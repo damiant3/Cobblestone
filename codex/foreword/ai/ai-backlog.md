@@ -37,14 +37,27 @@ its own re-recorded expectations.
 ## ClipBpe above ASCII
 
 `ClipBpe` matches Forge's CLIPTokenizer on every line of
-`codex/test/apps/clip-bpe-forge`, one of which is Latin-1, Cyrillic and curly
-quotes. Four differences remain for text outside that line, each ungraded:
-of ftfy's repairs only quote uncurling is made, so NFD accents (a macOS
-paste), HTML entities, ligatures, fullwidth Latin, mojibake and control
-characters all tokenize differently from Forge; a code point CCE cannot
-carry is dropped when the prompt becomes CCE Text, before the tokenizer sees
-it, where Forge emits its byte tokens; letters, digits and lowercasing above
-ASCII follow a range table covering Latin through Hangul, not Unicode's full
-categories (Vietnamese in U+1E00..U+1EFF is not a letter); a word-final capital sigma lowers to U+03C3 where Python
-gives U+03C2. Grade each with a line in that test's oracle before changing
-the table.
+`codex/test/apps/clip-bpe-forge`, and its letter, digit and lowercase tables
+agree with the oracle's `regex` classes and Python's `lower()` on every code
+point CCE carries (2026-10-17). Forge runs ftfy 6.1.2 with its defaults, and of
+its repairs only quote uncurling is made. Measured over the code points CCE
+carries (its tier tables): ligature, width folding and NFD Latin accents are
+unreachable, because CCE drops U+FB00.., fullwidth Latin and U+0300.. to `?`
+before the tokenizer, as it drops Vietnamese (U+1E00..U+1EFF), where Forge emits
+byte tokens. Reachable and not made: HTML entities, mojibake, C1 controls read
+as cp1252 (U+0080..U+009F), control and formatting characters (U+206A..U+206F),
+and NFC, which over carried text is 16 singleton and exclusion mappings
+(U+2126 to U+03A9, U+0958..U+095F to base and nukta), 465 compositions (399
+Hangul leading consonant and vowel, 66 kana, Arabic and Devanagari pairs) and
+the canonical reordering of 159 carried combining marks. **Parked (root, 2026-10-17):** no boundary fits R-CCE without
+touching every text, because a prompt reaches ClipBpe as CCE Text and the UTF-8
+boundaries before it carry all input; the gain is prompts that arrive
+decomposed, which our own input does not produce. Grade each repair with a line in
+that test's oracle before changing the code.
+
+## lora-resident exceeds the 60 s wall budget under load
+
+`codex/test/apps/lora-resident` failed `wall budget exceeded` in two cite-gate
+fan-outs on 2026-10-17 (red at `-Jobs 16`, root on seed A24CC2ED) and passes alone.
+**Open:** a `lora-resident.wall` sized from a measured loaded run, as the four
+GPU arms got (`flux-condition.wall` and its siblings).

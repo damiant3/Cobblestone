@@ -127,11 +127,17 @@ Chapter: CompositeRemovalProof
     dropped <- cp-british map store game input (crp-target 4 ingot)
     print-line-uni ("ITEM add=" & (when added is Err (e) -> e is Ok (v) -> v.note) & " ingot=" & show ingot & " remove=" & (when dropped is Err (e) -> e is Ok (v) -> v.note))
     f <- crp-check "[remove on an item in the backpack: deleted" (ingot > 0 & crp-noted dropped "british:remove" & crp-gone game.world ingot)
-    lot <- (list-at owner.vendor.lots 0).serial
-    lots <- owner.vendor.lot-count
+    lot <- (ep-lot owner.vendor.currency.world.goods (ep-lot-nth owner.vendor.currency.world.goods 0)).serial
+    lots <- (ep-lot-count owner.vendor.currency.world.goods)
     sold <- cp-british map store game input (crp-target 4 lot)
     g <- crp-check "[remove on a vendor's stock lot: deleted, the lot leaves the ledger and the vendor world still validates" (lot > 0 & crp-noted sold "british:remove"
-      & crp-gone game.world lot & owner.vendor.lot-count == lots - 1 & gv-lot owner.vendor lot 0 < 0 & gvsc-valid owner.vendor)
+      & crp-gone game.world lot & (ep-lot-count owner.vendor.currency.world.goods) == lots - 1 & gv-lot owner.vendor lot 0 < 0 & gvsc-valid owner.vendor)
+    struck <- (list-at owner.vendor.vendors 0).serial
+    exposed <- __record-set (list-at owner.combat.actors (max 0 (world-slot game.world struck))) "immune" False
+    harmed <- (when owner.magic is None -> Err "magery unbound" is Just (m) -> (when world-get game.world struck is Err (x) -> Err x is Ok (sm) -> mge-harm m game input me struck sm.health cb-cause-spell))
+    risen <- (when world-get game.world struck is Err (_) -> False is Ok (sm) -> sm.health > 0)
+    revived <- crp-check "a shopkeeper killed in combat rises at full health in place: the vendor keeps its serial, stock and binding, and the vendor world still validates (UOAIX-101)" (struck > 0 & is-ok harmed & risen
+      & gv-vendor owner.vendor struck 0 >= 0 & gvsc-container game.world (list-at owner.vendor.vendors 0).stock struck & gvsc-valid owner.vendor)
     vendor <- (list-at owner.vendor.vendors 0).serial
     stock <- (list-at owner.vendor.vendors 0).stock
     objects <- world-count game.world
@@ -156,10 +162,10 @@ Chapter: CompositeRemovalProof
       & crp-said rock "[kill targets a creature." & world-count game.world == objects & crp-gone game.world pack == False)
     saved <- cs-commit store True
     k <- crp-check "the world commits after every removal" (is-ok saved)
-    a + b + c + d + e + f + g + h + h2 + j + k
+    a + b + c + d + e + f + g + revived + h + h2 + j + k
   end
   crp-hidden : CompositeOwner, Integer -> Boolean
-  crp-hidden (store) (serial) = let slot = world-slot store.state.items.world serial in slot >= 0 & peek-byte store.state.active.concealed slot == 3
+  crp-hidden (store) (serial) = let slot = world-slot store.state.items.world serial in slot >= 0 & peek-byte (sa-at store.state.active.concealed slot) 0 == 3
   crp-later : CompositeOwner -> [Console] Integer
   crp-later (store) = let owner = store.state
     in let vendor = (list-at owner.vendor.vendors 0).serial

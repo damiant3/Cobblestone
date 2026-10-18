@@ -35,15 +35,13 @@ Chapter: CompositeFarmerProof
  A sale that empties a good: its lots leave the ledger as consumed stock, as an NPC death settles them (cgg-drop-lots).
   cfp-sell-out : GvWorld, Integer, Integer -> Integer
   cfp-sell-out (v) (index) (item) = let actor = (list-at v.vendors index).actor
-    in cfp-drop v actor item 0
-  cfp-drop : GvWorld, Integer, Integer, Integer -> Integer
-  cfp-drop (v) (actor) (item) (i) = if i >= v.lot-count then 0
-    else let l = list-at v.lots i
-    in if l.actor /= actor | l.item /= item then cfp-drop v actor item (i + 1)
-    else let w = v.currency.world
-    in let lost = ep-consume w (ep-actor w actor) l.item l.quantity
-    in let gone = world-delete v.game.world l.serial
-    in let retired = gh-retire-lot v i in 1 + cfp-drop v actor item i
+    in cfp-drop v item (ep-lot-first v.currency.world.goods actor)
+  cfp-drop : GvWorld, Integer, Integer -> Integer
+  cfp-drop (v) (item) (serial) = if serial == 0 then 0
+    else let next = ep-lot-next v.currency.world.goods serial
+    in if ep-lot-item v.currency.world.goods serial /= item then cfp-drop v item next
+    else let lost = ep-forget-lot v.currency.world serial
+    in let gone = world-delete v.game.world serial in 1 + cfp-drop v item next
   cfp-held : CgGatherer, Integer -> Integer
   cfp-held (c) (item) = let x = c.gatherer.producer.currency in ep-at (ep-actor x.world c.gatherer.producer.actor).stock item
   cfp-baker : CompositeGame, Integer -> Integer
@@ -138,7 +136,7 @@ Chapter: CompositeFarmerProof
     end
   opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
     is Err (e) -> cfp-check e False
-    is Ok (map) -> when walk-map-new 1408 1536 96 160
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
      is Err (e) -> cfp-check e False
      is Ok (britain) -> let filled = cfp-fill map 0
       in let town-filled = cfp-fill britain 0

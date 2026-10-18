@@ -1,0 +1,92 @@
+Chapter: PagedTable
+
+ A page is allocated by pt-add and never freed: a caller that restores a heap mark taken before pt-add loses the page
+ (L-BELOWMARK), so a table grows only outside a restored mark. A page holds one live flag byte per row (rounded up to
+ 8), then its rows. A freed row carries the free list's next row in its first qword.
+
+  PtTable = record { directory : Integer, ceiling : Integer, shift : Integer, row-bytes : Integer,
+    pages : Integer, count : Integer, live : Integer, free : Integer }
+ Shift 16 (65536 rows a page) and 2^24 directory entries (128 MiB of pointers) bound one table's bookkeeping.
+  pt-shift-limit : Integer = 16
+  pt-ceiling-limit : Integer = 16777216
+  pt-zero : Integer, Integer, Integer -> Integer
+  pt-zero (buffer) (at) (stop) = if at >= stop then 0 else let z = poke-qword buffer at 0 in pt-zero buffer (at + 8) stop
+  pt-new : Integer, Integer, Integer -> Result PtTable Text
+  pt-new (row-bytes) (shift) (ceiling) =
+    if row-bytes < 8 | int-mod row-bytes 8 /= 0 | shift < 0 | shift > pt-shift-limit | ceiling < 1 | ceiling > pt-ceiling-limit then Err "paged table shape"
+    else let directory = alloc-bytes (ceiling * 8)
+    in if directory == 0 then Err "paged table directory"
+    else let cleared = pt-zero directory 0 (ceiling * 8)
+    in Ok (PtTable { directory = directory, ceiling = ceiling, shift = shift, row-bytes = row-bytes,
+      pages = 0, count = 0, live = 0, free = -1 })
+  pt-page-rows : PtTable -> Integer
+  pt-page-rows (t) = bit-shl 1 t.shift
+  pt-flag-bytes : PtTable -> Integer
+  pt-flag-bytes (t) = (pt-page-rows t + 7) / 8 * 8
+  pt-page-bytes : PtTable -> Integer
+  pt-page-bytes (t) = pt-flag-bytes t + pt-page-rows t * t.row-bytes
+  pt-capacity : PtTable -> Integer
+  pt-capacity (t) = t.ceiling * pt-page-rows t
+  pt-page : PtTable, Integer -> Integer
+  pt-page (t) (row) = peek-qword t.directory (bit-shr row t.shift * 8)
+  pt-slot : PtTable, Integer -> Integer
+  pt-slot (t) (row) = bit-and row (pt-page-rows t - 1)
+  pt-at : PtTable, Integer -> Integer
+  pt-at (t) (row) = pt-page t row + pt-flag-bytes t + pt-slot t row * t.row-bytes
+  pt-live : PtTable, Integer -> Boolean
+  pt-live (t) (row) = row >= 0 & row < t.count & peek-byte (pt-page t row) (pt-slot t row) == 1
+ The address of a live row, or -1 for a row past the count or freed.
+  pt-row : PtTable, Integer -> Integer
+  pt-row (t) (row) = if pt-live t row then pt-at t row else -1
+ The new row's index (its bytes zero), or -1 when the table is at its ceiling or a page cannot be allocated.
+  pt-add : PtTable -> Integer
+  pt-add (t) = if t.free >= 0 then pt-reuse t t.free
+    else if t.count >= pt-capacity t then -1
+    else if pt-slot t t.count /= 0 then pt-append t
+    else if pt-grow t < 0 then -1
+    else pt-append t
+  pt-append : PtTable -> Integer
+  pt-append (t) = let row = t.count
+    in let counted = __record-set t "count" (row + 1)
+    in pt-mark t row
+  pt-grow : PtTable -> Integer
+  pt-grow (t) = let page = alloc-bytes (pt-page-bytes t)
+    in if page == 0 then -1
+    else let cleared = pt-zero page 0 (pt-page-bytes t)
+    in let set = poke-qword t.directory (t.pages * 8) page
+    in let grown = __record-set t "pages" (t.pages + 1) in 0
+  pt-reuse : PtTable, Integer -> Integer
+  pt-reuse (t) (row) = let at = pt-at t row
+    in let next = __record-set t "free" (peek-qword at 0)
+    in let cleared = pt-zero at 0 t.row-bytes
+    in pt-mark t row
+  pt-mark : PtTable, Integer -> Integer
+  pt-mark (t) (row) = let flag = poke-byte (pt-page t row) (pt-slot t row) 1
+    in let counted = __record-set t "live" (t.live + 1) in row
+ 0, or -1 for a row that is not live.
+  pt-remove : PtTable, Integer -> Integer
+  pt-remove (t) (row) = if not (pt-live t row) then -1
+    else let flag = poke-byte (pt-page t row) (pt-slot t row) 0
+    in let linked = poke-qword (pt-at t row) 0 t.free
+    in let head = __record-set t "free" row
+    in let counted = __record-set t "live" (t.live - 1) in 0
+
+ A table is valid when its pages cover its count and no more, the directory past them is empty, its live flags count
+ live, and its free list holds exactly the other rows below the count, each once.
+  pt-valid : PtTable -> Boolean
+  pt-valid (t) = t.count >= 0 & t.count <= pt-capacity t & t.live >= 0 & t.live <= t.count
+    & t.pages == (t.count + pt-page-rows t - 1) / pt-page-rows t
+    & pt-empty-past t t.pages & pt-live-count t 0 0 == t.live
+    & pt-free-walk t t.free (t.count - t.live) == 0
+  pt-empty-past : PtTable, Integer -> Boolean
+  pt-empty-past (t) (page) = if page >= t.ceiling then True
+    else if peek-qword t.directory (page * 8) /= 0 then False else pt-empty-past t (page + 1)
+  pt-live-count : PtTable, Integer, Integer -> Integer
+  pt-live-count (t) (row) (n) = if row >= t.count then n
+    else pt-live-count t (row + 1) (if peek-byte (pt-page t row) (pt-slot t row) == 1 then n + 1 else n)
+ The free rows left unvisited after following the list from row, or -1 when the list is longer than left, leaves the
+ count, or reaches a live row.
+  pt-free-walk : PtTable, Integer, Integer -> Integer
+  pt-free-walk (t) (row) (left) = if row == -1 then left
+    else if left <= 0 | row < 0 | row >= t.count | peek-byte (pt-page t row) (pt-slot t row) /= 0 then -1
+    else pt-free-walk t (peek-qword (pt-at t row) 0) (left - 1)

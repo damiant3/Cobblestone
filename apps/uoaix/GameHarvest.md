@@ -39,11 +39,13 @@ real inventory into the pack; the handler never grants starter tools.
 
 C06 returns a ground-enabled cursor with a separate HA context namespace.
 C6C is single-use, bound to character, connection and tool, and expires after
-ten seconds. Mining/wood use range2; fishing uses range4, with no target under
-the player's own feet; reach is two-dimensional, as ServUO `InRange`. Every
+ten seconds. Mining and wood reach 2 tiles, the tile under the player's own feet
+included (Damian, 2026-10-07: "you should be able to mine under your feet");
+fishing reaches 5 and never the player's own tile; reach is two-dimensional, as
+ServUO `InRange`. Every
 refused target logs its x,y,z and tile id in the reply note. A swing plays
 ServUO's effect sound (0x13E chop, 0x125 or 0x126 mine; fishing none).
-The adapter uses a three-second action cooldown.
+The adapter uses a three-second action cooldown, except mining, which waits 2.5 seconds (Damian, 2026-10-07: "delay between mining attempts should be 2.5 seconds exactly").
 Cooldown survives reconnect/restart; an old target cannot complete after
 either. Client coordinates cannot create a source unless lookup validates it.
 
@@ -130,4 +132,4 @@ Retained metadata is fixed by the five-player/256-source budgets. Lookup is
 O(source count); tool/lot lookup is bounded by64. Candidate allocation and
 copy cost are bounded by fixed economy table sizes, with no retained
 request allocation. Codec duplicate checks are O(source count squared)
-inside the256 limit. No compiler or seed change.
+inside the256 limit.

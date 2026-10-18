@@ -43,10 +43,11 @@ $compile  = Join-Path $root "build/compile.ps1"
 $kernelPath = if ([System.IO.Path]::IsPathRooted($Kernel)) { $Kernel } else { Join-Path $root $Kernel }
 
 Write-Host "[lir-a64] compiling lir-check with -Passes lir-dump-a64 against $Kernel ..."
+Remove-Item -Force $cdx, $log -ErrorAction SilentlyContinue
 pwsh $compile -Src $src -Out $cdx -Log $log -Kernel $kernelPath -Passes "+lir-dump-a64" | Out-Null
 
-if (-not (Test-Path $log)) {
-  Write-Host "[lir-a64] FAIL: no compile log at $log" -ForegroundColor Red
+if (-not (Test-Path $log) -or -not (Test-Path $cdx)) {
+  Write-Host "[lir-a64] FAIL: the compile wrote no log or no binary at $out (is -Kernel $Kernel there?)" -ForegroundColor Red
   exit 1
 }
 

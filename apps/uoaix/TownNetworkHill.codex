@@ -44,9 +44,10 @@ Chapter: TownNetworkHill
   tnh-close (g) = if g.closed then False
     else let a = __record-set g "closed" True
     in tnh-free [g.best,g.trial,g.inputs,g.outcomes,g.hidden,g.outputs,g.scores,g.total] 0
+ rows is the corpus's base rows per variant (tno-base-rows for the outcome corpus), which the score kernel indexes by.
   tnh-plan : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
-    Integer -> TnhGpu
-  tnh-plan (mh) (best) (trial) (inputs) (outcomes) (hidden) (outputs) (scores) (total) (samples) =
+    Integer, Integer -> TnhGpu
+  tnh-plan (mh) (best) (trial) (inputs) (outcomes) (hidden) (outputs) (scores) (total) (samples) (rows) =
     let parameter = gpu-arg-u64 0
     in let delta = gpu-arg-u64 0
     in TnhGpu {
@@ -59,12 +60,12 @@ Chapter: TownNetworkHill
       candidate-params = [gpu-arg-buf best 0,gpu-arg-buf trial 0,parameter,delta],
       hidden-params = [gpu-arg-buf trial 0,gpu-arg-buf inputs 0,gpu-arg-buf hidden 0,gpu-arg-u64 samples],
       output-params = [gpu-arg-buf trial 0,gpu-arg-buf hidden 0,gpu-arg-buf outputs 0,gpu-arg-u64 samples],
-      score-params = [gpu-arg-buf outputs 0,gpu-arg-buf outcomes 0,gpu-arg-buf scores 0,gpu-arg-u64 samples],
+      score-params = [gpu-arg-buf outputs 0,gpu-arg-buf outcomes 0,gpu-arg-buf scores 0,gpu-arg-u64 samples,gpu-arg-u64 rows],
       reduce-params = [gpu-arg-buf scores 0,gpu-arg-buf total 0,gpu-arg-u64 samples],
       copy-params = [gpu-arg-buf trial 0,gpu-arg-buf best 0]
     }
-  tnh-allocate : Integer, Integer -> Result TnhGpu Text
-  tnh-allocate (mh) (samples) =
+  tnh-allocate : Integer, Integer, Integer -> Result TnhGpu Text
+  tnh-allocate (mh) (samples) (rows) =
     let best = gpu-buf-alloc-raw (766 * 8)
     in let trial = gpu-buf-alloc-raw (766 * 8)
     in let inputs = gpu-buf-alloc-raw (samples * 32 * 8)
@@ -78,7 +79,7 @@ Chapter: TownNetworkHill
     in if missing | no-scratch then
       let freed = tnh-free [best,trial,inputs,outcomes,hidden,outputs,scores,total] 0
       in Err "GPU allocation refused"
-    else Ok (tnh-plan mh best trial inputs outcomes hidden outputs scores total samples)
+    else Ok (tnh-plan mh best trial inputs outcomes hidden outputs scores total samples rows)
   tnh-evaluate : TnhGpu -> Boolean
   tnh-evaluate (g) = if g.closed then False
     else if gpu-launch-module g.module "kernel_tnh_hidden" g.hidden-grid g.hidden-params < 0 then False
@@ -95,16 +96,16 @@ Chapter: TownNetworkHill
     else let p = __record-set g.parameter "value" parameter
     in let d = __record-set g.delta "value" delta
     in gpu-launch-module g.module "kernel_tnh_candidate" g.weight-grid g.candidate-params >= 0
-  tnh-open : Integer, List Integer, List Integer, List Integer -> Result TnhGpu Text
-  tnh-open (samples) (weights) (inputs) (outcomes) =
-    if samples < 1 | samples > 1024 then Err "sample bound"
+  tnh-open : Integer, Integer, List Integer, List Integer, List Integer -> Result TnhGpu Text
+  tnh-open (samples) (rows) (weights) (inputs) (outcomes) =
+    if samples < 1 | samples > 1024 | rows < 1 | rows > samples then Err "sample bound"
     else if list-length weights /= 766 | list-length inputs /= samples * 32 then Err "hill input shape"
     else if list-length outcomes /= samples * 14 then Err "hill outcome shape"
     else if not (tnh-range weights 4000 0 & tnh-range inputs 1000 0 & tnh-outcome-range outcomes 0)
       then Err "hill value bound"
     else let mh = gpu-module-load tnh-training-ptx
     in if mh <= 0 then Err "GPU module refused"
-    else when tnh-allocate mh samples
+    else when tnh-allocate mh samples rows
       is Err (message) -> Err message
       is Ok (g) ->
         if not (tnh-upload g.best weights & tnh-upload g.inputs inputs & tnh-upload g.outcomes outcomes)

@@ -1,0 +1,76 @@
+Chapter: CompositeHistory
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyMoney
+  cites Foreword chapter Format
+  cites Encode chapter Json
+
+ The admin panel's market history (Damian, 2026-10-09: "i wanna see over time, treasury, prices, availability stuff
+ like that"): one row a game hour in a ring of 336 rows, 14 game days (28 real hours at the default two-hour day). A
+ row is the hour, the treasury's copper, silver and gold (eu-money metals 1 to 3, purse 1), then for each catalog item
+ its lowest asking price over the shops that hold it (-1 when none does) and the stock all shops hold. The buffer is
+ made when the panel binds, before the serving mark (L-BELOWMARK); 0 means no history.
+  ch-rows : Integer = 336
+  ch-row-qwords : Integer -> Integer
+  ch-row-qwords (items) = 4 + 2 * items
+  ch-new : Integer -> Integer
+  ch-new (items) = let buf = alloc-bytes (16 + ch-rows * ch-row-qwords items * 8)
+    in let a = poke-qword buf 0 0
+    in let b = poke-qword buf 8 items in buf
+  ch-count : Integer -> Integer
+  ch-count (buf) = peek-qword buf 0
+  ch-items : Integer -> Integer
+  ch-items (buf) = peek-qword buf 8
+  ch-row : Integer, Integer -> Integer
+  ch-row (buf) (n) = buf + 16 + int-mod n ch-rows * ch-row-qwords (ch-items buf) * 8
+  ch-last-hour : Integer -> Integer
+  ch-last-hour (buf) = if ch-count buf == 0 then -1 else peek-qword (ch-row buf (ch-count buf - 1)) 0
+  ch-treasury : EuCurrency, Integer -> Integer
+  ch-treasury (x) (metal) = (em-purse (eu-money x metal) 1).coin
+  ch-record : Integer, GvWorld -> Integer
+  ch-record (buf) (v) = if buf == 0 then 0
+    else let hour = v.currency.world.hour
+    in if hour <= ch-last-hour buf then 0
+    else let row = ch-row buf (ch-count buf)
+    in let a = poke-qword row 0 hour
+    in let b = poke-qword row 8 (ch-treasury v.currency 1)
+    in let c = poke-qword row 16 (ch-treasury v.currency 2)
+    in let d = poke-qword row 24 (ch-treasury v.currency 3)
+    in let e = ch-market buf row v 1
+    in let f = poke-qword buf 0 (ch-count buf + 1) in 1
+  ch-market : Integer, Integer, GvWorld, Integer -> Integer
+  ch-market (buf) (row) (v) (item) = if item > ch-items buf then 0
+    else let at = row + 32 + (item - 1) * 16
+    in let a = poke-qword at 0 (ch-best v item 0 -1)
+    in let b = poke-qword at 8 (ch-stock v item 0 0)
+    in ch-market buf row v (item + 1)
+  ch-best : GvWorld, Integer, Integer, Integer -> Integer
+  ch-best (v) (item) (i) (best) = if i >= v.vendor-count then best
+    else let p = ep-price v.currency.world (list-at v.vendors i).actor item
+    in ch-best v item (i + 1) (if p > 0 & (best < 0 | p < best) then p else best)
+  ch-stock : GvWorld, Integer, Integer, Integer -> Integer
+  ch-stock (v) (item) (i) (n) = if i >= v.vendor-count then n
+    else let actor = (list-at v.vendors i).actor
+    in let held = if ep-valid-actor v.currency.world actor then ep-at (ep-actor v.currency.world actor).stock item else 0
+    in ch-stock v item (i + 1) (n + held)
+
+ The panel's panel-history answer: the hours and the treasury by metal from the oldest kept row, the catalog's item
+ names, and the price and stock series of one item (1 up to the catalog; 0 for none).
+  ch-first : Integer -> Integer
+  ch-first (buf) = if ch-count buf > ch-rows then ch-count buf - ch-rows else 0
+  ch-series : Integer, Integer, Integer, List Text -> List Text
+  ch-series (buf) (offset) (k) (parts) = if k >= ch-count buf then parts
+    else ch-series buf offset (k + 1) (list-push parts (show (peek-qword (ch-row buf k) offset)))
+  ch-array : Integer, Integer -> Text
+  ch-array (buf) (offset) = "[" & fmt-join (ch-series buf offset (ch-first buf) []) "," & "]"
+  ch-names : EpWorld, Integer, List Text -> List Text
+  ch-names (w) (i) (parts) = if i >= list-length w.catalog.items then parts
+    else ch-names w (i + 1) (list-push parts (json-quote (list-at w.catalog.items i).name))
+  ch-json : Integer, EpWorld, Integer -> Text
+  ch-json (buf) (w) (item) = if buf == 0 then "{\"error\":\"history-unbound\"}"
+    else let base = "{\"ok\":true,\"rows\":" & show (ch-count buf - ch-first buf) & ",\"hours\":" & ch-array buf 0
+      & ",\"copper\":" & ch-array buf 8 & ",\"silver\":" & ch-array buf 16 & ",\"gold\":" & ch-array buf 24
+      & ",\"names\":[" & fmt-join (ch-names w 0 []) "," & "]"
+    in if item < 1 | item > ch-items buf then base & "}"
+    else base & ",\"item\":" & show item & ",\"price\":" & ch-array buf (32 + (item - 1) * 16) & ",\"stock\":" & ch-array buf (40 + (item - 1) * 16) & "}"

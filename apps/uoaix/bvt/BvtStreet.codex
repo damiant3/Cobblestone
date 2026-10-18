@@ -1,0 +1,34 @@
+Chapter: BvtStreet
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-street-corpse : Integer -> Integer
+  bvt-street-corpse (body) = when world-new 64
+    is Err (_) -> -1
+    is Ok (w) -> when world-create w (WorldObject { serial = 0, kind = 2, x = 1490, y = 1640, z = 0, graphic = 8198, hue = 0, container = 0, amount = 400, health = 0 })
+      is Err (_) -> -1
+      is Ok (corpse) -> let found = cg-corpse-at w (world-tile-first w 1490 1640) body in if found == corpse then 1 else found
+  bvt-street-yells : Integer -> Integer
+  bvt-street-yells (serial) = let buf = cb-zeroed (cg-alarm-rows * 16)
+    in let first = cg-alarm-fresh buf serial 1000
+    in let second = cg-alarm-fresh buf serial 1001
+    in let later = cg-alarm-fresh buf serial (1000 + cg-alarm-quiet)
+    in (if first then 1 else 0) + (if second then 2 else 0) + (if later then 4 else 0)
+  bvt-street : Integer -> [Console] Integer
+  bvt-street (unused) = act
+    a <- bvt-check "a monster in Britain's streets is in range of the townsfolk (40088, 40168)" (cg-in-britain 1475 1645)
+    b <- bvt-check "a monster 875 tiles west of Britain is out of range" (not (cg-in-britain 600 1645))
+    c <- bvt-check "a noted body is found on its tile by its body art (40168)" (bvt-street-corpse 400 == 1)
+    d <- bvt-check "a corpse of another body art on the tile is not taken for it" (bvt-street-corpse 401 == 0)
+    e <- bvt-check "a townsperson yells, and yells again after the quiet window (40088)" (bit-and (bvt-street-yells 77) 5 == 5)
+    f <- bvt-check "a second yell inside the quiet window is refused" (bit-and (bvt-street-yells 77) 2 == 0)
+    g <- bvt-check "a monster takes an NPC in range that combat admits (40204)" (cg-prey-better 3 9999 True)
+    h <- bvt-check "a nearer NPC combat would refuse is passed over (40204)" (not (cg-prey-better 1 5 False))
+    i <- bvt-check "a wild creature struck by a guard turns on the guard (40204)" (cg-turns-on True False False)
+    j <- bvt-check "a creature struck by a player, or a tamed one, does not turn on the striker" (not (cg-turns-on True True False) & not (cg-turns-on False False False))
+    k <- bvt-check "picking cotton at 1 hit point leaves the picker at 1" (cpr-pricked 1 == 1)
+    l <- bvt-check "picking cotton at 25 hit points costs exactly 1" (cpr-pricked 25 == 24 & cpr-prick-resource == 10)
+    a + b + c + d + e + f + g + h + i + j + k + l
+  end

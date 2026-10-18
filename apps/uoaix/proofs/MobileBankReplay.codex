@@ -42,7 +42,7 @@ Chapter: MobileBankReplay
     banker <- gmb-add-banker bank npc
     actor <- gsi-session items shard input 0
     pack <- gsi-pack items actor
-    source <- (list-at vendor.lots 0).serial
+    source <- (ep-lot vendor.currency.world.goods (ep-lot-nth vendor.currency.world.goods 0)).serial
     buy-menu <- gv-handle-at vendor shard input (mbr-speech "buy") 100
     buy <- gp-put16 (gp-put32 ((gp-put32 [#3B,0,15] npc) & [2,26]) source) 4
     bought <- gv-handle-at vendor shard input buy 101
@@ -54,10 +54,10 @@ Chapter: MobileBankReplay
     lifted <- mbr-call bank shard input map (gp-put16 (gp-put32 [7] source) 4) 300
     deposit <- mbr-call bank shard input map (gp-put32 ((gp-put16 (gp-put16 (gp-put32 [8] source) 20) 20) & [0]) box) 301
     cash <- (em-purse vendor.currency.world.money 2).coin
-    moved <- poke-qword shard.world.buffer (16 + (world-slot shard.world player) * 80 + 16) 1422
+    moved <- poke-qword (wi-object shard.world.buffer (world-slot shard.world player)) 16 1422
     sell <- gp-put16 (gp-put32 (gp-put16 (gp-put32 [#9F,0,15] npc) 1) source) 4
     attempt <- gv-handle-at vendor shard input sell 400
-    unchanged <- vendor.sale-count == 1 & (em-purse vendor.currency.world.money 2).coin == cash & peek-qword shard.world.buffer (16 + (world-slot shard.world source) * 80 + 56) == box
+    unchanged <- vendor.sale-count == 1 & (em-purse vendor.currency.world.money 2).coin == cash & peek-qword (wi-object shard.world.buffer (world-slot shard.world source)) 56 == box
     a <- mbr-check "quoted lot deposited in bank then sold away from opening point is refused" (quoted == 1 & deposit.note == "items:drop" & is-ok attempt & unchanged)
     fresh-menu <- gv-handle-at vendor shard input (mbr-speech "sell") 500
     b <- mbr-check "bank lot excluded from new vendor quote" (is-ok fresh-menu & (list-at vendor.players 0).count == 0 & vendor.sale-count == 1)
@@ -120,14 +120,14 @@ Chapter: MobileBankReplay
     item-meta <- gsi-register items item 5 0 True False
     lifted <- mbr-call state shard input map (gp-put16 (gp-put32 [7] item) 1) 2000
     drop <- mbr-call state shard input map (gp-put32 ((gp-put16 (gp-put16 (gp-put32 [8] item) 20) 20) & [0]) pack-actor.pack) 2100
-    d <- mbr-check "nested bank item withdraws through normal atomic item handler" (lifted.note == "items:lift" & drop.note == "items:drop" & peek-qword shard.world.buffer (16 + (world-slot shard.world item) * 80 + 56) == pack-actor.pack)
+    d <- mbr-check "nested bank item withdraws through normal atomic item handler" (lifted.note == "items:lift" & drop.note == "items:drop" & peek-qword (wi-object shard.world.buffer (world-slot shard.world item)) 56 == pack-actor.pack)
     lift-back <- mbr-call state shard input map (gp-put16 (gp-put32 [7] item) 1) 3000
     deposit <- mbr-call state shard input map (gp-put32 ((gp-put16 (gp-put16 (gp-put32 [8] item) 20) 20) & [0]) bag) 3100
-    e <- mbr-check "deposit keeps the same serial in nested bank container" (deposit.note == "items:drop" & peek-qword shard.world.buffer (16 + (world-slot shard.world item) * 80 + 56) == bag)
-    moved <- poke-qword shard.world.buffer (16 + 16) 1420
+    e <- mbr-check "deposit keeps the same serial in nested bank container" (deposit.note == "items:drop" & peek-qword (wi-object shard.world.buffer (world-slot shard.world item)) 56 == bag)
+    moved <- poke-qword (wi-object shard.world.buffer 0) 16 1420
     refused <- mbr-call state shard input map (gp-put16 (gp-put32 [7] item) 1) 4000
     f <- mbr-check "movement revokes access to nested bank objects" (refused.note == "bank:access-refused" & list-at (mbr-packet refused 0) 0 == #27 & pack-actor.holding == 0)
-    returned <- poke-qword shard.world.buffer (16 + 16) 1421
+    returned <- poke-qword (wi-object shard.world.buffer 0) 16 1421
     reconnected <- __record-set input "connection" 8
     denied <- mbr-call state shard input map (gp-put32 [6] bank) 5000
     g <- mbr-check "new connection cannot reuse bank authority" (denied.note == "Open your bank at a nearby banker first.")
@@ -135,7 +135,7 @@ Chapter: MobileBankReplay
     clicked <- mbr-call state shard input map (gp-put32 [6] 2) 6010
     self <- mbr-call state shard input map (gp-put32 [6] 1) 6020
     named <- mbr-call state shard input map (gp-put32 [9] 2) 6030
-    hello <- mbr-check "single-clicking the banker answers its name and Hello" (named.note == "bank:name" & list-length named.packets == 2 & list-at (mbr-packet named 0) 9 == 6 & list-at (mbr-packet named 1) 9 == 0)
+    hello <- mbr-check "single-clicking the banker answers its name alone, no Hello (UOAIX-56, main 39760)" (named.note == "bank:name" & list-length named.packets == 1 & list-at (mbr-packet named 0) 9 == 6)
     clicks <- mbr-check "double-clicking the banker opens the bank and another mobile does not" (clicked.note == "bank:open" & self.note /= "bank:open")
     foreign <- world-create shard.world (gs-item 2 #09B2 0)
     foreign-meta <- gsi-register items #4000000A 29 #4A False False
@@ -151,10 +151,10 @@ Chapter: MobileBankReplay
     corrupted <- poke-qword bytes (16 + (world-slot shard.world item) * 40 + 8) 30
     bad <- gic-read shard.world bytes (gic-size items)
     j <- mbr-check "GSI1 refuses invalid metadata before allocating state" (is-err bad)
-    far <- poke-qword shard.world.buffer 32 1500
+    far <- poke-qword (wi-object shard.world.buffer 0) 16 1500
     absent <- mbr-call state shard input map (mbr-speech "bank") 7000
     k <- mbr-check "bank speech requires a registered nearby banker" (absent.note == "You must be near a banker.")
-    a+header+b+c+d+e+f+g+h+i+j+k
+    a+header+b+c+d+e+f+g+hello+clicks+h+i+j+k
   end
   opening : [Console] Integer = when gs-new 0
     is Err (e) -> act

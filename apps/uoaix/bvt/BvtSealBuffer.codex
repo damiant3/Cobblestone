@@ -1,0 +1,47 @@
+Chapter: BvtSealBuffer
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-191: the archive buffer a seal writes into is made at the growth point (eu-seg-ready), never by the seal in play.
+ Answers a bit per check: 1 the first ready makes a buffer and a second makes none, 2 grown loan tables leave that buffer
+ short of the room (the state in which a seal used to make one above the serving mark), 4 the next ready makes one that
+ covers the room, 8 the seal's eu-seg-buffer then hands back that same buffer; -9 a fixture that did not build.
+  bvsb-run : Integer -> Integer
+  bvsb-run (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let first = eu-seg-ready x
+      in let again = eu-seg-ready x
+      in let a = if first > 0 & again == 0 & x.start.archive /= 0 then 1 else 0
+      in let grown = eu-grow-loans x
+      in let short = x.start.archive-bytes < eu-seg-room x
+      in let b = if short then 2 else 0
+      in let remade = eu-seg-ready x
+      in let kept = x.start.archive
+      in let c = if remade > 0 & x.start.archive-bytes >= eu-seg-room x & x.start.archive-bytes >= eu-seg-bytes x + 512 then 4 else 0
+      in let d = if eu-seg-buffer x == kept then 8 else 0
+      in a + b + c + d
+ A segment sealed and pending when the tables outgrow the buffer survives the growth point's new buffer (trial 43344).
+ Answers 1 the header (bytes at 16, segment at 24) and a row past it are in the new buffer, 2 the buffer was made again;
+ -9 a fixture that did not build.
+  bvsb-pending : Integer -> Integer
+  bvsb-pending (unused) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let first = eu-seg-ready x
+      in let old = x.start.archive
+      in let a = poke-qword old 16 256
+      in let b = poke-qword old 24 77
+      in let c = poke-qword old 200 4242
+      in let pending = __record-set x.start "pending" 1
+      in let grown = eu-grow-loans x
+      in let remade = eu-seg-ready x
+      in let seg = x.start.archive
+      in (if peek-qword seg 16 == 256 & peek-qword seg 24 == 77 & peek-qword seg 200 == 4242 then 1 else 0) + (if remade > 0 & seg /= old then 2 else 0)
+  bvt-seal-buffer : Integer -> [Console] Integer
+  bvt-seal-buffer (unused) = act
+    n <- bvsb-run 0
+    a <- bvt-check ("the seal's archive buffer is made at the growth point and a seal reuses it (UOAIX-191, code " & show n & ")") (n == 15)
+    p <- bvsb-pending 0
+    b <- bvt-check ("a sealed segment pending when the tables outgrow the archive buffer is carried into the new one (trial 43344's padding fault, code " & show p & ")") (p == 3)
+    a + b
+  end

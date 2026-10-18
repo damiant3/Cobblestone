@@ -569,6 +569,15 @@ Section: Definition Emission
     else if n == "inject-theme-css" then True
     else if n == "fetch-then" then True
     else if n == "fetch-get-then" then True
+    else if n == "crypto-ready" then True
+    else if n == "crypto-random-hex" then True
+    else if n == "crypto-hmac-then" then True
+    else if n == "crypto-hmac-verify-then" then True
+    else if n == "crypto-seal-then" then True
+    else if n == "crypto-open-then" then True
+    else if n == "frame-mount" then True
+    else if n == "frame-serve" then True
+    else if n == "host-request-then" then True
     else if n == "fetch-with-then" then True
     else if n == "page-data" then True
     else if n == "location-hash" then True
@@ -799,6 +808,8 @@ Section: Chapter Emission
       "// Entry\ntry { opening(); } catch(e) { console.error(e); print_line_uni(e instanceof Error ? e.message : String(e)); }\n"
     else "// Entry: this chapter declares no opening\n"
     in let dom-bi = emit-dom-builtins & (if html-uses-gpu-bridge (m.defs) 0 then emit-dom-gpu-bridge else "") & (if html-uses-byte-heap defs-text then emit-dom-byte-heap else "")
+      & (if text-contains defs-text "crypto_" then emit-dom-crypto else "")
+      & (if text-contains defs-text "frame_mount(" | text-contains defs-text "frame_serve(" | text-contains defs-text "host_request_then(" then emit-dom-frame else "")
     in let wraps = "function __int(v) { return typeof v === 'number' ? BigInt(Math.trunc(v)) : v; }\n" & html-int-wraps (m.defs) 0 ""
     in let js = html-cce-runtime & builtins & dom-bi & wraps & types-text & defs-text & entry
     in emit-html-page title (emit-default-css) js
@@ -993,6 +1004,34 @@ Section: Chapter Emission
     & "var i=a.info||{};o.vendor=i.vendor||'';o.architecture=i.architecture||'';o.device=i.device||'';o.description=i.description||'';o.fallback=!!(a.isFallbackAdapter||i.isFallbackAdapter);"
     & "o.maxBufferSize=Number(a.limits.maxBufferSize);o.maxStorageBufferBindingSize=Number(a.limits.maxStorageBufferBindingSize);o.f16=a.features.has('shader-f16');"
     & "return a.requestDevice().then(function(d){return _gpuGemm(d,ms,o)})}).then(fin,function(e){o.err=String(e&&e.message||e);fin()});return 0}\n"
+
+ WebCrypto (W3C Web Cryptography API): keys, tags, nonces and ciphertext travel as lowercase hex, text as UTF-8;
+ AES-GCM takes a 12-byte nonce and a 128-bit tag, sealed as cipher hex, LF, tag hex. A refusal answers "!" and the
+ reason; a failed verification answers "0".
+  emit-dom-crypto : Text
+  emit-dom-crypto = "// crypto\n"
+    & "function _cx(h){h=String(h);if(h.length%2||!/^[0-9a-fA-F]*$/.test(h))throw Error('invalid hex');var b=new Uint8Array(h.length/2);for(var i=0;i<b.length;i++)b[i]=parseInt(h.substr(2*i,2),16);return b}\n"
+    & "function _ch(a){var b=new Uint8Array(a),s='';for(var i=0;i<b.length;i++)s+=(b[i]<16?'0':'')+b[i].toString(16);return s}\n"
+    & "function _ct(t){return new TextEncoder().encode(String(t))}\n"
+    & "function _cr(p,cb){p.then(function(r){cb(r)},function(e){cb('!'+String(e&&e.message||e))});return 0}\n"
+    & "function crypto_ready(){return (typeof window!=='undefined'&&window.isSecureContext&&typeof crypto!=='undefined'&&crypto.subtle)?1:0}\n"
+    & "function crypto_random_hex(n){return _ch(crypto.getRandomValues(new Uint8Array(Number(n))))}\n"
+    & "function crypto_hmac_then(k,t,cb){return _cr((async function(){var key=await crypto.subtle.importKey('raw',_cx(k),{name:'HMAC',hash:'SHA-256'},false,['sign']);return _ch(await crypto.subtle.sign('HMAC',key,_ct(t)))})(),cb)}\n"
+    & "function crypto_hmac_verify_then(k,g,t,cb){(async function(){var key=await crypto.subtle.importKey('raw',_cx(k),{name:'HMAC',hash:'SHA-256'},false,['verify']);return (await crypto.subtle.verify('HMAC',key,_cx(g),_ct(t)))?'1':'0'})().then(function(r){cb(r)},function(){cb('0')});return 0}\n"
+    & "function crypto_seal_then(k,n,a,p,cb){return _cr((async function(){var key=await crypto.subtle.importKey('raw',_cx(k),'AES-GCM',false,['encrypt']);var s=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:_cx(n),additionalData:_ct(a),tagLength:128},key,_ct(p)));return _ch(s.slice(0,-16))+'\\n'+_ch(s.slice(-16))})(),cb)}\n"
+    & "function crypto_open_then(k,n,a,c,g,cb){return _cr((async function(){var key=await crypto.subtle.importKey('raw',_cx(k),'AES-GCM',false,['decrypt']);var x=_cx(c),y=_cx(g),m=new Uint8Array(x.length+y.length);m.set(x);m.set(y,x.length);return new TextDecoder('utf-8',{fatal:true}).decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:_cx(n),additionalData:_ct(a),tagLength:128},key,m))})(),cb)}\n"
+    & "// crypto end\n"
+ A framed page (HTML Living Standard: iframe srcdoc and sandbox, window.postMessage): frame-mount puts html in an iframe
+ sandboxed to scripts alone (an opaque origin), frame-serve answers that frame's messages, and the framed page's
+ host-request-then posts a request to its parent and hands the reply with the same id to its callback. Messages from
+ any other window are ignored.
+  emit-dom-frame : Text
+  emit-dom-frame = "// frame\n"
+    & "var _gframe=null,_ghostq={},_ghostn=0;\n"
+    & "function frame_mount(id,html){var host=document.getElementById(String(id));if(!host)return 0;var f=document.createElement('iframe');f.setAttribute('sandbox','allow-scripts');f.setAttribute('title','panel');f.style.width='100%';f.style.border='0';f.style.minHeight='85vh';f.srcdoc=String(html);host.replaceChildren(f);_gframe=f;return 0}\n"
+    & "function frame_serve(handler){window.addEventListener('message',function(e){if(!_gframe||e.source!==_gframe.contentWindow)return;var d=e.data;if(!d||typeof d.id!=='number'||typeof d.body!=='string')return;var src=e.source;handler(d.body,function(r){src.postMessage({id:d.id,body:String(r)},'*');return 0n})});return 0}\n"
+    & "function host_request_then(body,cb){var id=++_ghostn;_ghostq[id]=cb;if(id===1)window.addEventListener('message',function(e){if(e.source!==window.parent)return;var d=e.data;if(!d||typeof d.id!=='number'||typeof d.body!=='string'||!_ghostq[d.id])return;var k=_ghostq[d.id];delete _ghostq[d.id];k(d.body)});window.parent.postMessage({id:id,body:String(body)},'*');return 0}\n"
+    & "// frame end\n"
 
   html-uses-gpu-bridge : List IRDef, Integer -> Boolean
   html-uses-gpu-bridge (defs) (i) =

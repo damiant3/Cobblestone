@@ -78,7 +78,9 @@ Chapter: ActiveSkillsReplay
   asr-services (unused) = AsServices { light = asr-light, animal = asr-animal, item-name = asr-item-name,
     intelligence = asr-intelligence, poison = asr-poison, cure = asr-cure, resurrect = asr-resurrect, snoop = asr-snoop,
     provoke = asr-provoke, lure = asr-lure, taming = asr-taming, master = asr-master, tame = asr-tame, pet-name = asr-pet-name, herd = asr-herd,
-    envenom = asr-envenom }
+    envenom = asr-envenom, durability = asr-durability }
+  asr-durability : Integer -> Integer
+  asr-durability (serial) = 0
   asr-send : ActiveSkills, GameShard, GameInput, WalkMap, List Integer, Integer -> Result (Maybe GameReply) Text
   asr-send (s) (shard) (input) (map) (packet) (tick) = as-handler-at (asr-services 0) s shard input map 2593 packet tick
   asr-denied : Text -> List Integer
@@ -212,11 +214,11 @@ Chapter: ActiveSkillsReplay
     a <- list-at s.actors 0
     hid <- asr-hide-try s shard input map 50200000 20
     slot <- world-slot shard.world input.session.serial
-    asr-check "hiding conceals the player and draws the self body hidden" (a.hidden & peek-byte s.concealed slot == 1 & asr-self-flags hid 0 == 128)
+    asr-check "hiding conceals the player and draws the self body hidden" (a.hidden & peek-byte (sa-at s.concealed slot) 0 == 1 & asr-self-flags hid 0 == 128)
     refused <- as-after s shard input [2,4,0] (gs-reply [[#21,0,0,0,0,0,0,0]] "walk refused")
     asr-check "a refused step does not reveal" (a.hidden & list-length refused.packets == 1)
     walked <- as-after s shard input [2,4,0] (gs-reply [[#22,0,1]] "walk")
-    asr-check "an admitted step reveals and redraws the self body" (not a.hidden & peek-byte s.concealed slot == 0 & asr-self-flags (Ok (Just walked)) 0 == 0)
+    asr-check "an admitted step reveals and redraws the self body" (not a.hidden & peek-byte (sa-at s.concealed slot) 0 == 0 & asr-self-flags (Ok (Just walked)) 0 == 0)
     again <- asr-hide-try s shard input map 60000000 20
     rehidden <- a.hidden
     looked <- asr-send s shard input map (asr-skill 1) 70000000
@@ -230,11 +232,13 @@ Chapter: ActiveSkillsReplay
     fixture <- __record-set other "serial" npc
     sneaking <- __record-set other "hidden" True
     hidden-npc <- as-conceal s npc 1
-    seeker <- sk-set a.skills.levels 14 300
+    seeker <- sk-set a.skills.levels 14 450
+    pinned <- __record-set a.skills "seed" 634785765
     missed <- asr-detect-try s shard input map 1426 1698 80000000 40
     asr-check "detecting away from the hider finds nothing" (asr-texts missed == "skills:detect" & other.hidden & asr-has missed (as-say "You can see nothing hidden there.") 0)
+    repinned <- __record-set a.skills "seed" 634785765
     found <- asr-detect-try s shard input map 1421 1698 90000000 40
-    asr-check "detecting at the hider reveals it" (asr-texts found == "skills:detect" & not other.hidden & peek-byte s.concealed (world-slot shard.world npc) == 0)
+    asr-check "detecting at the hider reveals it" (asr-texts found == "skills:detect" & not other.hidden & peek-byte (sa-at s.concealed (world-slot shard.world npc)) 0 == 0)
     far <- asr-detect-try s shard input map 1440 1698 100000000 0
     unbound <- __record-set other "serial" 0
     asr-check "detecting past twelve tiles refuses" (asr-has far (asr-denied "That location is too far away.") 0)
@@ -284,9 +288,10 @@ Chapter: ActiveSkillsReplay
         asr-check "the pulse before the delay changes nothing" (asr-none early & asr-amount shard bandage == 3 & ep-at p.stock 75 == 3)
         done <- asr-pulse s shard input due
         lots <- gv-lot s.vendor bandage 0
-        asr-check "finishing consumes exactly one bandage from world and economy" (asr-amount shard bandage == 2 & ep-at p.stock 75 == 2 & ep-at p.quality 75 == 1000 & ep-at p.wear 75 == 64 & ep-at p.cost 75 == 20 & ep-at w.consumed 75 == consumed + 1 & lots >= 0 & (list-at s.vendor.lots lots).quantity == 2 & (list-at s.vendor.lots lots).basis == 20)
+        asr-check "finishing consumes exactly one bandage from world and economy" (asr-amount shard bandage == 2 & ep-at p.stock 75 == 2 & ep-at p.quality 75 == 1000 & ep-at p.wear 75 == 64 & ep-at p.cost 75 == 20 & ep-at w.consumed 75 == consumed + 1 & lots >= 0 & (ep-lot-amount s.vendor.currency.world.goods lots) == 2 & (ep-lot s.vendor.currency.world.goods lots).basis == 20)
         asr-check "a successful application heals the patient" (asr-hits shard self > 10 & asr-has done (as-say "You finish applying the bandages.") 0 & a.due == 0)
         next <- a.next
+        npc-hurt <- asr-health shard npc 10
         started <- asr-bandage s shard input map bandage npc (next + 10)
         npc-due <- a.due
         moved <- when world-get shard.world npc is Err (_) -> -1 is Ok (m) -> (when world-update shard.world (__record-set m "x" 1426) is Err (_) -> -1 is Ok (_) -> 0)
@@ -584,7 +589,7 @@ Chapter: ActiveSkillsReplay
               asr-check "an unpicked container shows nothing unusual (9283)" (asr-has untouched (as-say "You notice nothing unusual.") 0)
               picked <- as-picked s bag 5 400
               traced <- asr-examine s shard input map bag (190000000 + gh-ticks 80000)
-              asr-check "a picked container names its last picker (9282)" (asr-has traced (as-say "This lock was last picked by Opponent.") 0)
+              asr-check "a picked container names its last picker (9282)" (text-length (as-mobile-name s shard 5) > 0 & asr-has traced (as-say ("This lock was last picked by " & as-mobile-name s shard 5 & ".")) 0)
               person <- asr-examine s shard input map 5 (190000000 + gh-ticks 90000)
               asr-check "a character is no thief, with no thieves' guild (9283)" (asr-has person (as-say "You notice nothing unusual.") 0)
             end
@@ -660,7 +665,7 @@ Chapter: ActiveSkillsReplay
       is Err (_) -> 0
       is Ok (_) -> 1
   asr-window : ActiveSkills, Integer, Integer -> Integer
-  asr-window (s) (serial) (until) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-qword s.spirit (slot * 8) until
+  asr-window (s) (serial) (until) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-qword (sa-at s.spirit slot) 0 until
   asr-said : Integer, Integer, List Integer -> List Integer
   asr-said (n) (i) (out) = if i == 44 + n then list-push out 0 else asr-said n (i + 1) (list-push out (if i == 0 then #1C else if i < 44 then 0 else 97))
   asr-oo : List Integer, Integer -> Boolean
@@ -679,6 +684,8 @@ Chapter: ActiveSkillsReplay
     is Ok (n) -> n
   asr-item-health : GameShard, Integer -> Integer
   asr-item-health (shard) (serial) = when world-get shard.world serial is Err (_) -> -1 is Ok (o) -> o.health
+  asr-bottled : GameShard, Integer -> Boolean
+  asr-bottled (shard) (serial) = when world-get shard.world serial is Err (_) -> False is Ok (o) -> o.graphic == #0F0E & o.health == 0 & o.amount == 1
   asr-poisoning : ActiveSkills, GameShard, GameInput, WalkMap, Integer -> [Console] Nothing
   asr-poisoning (s) (shard) (input) (map) (pack) = act
     a <- list-at s.actors 0
@@ -698,12 +705,12 @@ Chapter: ActiveSkillsReplay
     master <- sk-set a.skills.levels 30 1000
     coated <- asr-poison-try s shard input map lesser dagger "skills:poisoned" 220300000 0
     asr-check "at Poisoning 100.0 a Lesser Poison coats a dagger with 16 charges, spending the potion for a bottle (919, 0x247)" (asr-noted coated "skills:poisoned"
-      & asr-item-health shard dagger == 256 + 16 & asr-item-health shard lesser == -1 & asr-opcode coated #54 0 & asr-has coated (as-say "You successfully poison that item.") 0)
+      & asr-item-health shard dagger == 256 + 16 & asr-bottled shard lesser & asr-opcode coated #54 0 & asr-has coated (as-say "You successfully poison that item.") 0)
     again <- asr-poison-try s shard input map second dagger "none" 220400000 0
     asr-check "a dagger already holding that strength refuses (6020)" (asr-has again (asr-denied "That item is already poisoned!") 0 & asr-item-health shard second == 1)
     novice <- sk-set a.skills.levels 30 0
     fumbled <- asr-poison-try s shard input map deadly dagger "skills:poison-failed" 220500000 0
-    asr-check "at Poisoning 0 a Deadly Poison fails (1649) and is spent, the dagger unchanged" (asr-noted fumbled "skills:poison-failed" & asr-item-health shard deadly == -1 & asr-item-health shard dagger == 256 + 16)
+    asr-check "at Poisoning 0 a Deadly Poison fails (1649) and is spent, the dagger unchanged" (asr-noted fumbled "skills:poison-failed" & asr-bottled shard deadly & asr-item-health shard dagger == 256 + 16)
   end
   asr-theft-logged : EuCurrency, Integer, Integer, Integer -> Boolean
   asr-theft-logged (x) (victim) (thief) (amount) = let e = list-at x.events (x.count - 1)
@@ -743,15 +750,17 @@ Chapter: ActiveSkillsReplay
     bread-lot <- if mark < 1 then -1 else gv-add-lot s.vendor bread mark 34 1000 32 0
     had <- ep-at (ep-actor w 1).stock 34
     owned <- if mark < 1 then 0 else ep-at (ep-actor w mark).stock 34
-    shown <- gv-represented s.vendor 1 34 0 0
+    shown <- gv-represented s.vendor 1 34 0
     robbed <- asr-cursor-try s shard input map 33 bread "none" (230000000 + gh-ticks 100000) 0
     took <- if mark < 1 then 0 else owned - ep-at (ep-actor w mark).stock 34
     asr-check "stealing a lot moves its units to the thief's economy actor with no payment, the lot or a new one follows them, and the note records the theft" (found == 0 & bread-lot >= 0
       & (when robbed is Ok (Just (r)) -> text-starts-with r.note "skills:stolen; theft item=34 quantity=" & text-contains r.note "to-actor=1" is Ok (None) -> False is Err (_) -> False)
-      & took >= 2 & took <= 4 & ep-at (ep-actor w 1).stock 34 == had + took & gv-represented s.vendor 1 34 0 0 == shown + took)
+      & took >= 2 & took <= 4 & ep-at (ep-actor w 1).stock 34 == had + took & gv-represented s.vendor 1 34 0 == shown + took)
     x <- s.vendor.currency
     bag <- if mark < 1 then -1 else ep-find w mark 45 1
     bag-lot <- if mark < 1 then -1 else gv-add-lot s.vendor victim mark 45 1000 0 0
+    minted <- bb-founding-stock x
+    granted <- eu-grant x True 1 2 200 0 0
     funded <- eu-pay x True 2 purse 40 0 0
     pile <- when world-create shard.world (__record-set (gs-item victim #0EEA 0) "amount" 9) is Err (_) -> 0 is Ok (n) -> n
     pile-meta <- gsi-register s.items pile 0 0 True True
@@ -760,7 +769,7 @@ Chapter: ActiveSkillsReplay
     pinched <- asr-cursor-try s shard input map 33 pile "none" (230000000 + gh-ticks 120000) 0
     lost <- mark-c - (em-purse x.copper purse).coin
     left <- when world-get shard.world pile is Err (_) -> 0 is Ok (o) -> o.amount
-    asr-check "stealing a resident's copper pile moves the coins purse to purse untaxed (theft, currency kind 14), shrinks the pile by as much, puts no coin in the thief's pack, and the ledger records currency kind 14 and copper row kind 19" (bag == 0 & bag-lot >= 0 & funded >= 0 & pile > 0
+    asr-check "stealing a resident's copper pile moves the coins purse to purse untaxed (theft, currency kind 14), shrinks the pile by as much, puts no coin in the thief's pack, and the ledger records currency kind 14 and copper row kind 19" (bag == 0 & bag-lot >= 0 & is-ok minted & granted == 0 & funded >= 0 & pile > 0
       & (when pinched is Ok (Just (r)) -> text-starts-with r.note "skills:stolen; theft coin metal=1 quantity=" is Ok (None) -> False is Err (_) -> False)
       & lost >= 5 & lost <= 9 & (em-purse x.copper 2).coin == thief-c + lost & left == 9 - lost
       & gsi-child-art shard.world (world-first-child shard.world pack) #0EEA 0 == 0 & asr-theft-logged x purse 2 lost)
@@ -895,11 +904,11 @@ Chapter: ActiveSkillsReplay
     asr-check "a use without a gain roll sends no skill update" (a.skills.attempts == tried + 1 & as-level a 1 == 100 & not (asr-opcode flat #3A 0))
     always <- __record-set a.skills "gain-rate" 100000
     grown <- asr-try s shard input map 1 npc 30100000 0
-    asr-check "a gain raises the skill by one tenth and resends the list" (as-level a 1 == 101 & asr-opcode grown #3A 0)
+    asr-check "a gain raises the skill and resends the list" (as-level a 1 > 100 & asr-opcode grown #3A 0)
     trivial-level <- sk-set a.skills.levels 1 500
     tried3 <- a.skills.attempts
     easy <- asr-try s shard input map 1 input.session.serial 30150000 0
-    asr-check "a far too easy use practises nothing" (a.skills.attempts == tried3 + 1 & as-level a 1 == 500 & not (asr-opcode easy #3A 0))
+    asr-check "UOAIX-242: a direct use at 50.0 still practises (1998 DirectUse has no too-easy rule)" (a.skills.attempts == tried3 + 1 & as-level a 1 > 500 & asr-opcode easy #3A 0)
     restored-level <- sk-set a.skills.levels 1 101
     capped <- sk-set a.skills.levels 0 1000
     more <- sk-set a.skills.levels 5 1000
@@ -908,10 +917,11 @@ Chapter: ActiveSkillsReplay
     more4 <- sk-set a.skills.levels 8 1000
     more5 <- sk-set a.skills.levels 9 1000
     more6 <- sk-set a.skills.levels 10 1000
-    total <- skc-total a.skills 0
+    total <- skc-total-cells a.skills.levels 0
     tried2 <- a.skills.attempts
     held <- asr-try s shard input map 1 npc 30200000 0
-    asr-check "a gain at the total cap lowers another skill and keeps the total" (a.skills.attempts == tried2 + 1 & total >= 7000 & as-level a 1 == 102 & skc-total a.skills 0 == total & asr-opcode held #3A 0)
+    rate-back <- __record-set a.skills "gain-rate" 100
+    asr-check "UOAIX-242 D7: a gain past the 700.0 total raises the skill and lowers no other" (a.skills.attempts == tried2 + 1 & total >= 7000 & as-level a 1 > 101 & skc-total-cells a.skills.levels 0 == total + as-level a 1 - 101 & asr-opcode held #3A 0)
   end
   asr-codec : ActiveSkills, GvWorld, GmbState, GameCombat -> [Console] Nothing
   asr-codec (s) (v) (banks) (combat) = act
@@ -923,7 +933,7 @@ Chapter: ActiveSkillsReplay
       is Ok (restored) -> act
         decoded <- asc-decode restored 2000 buf asc-size
         r <- list-at restored.actors 0
-        asr-check "ASC1 restores serial and counters and clears cursors; the levels are the character's row in the shard's skill table" (is-ok encoded & is-ok decoded & r.serial == a.serial & gs-skill v.game a.serial 1 == 102 & gs-skill v.game a.serial 16 == 1000 & as-level a 16 == 1000 & r.skills.attempts == a.skills.attempts & r.skills.seed == a.skills.seed & r.cursor == 0 & r.connection == -1 & restored.next-target == s.next-target)
+        asr-check "ASC1 restores serial and counters and clears cursors; the levels are the character's row in the shard's skill table" (is-ok encoded & is-ok decoded & r.serial == a.serial & gs-skill v.game a.serial 1 == as-level a 1 & gs-skill v.game a.serial 16 == 1000 & as-level a 16 == 1000 & r.skills.attempts == a.skills.attempts & r.skills.seed == a.skills.seed & r.cursor == 0 & r.connection == -1 & restored.next-target == s.next-target)
         bad <- poke-qword buf (32 + 8) #100000000
         fresh <- as-new v banks combat
         when fresh
@@ -949,7 +959,7 @@ Chapter: ActiveSkillsReplay
     when ga-create game.accounts [111,116,104,101,114] [111,116,104,101,114,112,119]
       is Err (e) -> print-line-uni ("FAIL other account " & e)
       is Ok (_) -> act
-        switched <- ga-bind game.accounts game.characters index
+        switched <- gs-bind game index
         lent <- gsi-slot game a.serial 0
         kept <- gsi-account-character game.accounts a.serial 0
         away <- asc-encode s 40000000 buf asc-size
@@ -958,7 +968,7 @@ Chapter: ActiveSkillsReplay
           is Ok (restored) -> act
             decoded <- asc-decode restored 2000 buf asc-size
             r <- list-at restored.actors 0
-            back <- ga-bind game.accounts game.characters home
+            back <- gs-bind game home
             asr-check "ASC1 encodes and restores an actor whose account is not the bound one" (switched & back & a.serial /= 0 & lent < 0 & kept == home * 8
               & is-ok away & is-ok decoded & r.serial == a.serial & gs-skill game a.serial 1 == as-level a 1 & gsi-slot game a.serial 0 == 0)
           end

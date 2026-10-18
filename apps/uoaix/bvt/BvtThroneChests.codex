@@ -1,0 +1,38 @@
+Chapter: BvtThroneChests
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+  cites Uoaix chapter GameLocks
+
+ UOAIX-158: Lord British's kit chests stand behind the throne, locked down, locked and keyed alike; a second install
+ (every boot of a restored world) places nothing more and keeps the key.
+  btc-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  btc-cover (map) (x) (y) (z) = act
+    Ok map
+  end
+  btc-magic : Integer -> Result Magery Text
+  btc-magic (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> let filled = bwd-fill map 0
+      in when wd-read (bwd-data 0) 240 map map.stride
+        is Err (e) -> Err e
+        is Ok (decoration) -> when cg-new 0
+          is Err (e) -> Err e
+          is Ok (owner) -> Ok (mgs-new owner.items owner.banks owner.combat decoration (Just owner.vendor) (btc-cover map))
+  btc-held : Magery, Integer, Integer -> Boolean
+  btc-held (magic) (serial) (key) = serial > 0 & glk-locked magic serial & (list-at magic.definitions (world-slot magic.items.world serial)).key == key
+    & not (gsi-meta magic.items serial).movable
+  bvt-throne-chests : Integer -> [Console] Integer
+  bvt-throne-chests (unused) = when btc-magic 0
+    is Err (e) -> bvt-check ("throne chests fixture: " & e) False
+    is Ok (magic) -> let world = magic.items.world
+      in let key = glk-throne-chests magic
+      in let wooden = glk-throne-at world (world-tile-first world glk-throne-x 1624) #0E43
+      in let metal = glk-throne-at world (world-tile-first world glk-throne-x 1625) #0E41
+      in let count = world-count world
+      in let again = glk-throne-chests magic
+      in let after = world-count world in act
+      print-line-uni ("THRONECHESTS key=" & show key & " wooden=" & show wooden & " metal=" & show metal & " again=" & show again & " objects=" & show count & "," & show after)
+      a <- bvt-check "the wooden and metal kit chests stand behind the throne, locked down, locked and keyed alike (UOAIX-158)" (key > 0 & btc-held magic wooden key & btc-held magic metal key)
+      b <- bvt-check "a second install places no second pair and keeps the chests' key" (again == key & after == count)
+      a + b
+    end

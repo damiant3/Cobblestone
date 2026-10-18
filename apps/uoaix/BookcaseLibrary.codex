@@ -1,0 +1,62 @@
+Chapter: BookcaseLibrary
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter SkillsItemsPackets
+
+ A decoration bookcase holds three read-only books from a small library (UOAIX-228, Damian 2026-10-09: "we can populate
+ them next week with books"). The books are not world items: each has a serial in its own range, bookcase decoration
+ index i's k-th book being lib-serial-base + 4 i + k, so they cannot be taken and nothing is saved. The 1.25 client's
+ BookHeader 0x93 is 98 bytes (serial, the writable flag, the page count, a 60-byte title, a 30-byte author) and BookPage
+ 0x66 carries every page (number, line count, zero-terminated lines of at most 39 ASCII bytes), as WritableBooks sends.
+ ContainerContents 0x3C lists 19 bytes an item (serial, art, 0, amount, x, y, container, hue).
+  lib-serial-base : Integer = #7A000000
+  lib-shelf : Integer = 3
+  LibBook = record { title : Text, author : Text, pages : List (List Text) }
+  lib-books : Integer -> List LibBook
+  lib-books (unused) = [
+    LibBook { title = "The Founding of Britain", author = "a scribe of the castle", pages = [
+      ["Before the castle stood, the river", "ran past a ford where traders met.", "Lord British set his tents there", "and bade the masons build in stone,", "for a town that trades must also", "be a town that can be held."],
+      ["The first wall rose from the west", "quarry, carted down the old road.", "The miners were paid in bread and", "salt, and later in silver, when", "the minter struck the first coins", "from ore the miners themselves dug."],
+      ["So it is still: what the town eats,", "wears and spends began in a field,", "a forest or a vein, and passed", "through many hands to reach you.", "", "Mind the hands."]] },
+    LibBook { title = "On Copper, Silver and Gold", author = "the Royal Minter", pages = [
+      ["Ten copper make a silver, and ten", "silver make a gold, as the crown", "sets them. A merchant who names a", "price in gold and silver speaks", "plainly; one who counts every", "copper is splitting hairs."],
+      ["The crown makes change at the bank.", "Hand in a gold and you will have", "your silver back, struck from the", "very metal you handed in. No coin", "is made from nothing in Britain."]] },
+    LibBook { title = "A Herbalist's Notes", author = "Mira of the Strength and Steel", pages = [
+      ["Garlic and ginseng grow in the", "gardens east of the castle. Pick", "them when the leaves are full and", "they return within the week.", "", "Spider's silk is gathered, not grown:", "ask the hunters, and pay them well."],
+      ["Black pearl washes up on the shore", "after a storm. Blood moss likes the", "swamp, and so do the lizardmen,", "so go armed. Mandrake root and", "nightshade I will not write of here;", "come to the shop and ask."]] },
+    LibBook { title = "The Game of Draughts", author = "a regular of the Blue Boar", pages = [
+      ["Each side has twelve men on the dark", "squares. A man moves forward one", "square on the diagonal, and must", "jump an enemy man when it can,", "taking it from the board.", "", "A man that reaches the far row is", "crowned, and moves both ways."],
+      ["At the Blue Boar the taken men are", "set at the board's edge, so all can", "count them. The innkeeper keeps the", "boards; ask, and sit down to play."]] }]
+  lib-art : Integer -> Integer
+  lib-art (k) = list-at [#0FEF, #0FF0, #0FF1, #0FF2] (int-mod k 4)
+  lib-is : Integer -> Boolean
+  lib-is (serial) = serial > lib-serial-base & serial < lib-serial-base + #800000
+  lib-index : Integer, Integer -> Integer
+  lib-index (bookcase) (k) = int-mod (bookcase * lib-shelf + k) (list-length (lib-books 0))
+  lib-book-of : Integer -> Integer
+  lib-book-of (serial) = let n = serial - lib-serial-base - 1 in lib-index (n / 4) (int-mod n 4)
+ The bookcase's contents: its three books on one shelf of gump 0x4D.
+  lib-contents : Integer, Integer -> List Integer
+  lib-contents (container) (bookcase) = lib-finish (lib-rows container bookcase 0 (gp-put16 (gp-put16 (gp-start #3C) 0) lib-shelf))
+  lib-rows : Integer, Integer, Integer, List Integer -> List Integer
+  lib-rows (container) (bookcase) (k) (out) = if k >= lib-shelf then out
+    else let serial = lib-serial-base + 4 * bookcase + k + 1
+    in let a = list-push (gp-put16 (gp-put32 out serial) (lib-art (lib-index bookcase k))) 0
+    in let b = gp-put16 (gp-put16 (gp-put16 a 1) (60 + 30 * k)) 70
+    in lib-rows container bookcase (k + 1) (gp-put16 (gp-put32 b container) 0)
+  lib-finish : List Integer -> List Integer
+  lib-finish (p) = let a = list-set-at p 1 (list-length p / 256) in let b = list-set-at p 2 (int-mod (list-length p) 256) in p
+  lib-header : Integer, LibBook -> List Integer
+  lib-header (serial) (b) = gp-ascii (gp-ascii (gp-put16 (gp-put32 [#93] serial & [0]) (list-length b.pages)) b.title 0 60) b.author 0 30
+  lib-lines : List Text, Integer, List Integer -> List Integer
+  lib-lines (lines) (i) (out) = if i >= list-length lines then out
+    else let t = list-at lines i in lib-lines lines (i + 1) (gp-ascii out t 0 (text-length t + 1))
+  lib-pages : List (List Text), Integer, List Integer -> List Integer
+  lib-pages (pages) (i) (out) = if i >= list-length pages then out
+    else let lines = list-at pages i in lib-pages pages (i + 1) (lib-lines lines 0 (gp-put16 (gp-put16 out (i + 1)) (list-length lines)))
+  lib-page-packet : Integer, LibBook -> List Integer
+  lib-page-packet (serial) (b) = lib-finish (lib-pages b.pages 0 (gp-put16 (gp-put32 [#66, 0, 0] serial) (list-length b.pages)))
+ What a double-click on a library book answers: its header and every page.
+  lib-read : Integer -> List (List Integer)
+  lib-read (serial) = let b = list-at (lib-books 0) (lib-book-of serial) in [lib-header serial b, lib-page-packet serial b]
+  lib-title : Integer -> Text
+  lib-title (serial) = (list-at (lib-books 0) (lib-book-of serial)).title

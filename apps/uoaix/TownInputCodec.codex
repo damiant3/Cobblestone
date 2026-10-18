@@ -17,9 +17,10 @@ Chapter: TownInputCodec
   ti-encode (entry) (buf) (capacity) =
     if capacity < ti-frame-bytes then Err "town input destination too short"
     else if not (ti-shape-valid entry) then Err "town input shape invalid"
-    else if entry.operation == 1 & (entry.world-event.sequence /= entry.sequence | entry.world-event.tick /= entry.tick) then Err "town input world metadata mismatch"
     else let clear = ts-zero buf ti-frame-bytes 0
-    in let nested = if entry.operation == 1 then wj-encode entry.world-event (buf + 128) 128 else Ok 0
+    in let event = entry.world-event
+    in let nested = if entry.operation == 1 then wj-encode (WorldEvent { sequence = entry.sequence, tick = entry.tick,
+      operation = event.operation, object = event.object }) (buf + 128) 128 else Ok 0
     in when nested
       is Err (e) -> Err e
       is Ok (n) ->
@@ -74,9 +75,9 @@ Chapter: TownInputCodec
     in if entry.operation /= 1 then ti-decoded entry
     else when wj-decode (buf + 128)
       is Err (e) -> Err e
-      is Ok (event) ->
-        if event.sequence /= entry.sequence | event.tick /= entry.tick then Err "town input world metadata mismatch"
-        else let bound = __record-set entry "world-event" event
+      is Ok (event) -> let sequence = __record-set event "sequence" entry.sequence
+        in let tick = __record-set event "tick" entry.tick
+        in let bound = __record-set entry "world-event" event
         in ti-decoded bound
 
   ti-decode-record : Integer, Integer, Integer, Integer -> Result TownInput Text

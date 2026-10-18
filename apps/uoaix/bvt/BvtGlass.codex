@@ -1,0 +1,25 @@
+Chapter: BvtGlass
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BvtCheck
+
+  bvt-glass-name : Integer -> Text
+  bvt-glass-name (item) = (list-at (bb-catalog 0).items (item - 1)).name
+  bvt-glass-recipe : Integer -> EgRecipe
+  bvt-glass-recipe (item) = let c = bb-catalog 0 in list-at c.recipes (bb-recipe c item 0 - 1)
+  bvt-glass-without : List EgRecipe, Integer, Integer, List EgRecipe -> List EgRecipe
+  bvt-glass-without (xs) (item) (i) (out) = if i >= list-length xs then out
+    else bvt-glass-without xs item (i + 1) (if (list-at xs i).item == item then out else out & [list-at xs i])
+  bvt-glass : Integer -> [Console] Integer
+  bvt-glass (unused) = act
+    a <- bvt-check "the Britain catalog names glass and empty bottle as items 109 and 110" (bvt-glass-name 109 == "glass" & bvt-glass-name 110 == "empty bottle")
+    b <- bvt-check "glass fires from 2 sand and 1 log at the glassblower's furnace, station 16" (let r = bvt-glass-recipe 109 in r.station == 16 & r.one == 104 & r.one-count == 2 & r.two == 15 & r.two-count == 1)
+    c <- bvt-check "1 glass blows 2 empty bottles at station 16" (let r = bvt-glass-recipe 110 in r.station == 16 & r.one == 109 & r.one-count == 1 & r.quantity == 2 & r.two == 0)
+    d <- bvt-check "the Britain catalog with glass and bottles validates" (eg-validate (bb-catalog 0) == 0)
+    e <- bvt-check "with no glass recipe, glass (109) is the item the catalog cannot make" (let c = bb-catalog 0 in eg-validate (EgCatalog { items = c.items, resources = c.resources, recipes = bvt-glass-without c.recipes 109 0 [] }) == 109)
+    f <- bvt-check "the glassblower is shop 11, in the Merchants' Guild, selling empty bottles (0x0F0E)" (bb-shop-count >= 11 & bb-glassblower == 10 & (list-at bb-shops 10).title == "Glassblower" & (list-at bb-shops 10).premises == "Merchants' Guild" & (list-at (bb-goods 10) 0).item == 110 & (list-at (bb-goods 10) 0).graphic == #0F0E)
+    g <- bvt-check "the sand gatherer sells its sand to the glassblower, who buys sand and glass but no ore" ((cgg-trade-of cgg-sand-place).buyer == bb-glassblower & gvb-material (gvb-role bb-glassblower) 104 & gvb-material (gvb-role bb-glassblower) 109 & not (gvb-material (gvb-role bb-glassblower) 5) & not (gvb-material 0 104))
+    h <- bvt-check "every shop has its role word, so vendor 10 opens the glassblower's menu" (list-length gvb-role-words == bb-shop-count & list-at gvb-role-words 10 == "glassblower" & gvb-role 10 == 10)
+    i <- bvt-check "sand draws as the ore pile hued 0x15F and is named sand, and iron ore keeps no name" (gh-output-graphic 104 == #19B9 & item-ore-hue 104 == #015F & item-ore-name (item-ore-hue 104) == "sand" & item-ore-name (item-ore-hue 5) == "")
+    a + b + c + d + e + f + g + h + i
+  end

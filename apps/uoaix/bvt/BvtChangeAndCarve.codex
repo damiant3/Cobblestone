@@ -1,0 +1,95 @@
+Chapter: BvtChangeAndCarve
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bcc2-owner : Integer -> Result CompositeGame Text
+  bcc2-owner (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> cg-founded game vendor (gsi-new game.world)
+ The first shop holds 70 silver and copper copper, no gold, and buys a 3-copper line; answers the silver it broke,
+ or -1 when the scenario cannot be built.
+ The fixture moves coin on the ledgers directly; the currency records each ledger's sequence as its own operations do,
+ so eu-ready holds and an exchange is admitted.
+  bcc2-sync : EuCurrency -> Integer
+  bcc2-sync (x) = let a = __record-set x "copper-seq" x.copper.sequence
+    in let b = __record-set x "silver-seq" x.silver.sequence
+    in let c = __record-set x "gold-seq" x.world.money.sequence in 0
+  bcc2-broken : Integer -> Integer
+  bcc2-broken (copper) = when bcc2-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> let v = owner.vendor
+      in let x = v.currency
+      in let actor = (list-at v.vendors 0).actor
+      in let p = (ep-actor x.world actor).purse
+      in let a = em-reclaim x.copper p (em-purse x.copper p).coin
+      in let b = em-reclaim x.silver p (em-purse x.silver p).coin
+      in let d = em-reclaim x.world.money p (em-purse x.world.money p).coin
+      in let e = em-decree x.silver 70
+      in let f = em-payout x.silver p 70
+      in let g = if copper == 0 then 0 else em-payout x.copper p copper
+      in let synced = bcc2-sync x
+      in if (em-purse x.silver p).coin /= 70 | (em-purse x.copper p).coin /= copper | (em-purse x.world.money p).coin /= 0 then -1
+      else let line = GvLine { lot = 0, quantity = 1, price = 3, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }
+      in let changed = gv-change v [line] actor 0
+      in 70 - (em-purse x.silver p).coin
+ Why a break is refused on the same scenario: eu-ready, eu-room, then the direct exchange of one silver.
+  bcc2-why : Integer -> Text
+  bcc2-why (unused) = when bcc2-owner 0
+    is Err (e) -> e
+    is Ok (owner) -> let x = owner.vendor.currency
+      in let p = (ep-actor x.world (list-at owner.vendor.vendors 0).actor).purse
+      in let e = em-decree x.silver 70
+      in let f = em-payout x.silver p 70
+      in let synced = bcc2-sync x
+      in "ready=" & (if eu-ready x then "1" else "0") & " room=" & (if eu-room x then "1" else "0") & " hours=" & show x.world.hour & "/" & show x.copper.hour & "/" & show x.silver.hour
+        & " purse=" & show p & " copper-purses=" & show x.copper.purse-count & " exchange=" & show (eu-exchange x p 2 1 1)
+ A hunter at 1400,1500 on leg leg with a kill taken: answers 1 when the hunter's actor has an owner row after its carve
+ pass, 0 when not, -1 when the scenario cannot be built.
+  bcc2-carved : Integer -> Integer
+  bcc2-carved (leg) = when bcc2-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> let game = owner.checkpoint.game
+      in when ef-new owner.vendor.currency cgh-profile.owner cgh-profile.place
+        is Err (_) -> -1
+        is Ok (f) -> when world-create game.world (gs-mobile 0 1400 1500 0 400 1002)
+          is Err (_) -> -1
+          is Ok (serial) -> let c = cgf-new-as cgh-profile f serial (BbSpot { x = 1400, y = 1500, z = 0 })
+            in let a = __record-set c "leg" leg
+            in let b = __record-set c "took" 1
+            in let carved = cg-hunter-carve owner c game
+            in if gv-owner owner.vendor serial 0 >= 0 then 1 else 0
+ A guard with an economy actor of its own tries the armory with no lot to buy: answers 10 when it had no owner row
+ before and 1 more when it has one after, so the row is bound before the checkout; -1 when not built.
+  bcc2-guard : Integer -> Integer
+  bcc2-guard (unused) = when bcc2-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> let v = owner.vendor
+      in let x = v.currency
+      in let purse = eu-open x 2 7001
+      in let actor = if purse < 0 then -1 else ep-admit x.world purse 100
+      in if actor < 1 then -1
+      else when world-create owner.checkpoint.game.world (gs-mobile 0 1420 1600 0 400 1002)
+        is Err (_) -> -1
+        is Ok (serial) -> let before = if gv-owner v serial 0 < 0 then 10 else 0
+          in when world-get owner.checkpoint.game.world serial
+            is Err (_) -> -1
+            is Ok (guard) -> let tried = cg-guard-buy owner v (list-at v.vendors cg-armory) actor -1 5 guard
+              in before + (if gv-owner v serial 0 >= 0 then 1 else 0)
+  bvt-change-and-carve : Integer -> [Console] Integer
+  bvt-change-and-carve (unused) = act
+    n <- bcc2-broken 0
+    m <- bcc2-broken 5
+    a <- bvt-check ("a shop a few copper short breaks one silver, not its 70, so the treasury makes 10 copper of change (UOAIX-148, broke " & show n & (if n == 1 then "" else "; " & bcc2-why 0) & ")") (n == 1)
+    b <- bvt-check ("a shop already holding the copper breaks no silver (broke " & show m & ")") (m == 0)
+    h <- bcc2-carved 4
+    k <- bcc2-carved 0
+    c <- bvt-check ("a hunter carving at its kill holds an owner row first, so its hides are never an ownerless lot (code " & show h & ")") (h == 1)
+    d <- bvt-check ("a hunter not hunting registers nothing (code " & show k & ")") (k == 0)
+    g <- bcc2-guard 0
+    e <- bvt-check ("a guard buying armor has its owner row bound before the checkout, so the gorget is never an ownerless lot (code " & show g & ")") (g == 11)
+    a + b + c + d + e
+  end

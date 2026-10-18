@@ -1,19 +1,20 @@
 Chapter: GsiCodec
   cites Uoaix chapter GameSkillsItems
 
- GSI1 uses a 16-byte little-endian header and five qwords per world slot.
+ GSI1 uses a 16-byte little-endian header and five qwords per world slot. The fourth is 1 movable, 0 not, 2 locked down
+ and 3 + a serial secured by it (Housing, UOAIX-253); a locked or secured item is movable underneath.
  Cursors and connection authority are deliberately absent from this format.
 
   gic-size : GsiState -> Integer
   gic-size (state) = 16 + state.world.capacity * 40
   gic-write-rows : GsiState, Integer, Integer -> Integer
   gic-write-rows (state) (buffer) (i) = if i == state.world.capacity then 0 else let meta = list-at state.items i
-    in let live = meta.serial > 0 & peek-qword state.world.buffer (16 + i * 80) == meta.serial
+    in let live = meta.serial > 0 & peek-qword (wi-object state.world.buffer i) 0 == meta.serial
     in let at = 16 + i * 40
     in let a = poke-qword buffer at (if live then meta.serial else 0)
     in let b = poke-qword buffer (at + 8) (if live then meta.layer else 0)
     in let c = poke-qword buffer (at + 16) (if live then meta.gump else 0)
-    in let d = poke-qword buffer (at + 24) (if live & meta.movable then 1 else 0)
+    in let d = poke-qword buffer (at + 24) (if not live then 0 else if meta.held == 0 - 1 then 2 else if meta.held > 0 then 3 + meta.held else if meta.movable then 1 else 0)
     in let e = poke-qword buffer (at + 32) (if live & meta.stackable then 1 else 0)
     in gic-write-rows state buffer (i + 1)
   gic-write : GsiState, Integer, Integer -> Result Integer Text
@@ -29,14 +30,16 @@ Chapter: GsiCodec
     in let movable = peek-qword buffer (at + 24)
     in let stackable = peek-qword buffer (at + 32)
     in let valid = if serial == 0 then layer == 0 & gump == 0 & movable == 0 & stackable == 0
-      else serial > 0 & peek-qword world.buffer (16 + i * 80) == serial & peek-qword world.buffer (24 + i * 80) == 2
-        & layer >= 0 & layer <= 29 & gump >= 0 & gump <= 65535 & movable >= 0 & movable <= 1 & stackable >= 0 & stackable <= 1
+      else serial > 0 & peek-qword (wi-object world.buffer i) 0 == serial & peek-qword (wi-object world.buffer i) 8 == 2
+        & layer >= 0 & layer <= 29 & gump >= 0 & gump <= 65535 & movable >= 0 & movable <= 1073741827 & stackable >= 0 & stackable <= 1
         & (stackable == 0 | (layer == 0 & gump == 0))
     in valid & gic-valid world buffer (i + 1)
   gic-read-rows : GsiState, Integer, Integer -> Integer
   gic-read-rows (state) (buffer) (i) = if i == state.world.capacity then 0 else let at = 16 + i * 40
     in let serial = peek-qword buffer at
-    in let registered = if serial == 0 then 0 else gsi-register state serial (peek-qword buffer (at + 8)) (peek-qword buffer (at + 16)) (peek-qword buffer (at + 24) == 1) (peek-qword buffer (at + 32) == 1)
+    in let kept = peek-qword buffer (at + 24)
+    in let registered = if serial == 0 then 0 else gsi-register state serial (peek-qword buffer (at + 8)) (peek-qword buffer (at + 16)) (kept >= 1) (peek-qword buffer (at + 32) == 1)
+    in let held = if serial == 0 | registered < 0 | kept < 2 then 0 else let h = __record-set (gsi-meta state serial) "held" (if kept == 2 then 0 - 1 else kept - 3) in 0
     in if registered < 0 then -1 else gic-read-rows state buffer (i + 1)
   gic-read : WorldTable, Integer, Integer -> Result GsiState Text
   gic-read (world) (buffer) (length) = if not (world-indexed world) then Err "GSI1 requires rebuilt world index"

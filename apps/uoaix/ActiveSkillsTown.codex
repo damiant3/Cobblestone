@@ -20,7 +20,7 @@ Chapter: ActiveSkillsTown
   as-instrument-in (s) (serial) (left) = if serial == 0 | left == 0 then 0
     else let slot = world-slot s.items.world serial
     in if slot < 0 then 0 else let next = world-next-sibling s.items.world serial
-    in if peek-qword s.items.world.buffer (24 + slot * 80) == 2 & as-instrument-graphic (peek-qword s.items.world.buffer (56 + slot * 80)) then serial
+    in if peek-qword (wi-object s.items.world.buffer slot) 8 == 2 & as-instrument-graphic (peek-qword (wi-object s.items.world.buffer slot) 40) then serial
     else let child = as-instrument-in s (world-first-child s.items.world serial) (left - 1)
     in if child /= 0 then child else as-instrument-in s next left
   as-instrument : ActiveSkills, Integer -> Integer
@@ -31,13 +31,13 @@ Chapter: ActiveSkillsTown
   as-calm (s) (serial) (until) = let slot = world-slot s.items.world serial
     in if slot < 0 then 0 else let actor = list-at s.combat.actors slot
     in let stopped = if actor.serial == serial then let a = cb-stop s.combat actor in __record-set actor "war" False else actor
-    in let held = poke-qword s.calm (slot * 8) until in 1
+    in let held = poke-qword (sa-at s.calm slot) 0 until in 1
   as-calmed : ActiveSkills, Integer, Integer -> Boolean
   as-calmed (s) (serial) (now) = let slot = world-slot s.items.world serial
-    in if slot < 0 then False else peek-qword s.calm (slot * 8) > now
+    in if slot < 0 then False else peek-qword (sa-at s.calm slot) 0 > now
   as-fighters : ActiveSkills, WorldObject, Integer, Integer, List Integer -> List Integer
   as-fighters (s) (player) (radius) (i) (out) = if i == s.combat.count then out
-    else let actor = list-at s.combat.actors (peek-qword s.combat.active (i * 8))
+    else let actor = list-at s.combat.actors (peek-qword (sa-at s.combat.active i) 0)
     in let near = when world-get s.items.world actor.serial is Err (_) -> False is Ok (m) -> as-near player m radius
     in as-fighters s player radius (i + 1) (if near & actor.serial /= player.serial then list-push out actor.serial else out)
   as-calm-all : ActiveSkills, List Integer, Integer, Integer -> Integer
@@ -62,6 +62,18 @@ Chapter: ActiveSkillsTown
   as-incite-sound (g) (well) = let base = if g == #0E9C then #38 else if g == #0E9D | g == #0E9E then #52
       else if g == #0EB1 then #43 else if g == #0EB2 then #45 else #4C
     in if well then base else base + 1
+ ServUO BaseInstrument.OnDoubleClick: an instrument in hand or in the backpack is played, Musicianship decides the well or
+ poorly played sound, and the player waits 6 seconds before the next use.
+  as-play : ActiveSkills, AsActor, WorldObject, Integer, Integer -> GameReply
+  as-play (s) (a) (player) (serial) (now) = if now < a.next then gsi-denied "You must wait to perform another action."
+    else when world-get s.items.world serial
+      is Err (_) -> gsi-denied "That is gone."
+      is Ok (o) -> let pack = gsi-pack-find s.items.world player.serial 0
+        in if world-layer-serial s.items.world player.serial 1 /= serial & (pack == 0 | as-instrument-in s (world-first-child s.items.world pack) 64 /= serial)
+        then gsi-denied "That must be in your backpack for you to use it."
+        else let well = as-roll s a 29 (skc-random a.skills 600)
+        in let paced = __record-set a "next" (now + gh-ticks 6000)
+        in gs-reply [cbp-sound (as-incite-sound o.graphic well) player] (if well then "skills:played" else "skills:played-poorly")
   as-incite-first : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
   as-incite-first (services) (s) (a) (game) (player) (obj) (now) = when cb-ensure s.combat game obj.serial
     is Err (_) -> gsi-denied "You cannot provoke such a person!"

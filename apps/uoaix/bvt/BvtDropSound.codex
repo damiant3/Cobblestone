@@ -1,0 +1,42 @@
+Chapter: BvtDropSound
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-155 (Damian, 2026-10-09: "a thunk and a swoosh"). A mobile, its backpack (0x0E75), a chest (0x0E40) and a basket
+ (0x0E7A) on the ground, and one dagger in each place. Answers a bit per check, 1 a drop into the backpack sounds 0x48
+ (containers.cfg's default), 2 into the chest 0x42 (the thunk), 4 into the basket 0x4F, 8 on the ground 0x42, 16 onto
+ the mobile (equipping) 0x42, 32 a bounce carries a 0x54 sound of 0x57 (the swoosh); 63 is all.
+  bds-sound : List (List Integer), Integer -> Integer
+  bds-sound (packets) (i) = if i >= list-length packets then -1
+    else let p = list-at packets i in if list-length p == 12 & list-at p 0 == #54 then list-at p 2 * 256 + list-at p 3 else bds-sound packets (i + 1)
+  bds-in : GsiState, Integer, Integer -> Integer
+  bds-in (items) (container) (graphic) = when world-create items.world (gs-item container graphic 0)
+    is Err (_) -> -1
+    is Ok (serial) -> when world-get items.world serial is Err (_) -> -1 is Ok (o) -> gsi-drop-sound items o
+  bds-ground : GsiState, Integer, Integer -> Integer
+  bds-ground (items) (x) (graphic) = when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = 1600, z = 0, graphic = graphic, hue = 0, container = 0, amount = 1, health = 0 })
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bds-checks : Integer -> Integer
+  bds-checks (unused) = when cg-game 512
+    is Err (_) -> -1
+    is Ok (game) -> let items = gsi-new game.world
+      in when world-create game.world (gs-mobile 0 1500 1600 0 400 1002)
+        is Err (_) -> -2
+        is Ok (me) -> when world-create game.world (gs-item me #0E75 0)
+          is Err (_) -> -3
+          is Ok (pack) -> let chest = bds-ground items 1501 #0E40
+            in let basket = bds-ground items 1502 #0E7A
+            in let loose = bds-ground items 1503 #0F52
+            in let worn = when world-get items.world loose is Err (_) -> -1 is Ok (o) -> gsi-drop-sound items o
+            in let actor = GsiActor { serial = me, connection = 1, holding = 0, amount = 1, origin = gs-item 0 0 0, pack = pack, target = 0, skill = 0, next-lift = 0 }
+            in let bounced = bds-sound (gsi-bounce items actor 5).packets 0
+            in (if bds-in items pack #0F52 == #48 then 1 else 0) + (if bds-in items chest #0F52 == #42 then 2 else 0)
+              + (if bds-in items basket #0F52 == #4F then 4 else 0) + (if worn == #42 then 8 else 0)
+              + (if bds-in items me #0F52 == #42 then 16 else 0) + (if bounced == #57 then 32 else 0)
+  bvt-drop-sound : Integer -> [Console] Integer
+  bvt-drop-sound (unused) = act
+    n <- bds-checks 0
+    a <- bvt-check ("a drop sounds its container's ServUO sound or the ground's thunk, a bounce the swoosh (UOAIX-155, code " & show n & ")") (n == 63)
+    a
+  end

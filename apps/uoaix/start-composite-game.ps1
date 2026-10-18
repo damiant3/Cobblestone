@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$StateFile,
-    [string]$OutDir='',[ValidateRange(10,120)][int]$StartupSeconds=60,[switch]$Testing,[switch]$Dev,[switch]$Hosted,[switch]$Admin,[string]$Vm='',[ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,[switch]$NoPrompt)
+    [string]$OutDir='',[ValidateRange(10,900)][int]$StartupSeconds=60,[switch]$Testing,[switch]$Dev,[switch]$Hosted,[switch]$Admin,[string]$Vm='',[ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,[ValidateRange(1,100)][int]$ClockScale=1,[switch]$NoPrompt,[switch]$Open,[ValidateRange(0,256)][int]$Links=32)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 if($Testing -and $Hosted){throw 'Testing mode is forbidden on a public or hosted shard'}
+if($Open -and -not $Testing){throw '-Open opens the economy at boot in Testing mode only'}
 if($Dev -and $Hosted){throw 'Development account creation is forbidden on a public or hosted shard'}
 $public=-not ($Testing -or $Dev)
 $british=''
@@ -30,11 +31,14 @@ if(Test-Path -LiteralPath $OutDir){throw 'OutDir must be new'}
 [void](New-Item -ItemType Directory $OutDir)
 $free=(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
 if($free -lt 1572864){throw 'RAM admission'}
-$log=Join-Path $OutDir 'server.log';$err=Join-Path $OutDir 'guest.stderr'
+$log=Join-Path $OutDir 'server.log'
+# Under the workspace codex-vm's unbuffered stderr costs about 37 s a boot (OperatorsManual); run.json names this path.
+$err=Join-Path ([IO.Path]::GetTempPath()) ('uoaix-guest-'+[guid]::NewGuid().ToString('N')+'.stderr')
 $vm=if($Vm){(Resolve-Path -LiteralPath $Vm).Path}else{Join-Path $repo 'tools/codex-vm.exe'}
 $vmArgs=@('-kernel',('"'+$Artifact+'"'),'-disk',('"'+$StateFile+'"'),'-output',('"'+$log+'"'),'-headless','-mem','3072','-e1000-nat','-portfwd',"${Port}:2593")
+if($ClockScale -gt 1){$vmArgs+=@('-clock-scale',"$ClockScale")}
 $option=Join-Path $OutDir 'launch.input'
-$record=if($Testing){"UOAIX TESTING`n"}elseif($Dev){"UOAIX DEV`n"}elseif($british){"UOAIX PUBLIC $british`n"}else{''}
+$record=if($Testing -and $Open){"UOAIX TESTING OPEN`n"}elseif($Testing){"UOAIX TESTING`n"}elseif($Dev){"UOAIX DEV`n"}elseif($british){"UOAIX PUBLIC $british`n"}else{''}
 if($Admin){
     $keys=@(1..5|ForEach-Object{[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()})
     $record="ADMIN $($keys -join ' ')`n"+$record
@@ -42,12 +46,13 @@ if($Admin){
     $ownerKey=Join-Path $OutDir 'admin-owner.key'
     [IO.File]::WriteAllText($ownerKey,$keys[3]+"`n",[Text.Encoding]::ASCII)
 }
+if($Links -ne 32){$record="LINKS $Links`n"+$record}
 if($record){
     [IO.File]::WriteAllText($option,$record,[Text.Encoding]::ASCII)
     $vmArgs+=@('-input',('"'+$option+'"'))
 }
 $guest=Start-Process $vm -ArgumentList $vmArgs -WindowStyle Hidden -PassThru -RedirectStandardError $err
-$run=[ordered]@{owner=$env:CODEX_SESSION_ID;pid=$guest.Id;guests=1;log=$log;artifact=$Artifact;artifactHash=(Get-FileHash $Artifact).Hash;vm=$vm;vmHash=(Get-FileHash $vm).Hash;stateFile=$StateFile;port=$Port;cacheOnly=$true;testing=[bool]$Testing;dev=[bool]$Dev;hosted=[bool]$Hosted;freeKiB=$free;running=$false}
+$run=[ordered]@{owner=$env:CODEX_SESSION_ID;pid=$guest.Id;guests=1;log=$log;stderr=$err;artifact=$Artifact;artifactHash=(Get-FileHash $Artifact).Hash;vm=$vm;vmHash=(Get-FileHash $vm).Hash;stateFile=$StateFile;port=$Port;cacheOnly=$true;testing=[bool]$Testing;dev=[bool]$Dev;hosted=[bool]$Hosted;freeKiB=$free;running=$false}
 $run|ConvertTo-Json|Set-Content (Join-Path $OutDir 'run.json')
 $ready=$false
 try{
@@ -73,5 +78,6 @@ try{
 }finally{
     if(Test-Path -LiteralPath $option){Remove-Item -LiteralPath $option -Force}
     if(-not $ready -and -not $guest.HasExited){Stop-Process -Id $guest.Id -Force;[void]$guest.WaitForExit(5000)}
+    if(-not $ready -and (Test-Path -LiteralPath $err)){Move-Item -LiteralPath $err -Destination (Join-Path $OutDir 'guest.stderr') -Force;$run.stderr=Join-Path $OutDir 'guest.stderr'}
     $run|ConvertTo-Json|Set-Content (Join-Path $OutDir 'run.json')
 }

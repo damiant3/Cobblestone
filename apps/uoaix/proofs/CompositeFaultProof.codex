@@ -24,35 +24,52 @@ Chapter: CompositeFaultProof
     input <- gn-input-with specs 1
     mode <- __record-set input "mode" 2
     phase <- __record-set input.session "phase" 1
-    entry <- cs-route store owner.checkpoint.game input map 2593 (cfi-create 0)
     game <- owner.checkpoint.game
     good <- owner.active.next-target
     before <- store.store.sequence
     broken <- __record-set owner.active "next-target" 70000
-    refused <- cs-commit store True
-    a <- cfi-check "a save the codec refuses keeps the last commit and does not latch" (is-ok entry & is-err refused & store.store.fault == 0
-      & store.refusals == 1 & store.refused-at > 0 & store.store.sequence == before)
+    entry <- cs-route store game input map 2593 (cfi-create 0)
+    a <- cfi-check "a route whose save the codec refuses is served, and the owner neither latches nor writes" (is-ok entry
+      & store.store.fault == 0 & store.refusals >= 1 & store.refused-at > 0 & store.store.sequence == before)
+    counted <- store.refusals
     dirty <- __record-set owner.combat "draws" (owner.combat.draws + 1)
     soft <- cs-commit-soft store
-    b <- cfi-check "a soft commit logs a refusal and answers Ok" (is-ok soft & store.store.fault == 0 & store.refusals == 2)
+    hard <- cs-commit store True
+    b <- cfi-check "soft and forced commits the codec refuses answer Ok and count the refusals" (is-ok soft & is-ok hard
+      & store.store.fault == 0 & store.refusals == counted + 2)
     short <- cs-route store game input map 2593 [5]
     pinged <- cs-route store game input map 2593 [115, 0]
-    c <- cfi-check "a refused packet drops only its route and the next route is served" (is-err short & is-ok pinged & store.store.fault == 0)
+    c <- cfi-check "a handler refusal drops only its route and the next route is served" (is-err short & is-ok pinged & store.store.fault == 0)
     mended <- __record-set owner.active "next-target" good
-    resumed <- cs-commit store True
-    d <- cfi-check "a valid commit resumes saving and clears the refusal count" (is-ok resumed & store.refusals == 0 & store.refused-at == 0
-      & store.store.sequence == before + 1)
-    again <- __record-set owner.active "next-target" 70000
-    first <- cs-commit store True
-    aged <- __record-set store "refused-at" (hpet-ticks - (cs-save-limit + 1) * max 1 hpet-ticks-per-second)
-    latched <- cs-commit store True
-    routed <- cs-route store game input map 2593 [115, 0]
-    ticked <- cs-tick store game map 0 0
-    e <- cfi-check "a refusal older than the save limit latches, names why, and the tick reports the latch" (is-err first & is-err latched
-      & store.store.fault == 1 & text-starts-with store.latch "saves refused for 300 s: "
-      & cfi-err-starts routed "composite owner requires restart: saves refused for 300 s: "
-      & (when ticked is Ok (n) -> n == -1 is Err (_) -> False))
-    a + b + c + d + e
+    clean <- cs-commit store True
+    written <- store.store.sequence
+    e <- cfi-check "control: a valid commit writes with no failed check and clears the refusal count" (is-ok clean & store.check == 0
+      & store.refusals == 0 & store.refused-at == 0 & written == before + 1)
+    treasury <- em-purse owner.vendor.currency.copper 1
+    coin <- treasury.coin
+    bent <- __record-set treasury "coin" (coin + 7)
+    wrong <- cs-commit store True
+    d <- cfi-check "a currency state that disagrees with its history is written anyway and its clause is kept" (is-ok wrong
+      & store.store.sequence == written + 1 & store.check / 4 /= 0 & not (euv-valid owner.vendor.currency) & store.store.fault == 0)
+    reopened <- us-open 0 131072
+    reloaded <- (when reopened
+      is Err (e) -> act Err e end
+      is Ok (disk) -> cs-load-config disk (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }))
+    f <- cfi-check "the world that disagrees reloads from disk with the written coin" (when reloaded
+      is Err (e) -> False
+      is Ok (back) -> (em-purse back.state.vendor.currency.copper 1).coin == coin + 7 & back.store.sequence == written + 1)
+    home <- store.store.start
+    landed <- store.store.sequence
+    away <- __record-set store.store "start" 140000
+    churned <- __record-set owner.combat "draws" (owner.combat.draws + 1)
+    failed <- cs-commit store True
+    pong <- cs-route store game input map 2593 [115, 0]
+    g <- cfi-check "a store write failure answers Ok, keeps serving and leaves the store open" (is-ok failed & is-ok pong
+      & store.store.fault == 0 & store.store.sequence == landed & store.refusals >= 1)
+    returned <- __record-set store.store "start" home
+    retried <- cs-commit store True
+    h <- cfi-check "the next commit retries the write and lands" (is-ok retried & store.store.sequence == landed + 1 & store.refusals == 0)
+    a + b + c + d + e + f + g + h
   end
   opening : [Console, Device.Block] Integer = when cg-specs 0
     is Err (e) -> act

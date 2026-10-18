@@ -29,6 +29,14 @@ count does.
 
 ## Done
 
+### Update 70 -- one compiler miscompile, found only by the full test-run
+
+- `test-run`: `typeclass-instance-types` and three `method-template-contract-*` tests printed `1` for `True`. Seed bisect: main 44895 (CORE-11 leaf inliner) bound a non-simple argument at the leaf's declared parameter type, an unresolved type variable for a polymorphic parameter. Fixed in main 45554 (seed 292381CB). 44895 passed its BVT and cite-gate because nothing cites the compiler; only the full gate's run of every test chapter carrying an `.expected` reaches these four.
+- `check-shell-raw`: `cdxtopeScript` rose 1571 to 1724 ScRaw with red's UEFI stub work (45022, 45145); re-baselined in 45516, conversion owed.
+- `check-cite-names` read an untracked `apps/landing/web/compile/Codex.codex` left by an older landing build in the release workspace. Before the gate, `p4 reconcile -n` the workspace and move every untracked `.codex` out.
+- `plug-smoke`: since 41488 ptx `run.ps1` refuses a program calling a function PTX does not define, and both shared smoke inputs print. ptx now smokes its own device-kernel probes (45567).
+- `p4-stale-check` refused the poison build's concatenated source in a log folder inside the workspace. Keep release logs and scratch outside the workspace.
+- GPU subjects over the 60 s wall budget at 16 ways: 5 in `test-run`, the same 7 in the battery and in the poison battery; graded alone after the fan-outs.
 ### Update 69 -- three reds at step 0b, none a compiler defect
 
 - `test-run`: six GPU diffusion subjects over the 60 s wall budget at 16-way; all six pass alone: `build/bvt.ps1 -CodexCdx build/output/Sut.cdx -Jobs 1 -SubjectsFile <the reds>`.

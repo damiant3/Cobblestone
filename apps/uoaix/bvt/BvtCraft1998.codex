@@ -1,0 +1,33 @@
+Chapter: BvtCraft1998
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter Craft1998
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-242: the 1998 scripts' checks for crafts and harvests. A player's harvest is a direct use, so it succeeds at its
+ checked value (card 0: the bare skill); fishing is client skill 18 and economy skill 4.
+  bvc98-row : Integer, Integer -> Integer
+  bvc98-row (skill) (level) = let row = alloc-bytes (46 * 8) in let cleared = bvc98-zero row 0 in let set = poke-qword row (skill * 8) level in row
+  bvc98-zero : Integer, Integer -> Integer
+  bvc98-zero (row) (i) = if i >= 46 then 0 else let z = poke-qword row (i * 8) 0 in bvc98-zero row (i + 1)
+  bvc98-actor : Integer -> EpActor
+  bvc98-actor (row) = EpActor { purse = 0, place = 0, hunger = 0, attempts = 0, stock = ep-buffer 147, quality = ep-buffer 147,
+    cost = ep-buffer 147, wear = ep-buffer 147, skills = ep-buffer 11, row = row, card = 0, learn-hook = ep-learn-none }
+  bvc98-tries : EpActor, Integer, Integer, Integer, Integer -> Integer
+  bvc98-tries (p) (skill) (classic) (left) (ok) = if left == 0 then ok else bvc98-tries p skill classic (left - 1) (if ep-practice-in p skill classic 0 then ok + 1 else ok)
+  bvt-craft-1998 : Integer -> [Console] Integer
+  bvt-craft-1998 (unused) = let fished = bvc98-row 18 300
+    in let low = bvc98-tries (bvc98-actor fished) 4 18 1000 0
+    in let rose = peek-qword fished (18 * 8)
+    in let high = bvc98-tries (bvc98-actor (bvc98-row 18 900)) 4 18 1000 0
+    in let rows = c98-range 18 0 == 0 & c98-range 44 0 == 0 & c98-range 45 0 == 0 & c98-range 13 0 == 0 & c98-range 34 0 == 0 & c98-range 11 0 == 0 & c98-range 37 0 == 0
+      & c98-range 8 48 == 80 & c98-difficulty 8 48 == 300 & c98-range 8 49 == 80 & c98-difficulty 8 49 == 0 & c98-range 7 3 == -1 & c98-range 6 0 == -1 & c98-range 8 38 == -1
+    in let losses = c98-loss 8 48 5 (0 - 7) 500 == 5 & c98-loss 8 49 2 (0 - 8) 500 == 1 & c98-loss 8 49 2 (0 - 9) 500 == 0 & c98-loss 13 50 1 (0 - 3) 500 == 1
+      & c98-loss 45 31 8 (0 - 1) 500 == 4 & c98-loss 45 31 2 (0 - 1) 500 == 2 & c98-loss 45 65 3 (0 - 1) 500 == 3 & c98-loss 45 66 10 (0 - 1) 500 == 5 & c98-loss 11 60 4 (0 - 1) 500 == 0 & c98-loss 44 15 1 (0 - 1) 500 == 0
+      & c98-loss 34 46 16 0 900 == 4 & c98-loss 34 46 16 (0 - 4) 900 == 0 & c98-loss 34 46 16 0 100 == 16
+    in act
+      a <- bvt-check ("a player's harvest is a 1998 direct use, landing its checked value per mille: fishing from 30.0 lands between 300 and the skill it rose to (" & show low & " of 1000, to " & show rose & "), at 90.0 about 900 (" & show high & ")") (low > 250 & low < rose + 40 & rose > 300 & high > 840 & high < 960)
+      b <- bvt-check "the 1998 rows: harvests, cooking, smelting, carpentry, tinkering and tailoring are direct uses; a carved bow is difficulty 300 at range 80 and arrows 0 at 80; blacksmithing and farming have no row here" rows
+      c <- bvt-check "a failure's loss: a carved bow all its wood, arrows 1 in 4, a cook its piece, smelting half (all at 1), carpentry and harvests nothing, a tailor up to need / 4 from 80.0 and up to need below 40.0" losses
+      d <- bvt-check "a direct use gains at factor 100 on success and 50 on failure (TestSkillInternal)" (c98-direct-chance 500 True == 500 & c98-direct-chance 500 False == 750 & c98-direct-chance 0 False == 500)
+      a + b + c + d
+    end

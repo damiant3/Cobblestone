@@ -1,0 +1,34 @@
+Chapter: BvtLongRoute
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ Trial 41500: workers bound for far nodes never routed. The fixture is a 64 by 64 serpentine: walls (flag 64, impassable) at x 1008, 1016 .. 1056, open alternately on row
+ 1062 and row 1001, one row inside the window's edge. The walk from 1001,1001 to 1060,1001 runs every corridor's length, past 256
+ steps; it fits a shared route (a slot per map cell) and not a 256-byte path buffer.
+  bvlr-wall : Integer, Integer -> Boolean
+  bvlr-wall (x) (y) = let k = (x - 1008) / 8
+    in x >= 1008 & x <= 1056 & int-mod (x - 1008) 8 == 0 & (if int-mod k 2 == 0 then y /= 1062 else y /= 1001)
+  bvlr-fill : WalkMap, Integer -> Integer
+  bvlr-fill (map) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let mark = __heap-save
+    in let set = walk-set-land map x y 0 (if bvlr-wall x y then 64 else 0)
+    in let restored = __heap-restore mark in bvlr-fill map (i + 1)
+  bvt-long-route : Integer -> [Console] Integer
+  bvt-long-route (unused) = when world-new 64
+    is Err (e) -> bvt-check ("long route fixture world: " & e) False
+    is Ok (w) -> when walk-map-new 1000 1000 64 64
+      is Err (e) -> bvt-check ("long route fixture map: " & e) False
+      is Ok (map) -> let filled = bvlr-fill map 0
+        in let indexed = world-reindex w
+        in let p = tl-path-new map
+        in let m = WorldObject { serial = 0, kind = 1, x = 1001, y = 1001, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+        in let id = rte-plan p w map None m 1060 1001 0
+        in let short = tl-plan p w map None m 1060 1001 0 (alloc-bytes 256)
+        in act
+          a <- bvt-check ("a serpentine walk past 256 steps plans as a shared route: " & show (if id < 0 then -1 else rte-key p id 6)) (id >= 0 & rte-key p id 6 > 256)
+          b <- bvt-check ("the same walk, which plans as a shared route, refuses a 256-byte path buffer: " & show short) (indexed & id >= 0 & short == -1)
+          a + b
+        end

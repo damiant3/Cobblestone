@@ -1,0 +1,87 @@
+Chapter: BvtDispelVortex
+  cites Uoaix chapter GameMagery
+  cites Uoaix chapter MageryCodec
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter BvtCheck
+
+ A caster at 1421,1698 on open land, as MageryReplay's fixture builds one.
+  BdvEnv = record { game : GameShard, magic : Magery, input : GameInput, combat : GameCombat }
+  bdv-land : WalkMap, Integer -> Integer
+  bdv-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let written = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bdv-land map (i + 1)
+  bdv-decoration : WalkMap -> Result WdState Text
+  bdv-decoration (map) = let data = alloc-bytes 64
+    in let zero = mgs-zero data 0 8
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 16 map.x
+    in let c = poke-qword data 24 map.y
+    in let d = poke-qword data 32 map.width
+    in let e = poke-qword data 40 map.height
+    in wd-read data 64 map 200
+  bdv-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  bdv-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  bdv-env : Integer -> Result BdvEnv Text
+  bdv-env (unused) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (game) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> Err e
+      is Ok (map) -> let filled = bdv-land map 0
+        in when bdv-decoration map
+          is Err (e) -> Err e
+          is Ok (decoration) -> let hero = world-create game.world (gs-mobile 0 1421 1698 0 400 1002)
+            in let character = poke-qword game.characters 0 1
+            in let items = gsi-new game.world
+            in let bank = gmb-new items #4A
+            in let combat = cb-new game 42
+            in let magic = mgs-new items bank combat decoration None (bdv-cover map)
+            in let input = gn-input-with (gsi-specs 0) 1
+            in let mode = __record-set input "mode" 2
+            in let phase = __record-set input.session "phase" 2
+            in let serial = __record-set input.session "serial" 1
+            in let active = __record-set game "active" 1
+            in let bound = mge-bind magic
+            in if not (is-ok hero) then Err "fixture allocation"
+            else Ok (BdvEnv { game = game, magic = magic, input = input, combat = combat })
+ A ground answer (0x6C type 1) to the cursor at x,y: serial 0, as the client sends for a tile.
+  bdv-ground : Integer, Integer -> List Integer
+  bdv-ground (x) (y) = [#6C, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, x / 256, int-mod x 256, y / 256, int-mod y 256, 0, 0, 0, 0]
+  bdv-aimed : Result MgAim Text -> Integer
+  bdv-aimed (r) = when r is Err (_) -> 0 - 1 is Ok (aim) -> aim.object.serial
+ A fire field three tiles east; a ground answer on a piece's tile aims at that piece, one on an empty tile is refused.
+  bdv-dispel : Integer -> Boolean
+  bdv-dispel (unused) = when bdv-env 0
+    is Err (_) -> False
+    is Ok (env) -> when world-get env.game.world 1
+      is Err (_) -> False
+      is Ok (source) -> when mga-walls env.magic env.game source (mga-point 1424 1698 0) 28 (0 - mga-wall-last 28) []
+        is Err (_) -> False
+        is Ok (_) -> let piece = (list-at env.magic.walls 0).serial
+          in when world-get env.game.world piece
+            is Err (_) -> False
+            is Ok (item) -> let on = bdv-aimed (mga-aim env.magic env.game env.input source 34 (bdv-ground item.x item.y))
+              in let off = mga-aim env.magic env.game env.input source 34 (bdv-ground 1421 1702)
+              in piece > 0 & on == piece & (when off is Err (e) -> e == "That cannot be dispelled." is Ok (_) -> False)
+ Every creature Magery summons binds its combat profile (cb-profile), the energy vortex's Wrestling 120.0 included.
+  bdv-binds : BdvEnv, List WsProfile, Integer -> Integer
+  bdv-binds (env) (ps) (i) = if i >= list-length ps then 0
+    else let p = list-at ps i
+    in when world-create env.game.world (gs-mobile 0 1430 (1690 + i) 0 p.body 0)
+      is Err (_) -> 1 + bdv-binds env ps (i + 1)
+      is Ok (serial) -> (if cb-profile env.combat env.game serial p.name p.dex-high p.damage-low p.damage-high p.skill-high == 0 then 0 else 1) + bdv-binds env ps (i + 1)
+  bdv-vortex : Integer -> Boolean
+  bdv-vortex (unused) = when bdv-env 0
+    is Err (_) -> False
+    is Ok (env) -> when world-create env.game.world (gs-mobile 0 1440 1690 0 13 0)
+      is Err (_) -> False
+      is Ok (over) -> bdv-binds env (gws-summon-profiles 0) 0 == 0
+        & cb-profile env.combat env.game over "past the ceiling" 100 1 2 (cb-skill-ceiling + 1) == 0 - 1
+  bvt-dispel-vortex : Integer -> [Console] Integer
+  bvt-dispel-vortex (unused) = act
+    a <- bvt-check "Dispel Field takes a ground cursor; a ground answer on a field piece's tile aims at the piece, on an empty tile it cannot be dispelled (mga-aim)" (mgd-ground-cursor 34 & not (mgd-ground-cursor 4) & bdv-dispel 0)
+    b <- bvt-check "every summon profile binds its combat profile, the energy vortex's skill 1200 included; past the ceiling is refused (cb-profile)" (bdv-vortex 0)
+    a + b
+  end

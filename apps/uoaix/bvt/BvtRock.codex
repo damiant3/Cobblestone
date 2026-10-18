@@ -1,0 +1,60 @@
+Chapter: BvtRock
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ The fixture's mountain is the block x 1446-1457, y 1522-1529, impassable (flag 64): its 44 faces are the ring of tiles
+ around it, and the nearest to the strip's centre (1451,1532) are on row 1530.
+  bvt-rock-fill : WalkMap, Boolean, Integer -> Integer
+  bvt-rock-fill (map) (rock) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let mark = __heap-save
+    in let inside = rock & x >= 1446 & x <= 1457 & y >= 1522 & y <= 1529
+    in let set = walk-set-land map x y 0 (if inside then mt-mountain-flag + 64 else 0)
+    in let restored = __heap-restore mark in bvt-rock-fill map rock (i + 1)
+  bvt-rock-far : WalkMap, Integer -> Integer
+  bvt-rock-far (map) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let mark = __heap-save
+    in let inside = (x >= 1362 & x <= 1365 & y >= 1490 & y <= 1493) | (x >= 1512 & x <= 1515 & y >= 1508 & y <= 1511)
+    in let set = walk-set-land map x y 0 (if inside then mt-mountain-flag + 64 else 0)
+    in let restored = __heap-restore mark in bvt-rock-far map (i + 1)
+  bvt-rock-ring : Result BbSpot Text -> Integer
+  bvt-rock-ring (r) = when r
+    is Err (_) -> -1
+    is Ok (s) -> max (walk-abs (s.x - cgg-rock-x)) (walk-abs (s.y - cgg-rock-y))
+  bvt-rock-at : Result BbSpot Text, Integer, Integer -> Boolean
+  bvt-rock-at (r) (x) (y) = when r
+    is Err (_) -> False
+    is Ok (s) -> s.x == x & s.y == y
+  bvt-rock : Integer -> [Console] Integer
+  bvt-rock (unused) = when world-new 64
+    is Err (e) -> bvt-check ("rock fixture world: " & e) False
+    is Ok (w) -> when walk-map-new 1440 1516 24 24
+      is Err (e) -> bvt-check ("rock fixture map: " & e) False
+      is Ok (map) -> when walk-map-new 1440 1516 24 24
+        is Err (e) -> bvt-check ("rock fixture flat map: " & e) False
+        is Ok (flat) -> let a0 = bvt-rock-fill map True 0
+          in let b0 = bvt-rock-fill flat False 0
+          in act
+            total <- cgg-rock-count w map
+            first <- cgg-rock-nth w map 0
+            a <- bvt-check "every free tile beside the mountain is a rock face a miner can work: 44 around a 12 by 8 block" (total == 44)
+            b <- bvt-check "a miner's first face is the nearest to the ore strip, on the rock's south edge (1449,1530)" (bvt-rock-at first 1449 1530)
+            mid <- cgg-rock-nth w map 20
+            last <- cgg-rock-nth w map 43
+            c <- bvt-check "later trips take faces farther out: ring 2 first, the far corner (ring 11) last" (bvt-rock-ring first == 2 & bvt-rock-ring mid >= 2 & bvt-rock-ring mid <= bvt-rock-ring last & bvt-rock-ring last == 11)
+            past <- cgg-rock-nth w map 44
+            d <- bvt-check "there is no 45th face, so trip 44 wraps to the first (cgg-rock-try indexes modulo the count)" (is-err past)
+            held <- world-create w (gs-mobile 0 1449 1530 0 400 1002)
+            taken <- cgg-rock-nth w map 0
+            e <- bvt-check "a face another mobile stands on is passed over for the next one along the rock" (is-ok held & cgg-rock-count w map == 43 & bvt-rock-at taken 1450 1530)
+            f <- bvt-check "a map without mountain marks has no faces, so a spent miner falls back to the strip" (cgg-rock-count w flat == 0)
+            g <- when walk-map-new 1360 1488 160 240
+              is Err (e) -> bvt-check ("rock fixture wide map: " & e) False
+              is Ok (wide) -> let filled = bvt-rock-far wide 0
+                in bvt-check "the rock search reaches the masses past the old walk window, west at x 1362 and east at x 1512: all 40 faces of two 4 by 4 blocks" (cgg-rock-count w wide == 40)
+            a + b + c + d + e + f + g
+          end

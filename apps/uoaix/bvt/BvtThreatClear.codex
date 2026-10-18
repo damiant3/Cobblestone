@@ -1,0 +1,63 @@
+Chapter: BvtThreatClear
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawnCodec
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-262: on BvtWorkerDay's founded town with its spawns attached (as BvtGuardWard), an earth elemental bound to slot 0 in the Britain mine region. Answers a bit per check: 1 a
+ guard's kill clears the region and notes a kill report, 2 another killer leaves it open, 4 the cleared mark saves and
+ loads, 8 a miner-list role is a worker and a shopkeeper is not, a bound patrol is a guard and serial 0 is not; 15 is
+ all, -1 to -3 a fixture that failed.
+  btc-bind : CompositeGame, GameWorldSpawn -> Integer
+  btc-bind (owner) (g) = let region = list-length g.catalog.regions - 1
+    in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+    in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 then 0
+    else when world-create owner.checkpoint.game.world (gs-mobile 0 1450 1530 0 14 0)
+      is Err (_) -> 0
+      is Ok (serial) -> let slot = list-at g.slots 0
+        in let a = __record-set slot "serial" serial
+        in let b = __record-set slot "region" region
+        in let c = __record-set slot "profile" profile
+        in let d = __record-set slot "owner" 0
+        in let e = __record-set slot "summoned" 0 in serial
+  btc-guard : CompositeGame, CivicLive -> Integer
+  btc-guard (owner) (c) = if list-length c.guards == 0 then 0
+    else when world-create owner.checkpoint.game.world (gs-mobile 0 1460 1530 0 400 1002)
+      is Err (_) -> 0
+      is Ok (serial) -> let bound = __record-set (list-at c.guards 0) "serial" serial in serial
+  btc-run : Boolean -> Integer
+  btc-run (by-guard) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> let attached = when owner.spawns is Just (_) -> Ok 0 is None -> cg-spawn-attach owner
+      in when owner.spawns
+      is None -> -1
+      is Just (g) -> when owner.civic
+        is None -> -2
+        is Just (c) -> let beast = btc-bind owner g
+          in let guard = btc-guard owner c
+          in if beast == 0 | guard == 0 then -3
+          else let region = list-length g.catalog.regions - 1
+          in let before = peek-qword owner.reports 0
+          in let held = cg-guard-clear owner g (if by-guard then guard else 0) beast
+          in let cleared = gws-region-cleared g region
+          in let noted = peek-qword owner.reports 0 == before + 1 & peek-qword (owner.reports + 16 + int-mod before cg-report-rows * 64) 0 == 2
+          in if not by-guard then (if not cleared & peek-qword owner.reports 0 == before then 2 else 0)
+          else let slot = list-at g.slots 0
+          in let e1 = __record-set slot "serial" 0
+          in let e2 = __record-set slot "region" (0 - 1)
+          in let e3 = __record-set slot "profile" (0 - 1)
+          in let now = g.combat.tick
+          in let buf = alloc-bytes (gwsc-size g)
+          in let encoded = gwsc-encode g owner.checkpoint.game.world now buf (gwsc-size g)
+          in let reset = poke-qword g.deadlines (region * 8) 0
+          in let decoded = if is-ok encoded then gwsc-decode g owner.checkpoint.game.world now buf (gwsc-size g) else Err "not encoded"
+          in let kept = is-ok decoded & gws-region-cleared g region & not (gws-region-cleared g 0)
+          in let roles = cg-death-worker 10 & cg-death-worker 1 & not (cg-death-worker 4) & cg-any-guard c guard & not (cg-any-guard c 0)
+          in (if cleared & noted then 1 else 0) + (if kept then 4 else 0) + (if roles then 8 else 0)
+  bvt-threat-clear : Integer -> [Console] Integer
+  bvt-threat-clear (unused) = act
+    n <- btc-run True
+    m <- btc-run False
+    a <- bvt-check ("a guard's kill of a wild creature clears its spawn region for good (the save keeps it) and notes a kill report; another killer leaves the region open (UOAIX-262, codes " & show n & " " & show m & ")") (n + m == 15)
+    a
+  end

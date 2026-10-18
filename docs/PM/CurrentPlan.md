@@ -44,6 +44,11 @@ on compiler, forwards, kernel, and uoaix".** No lane takes Prism, Spark or
 landing-page work until he reopens it. **"Spark and Fishtank can be ignored"**
 (Damian, 2026-10-07): their rows and grades are not carried to him.
 
+**Lanes (Damian, 2026-10-16): "i want one lane dedicated to uoaixassist, one
+to do any compiler/language/kernel/forwards work, and the rest on uoaix".**
+blu is the UOAIX Assist lane, red is the compiler, language, kernel and
+foreword lane, and reek, fester and val are on UOAIX (root's assignment).
+
 Docs go straight to main; a code arc gates once per arc
 (`CoordinationProtocol.md`). The lanes table wins over this section.
 
@@ -58,11 +63,9 @@ Docs go straight to main; a code arc gates once per arc
 
 **MAIN OPEN.** The token is granted for proven seed CLs only.
 
-Latest public release: **Update 68** (2026-10-07, commit `8557982b`, seed
-`E29C439B`; `GitHubUpdate68.md`). **Update 69 is in flight (red)**: COMPILER-124,
-COMPILER-129 (closed for 69 on every plug a runtime here grades), diag.img
-DDD55081, the games `random_get` host. Re-measure the seed and mirror tips at
-the release.
+Latest public release: **Update 69** (2026-10-07, commit `fa0eaade` on GitHub
+master and GitLab main, seed `58D18336`; `GitHubUpdate69.md`). Re-measure the
+seed and mirror tips at the next release.
 
 **GPU compute on our own OS is the GSP firmware route, TIER 1 (Damian,
 2026-09-30: "use the gsp firmware is an absolute tier 1 requirement. forget this
@@ -137,19 +140,6 @@ and in the end `nvcuda.dll` behind codex-vm's GPU bridge.
 - **Pool:** the two Magic games (val; `apps/games/magic` findings and
   `WorkPlan.md`, `apps/games/codexmagic`), taken only when a lane has no unit.
 
-## Doc compaction (Damian, 2026-10-07: "clean up all the currentplan and uoaix project docs to remove tombstones and war stories, compact and succintify that stuff")
-
-Pure docs: no token, no gate, copy up per file group. A doc states what IS (R-HISTORY, R-PROSE).
-**Delete:** closed or "built" rows and sections whose work landed (the CL is the record); "Earlier:", "superseded", "was", "retracted" blocks; session narrative, bisect and debugging stories, who-found-what-when; measurements and CL numbers kept as history; restated summaries.
-**Keep:** every open item; every ruling with Damian's quoted words; wire, file and client facts we do not own; magic numbers and why; contracts a caller relies on; live code citations.
-Before deleting a paragraph, ask what it carries that lives nowhere else (L-ROWROT): a lesson becomes a `LESSONS.md` row, a trap becomes one sentence. Replace text, never append. Merge down before each copy-up; a lane row's own NOW/NEXT text stays its lane's.
-
-| owner | files under `apps/uoaix/` |
-|---|---|
-| fester | `Magery`, `ActiveSkills`, `Skills*`, `GameCombat*`, `GameResurrection`, `GameMonster*`, `CharacterStylist`, `ItemActions`, `GameHarvest`, `GameCraft`, `World*` |
-
-Each lane takes its share after its current unit lands (red is on the Update 69 release and holds none), and deletes its row here when done.
-
 ## The lanes (RULED by Damian 2026-08-15)
 
 The table is the assignment; re-read it on every merge-down. A row is NOW,
@@ -162,12 +152,12 @@ each pane declares a rate or a budget and skips or runs late on a miss
 
 | agent | now | then | standing |
 |---|---|---|---|
-| **blu** | **NOW:** none; next own pick from `uoaix-backlog.md` (root's standing GO). | **NEXT:** after root's next live switch, measure the UOAIX-50 seal rate and the UOAIX-29 wheel peak from the `ECONOMY ROWS` commit line and size the 256-entry pool. | Camping, Cartography and Taste Identification are reek's (root, 2026-10-06). Built, awaiting root's live switch and Damian's grade: UOAIX-50 (reinstall the map cache, UCC1 24), UOAIX-30 (fresh worlds only), vendor reload past 128 lots, F34, UOAIX-58, vein-trip, UOAIX-42, F44-F46, F30, UOAIX-60, F51, F53, UOAIX-28, UOAIX-59, F57 (regenerate the dwd), F56 (Damian confirms the 0x1A movable flag makes wheat and cotton pickable), UOAIX-52, UOAIX-44, F59-F61 (fresh world). Construction 35373 stays off main. Blu keeps `codex/os/net/**`. |
-| **val** | **NOW** (root, 2026-10-07): UOAIX-99, a split or stack of a vendor-lot stack refuses every later save (row in `uoaix-backlog.md`); then UOAIX-49 part B, bots 2 to 6 trade from their testing kit. Shelf 35382 is paused civic-input work. | **NEXT:** root dispatches. | **For Damian:** DATA-1, DATA-W2, FW-3, GPUSHOW-1/3, GLOBE-1 keep their owning rows and DamianDecisions options; FW-2 needs a real-GPU page review; virtual-desktop wording in DamianDecisions 3.11; FW-1 options Deferred. |
-| **fester** | **NOW** (fester's pick, root's GO 2026-10-07): UOAIX-49 never-run list, MageryActions (18 of 27 never run): a `soak-bots.ps1` spell family casting every circle at its proper target, graded by MageryActions entered definitions before and after under `-RawFlags cover`; then fester's doc compaction share. UOAIX-81 is built (all 64 spells; Damian's client grade open). | **NEXT:** none registered; ask root. | The testing kit's 25-slot tool bag is full: the next kit item needs a second bag. Shelves 35378 and 35450 are not regraded at head. |
-| **reek** | **NOW:** COMPILER-122 parked as shelf 38881 (seed AEFBF586, proven at main 38907; its 6 files are open in the reek workspace): at MAIN OPEN, if any seed landed since, shelve, revert `seed/Codex.cdx` and `TechnicalDetails.md`, merge down, then re-run the lane proof chain (memory `lane-seed-proof`: fixed point, sign, a `-Measure` compile showing `bivy-close=` and no `bivy-hwm`, BVT, cite-gate over `opening.codex` and `Core/PhaseAllocator.codex`, GPU wall-budget reds rerun serially), `install-seed.ps1 -Lane`, token, submit, copy up. | **NEXT:** UOAIX-49 soak `pet` family, shelf 38919 (description has the run): make the family target a creature whose spawn profile is tameable, then a 6-minute covered soak on a head build until `gws-tame` is entered; land the shelf. | Plugs close-out lane and codex-vm GPU bridge; `tools/codex-vm.c`. Eight Britain shops and their lineup copies fill the 16-row vendor table (`gv-add-vendor`): a ninth shop needs a wider GVS1 table. Tokenless `codex/foreword/` landings name their closure check. |
-| **red** | **NOW** (root, 2026-10-07): the Update 69 release at main head; `.claude/skills/release/SKILL.md`; a partial battery finishes by its reds only. | **NEXT:** (1) COMPILER-109 (Lowering, recipe in its row; reek landed its opening: take the rest only if reek holds none). (2) COMPILER-123 is open only for Damian's grade: `pwsh build/test.ps1 -Tier hardware -CodexCdx seed\Codex.cdx -ApprovedBy damian`, `t5-encoder-step` PASS (row). | Awaiting Damian's client grade: UOAIX-76 (food), the struck-player retaliation fix, the "Not Implemented" skills group (Parrying, Provocation, Enticement, Forensic Evaluation, Spirit Speak, Poisoning, Stealing: NPC backpacks only), UOAIX-53 (F26 hand tools), F32, F37, F40-F42, F19/F20, F23, F25, UOAIX-36, UOAIX-39, UOAIX-40, UOAIX-35. Shelves: 36038 (CompositeBritainWorld census probe), 35360 (town-network goal controller, paused), 33249 (T5 single-pass proposal, deferred). Root grades the client on the composite. A change to a chapter the composite routes through runs the composite four-boot set before landing. |
-| **root** | **NOW:** commander; the CurrentPlan compaction. Live UOAIX shard STOPPED: restart on a fresh world with a head candidate (5-minute soak, switch-fresh, then a 30-minute canary run after the gate soak, same port). | **NEXT:** Update 69 lands through red. Shell refinement scope: `docs/Designs/Active/OS/ShellRefinement.md`; build tooling closure: `Build.md`. | |
+| **blu** | **NOW:** the UOAIX Assist's circuits on uo1998 (Tailoring, Buy reagents, Survey town, Refresh, Cave mining, Smithing; `apps/uoaix/assist/tailoring-circuit.md`), driven from the Circuits tab or control port 2651. The relay runs the head of `apps/uoaix/assist` (PID in `status.json`, started by blu from `D:\Projects\Cobblestone-blu\apps\uoaix\assist\assist.ps1 -LoginServer login.uo1998.com,5000 -ListenPort 2650 -LogDir D:\Projects\Cobblestone-root\build-output\uoaix\assist`); it and the client stay up for Damian, a relaunch only on his word, and every relaunch logs him out; the running relay predates the newest window changes on main, which load at his next "bounce". Damian's 30,000 gold sits in bank bag 42C5AF7E and no Assist code takes gold from a bag; the pearl back stock is in bag 42C5AF80. Damian said to ignore root's dispatch: his own asks come first. | **NEXT:** first live runs with Damian, each compiled and not run: Refresh with no storage bag, the Smithing circuit (`circuit smith`; ingots from the bank or a smith), the Maker tab's crafts books, and the mining circuit's setup and run (`mine-setup`). Not built: ingots from the mining circuit as the smithing source, and an ingot-buying circuit of its own. | `apps/uoaix/assist/**`. Construction 35373's blu-only chapters stay off main. |
+| **val** | **NOW:** resting (handed off 2026-10-18, root's order): no file open, no shelf. The deed campaign is on main (`apps/uoaix/UOAIX.md`, "Houses come from deeds"; UOAIX-252, UOAIX-253), BVT green (root, main 45441) and clean in root's fresh-world trial-45448; Damian grades buying a deed in the Saw Horse, placing it, and the key and the door in the client after the switch. | **NEXT:** whatever root dispatches; Construction's design path is reek's (multis). | |
+| **reek** | **NOW:** none. Built and NOT RUN in game: the buildable-multis campaign (`docs/Designs/Active/Apps/UoaixMultis.md`, slices 1-7, main 45422 to 45463): `multis.cfg` designs 0x200-0x203, `[decor multi <name>`, deed houses of a design with locking front doors, placed multis colliding, `[decor cut` and `[decor compose` in game. Reaches the players only through one `switch-live.ps1 -Bake` (passing `-DecorationFile`); trial check: after it, a GM's `[decor multi castle-shrine` draws the castle with the shrine on its court roof, its walls stop a walker and its roof bears one, and a house deed item whose health is 0x202 (a GM makes it; no vendor sells design deeds yet) stands the throne room with a locked double door. | **NEXT:** whatever Damian's game test of the multis turns up (the 1.25 client's largest drawn multi is 3461 components; the full castle is about 11,300), then the UOAIX backlog, player-reachable first. | UOAIX: doors, beds, routes, shop doors, the city guard and city law mechanism, the stablemasters, teleporters and the merchant fleet (from red, 2026-10-16). |
+| **fester** | **NOW:** idle. UOAIX stage D: D2 to D6 done (UOAIX.md; D4's OVMF half reaches `READY` on q35 and pc). Built and waiting on runs, each NOT RUN in game: UOAIX-253, 53, 241, 178, 217, 260, 262, 252, 251, 242 D6, 238. The full UOAIX BVT unit passes compiled with `-Decks 150 -MemNoCap` (root, 44983: 0 of 343 failures); `bvt.ps1` passes neither flag, so its own compile stops at CDX9002 (deck overflow in RESOLVE). | **NEXT:** D7 waits on Damian's R6 (Vultr: region, plan and date). | reek holds doors, beds, routes, shop doors, the city guard and city law mechanism, the stablemasters, teleporters and the merchant fleet. Catalog ids 139-146 are blu's (UOAIX-174). The brambles change (43433) needs a map cache reinstall to reach a live walk map. Shelves on BigWhite_Codex_fester: 35450 and 35378 (deferred diagnostics). Shelves on BigWhite_Codex_red: 35360 (town-network goal controller, paused), 33249 (T5 single-pass proposal, deferred). |
+| **red** | **NOW:** prep the cobblestoneproject.com push with a new landing card for UOAIX Assist (Damian, 2026-10-18: "have red prep for push cobblestoneproject.com with a new card for uoaix assist"): `docs/Agents/PublicPush.md`, "The website mirror", steps 1 to 5b, widened (Damian, 2026-10-18: "rebuild all the wasm compiler modules, rebuild the site, proof it and open a preview in my edge browser"); stop before `git push` and report. Standing lane: the compiler, language, kernel and foreword (Damian, 2026-10-16), and the plugs as compiler backends (root, 2026-10-17). | **NEXT:** the compiler and quire backlogs in order; the `cdxtopeScript` raw-shell rise from 45022 and 45145 (re-baselined at Release 70, 45516) is red's to convert. CORE-9 and CORE-12 stay with Damian; perl plug 2.110 parked by root. | `codex/compiler/**`, `codex/foreword/**`, `codex/os/**` (`codex/os/net/**` from blu), the release owner. |
+| **root** | **NOW:** handed off 2026-10-18 00:45 at 72% (Damian: "when reek and val handoff, you can too"); nothing open or shelved. Live UOAIX shard main 44460 on its own world (supervisor `live-44460-r3` PID 22940, guest 2224, packet proxy PID 4400 on 2593), left running. NO switch candidate yet: trial-45448 passed (fresh world, hour 80, 0 failure lines, keepers 0 no-route, INN 0, every worker routes and makes, 18942 multi rows) but reek found a defect in 45448 after it (7x7 walls around every placed design, fixed main 45460). Every open decision for Damian is in root ws `build-output\uoaix\TESTPLAN-45018.md` (item D1 says the above). The uo1998 Assist relay is blu's (port 2650). | **NEXT:** (1) trial main head (45463 or later: deeds, multis, cut/compose, design doors) on a fresh world with the decoration re-imported, AND place a design (`[decor multi 200`, a design deed) during the trial, then grade nights 2-3, keepers, INN, workers; (2) rewrite TESTPLAN for that build and wait for Damian's `switch` (`switch-live.ps1 -Fresh -Bake`, backup first, announce "restarting now"). Root runs every trial, soak, battery, BVT fan-out and cite-gate (CoordinationProtocol, one runner). | |
 
 **Plugs are reek's close-out lane** (Damian's direction, 2026-08-18): the
 register in order, one entry at a time, said in status.json.
@@ -177,10 +167,7 @@ in a CL that changes what he wrote and flag it in the next GitHubUpdate.
 ## The pool (Damian, 2026-08-18)
 
 Every open design in `docs/Designs/Active/` is available work; a lane that
-empties draws in order, says so in the table, and strikes the item. Taken:
-`HardwareAbstractionLayer.md` (root), `GameEngine.md` phase 2 (val),
-`ShellDslReadability.md` (reek), `ComplianceEvidence.md` (root). The pool holds
-no drawable item now; `DeviceEmulationCatalog.md` is demand-driven. Seed
+empties draws in order, says so in the table, and strikes the item. `DeviceEmulationCatalog.md` is demand-driven. Seed
 campaigns take the token per CL.
 
 **Unowned registers.** The document that owns the subject wins over any claim
@@ -270,6 +257,14 @@ spend are almost always very much over"; 75 ruled 2026-09-28).** The number is
 handoff at 75 or at a genuine boundary above it, never below, and cancels an
 early one.
 
+**A red whose only reason is the wall budget stops nothing (Damian,
+2026-10-07: "the machine is loaded with work. don't let wallclock failures
+stop anything"; "we didn't change that code so the test results are
+meaningless").** A gate, a landing or a release carries on and names it.
+Results for code the change did not touch grade nothing, so they get no solo
+re-runs. Any other red (wrong output, crash, compile failure) still stops the
+line.
+
 **Everything written to Damian is in the Codex Prose Language (Damian,
 2026-09-08, an experiment):** the axioms and banned words of
 `docs/DevelopersGuide.md` "Codex Prose Language (CPL)". Lane-to-lane messages
@@ -333,6 +328,72 @@ target.
 mirrors to GitHub and GitLab; a bug report about an external project is its
 author's to receive first. In a design, state the target's behaviour as a fact
 about the machine we build on. CL descriptions are not mirrored.
+
+**UOAIX: Damian's live bugs come first (Damian, 2026-10-08: "the fleet's goal
+is to resolve all bugs I can identify faster than I can identify new bugs").**
+A bug Damian reports in game preempts every stage unit in every lane: root routes
+it to one lane at once, the lane fixes and lands it before resuming its stage, and
+root lists every open report in the live TESTPLAN. **Feature freeze while
+any reported bug is open (Damian, 2026-10-08: "absolutely no new features to
+land on main until bugs I identify are fixed. no more wait a day for a bug
+fix"):** only bug fixes land on main; a finished feature stays shelved; no live
+switch until the queue is empty.
+
+**UOAIX: code only, straight to main (Damian, 2026-10-08: "no agents are allowed to run builds or tests. only code. all code gets put directly onto main, no workstreams. all code will be tested after all the code for both lanes is written"; "there will be no ceremony, only coding").** A lane writes code in its `<lane>_main` client and submits to main with no compile, BVT, boot or test; it syncs and resolves before each submit. Root compiles and runs the BVT once, after every lane's code is written. This overrides the compile-at-merged-head and BVT-before-landing rules below for UOAIX.
+
+**UOAIX: no proofs; Damian's in-game test is the proof (Damian, 2026-10-07: "ok
+no more proof", "stop all that", "the proof is me testing it in game", "if the
+agents aren't confident after writing it, tell them to re-read it and lets get
+a new build up within the next 5 minutes of every lane's outstanding changes";
+"if these agents cant be more confident of these small changes without 20-30
+minute test sweeps we have lost the handle entirely").** A UOAIX change is
+re-read until the author is confident, compiled with CompositeGameServer AT THE
+MERGED HEAD with 0 errors, and only then landed (Damian, 2026-10-08: "never
+push to main before they confirm it builds"; "skipping ceremony is not
+skipping CI tests to prevent fleet blockage"). A change to a save codec also boots
+its candidate once on a scratch world and reads WORLD RESTORED after one restart
+before landing: a server that refuses its own save blocks every lane's switch. Apart from the UOAIX BVT below: no replay, no soak, no citer sweep. While
+Damian tests, every lane finishes every item in its lane in one pass and lands
+it; then root makes one build and one server restart (Damian, 2026-10-07:
+"everyone should work to finish every single item in their lane in a single
+pass on the code, get it on main, and lets have one single build and one single
+re-run of the server after that. no more of this chasing flies with cannons").
+
+**UOAIX: every item from harvest, transform, consume (Damian, 2026-10-08: "any
+feature that exists now must be reconciled against those rules, and any future
+feature must ship with all that complete").** The rules are in
+`apps/uoaix/CompositeGame.md`: no item from nothing, every item made by an NPC trade
+from harvested or transformed inputs, every harvested input gathered by an NPC.
+A UOAIX feature is done only when its items' whole chain (gatherer, transform,
+consumer) exists and runs, and every admin function the feature needs is on the admin page and works (Damian, 2026-10-08: "acceptance criteria for a feature should also include any necessary admin functions added and working to the website"); val's audit drives the reconciliation of what exists.
+
+**UOAIX BVT (Damian, 2026-10-08: "i want a bvt test that must be run, and added
+to for each bugfix or new feature that does both positive and negative unit
+testing: fast, small, targeted").** One suite, `apps/uoaix/bvt/`, run by one
+command, `apps/uoaix/bvt.ps1`, in one guest, under 2 minutes in total. Every bug
+fix and every feature adds, in the same CL, at least one positive case (the
+intended behaviour happens) and one negative case (the bad input, state or old
+defect is refused or absent), each a direct call into the changed function with
+no world boot where possible. The whole BVT runs green at the merged head before
+every UOAIX landing. Harness owner: fester. The BVT is a smoke test, not a
+coverage suite (Damian, the same day: "bvt does not smoke out every single
+possible bug, but is a lightweight smoke test to ensure builds don't break
+easily"; "e.g. is it testable is the goal of the bvt"): the BVT answers one question,
+can Damian test this build. Its base cases are the server compiles, boots, restores
+its own save after a restart and admits a login; each CL's case grades the one
+thing that CL changed, in milliseconds. A CL that adds behaviour names, in its
+description, the live call site that runs it in the booted server (L-UNCALLED).
+Run `pwsh -File apps/uoaix/bvt.ps1`
+(it prints PASS/FAIL per case and `UOAIX BVT PASS`); add a case as a chapter in
+`apps/uoaix/bvt/` defining `bvt-<name> : Integer -> [Console] Integer` that
+returns its failure count, with `bvt-check` from `BvtCheck` per assertion
+(`BvtLaunch.codex` is the pattern). It boots in TESTING mode, as the live shard does, in 41 s (2026-10-08).
+
+**UOAIX live switch (Damian, 2026-10-08).** Root freezes a release candidate: root's stream is merged down to one main CL and no further; a defect the trial finds is fixed on main by a lane and only that CL is merged into root ("have fleet agents sync up to your local workstream and quickfix things so you can get the server up without merging down changes from other agent's future feature work increasing risk"). Before the switch the candidate passes the BVT and one game day on a fresh world at 30x (every worker leaves the inn, routes and produces, no SAVE SECTION FAILED, no !EXC); dispatch is FIFO and a reported bug preempts features; both test clients carry identical data files.
+
+**No save durability (Damian, 2026-10-07: "we don't need save durability its
+wasted code and testing"):** no old-version readers, no compatibility arms,
+no durability tests; a format change boots a fresh world.
 
 One line each: battery runs are Damian's (release proofs excepted). Goldens
 stay parked during active GUI work. Prose about our own code is deleted in

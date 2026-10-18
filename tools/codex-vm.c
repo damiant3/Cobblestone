@@ -11020,10 +11020,10 @@ static void pic_handle_out(PicState *p, int port_is_data, int val) {
     }
 }
 
-/* The 8259's fully nested priority: IRQ n is held while n or any
-   higher-priority (lower-numbered) IRQ is in service. */
+/* The 8259 holds IRQ n while its OCW1 mask bit is set, and, by fully nested
+   priority, while n or any higher-priority (lower-numbered) IRQ is in service. */
 static int pic_master_can_deliver(int irq) {
-    return (pic_master.isr & ((2 << irq) - 1)) == 0;
+    return !(pic_master.mask & (1 << irq)) && (pic_master.isr & ((2 << irq) - 1)) == 0;
 }
 
 static int pic_handle_in(PicState *p, int port_is_data) {
@@ -17723,7 +17723,7 @@ int main(int argc, char **argv) {
                         pending_irq = vec;  /* timer tick */
                         pending_pic_irq = 0;
                     } else {
-                        Sleep(10);  /* IRQ0 still in service: nothing can wake this guest */
+                        Sleep(10);  /* IRQ0 masked or still in service: nothing can wake this guest */
                     }
                 } else {
                     DWORD ms = (DWORD)((period - elapsed) * 1000.0);

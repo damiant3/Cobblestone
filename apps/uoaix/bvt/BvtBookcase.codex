@@ -1,0 +1,36 @@
+Chapter: BvtBookcase
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter BookcaseLibrary
+  cites Uoaix chapter BvtCheck
+
+ Every library page fits the client's book: at most 8 lines of at most 39 characters, at most 20 pages.
+  bbk-lines : List Text, Integer -> Boolean
+  bbk-lines (lines) (i) = if i >= list-length lines then True else text-length (list-at lines i) <= 39 & bbk-lines lines (i + 1)
+  bbk-pages : List (List Text), Integer -> Boolean
+  bbk-pages (pages) (i) = if i >= list-length pages then True else list-length (list-at pages i) <= 8 & bbk-lines (list-at pages i) 0 & bbk-pages pages (i + 1)
+  bbk-fit : List LibBook, Integer -> Boolean
+  bbk-fit (books) (i) = if i >= list-length books then True
+    else let b = list-at books i in list-length b.pages >= 1 & list-length b.pages <= 20 & text-length b.title <= 60 & text-length b.author <= 30 & bbk-pages b.pages 0 & bbk-fit books (i + 1)
+
+  bvt-bookcase : Integer -> [Console] Integer
+  bvt-bookcase (unused) = act
+    a <- bvt-check "every 1.25 bookcase art (0x0A97..0x0A9C) opens the bookcase container gump 0x4D (UOAIX-228)" (wd-bookcase #0A97 & wd-bookcase #0A9C & wd-bookcase-gump == #4D)
+    b <- bvt-check "a ruined bookcase, the arts beside the range and a door answer with their name instead" (not (wd-bookcase #0C14) & not (wd-bookcase #0C15) & not (wd-bookcase #0A96) & not (wd-bookcase #0A9D) & not (wd-bookcase #0675))
+    c <- bvt-check "a bookcase lists three library books in its gump: a 0x3C of 5 + 3 x 19 bytes, each book inside the bookcase (UOAIX-228)" (bbk-contents 0)
+    d <- bvt-check "a library book reads as the client's 98-byte 0x93 header, read-only, and a 0x66 of every page whose length field is its length; its serial names its bookcase's book" (bbk-read 0)
+    e <- bvt-check "every library book fits the client's book: 20 pages of 8 lines of 39 characters, a 60-byte title and a 30-byte author" (bbk-fit (lib-books 0) 0)
+    f <- bvt-check "a decoration, planting or flora serial is no library book" (not (lib-is (wd-serial-base + 5)) & not (lib-is #7D000005) & not (lib-is #7C000005) & lib-is (lib-serial-base + 1))
+    a + b + c + d + e + f
+  end
+  bbk-contents : Integer -> Boolean
+  bbk-contents (unused) = let p = lib-contents #7E000010 15
+    in list-at p 0 == #3C & list-length p == 5 + 3 * 19 & list-at p 1 * 256 + list-at p 2 == list-length p & list-at p 3 * 256 + list-at p 4 == 3
+      & gp-u32 p 5 == lib-serial-base + 4 * 15 + 1 & gp-u32 p (5 + 13) == #7E000010 & gp-u32 p (5 + 19 + 13) == #7E000010
+  bbk-read : Integer -> Boolean
+  bbk-read (unused) = let serial = lib-serial-base + 4 * 15 + 2 + 1
+    in let r = lib-read serial
+    in let h = list-at r 0
+    in let g = list-at r 1
+    in list-length r == 2 & list-at h 0 == #93 & list-length h == 98 & gp-u32 h 1 == serial & list-at h 5 == 0
+      & list-at g 0 == #66 & list-at g 1 * 256 + list-at g 2 == list-length g & gp-u32 g 3 == serial
+      & lib-book-of serial == lib-index 15 2 & lib-title serial == (list-at (lib-books 0) (lib-index 15 2)).title

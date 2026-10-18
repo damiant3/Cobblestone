@@ -7,13 +7,67 @@ Chapter: GameLinks
   GameLinks = record { server : ShardServer, specs : List GameOpcodeSpec,
     peers : List GamePeer, relays : List GameRelay, lifetime : Integer, fault : Boolean,
     web : (HttpRequest -> Result HttpResponse Text), tick-at : Integer, tick-failures : Integer,
-    watermark-at : Integer, heap-peak : Integer, stack-low : Integer }
+    watermark-at : Integer, heap-peak : Integer, stack-low : Integer,
+    grow-need : (Integer -> Boolean), grow : (Integer -> Result Integer Text), grow-limit : Integer, grow-base : Integer, grow-why : (Integer -> Integer),
+    admit-dynamic : Boolean, link-bytes : Integer, round-ticks : Integer, round-budget : Integer, rate : Integer, round-end : Integer, first-hpet : Integer, first-ticks : Integer }
   gl-ports : List Integer, Integer -> Boolean
   gl-ports (ports) (i) = if i == list-length ports then True else (list-at ports i == 2593 | list-at ports i == 2594) & gl-ports ports (i + 1)
   gl-web-none : HttpRequest -> Result HttpResponse Text
   gl-web-none (request) = Err "no admin panel is bound to these game links"
   gl-bind-web : GameLinks, (HttpRequest -> Result HttpResponse Text) -> Integer
   gl-bind-web (owner) (web) = let bound = __record-set owner "web" web in 0
+ Growth (UoaixDynamicTables.md, stage 2d step 4): when need says so and the heap is under its limit, the round compacts,
+ grows, and raises the scratch mark over the grown tables so no later compaction reclaims them.
+  gl-grow-never : Integer -> Boolean
+  gl-grow-never (unused) = False
+  gl-grow-none : Integer -> Result Integer Text
+  gl-grow-none (unused) = Ok 0
+  gl-grow-why-none : Integer -> Integer
+  gl-grow-why-none (unused) = 0
+  gl-bind-grow-why : GameLinks, (Integer -> Integer) -> Integer
+  gl-bind-grow-why (owner) (why) = let a = __record-set owner "grow-why" why in 0
+ LINKS 0 (root for Damian, 2026-10-08, "if the box has room, let it grow"): an account login is admitted only while one
+ more link's bytes keep the heap under the growth limit and the decaying maximum round time is under its budget.
+  gl-bind-admission : GameLinks, Integer, Integer -> Integer
+  gl-bind-admission (owner) (bytes) (budget) = let a = __record-set owner "admit-dynamic" True
+    in let b = __record-set owner "link-bytes" bytes
+    in let c = __record-set owner "round-budget" budget in 0
+  gl-admission : GameLinks -> Text
+  gl-admission (owner) = if not owner.admit-dynamic then ""
+    else if owner.grow-limit > 0 & __heap-save + owner.link-bytes > owner.grow-limit then "login refused: the heap has no room for another link"
+    else if owner.round-ticks > owner.round-budget then "login refused: rounds are over their time budget"
+    else ""
+  gl-time-round : GameLinks, Integer -> Integer
+  gl-time-round (owner) (start) = let spent = hpet-ticks - start
+    in let kept = __record-set owner "round-ticks" (max spent (owner.round-ticks - owner.round-ticks / 8)) in spent
+  gl-bind-grow : GameLinks, (Integer -> Boolean), (Integer -> Result Integer Text), Integer -> Integer
+  gl-bind-grow (owner) (need) (grow) (limit) = let a = __record-set owner "grow-need" need
+    in let b = __record-set owner "grow" grow
+    in let c = __record-set owner "grow-limit" limit
+    in let d = __record-set owner "grow-base" __heap-save in 0
+  gl-grow : GameLinks, Integer -> [Console] Integer
+  gl-grow (owner) (now) = if not (owner.grow-need now) | __heap-save >= owner.grow-limit then act 0 end
+    else let due = owner.grow-why now
+    in when sl-compact owner.server.links
+      is Err (e) -> act
+        slg-line owner.server.game.log slg-network slg-error ("WORLD GROWTH compaction " & e)
+        0
+      end
+      is Ok (_) -> let base = __heap-save in when owner.grow 0
+        is Err (e) -> act
+          slg-line owner.server.game.log slg-network slg-warn ("WORLD GROWTH refused: " & e)
+          0
+        end
+        is Ok (capacity) -> let pinned = __heap-save - base
+          in let raised = __record-set owner.server.links "mark" __heap-save
+          in let used = __heap-save - owner.grow-base
+          in let still = owner.grow-why now
+          in let budget = owner.grow-limit - owner.grow-base
+          in act
+            slg-line owner.server.game.log slg-network (if used * 10 > budget * 9 then slg-warn else slg-info) ("WORLD GROWN capacity=" & show capacity & " heap-used=" & show used & " budget=" & show budget
+              & " due=" & show due & " still=" & show still & " pinned=" & show pinned)
+            1
+          end
   gl-relays : Integer, List GameRelay -> List GameRelay
   gl-relays (left) (out) = if left == 0 then out else gl-relays (left - 1) (list-push out (GameRelay { key = 0, expires = 0 }))
   gl-peers : ShardServer, Integer, List GamePeer -> Result (List GamePeer) Text
@@ -29,8 +83,9 @@ Chapter: GameLinks
       is Ok (server) -> when gl-peers server 0 []
         is Err (e) -> Err e
         is Ok (peers) -> let owner = GameLinks { server = server, specs = specs, peers = peers,
-          relays = gl-relays sl-max-links [], lifetime = hpet-ticks-per-second * 120, fault = False, web = gl-web-none, tick-at = 0, tick-failures = 0,
-          watermark-at = 0, heap-peak = 0, stack-low = 0 }
+          relays = gl-relays sl-max-links [], lifetime = hpet-ticks-per-second * 120, rate = hpet-ticks-per-second, fault = False, web = gl-web-none, tick-at = 0, tick-failures = 0,
+          watermark-at = 0, heap-peak = 0, stack-low = 0, grow-need = gl-grow-never, grow = gl-grow-none, grow-limit = 0, grow-base = 0, grow-why = gl-grow-why-none,
+          admit-dynamic = False, link-bytes = 0, round-ticks = 0, round-budget = 0, round-end = 0, first-hpet = 0, first-ticks = 0 }
           in let saved = __record-set server.links "mark" __heap-save in Ok owner
   gl-ticket : GameLinks, Integer, Integer, Integer -> Integer
   gl-ticket (owner) (key) (now) (i) = if key == 0 | i == list-length owner.relays then -1
@@ -55,12 +110,12 @@ Chapter: GameLinks
     in let pulse = __record-set peer "pulse" now
     in let account = __record-set peer "account" (0 - 1)
     in let lord = __record-set peer "lord" 0 in 0
- GameShard.characters holds one account's slots, so each session lends its own account and game-login
- flag for its callback; ga-bind writes the previous account's working slots back first.
+ GameShard.characters points at one account's slots, so each session lends its own account and game-login
+ flag for its callback.
   gl-lend : GameLinks, Integer -> Integer
   gl-lend (owner) (i) = let peer = list-at owner.peers i
     in if peer.account < 0 then 0
-    else let bound = ga-bind owner.server.game.accounts owner.server.game.characters peer.account
+    else let bound = gs-bind owner.server.game peer.account
     in poke-qword owner.server.game.accounts 56 peer.lord
   gl-adopt : GameLinks, Integer -> Integer
   gl-adopt (owner) (i) = let peer = list-at owner.peers i
@@ -89,6 +144,7 @@ Chapter: GameLinks
     in let op = list-at packet 0
     in let relay = input.mode == 1 & op == 160
     in let login = input.mode == 2 & op == 145
+    in let refused = if input.mode == 1 & op == 128 then gl-admission owner else ""
     in let now = hpet-ticks
     in let ticket = if login then gl-ticket owner input.session.key now 0 else -1
     in let free = if relay then gl-free-ticket owner now 0 else -1
@@ -97,7 +153,8 @@ Chapter: GameLinks
       else if op == 93 then gp-u32 packet 65 else if op == 0 then gp-u32 packet 92 else -1
     in let busy = if selected < 0 | selected >= 5 then False
       else gl-actor-used owner (peek-qword server.game.characters (selected * 160)) i 0
-    in if login & ticket < 0 then act Err "relay key absent, consumed or expired" end
+    in if refused /= "" then act Err refused end
+    else if login & ticket < 0 then act Err "relay key absent, consumed or expired" end
     else if relay & free < 0 then act Err "relay ticket capacity" end
     else if selected >= 5 then act Err "character slot outside account" end
     else if busy then act Err "character already connected" end
@@ -192,7 +249,7 @@ Chapter: GameLinks
       1
     end
   gl-tick : (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks, Integer -> [Console, e] Integer
-  gl-tick (world) (owner) (now) = if now - owner.tick-at < hpet-ticks-per-second then act 0 end
+  gl-tick (world) (owner) (now) = if now - owner.tick-at < owner.rate then act 0 end
     else let first = owner.tick-at == 0
     in let stamped = __record-set owner "tick-at" now
     in act
@@ -252,8 +309,10 @@ Chapter: GameLinks
     in let p = list-at owner.server.protocols i
     in if not slot.occupied then gl-pass handler pulse disconnect owner (i + 1) now
     else let reset = if p.epoch /= slot.epoch then gl-reset owner i now else 0
-    in let failed = if slot.failed | net-io-conn-closed slot.transport | get-ticks - p.activity > 30000 then __record-set p "closing" 2 else p
+    in let idle = p.closing == 0 & not slot.failed & not (net-io-conn-closed slot.transport) & get-ticks - p.activity > gl-idle-ms
+    in let failed = if slot.failed | net-io-conn-closed slot.transport | idle then __record-set p "closing" 2 else p
     in act
+      noted <- if idle then slg-line owner.server.game.log slg-network slg-warn ("LINK IDLE closed connection=" & show i & " after " & show (get-ticks - p.activity) & " ms with no frame") else act 0 end
       consumed <- if p.closing /= 0 | slot.tx.offset /= slot.tx.used | slot.transport.recv-len == 0 then act 0 end
         else if slot.port == 2593 then gl-input handler owner i 0
         else if p.seen == slot.transport.recv-len & not (net-io-peer-finished slot.transport) then act 0 end
@@ -286,6 +345,9 @@ Chapter: GameLinks
         end
       end
     end
+ A link with no inbound frame for gl-idle-ms (get-ticks, wall ms) is reaped. The 1.25 client pings (0x73) about once a
+ minute when idle (live 43454: 15.6 to 74.9 s, median 62 s), so the limit is above three of its longest gaps (UOAIX-249).
+  gl-idle-ms : Integer = 240000
   gl-time-before-rx : GameLinks, Integer, Integer -> [Network.Write] Integer
   gl-time-before-rx (owner) (i) (now) = if i >= list-length owner.server.links.slots then 0
     else let slot = list-at owner.server.links.slots i
@@ -309,10 +371,15 @@ Chapter: GameLinks
     (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
     (GameShard, GameInput -> [e] Result Integer Text), (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks -> [Console, Network.Read, Network.Write, e] Integer
   gl-round (handler) (pulse) (disconnect) (world) (owner) = act
-    aged <- gl-time-before-rx owner 0 hpet-ticks
+    started <- hpet-ticks
+    t0 <- get-ticks
+    aged <- gl-time-before-rx owner 0 started
     received <- ss-receive owner.server 16 0
-    worked <- gl-pass handler pulse disconnect owner 0 hpet-ticks
-    ticked <- gl-tick world owner hpet-ticks
+    t1 <- get-ticks
+    worked <- gl-pass handler pulse disconnect owner 0 started
+    t2 <- get-ticks
+    ticked <- gl-tick world owner started
+    t3 <- get-ticks
     flushed <- sl-flush owner.server.links 0
     if worked < 0 | owner.fault then -1
     else when (if __heap-save - owner.server.links.mark > 1048576 then sl-compact owner.server.links else Ok 0)
@@ -320,8 +387,40 @@ Chapter: GameLinks
         slg-line owner.server.game.log slg-network slg-error ("FAIL game links compaction " & e)
         0 - 1
       end
-      is Ok (_) -> let parked = if received == 0 & worked == 0 & ticked == 0 then cpu-park else 0 in 1
+      is Ok (_) -> act
+        t4 <- get-ticks
+        grown <- gl-grow owner started
+        t5 <- get-ticks
+        timed <- gl-time-round owner started
+        noted <- gl-slow-round owner started timed t0 t1 t2 t3 t4 t5
+        let parked = if received == 0 & worked == 0 & ticked == 0 & grown == 0 then cpu-park else 0 in 1
+      end
   end
+ Damian, 2026-10-09: "i am getting some bumpy play, but i can't tell if that is box load or legit issue with the server".
+ A round that runs past gl-slow-ms names its phases (get-ticks, ms); a round that starts gl-slow-ms after the last one
+ ended was not running at all, because the codex-vm timer wakes a parked guest every 55 ms, so the gap is the host's.
+ A round's length is get-ticks (the timer count, wall time under -clock-scale); the gap is HPET, which runs clock-scale times fast and keeps counting while the host does not run the guest, divided by the scale the two clocks show since the first round. 250 ms is about where a player feels a walk's answer late.
+  gl-slow-ms : Integer = 250
+  gl-round-ms : Integer, Integer -> Integer
+  gl-round-ms (ticks) (rate) = ticks * 1000 / max 1 rate
+  gl-clock-scale : Integer, Integer -> Integer
+  gl-clock-scale (hpet-ms) (ticks) = if ticks < 1000 then 1 else max 1 ((hpet-ms + ticks / 2) / ticks)
+  gl-round-kind : Integer, Integer -> Integer
+  gl-round-kind (total) (gap) = if total >= gl-slow-ms then 1 else if gap >= gl-slow-ms then 2 else 0
+  gl-slow-round : GameLinks, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Console] Integer
+  gl-slow-round (owner) (started) (spent) (t0) (t1) (t2) (t3) (t4) (t5) = let first = if owner.first-ticks /= 0 then 0 else let a = __record-set owner "first-hpet" started in let b = __record-set owner "first-ticks" (max 1 t0) in 1
+    in let scale = gl-clock-scale (gl-round-ms (started - owner.first-hpet) owner.rate) (t0 - owner.first-ticks)
+    in let gap = if owner.round-end == 0 then 0 else gl-round-ms (started - owner.round-end) owner.rate / scale
+    in let total = t5 - t0
+    in let ended = __record-set owner "round-end" (started + spent)
+    in let kind = gl-round-kind total gap
+    in if kind == 0 then act 0 end
+    else act
+      slg-line owner.server.game.log slg-world slg-warn ((if kind == 1 then "ROUND SLOW" else "ROUND LATE") & " ms=" & show t5
+        & " total=" & show total & " gap=" & show gap & " scale=" & show scale & " receive=" & show (t1 - t0) & " pass=" & show (t2 - t1)
+        & " tick=" & show (t3 - t2) & " flush-compact=" & show (t4 - t3) & " grow=" & show (t5 - t4))
+      0
+    end
   gl-serve : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
     (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
     (GameShard, GameInput -> [e] Result Integer Text), (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks -> [Console, Network.Read, Network.Write, e] Integer

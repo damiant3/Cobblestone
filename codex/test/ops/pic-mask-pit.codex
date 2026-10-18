@@ -1,0 +1,31 @@
+Chapter: PicMaskPit
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+ OCW1, a write to port 0x21, is the master 8259's interrupt mask: a set bit holds that IRQ, so with bit 0 set the
+ PIT's IRQ0 delivers no tick. 236 is the mask the boot writes; 237 adds IRQ0. The 20 ms settle lets a tick raised
+ before the write land outside the measured window.
+
+Section: Body
+
+  hold : Integer, Integer -> Integer
+  hold (until) (fuel) = if hpet-ticks >= until | fuel <= 0 then fuel else hold until (fuel - 1)
+
+  wait-tick : Integer, Integer -> Boolean
+  wait-tick (from) (fuel) = if get-ticks > from then True else if fuel <= 0 then False else wait-tick from (fuel - 1)
+
+  opening : [Console, Device.Port] Nothing =
+    let clock = hpet-start
+    in let rate = hpet-ticks-per-second
+    in act
+      port-out-byte 33 237
+      let settled = hold (hpet-ticks + rate / 50) 1000000000
+      in let before = get-ticks
+      in let held = hold (hpet-ticks + rate / 5) 1000000000
+      in let after = get-ticks
+      in act
+        port-out-byte 33 236
+        print-line-uni ("masked-advance : " & show (after - before))
+        print-line-uni ("unmasked-advance : " & show (wait-tick after 1000000000))
+      end
+  end

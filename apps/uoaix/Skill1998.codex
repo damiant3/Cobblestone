@@ -1,0 +1,48 @@
+Chapter: Skill1998
+  cites Uoaix chapter Skill1998Data
+
+ The June 1998 server's skill check and gain (draxinar's OUO skill.c, UoDemo.exe addresses), with UOAIX's rulings D1 to
+ D3 (docs/Designs/Active/Apps/Uoaix1998Skills.md): no usage counters, every character at s98-base-delay, and every check
+ below 50.0 base skill gains. Skill values are tenths.
+
+  s98-base-delay : Integer = 1000
+  s98-one : Integer = 1073741824
+  s98-mul : Integer, Integer -> Integer
+  s98-mul (a) (b) = a * b / s98-one
+  s98-pow : Integer, Integer, Integer -> Integer
+  s98-pow (base) (n) (acc) = if n == 0 then acc
+    else s98-pow (s98-mul base base) (n / 2) (if int-mod n 2 == 1 then s98-mul acc base else acc)
+  s98-valid : Integer -> Boolean
+  s98-valid (skill) = skill >= 0 & skill < 46
+ Double3_Eval (0x004D447C) of the skill's AdvRate line at a base skill, times 1000.
+  s98-curve : Integer, Integer -> Integer
+  s98-curve (skill) (base) = (1000 * list-at s98d-bn skill * s98-pow (list-at s98d-root skill) (max 0 (min 1000 base)) s98-one
+    + 1000 * list-at s98d-cn skill * s98-one) / (list-at s98d-den skill * s98-one)
+ CalcDelay (0x004D55D2) with the base delay fixed at s98-base-delay (D1).
+  s98-delay : Integer, Integer -> Integer
+  s98-delay (skill) (base) = if not (s98-valid skill) then 0 else s98-base-delay * s98-curve skill base / 1000000
+ GetSkillValue (0x004D5FBB): the checked value blends the stats by the skill's weights and SkillStat.
+  s98-value : Integer, Integer, Integer, Integer, Integer -> Integer
+  s98-value (skill) (base) (str) (dex) (wit) = if not (s98-valid skill) then base
+    else let stat = (str * list-at s98d-str skill + dex * list-at s98d-dex skill + wit * list-at s98d-int skill)
+      * (100 - list-at s98d-skill-stat skill) / 1000
+    in base * (1000 - stat) / 1000 + stat
+ CalcChance (0x004D50A8), per mille; SkillCheck succeeds when chance - random(1000) > 0.
+  s98-chance : Integer, Integer, Integer -> Integer
+  s98-chance (value) (difficulty) (range) = (value - difficulty) * 100 / max 1 range + 500
+ SkillGain (0x004D5118): thousandths of a tenth for a check whose chance was chance, at gain percent percent. OUO's
+ floor of 1 on a truncated zero (the 1998-11-10 patch) is kept.
+  s98-gain : Integer, Integer, Integer, Integer -> Integer
+  s98-gain (skill) (base) (chance) (percent) = let factor = min 1000 (1000 - chance)
+    in if factor <= 0 | base >= 1000 then 0
+    else let rate = s98-delay skill base * percent / 100
+    in let gain = factor * rate / 1000
+    in if gain == 0 & rate > 0 then 1 else gain
+ Whole tenths from a gain, the fraction rounded up with its own chance; roll is uniform 0..999.
+  s98-tenths : Integer, Integer -> Integer
+  s98-tenths (gain) (roll) = gain / 1000 + (if int-mod gain 1000 > roll then 1 else 0)
+ Whether a check gains: a success, a check made with alwaysGain, or any check below 50.0 base (D3).
+  s98-learns : Integer, Boolean, Boolean -> Boolean
+  s98-learns (base) (passed) (always) = passed | always | base < 500
+
+Page 1

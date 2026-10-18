@@ -1,0 +1,31 @@
+Chapter: BvtFieldFit
+  cites Uoaix chapter BvtDispelVortex
+  cites Uoaix chapter BvtCheck
+
+ An energy field cast from 1421,1698 at 1424,1698 runs 1424,1696 to 1424,1700; a living mobile on a tile makes it unfit.
+ Answers the pieces placed, -1 when the spell is not ready, -2 when not built.
+  bffit-stand : GameShard, Integer, Integer -> Integer
+  bffit-stand (game) (y) (last) = if y > last then 0 else let made = world-create game.world (__record-set (gs-mobile 0 1424 y 0 400 0) "health" 50) in bffit-stand game (y + 1) last
+  bffit-pieces : Magery, Integer, Integer -> Integer
+  bffit-pieces (magic) (i) (n) = if i == 32 then n else bffit-pieces magic (i + 1) (if (list-at magic.walls i).serial /= 0 then n + 1 else n)
+  bffit-cast : Boolean -> Integer
+  bffit-cast (all) = when bdv-env 0
+    is Err (_) -> -2
+    is Ok (env) -> when world-get env.game.world 1
+      is Err (_) -> -2
+      is Ok (source) -> let target = mga-point 1424 1698 0
+        in let a = bffit-stand env.game 1696 1696
+        in let b = bffit-stand env.game 1700 1700
+        in let c = if all then bffit-stand env.game 1697 1699 else 0
+        in if not (mga-wall-ready env.magic env.game source target 50 (0 - mga-wall-last 50)) then -1
+        else when mga-walls env.magic env.game source target 50 (0 - mga-wall-last 50) []
+          is Err (_) -> -2
+          is Ok (_) -> bffit-pieces env.magic 0 0
+  bvt-field-fit : Integer -> [Console] Integer
+  bvt-field-fit (unused) = act
+    n <- bffit-cast False
+    m <- bffit-cast True
+    a <- bvt-check ("an energy field whose two end tiles are taken is still cast, its three free pieces placed, as ServUO's AdjustField skips a tile (UOAIX-220, root's soak 42651: every field refused across a street; got " & show n & ")") (n == 3)
+    b <- bvt-check ("a field with no free tile is refused (got " & show m & ")") (m == -1)
+    a + b
+  end

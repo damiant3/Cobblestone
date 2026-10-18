@@ -1,0 +1,58 @@
+Chapter: BvtMapPins
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-176: a map's course. Answers a bit per check: 1 add, insert and change keep plotting order (the course shows
+ clear, 10,20 then 5,6 then 30,44, then the editable flag), 2 a removal renumbers the rest, 4 the 51st pin is refused,
+ 8 a clear leaves another map's pins, 16 the save tail reads every row back, 32 the editable toggle; 63 is all.
+  bmp-course-ok : List (List Integer), Integer -> Boolean
+  bmp-course-ok (c) (serial) = list-length c == 5 & list-at (list-at c 0) 5 == 5 & gp-u32 (list-at c 1) 1 == serial
+    & gp-u16 (list-at c 1) 7 == 10 & gp-u16 (list-at c 1) 9 == 20 & gp-u16 (list-at c 2) 7 == 5 & gp-u16 (list-at c 2) 9 == 6
+    & gp-u16 (list-at c 3) 7 == 30 & gp-u16 (list-at c 3) 9 == 44 & list-at (list-at c 4) 5 == 7 & list-at (list-at c 4) 6 == 1
+  bmp-fill : MpnState, Integer, Integer -> Integer
+  bmp-fill (s) (serial) (left) = if left == 0 then 0 else let added = mpn-command s serial 1 0 left left in bmp-fill s serial (left - 1)
+  bmp-checks : Integer -> Integer
+  bmp-checks (unused) = let s = mpn-new 0
+    in let a = mpn-command s 7001 1 0 10 20
+    in let b = mpn-command s 7001 1 0 30 40
+    in let c = mpn-command s 7001 2 1 5 6
+    in let d = mpn-command s 7001 3 2 30 44
+    in let ordered = bmp-course-ok (mpn-course s 7001 True) 7001 & a == 0 & b == 0 & c == 0 & d == 0
+    in let e = mpn-command s 7001 4 0 0 0
+    in let renumbered = e == 0 & mpn-pins s 7001 0 0 == 2 & mpn-at s (mpn-find s 7001 0 0) 2 == 5 & mpn-at s (mpn-find s 7001 1 0) 2 == 30
+    in let t = mpn-new 0
+    in let grown = mpn-grow-to t 128
+    in let filled = bmp-fill t 7002 50
+    in let capped = mpn-pins t 7002 0 0 == 50 & mpn-command t 7002 1 0 1 1 == -1 & mpn-command t 7002 2 0 1 1 == -1
+    in let other = mpn-command s 7003 1 0 9 9
+    in let cleared = mpn-command s 7001 5 0 0 0
+    in let kept = mpn-pins s 7001 0 0 == 0 & mpn-pins s 7003 0 0 == 1
+    in let buf = alloc-bytes (mpn-tail-size t)
+    in let written = mpn-write-tail t buf
+    in let back = mpn-new 0
+    in let read = mpn-read-tail back buf (mpn-tail-length buf (mpn-tail-size t))
+    in let round = read == 0 & mpn-pins back 7002 0 0 == 50 & mpn-at back (mpn-find back 7002 49 0) 2 == 1
+    in let on = mpn-set-editable s 7003 True
+    in let was = mpn-editable s 7003
+    in let off = mpn-set-editable s 7003 False
+    in let toggled = was & not (mpn-editable s 7003) & mpn-pins s 7003 0 0 == 1
+    in (if ordered then 1 else 0) + (if renumbered then 2 else 0) + (if capped then 4 else 0) + (if kept then 8 else 0)
+      + (if round then 16 else 0) + (if toggled then 32 else 0)
+ A 0x56 from someone holding no drawn map changes nothing and is answered with no packet.
+  bmp-refused : Integer -> Boolean
+  bmp-refused (unused) = when cg-new 0
+    is Err (_) -> False
+    is Ok (owner) -> let game = owner.checkpoint.game
+      in when world-create game.world (gs-mobile 0 1420 1700 0 400 0)
+        is Err (_) -> False
+        is Ok (player) -> let packet = gp-put16 (gp-put16 (gp-put32 [#56] player & [6, 0]) 0) 0
+          in when cg-map-pin owner game player packet
+            is None -> False
+            is Just (r) -> r.note == "map pin refused" & list-length r.packets == 0 & owner.pins.count == 0
+  bvt-map-pins : Integer -> [Console] Integer
+  bvt-map-pins (unused) = act
+    n <- bmp-checks 0
+    a <- bvt-check ("a map's course keeps plotting order, renumbers, caps at 50 pins, clears one map and survives the save tail (UOAIX-176, code " & show n & ")") (n == 63)
+    b <- bvt-check "a map command on something that is not the player's drawn map is refused and plots nothing (UOAIX-176)" (bmp-refused 0)
+    a + b
+  end

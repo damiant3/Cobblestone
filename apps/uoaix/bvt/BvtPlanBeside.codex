@@ -1,0 +1,31 @@
+Chapter: BvtPlanBeside
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter BvtCheck
+
+  bvpb-fill : WalkMap, Integer -> Integer
+  bvpb-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bvpb-fill map (i + 1)
+  bvpb-mobile : Integer, Integer, Integer -> WorldObject
+  bvpb-mobile (serial) (x) (y) = WorldObject { serial = serial, kind = 1, x = x, y = y, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 10 }
+  bvt-plan-beside : Integer -> [Console] Integer
+  bvt-plan-beside (unused) = when world-new 64
+    is Err (e) -> bvt-check ("plan beside fixture world: " & e) False
+    is Ok (w) -> when walk-map-new 1000 1000 32 32
+      is Err (e) -> bvt-check ("plan beside fixture map: " & e) False
+      is Ok (map) -> let filled = bvpb-fill map 0
+        in when world-create w (bvpb-mobile 0 1010 1010)
+          is Err (e) -> bvt-check ("plan beside walker: " & e) False
+          is Ok (walker) -> when world-create w (bvpb-mobile 0 1009 1010)
+            is Err (e) -> bvt-check ("plan beside occupant: " & e) False
+            is Ok (occupant) -> let indexed = world-reindex w
+              in let p = tl-path-new map
+              in let m = bvpb-mobile walker 1010 1010
+              in let held = tl-plan p w map None m 1009 1010 0 (alloc-bytes 256)
+              in let free = tl-plan p w map None m 1011 1010 0 (alloc-bytes 256)
+              in act
+                a <- bvt-check ("a walker with a mobile beside it refuses a plan onto that mobile's tile: " & show held) (indexed & held == -1)
+                b <- bvt-check ("the same walker plans one step onto the free tile on its other side: " & show free) (free == 1)
+                a + b
+              end

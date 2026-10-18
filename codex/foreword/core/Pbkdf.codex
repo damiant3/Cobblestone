@@ -3,7 +3,10 @@ Chapter: Pbkdf
 
  PBKDF2-HMAC-SHA256, RFC 8018 section 5.2. Invalid parameters or
  non-octet input produce an empty hash, which verification rejects.
- The output and two 32-byte round buffers precede each scratch mark.
+ The output, two 8-word round buffers and the ipad and opad compression
+ states precede each scratch mark. An iteration is two SHA-256 compressions:
+ the inner and outer pad blocks are compressed once per derivation, so each
+ round hashes only its 32-byte message (one block, 96 bytes of message in all).
  Time is proportional to iterations times output blocks; retained heap
  is independent of the iteration count. This is not a memory-hard KDF.
 
@@ -50,54 +53,84 @@ Section: Hash
     in let key = hmac-normalize-key password
     in let ipad = for b in key -> bit-xor b 54
     in let opad = for b in key -> bit-xor b 92
-    in let u = repeat-byte 0 32
-    in let t = repeat-byte 0 32
-    in let result = pb-output-blocks ipad opad salt (params.pb-iterations) (params.pb-hash-length) 1 u t output
+    in let u = [0, 0, 0, 0, 0, 0, 0, 0]
+    in let t = [0, 0, 0, 0, 0, 0, 0, 0]
+    in let istate = pb-pad-state ipad
+    in let ostate = pb-pad-state opad
+    in let pads = PbPads { pb-ipad = ipad, pb-opad = opad, pb-istate = istate, pb-ostate = ostate }
+    in let result = pb-output-blocks pads salt (params.pb-iterations) (params.pb-hash-length) 1 u t output
     in let restored = __heap-restore mark
     in result
 
+  PbPads = record {
+    pb-ipad : List Integer,
+    pb-opad : List Integer,
+    pb-istate : List Integer,
+    pb-ostate : List Integer
+  }
+
+ The SHA-256 state after one 64-byte pad block. sha256-compress writes its
+ answer into the hash list it is handed, so every caller passes a copy.
+
+  pb-pad-state : List Integer -> List Integer
+  pb-pad-state (pad) =
+    let words = bytes-to-words pad 0 64 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    in sha256-compress (sha256-copy-list sha256-h0 0 8 []) words
+
+ The padding of a 32-byte message after one 64-byte pad block: the 0x80
+ marker word, six zero words, and the length, 96 bytes = 768 bits.
+
+  pb-tail : List Integer = [2147483648, 0, 0, 0, 0, 0, 0, 768]
+
+  pb-prf-words : PbPads, List Integer -> List Integer
+  pb-prf-words (pads) (u) =
+    let inner = sha256-compress (sha256-copy-list (pads.pb-istate) 0 8 []) (u & pb-tail)
+    in sha256-compress (sha256-copy-list (pads.pb-ostate) 0 8 []) (inner & pb-tail)
+
   pb-prf : List Integer, List Integer, List Integer -> List Integer
   pb-prf (ipad) (opad) (message) =
-    hash-words-to-bytes (sha256 (opad & hash-words-to-bytes (sha256 (ipad & message))))
+    sha256 (opad & hash-words-to-bytes (sha256 (ipad & message)))
 
-  pb-output-blocks : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer, List Integer, List Integer -> List Integer
-  pb-output-blocks (ipad) (opad) (salt) (iterations) (length) (index) (u) (t) (output) =
+  pb-output-blocks : PbPads, List Integer, Integer, Integer, Integer, List Integer, List Integer, List Integer -> List Integer
+  pb-output-blocks (pads) (salt) (iterations) (length) (index) (u) (t) (output) =
     if list-length output >= length then output
     else let mark = __heap-save
-    in let first = pb-prf ipad opad (salt & pb-be32 index)
+    in let first = pb-prf (pads.pb-ipad) (pads.pb-opad) (salt & pb-be32 index)
     in let u1 = pb-copy first u 0
     in let t1 = pb-copy first t 0
     in let restored = __heap-restore mark
-    in let block = pb-rounds ipad opad u1 t1 (iterations - 1)
+    in let block = pb-rounds pads u1 t1 (iterations - 1)
     in let count = min 32 (length - list-length output)
     in let appended = pb-append block count 0 output
-    in pb-output-blocks ipad opad salt iterations length (index + 1) u1 t1 appended
+    in pb-output-blocks pads salt iterations length (index + 1) u1 t1 appended
 
-  pb-rounds : List Integer, List Integer, List Integer, List Integer, Integer -> List Integer
-  pb-rounds (ipad) (opad) (u) (t) (remaining) =
+  pb-rounds : PbPads, List Integer, List Integer, Integer -> List Integer
+  pb-rounds (pads) (u) (t) (remaining) =
     if remaining <= 0 then t
     else let mark = __heap-save
-    in let next = pb-prf ipad opad u
+    in let next = pb-prf-words pads u
     in let copied = pb-copy next u 0
     in let mixed = pb-xor-into next t 0
     in let restored = __heap-restore mark
-    in pb-rounds ipad opad copied mixed (remaining - 1)
+    in pb-rounds pads copied mixed (remaining - 1)
 
   pb-copy : List Integer, List Integer, Integer -> List Integer
   pb-copy (source) (target) (i) =
-    if i >= 32 then target
+    if i >= 8 then target
     else pb-copy source (list-set-at target i (list-at source i)) (i + 1)
 
   pb-xor-into : List Integer, List Integer, Integer -> List Integer
   pb-xor-into (source) (target) (i) =
-    if i >= 32 then target
+    if i >= 8 then target
     else
       pb-xor-into source (list-set-at target i (bit-xor (list-at source i) (list-at target i))) (i + 1)
 
   pb-append : List Integer, Integer, Integer, List Integer -> List Integer
-  pb-append (source) (count) (i) (output) =
+  pb-append (words) (count) (i) (output) =
     if i >= count then output
-    else pb-append source count (i + 1) (list-push output (list-at source i))
+    else let shift = 24 - 8 * int-mod i 4
+    in let byte = bit-and (bit-shru (list-at words (i / 4)) shift) 255
+    in pb-append words count (i + 1) (list-push output byte)
 
   pb-be32 : Integer -> List Integer
   pb-be32 (n) = [

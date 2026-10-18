@@ -38,8 +38,7 @@ includes current HP. Apply GameClientView after commit with the owner's
 authoritative `gv-status-packet`, replacing the bare character status so
 the displayed coin value remains correct. That adapter also reconciles
 death/resurrection season and light. Shrine appearance tracks the player's
-view range and reappears when returning. The real-client bar rendering is
-graded in Fester's composite by root.
+view range and reappears when returning.
 
 USR1 is a32-byte component: little-endian qwords magic, version1, first
 ankh serial and second ankh serial. `gr-encode state buffer capacity` and
@@ -53,9 +52,8 @@ atomicity. Install the shrine before the first checkpoint.
 Retained state is one fixed record. Corpse registration scans O(world
 capacity) on connection entry, then only the returned death packets.
 Appearance uses the existing bounded equipment scan. Requests
-retain no packet lists. No compiler or seed change.
+retain no packet lists.
 
 The native GameResurrectionReplay covers lethal combat, ghost continuation,
 corpse custody, range refusal, ankh recovery, repeated-heal refusal, real
-item-packet looting, HP/status updates and shrine codec recovery. Real-client
-acceptance and encompassing restart grading remain with the composite owner.
+item-packet looting, HP/status updates and shrine codec recovery.

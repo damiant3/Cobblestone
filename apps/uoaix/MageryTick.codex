@@ -18,7 +18,7 @@ Chapter: MageryTick
     in let touched = mgs-touch magic
     in if actor.serial == input.session.serial then [mga-self-shown magic shard input mobile False] else []
  ServUO Sixth/Explosion (pre-AOS): the blast lands 2.5 s after the cast, 23 to 44 before scaling, effect 0x36BD, sound
- 0x307; a caster gone by then detonates nothing.
+ 0x207 (the 1998 client has no 0x307); a caster gone by then detonates nothing.
   mgt-fuse : Magery, GameShard, GameInput, MgActor, WorldObject -> Result (List (List Integer)) Text
   mgt-fuse (magic) (shard) (input) (actor) (mobile) = if actor.fuse == 0 | magic.tick < actor.fuse then Ok []
     else let caster = actor.fuser
@@ -30,7 +30,7 @@ Chapter: MageryTick
       is Ok (source) -> let damage = mge-spell-damage magic shard source mobile 43
         in when mge-harm magic shard input caster actor.serial damage cb-cause-spell
           is Err (e) -> Err e
-          is Ok (packets) -> Ok ([mgp-effect mobile mobile #36BD False,mgp-sound mobile #0307] & packets)
+          is Ok (packets) -> Ok ([mgp-effect mobile mobile #36BD False,mgp-sound mobile #0207] & packets)
   mgt-incognito : Magery, GameShard, GameInput, MgActor -> Result (List (List Integer)) Text
   mgt-incognito (magic) (shard) (input) (actor) =
     if actor.incognito == 0 | actor.incognito > magic.tick | actor.serial /= input.session.serial then Ok []
@@ -52,7 +52,7 @@ Chapter: MageryTick
   mgt-poison (magic) (shard) (input) (actor) (mobile) = if actor.poison < 0 | magic.tick < actor.poison-due then Ok []
     else if actor.poison-left == 0 then let a = __record-set actor "poison" -1
       in let touched = mgs-touch magic in Ok [mgp-appearance magic input mobile]
-    else let health = peek-qword shard.world.buffer (88 + world-slot shard.world actor.serial * 80)
+    else let health = peek-qword (wi-object shard.world.buffer (world-slot shard.world actor.serial)) 72
     in let damage = mge-poison-damage magic actor health
     in let a = __record-set actor "poison-left" (actor.poison-left - 1)
     in let b = __record-set actor "poison-due" (magic.tick + mgd-ticks (if actor.poison == 3 then 4000 else 3000))
@@ -82,8 +82,8 @@ Chapter: MageryTick
     in let b = __record-set actor "cursor" cursor
     in let c = __record-set actor "stage" 2
     in let d = __record-set actor "due" (magic.tick + mgd-ticks 30000)
-    in let packet = mgp-target cursor (mgd-ground actor.spell)
-    in let flags = list-set-at packet 6 (if mgd-harmful actor.spell then 1 else if mgd-beneficial actor.spell then 2 else 0)
+    in let packet = mgp-target cursor (mgd-ground-cursor actor.spell)
+    in let flags = list-set-at packet 6 (if mgd-ground-cursor actor.spell then 0 else if mgd-harmful actor.spell then 1 else if mgd-beneficial actor.spell then 2 else 0)
     in act Ok [packet] end
   mgt-one : Magery, GameShard, GameInput, MgActor -> [Device.Block] Result (List (List Integer)) Text
   mgt-one (magic) (shard) (input) (actor) = when world-get shard.world actor.serial
@@ -99,7 +99,7 @@ Chapter: MageryTick
         in let b = __record-set actor "protection" 0 in mgs-touch magic
       in let regen = actor.mana < mgs-stat actor 2 & actor.regen <= magic.tick
       in let restored = if not regen then 0 else let a = __record-set actor "mana" (actor.mana + 1)
-        in let b = __record-set actor "regen" (if actor.mana == mgs-stat actor 2 then 0 else magic.tick + mgr-regen-delay shard actor)
+        in let b = __record-set actor "regen" (if actor.mana == mgs-stat actor 2 then 0 else magic.tick + mgr-regen-due magic shard actor)
         in mgs-touch magic
       in let status = if modified then mge-stats magic shard input actor else Ok []
       in when status
@@ -128,7 +128,7 @@ Chapter: MageryTick
               end
   mgt-snapshot : Magery, Integer, List Integer -> List Integer
   mgt-snapshot (magic) (i) (out) = if i == magic.count then out
-    else mgt-snapshot magic (i + 1) (list-push out (peek-qword magic.active (i * 8)))
+    else mgt-snapshot magic (i + 1) (list-push out (peek-qword (sa-at magic.active i) 0))
   mgt-actors : Magery, GameShard, GameInput, List Integer, Integer, List (List Integer) -> [Device.Block] Result (List (List Integer)) Text
   mgt-actors (magic) (shard) (input) (serials) (i) (out) = if i == list-length serials then act Ok out end
     else let slot = list-at serials i
@@ -143,10 +143,10 @@ Chapter: MageryTick
     end
   mgt-due : Magery, Integer, List Integer -> List Integer
   mgt-due (magic) (i) (out) = if i == magic.due-count then out
-    else mgt-due magic (i + 1) (list-push out (peek-qword magic.due (i * 8)))
+    else mgt-due magic (i + 1) (list-push out (peek-qword (sa-at magic.due i) 0))
   mgt-unarmed : Magery, Integer, List Integer -> List Integer
   mgt-unarmed (magic) (i) (out) = if i == magic.count then out
-    else let slot = peek-qword magic.active (i * 8)
+    else let slot = peek-qword (sa-at magic.active i) 0
     in mgt-unarmed magic (i + 1) (if (list-at magic.actors slot).armed == 0 then list-push out slot else out)
  With a wheel, a pulse visits the actors whose entries fired, the pulsing player's own actor (casting
  fizzles on movement and death clears effects at once, as the scan did), and unarmed actors after a full pool.
@@ -211,7 +211,9 @@ Chapter: MageryTick
     is Ok (actor) -> if (kind == 39 & actor.poison >= 0) | (kind == 47 & mge-frozen magic shard m.serial) then Ok []
       else if mge-resisted magic shard caster m.serial then Ok [sip-message m.serial m.graphic 6 "You feel yourself resisting magical energy."]
       else let share = mge-share shard caster m.serial
-      in if kind == 28 then mge-harm magic shard input caster m.serial (max 1 (2 * share / 1000)) cb-cause-spell
+      in if kind == 28 then (when mge-harm magic shard input caster m.serial (max 1 (2 * share / 1000)) cb-cause-spell
+        is Err (e) -> Err e
+        is Ok (hurt) -> Ok (hurt & [mgp-sound m #0208]))
       else if kind == 39 then
         let total = mgs-skill shard caster 25 + mgs-skill shard caster 30
         in let level = if mgd-poison-threshold total 0 2000 True & mgs-random magic 10 == 0 then 3

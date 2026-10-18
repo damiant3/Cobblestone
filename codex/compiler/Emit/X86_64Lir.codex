@@ -147,6 +147,13 @@ Section: LIR Instruction Selection (x86-64)
      is LoMul -> st-append-code st (imul-rr pd pr & jcc cc-no 2 & [15, 11])
      is LoRem -> st
      is LoDiv -> st
+     is LoAnd -> st-append-code st (and-rr pd pr)
+     is LoOr -> st-append-code st (or-rr pd pr)
+     is LoXor -> st-append-code st (xor-rr64 pd pr)
+     is LoShl -> st
+     is LoShr -> st
+     is LoShru -> st
+     is LoListAt -> st
 
  A remainder never reaches these: `lir-sel-bin` routes `LoRem` to `idiv`
  before the two-operand ALU is consulted, because a remainder is not one. The
@@ -161,6 +168,13 @@ Section: LIR Instruction Selection (x86-64)
      is LoMul -> st-append-code st (imul-rri pd pd k & jcc cc-no 2 & [15, 11])
      is LoRem -> st
      is LoDiv -> st
+     is LoAnd -> st-append-code st (and-ri pd k)
+     is LoOr -> st-append-code st (or-ri pd k)
+     is LoXor -> st-append-code st (li lir-scratch2 k & xor-rr64 pd lir-scratch2)
+     is LoShl -> st-append-code st (shl-ri pd k)
+     is LoShr -> st-append-code st (sar-ri pd k)
+     is LoShru -> st-append-code st (shr-ri pd k)
+     is LoListAt -> st
 
   lir-alu-gen : CodegenState, LirOp, Integer, LirValue, List Location -> CodegenState
   lir-alu-gen (st) (op) (w) (rhs) (assign) =
@@ -303,10 +317,36 @@ Section: LIR Instruction Selection (x86-64)
     if lir-is-imm r then st-append-code st (imul-rri w (lir-lea-src l assign) (lir-imm-val r))
     else st-append-code st (imul-rri w (lir-lea-src r assign) (lir-imm-val l))
 
-  lir-sel-bin : CodegenState, LirOp, Integer, LirValue, LirValue, List Location -> CodegenState
+ `list-at` with the tree emitter's bounds and view rule (`emit-list-at-builtin`):
+ the index must satisfy 0 <= i < [p+0] or the instruction traps, a negative
+ capacity cell at [p-8] marks a tail view whose base is [p+8], and the element
+ is at base + 8i + 8. The index works in R11 and the list in R8, neither of
+ which the allocator hands out, so no operand is overwritten before it is read.
+
+  lir-sel-list-at : CodegenState, Integer, LirValue, LirValue, List Location -> CodegenState
+  lir-sel-list-at (st) (dst) (l) (r) (assign) =
+    let st1 = lir-load-into st lir-scratch-reg r assign
+    in let st2 = lir-load-into st1 lir-scratch2 l assign
+    in let neg-guard = cmp-ri lir-scratch-reg 0 & jcc cc-ge 2 & [15, 11]
+    in let len-guard = [77, 57, 24] & jcc cc-g 2 & [15, 11]
+    in let view-base = mov-load lir-scratch2 lir-scratch2 8
+    in let view-test = [73, 131, 120, 248, 0] & jcc cc-ge (list-length view-base) & view-base
+    in let addr = shl-ri lir-scratch-reg 3 & view-test & add-rr lir-scratch-reg lir-scratch2
+    in let st3 = st-append-code st2 (neg-guard & len-guard & addr)
+    in when (list-at assign dst)
+     is LocReg (pr) -> st-append-code st3 (mov-load (list-at lir-phys pr) lir-scratch-reg 8)
+     is LocSlot (ks) ->
+      st-append-code st3 (mov-load lir-scratch-reg lir-scratch-reg 8 & mov-store reg-rsp lir-scratch-reg (lir-slot-off ks))
   lir-sel-bin (st) (op) (dst) (l) (r) (assign) =
     if lir-op-divides op then lir-sel-rem st op dst l r assign
+    else if lir-op-indexes op then lir-sel-list-at st dst l r assign
     else lir-sel-alu st op dst l r assign
+
+  lir-op-indexes : LirOp -> Boolean
+  lir-op-indexes (op) =
+    when op
+     is LoListAt -> True
+     is otherwise -> False
 
   lir-sel-alu : CodegenState, LirOp, Integer, LirValue, LirValue, List Location -> CodegenState
   lir-sel-alu (st) (op) (dst) (l) (r) (assign) =
@@ -449,9 +489,28 @@ Section: LIR Instruction Selection (x86-64)
     if i < 6 then st
     else lir-push-stack-args (lir-push-arg st (list-at argvals i) assign (pushed * 8)) argvals (i - 1) (pushed + 1) assign
 
+ A shared constant (`Emit/X86_64Chapter.codex`, `emit-shared-consts`) is one
+ table in the data segment, so a reference loads its address through the same
+ rodata fixup `emit-shared-const-ref` uses instead of calling the nullary
+ function that would rebuild it.
+
+  lir-sel-shared-const : CodegenState, Integer, Integer, List Location -> CodegenState
+  lir-sel-shared-const (st) (dst) (roff) (assign) =
+    let w = when (list-at assign dst)
+     is LocReg (pr) -> list-at lir-phys pr
+     is LocSlot (ks) -> lir-scratch-reg
+    in let patch = st.code-len + 2
+    in let st1 = st-append-code st (mov-ri64 w 0)
+    in let st2 = __record-set (__record-set st1 "rf-poffsets" (list-push (st1.rf-poffsets) patch)) "rf-roffsets" (list-push (st1.rf-roffsets) roff)
+    in when (list-at assign dst)
+     is LocReg (pr) -> st2
+     is LocSlot (ks) -> st-append-code st2 (mov-store reg-rsp w (lir-slot-off ks))
+
   lir-sel-call : CodegenState, Integer, Text, List LirValue, List Location -> CodegenState
   lir-sel-call (st) (dst) (name) (argvals) (assign) =
-    let na = list-length argvals
+    let shared = if list-length argvals == 0 then cs-find (st.shared-consts) name else 0 - 1
+    in if shared >= 0 then lir-sel-shared-const st dst shared assign
+    else let na = list-length argvals
     in let nstack = if na > 6 then na - 6 else 0
     in let st0 = lir-push-stack-args st argvals (na - 1) 0 assign
     in let st1 = lir-place-args st0 argvals 0 (na - nstack) assign (nstack * 8)
@@ -1185,7 +1244,9 @@ Section: LIR Dispatch
 
   lir-call-target-ok : CodegenState, Text, Integer -> Boolean
   lir-call-target-ok (st) (name) (nargs) =
-    (lookup-x86-arity (st.user-arities) name == nargs) & (is-builtin (st.builtin-names) name == False)
+    if name == "__list_set_at" then nargs == 3
+    else if name == "__list_snoc" then nargs == 2
+    else (lookup-x86-arity (st.user-arities) name == nargs) & (is-builtin (st.builtin-names) name == False)
 
   lir-calls-ok-insns : CodegenState, List LirInsn, Integer, Integer -> Boolean
   lir-calls-ok-insns (st) (insns) (i) (n) =
@@ -1250,6 +1311,19 @@ Section: LIR Dispatch
     in let vh2 = vh1 & ". The selector's output would not compute the program; the build halts rather than write it."
     in st-add-error st code vh2 synthetic-span
 
+  lir-bits-free : CodegenState -> Boolean
+  lir-bits-free (st) =
+    let ua = st.user-arities
+    in if lookup-x86-arity ua "bit-and" >= 0 then False
+    else if lookup-x86-arity ua "bit-or" >= 0 then False
+    else if lookup-x86-arity ua "bit-xor" >= 0 then False
+    else if lookup-x86-arity ua "bit-shl" >= 0 then False
+    else if lookup-x86-arity ua "bit-shr" >= 0 then False
+    else if lookup-x86-arity ua "bit-shru" >= 0 then False
+    else if lookup-x86-arity ua "list-at" >= 0 then False
+    else if lookup-x86-arity ua "list-set-at" >= 0 then False
+    else lookup-x86-arity ua "list-push" < 0
+
   lir-emit-try : CodegenState, IRDef -> LirEmitTry
   lir-emit-try (st) (def) =
     if def.is-punctual then lir-not-handled st
@@ -1257,7 +1331,7 @@ Section: LIR Dispatch
       lir-not-handled st
     else if lir-ty-needs-guard (return-bound-of (def.type-val) (list-length (def.params))) then
       lir-not-handled st
-    else let r = lower-def-to-lir def
+    else let r = lower-def-to-lir-bits def (lir-bits-free st)
     in if r.ok == False then lir-not-handled st
     else if lir-calls-ok st ((r.func).blocks) 0 (list-length ((r.func).blocks)) == False then
       lir-not-handled st

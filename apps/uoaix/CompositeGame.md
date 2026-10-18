@@ -37,6 +37,11 @@ more than 5 launches in 10 minutes stop the supervisor. `supervisor.json` holds 
 current run and guest PID; creating `<OutDir>/stop` shuts the guest down and ends the
 supervisor. Relaunches skip British's password prompt (`-NoPrompt`); `-Port` and
 `-AdminPort` move the host ports.
+`switch-live.ps1 -Artifact <cdx> -World <disk> -OutDir <new> -Running <old OutDir>` switches the testing shard:
+it stops the old supervisor through its stop file, refuses any disk a codex-vm names (L-HOTCOPY), copies the
+outgoing and reused disks to `-BackupDir` (default `world-backups` beside `-World`) with a hash check, then
+starts `supervise-composite-game.ps1 -Testing -Admin` detached and returns once it is serving; `-Fresh` installs
+the map cache on a new `-World` (`-ClientRoot`, `-DecorationFile`, `-FloraFile`). `-StartupSeconds` (default 120, the supervisor's maximum) is each launch's deadline: a loaded box boots past the supervisor's 60 s default.
 Once a run has logged its first `WATERMARK` line, a run silent for `-HeartbeatSeconds`
 (180) is logged `WEDGED`, stopped and relaunched.
 The launcher reads no client directory and starts no MUL bridge. The server
@@ -147,7 +152,8 @@ and CBE1, Lord British's errand (`CompositeBritishErrand`): mobile serial (0
 when the mobile is gone), leg, mining tries, gold ore mined, blocked steps,
 home tile and the stand tile's height. Version22 appends one length qword (0 or `cgg-bytes`, 192) and CGG1,
 the farmer (`CompositeGatherer` at place 300, `cgg-trade-of`): wheat from the strip x 1410..1415, y 1660..1670,
-milled at the Good Eats mill, sold to the baker.
+milled at the Good Eats mill, sold to the baker. Version30 appends one length qword (`cn-codec-bytes`) and CNS1,
+the plots and houses (`Construction`); a version29 world loads with none and is rewritten as version30.
 Versions 9 and later carry
 EUC1 version 4 (found counters), so a disk written before main 35832 is
 refused; version8 carries EUC1 version 2 and versions
@@ -213,12 +219,24 @@ schedules each resident's next hour (`cg-labor`).
 
 **The NPC economy waits for the king's gold (UOAIX-86).** Until Lord British's
 errand has struck the gold he mined (`cg-seeded`: the saved errand is at
-`cbe-done`, which only `cbe-bank` sets), the tick skips `cg-town-headless`,
-`cg-gather` and `cg-errand-arm`, the pulse skips `cg-labor` and the town move,
-and a miner's timer re-arms without stepping. Lord British's own errand always
-runs. Founding strikes one gold ingot (`gvd-economy`, `bb-economy`), so
-`mint-ingots` is not the signal. A world with no Lord British character never
-opens. Proofs of the NPC economy open it with `cg-seed-gold`.
+`cbe-done`, set by `cbe-bank` or by British striking gold ingots at the Royal
+Minter, `cg-minter-or-plant`), the tick skips `cg-town-headless` and
+`cg-errand-arm`, and the pulse skips `cg-labor` and the town move. Harvesters
+work from the start: the gatherer, the miners and the farmer step, and their
+goods wait for a buyer. In testing mode the errand never runs (`cg-british-arm`): Damian plays British
+and opens the economy himself. A new world strikes nothing (`bb-economy`). A world with no Lord British character never
+opens. Proofs of the NPC economy open it with `cg-seed-gold`. A trial with no client launches `UOAIX TESTING OPEN`, which
+opens it at boot the same way; every boot logs `ECONOMY opened by the TESTING OPEN launch`, `ECONOMY open` or
+`ECONOMY closed until British strikes gold at the Royal Minter`. At the default day (7200 real seconds) an economy hour
+is 300 real seconds.
+
+**Ruling: workers find their own resources (Damian, 2026-10-08: "there are more miners than that spot will serve for a whole workday. we need to have a "find resource" capability for the npcs at runtime, so when areas get mined or logged out (forestry logging), they keep searching. and farmers need to reap and sow, increasing their bounty each until the farm plot is full.").** A miner or lumberjack whose known spots are spent searches outward at runtime for the nearest unspent resource of its kind on the map (minable rock, trees) and works there, so a workday never ends idle on a spent strip. A farmer reaps what is ripe and sows the empty rows, each season's planting larger than the last, until the plot is full.
+
+**Ruling: every item comes from harvest, transform, consume (Damian, 2026-10-08: "this is the mechanism by which all items must be created. harvest->transform->consume").** No item enters the world from nothing: raw goods are harvested from the map, goods are made only by transforming harvested or made inputs, and goods leave the world only by being consumed. Every item the world uses (a nail for a building included) is made by some NPC trade that consumes harvested or transformed inputs (Damian, the same day: "if there are items, like nails, needed for buildings, then the nail must be made by some npc class, it must consume some harvestable or transformed resource"). Every harvestable input has an NPC gatherer that harvests it (Damian: "and there must be a gatherer for that resource"). Every existing feature is reconciled against these rules, and every future feature ships with its whole chain (gatherer, transform, consumer) complete (Damian: "any feature that exists now must be reconciled against those rules, and any future feature must ship with all that complete"). A vendor refuses only a marked item (a sword, a piece of armour: an item tracked to its owner); a commodity (ore, an ingot, an apple) is fungible and is bought whatever its origin (Damian: "a vendor only refuses marked items. commodities cannot be tracked to owners like that. a pile of ore or an ingot is fungible. the guards can't tell who's apple it is."). The one exemption: every character, player or NPC, starts equipped with the clothing and basic tools of its job or template (Damian: "on clothing and basic tools: yes all characters should come equipped for their basic job/template"). Monsters and brigands follow the same rule: they start with what they need to function, have inventories, pick things up, harvest, rummage through the corpses they make or find, and carry it all until it is stolen or they die; their corpse holds what they carried. NPCs carry no weight limit (Damian: "monsters and brigand npcs the same: they have what they need to be functional in the world. the have inventories, and pick stuff up and harvest things. they rummage through the corpses they create or find, and then they carry that till stolen or dead. npcs don't have to follow encumberance rules. it would be silly for an ogre to get stuck with too much gold in their pockets.").
+
+**Ruling: workers live in the town's empty buildings, not the inn (Damian, 2026-10-08: "there are tons of empty buildings in the north part of town there. my idea was to use them, not the inn. and each character could spread out to fill the town, and we could double up if need be").** Each founded worker gets a home in an empty Britain building, spread across the town, with a second worker in a building only when every empty building already holds one. A worker leaves and returns through its own building's door; the inn is not a worker home. Candidate buildings: the free-sign list in `BritainShops.md`, "Premises for new trades", north part first.
+
+**Ruling: new trades (Damian, 2026-10-08: "we need herbalists and alchemists that buy and make potions and tinctures, scribes that make spellbooks and scrolls, paper millers who make blank books and scrolls from wood pulp and parchment from leather scraps").** Herbalists and alchemists buy reagents and make potions and tinctures; scribes make spellbooks and scrolls; paper millers make blank books and blank scrolls from wood pulp, and parchment from leather scraps. Each trade ships with its whole chain under the rule above (the wood and leather gatherers included). Root's rulings for the herbalist (2026-10-08): the herbalist gathers the five plant reagents (garlic, ginseng, mandrake root, nightshade, blood moss) from wild plants on the town's walk map, one gatherer per reagent where the code allows one raw and one tool per trade, and sells them from its own shop; the alchemist buys reagents for potions and the scribe for scrolls; the healer keeps buying as today. Black pearl, spiders' silk and sulfurous ash get their own gatherers later. Glassblowers make glass (bottles for the alchemists among it) from sand that a sand gatherer harvests (Damian: "we need glassblowers and sand harvesting"). Potters make pottery from clay that a clay gatherer harvests (Damian: "we need potters and clay gathering"). Gatherers sell their raw goods to players too: the farmer sells wheat and the miner sells ingots; a player with Tinkering makes nails; fallen branches are no resource and are removed, and every recipe that used them takes logs, boards or coal instead (Damian: "a farmer can sell wheat, a miner can sell ingots. nails should also be makable with the tinker skill. fallen branches is not a resource, remove that. its either logs or boards or coal."). Fallen branches are no item at all; a log or a board serves as fuel, and logs are the primary source of every derived wood good used in crafting (boards, pulp, hafts) (Damian: "replace fallen branches with logs or boards. you can burn boards too. fallen branches shouldn't even be a thing as far as I care at this point"; "logs are primary source of all `"derived wood`" stuff needed for crafting"). A miner with plenty of money holds its ingots instead of selling them to NPC buyers while the ingot price is low (Damian: "a miner should choose to not sell ingots to npcs when they have plenty of money and the price of ingots is low"). The miner holds out until a player pays more, the price rises, or the miner needs coin, and then sells (Damian: "and instead hold out for a player to pay more, or the price to go up, or for them to become needful of coin"). Hunters take hides from hunted animals and tanners make leather from them; tailors make cloth items only; a leatherworker makes leather armor and leather goods, and a cobbler, a separate specialist trade, makes footwear (Damian: "we need tanners and leather from hunted animals, tailoring should be cloth items only. leather is cobbler or whatever the appropriate title is for one who makes leather armor. we don't have those people anymore."). Buildings that new trades may take over (Damian: "add strength and steel to a list of repurposable buidings for professions I am creating that don't already exist, like glassblowing"): Strength and Steel. Already taken: The Miner's Guild (paper mill), the Britain Public Library (scribe). (Damian, the same day: "leatherworks do not make shoes though, a cobbler does, it is a speciality").
 
 A fresh Britain world adds one economic gatherer (`cgg-new`, after the
 residents): a world mobile lodged on a free Sweet Dreams Inn tile that is no
@@ -231,11 +249,36 @@ one gatherer step on the residents' map with their doors (`cg-gather`). At
 home it first carries an unsold ingot to the blacksmith, else walks to a free tile within two of the
 Hammer And Anvil's forge (`WorkStations.codex`), smelts 2 ore there into an ingot lot in its
 backpack (`bb-produce`, `bb-materialise`) and carries it straight to the blacksmith, else leaves for the node when it has regrown and it holds a
-pickaxe. It walks through the lodging entrance, mines once per tick until one
-ore or 64 tries, and walks back the same way. At the blacksmith it stands on a
+pickaxe. It walks through the lodging entrance, mines once per step until it
+holds two of its raw material (one smelt) or 64 tries, moving on to another ready node of the
+same resource at its place when a harvest spends one (`cgg-renode`, never making a node), and walks back the same way; a miner's
+try at its vein shows the player within 18 tiles the pickaxe swing (action 11) and the mining
+sound (`cg-miner-show`). Each worker logs `WORKER <gatherer|farmer|miner-N> leg L` at every leg
+change and every 32 blocked steps (`cs-workers-report`; legs as in `cgg-step`). A harvester whose
+tool has worn out walks to the provisioner and buys a pickaxe (legs 8 and 9, `cgg-buy-tool`) once
+the treasury holds gold and it can pay; otherwise, or when the purchase fails, it makes its own.
+An ingot goes to whichever of the blacksmith and the tinker can pay and bids more (`cgg-buyer-for`),
+the blacksmith on a tie; the tinker's restock uses ingots it holds before making any.
+
+Three fibre workers follow the four miners in `owner.miners` (`cg-found-workers`, UCC1 v31 saves them
+after the miners): a flax picker and a cotton picker in the wheat field (places 301 and 302, nine
+nodes each, `cpr-fibre-install`) and a shepherd shearing wool with a knife in the pasture
+1408-1415,1640-1659 (place 303, six nodes). The pasture is a spawn region (`cg-pasture`, id 9303) holding
+four sheep of the catalog's sheep profile, which are named, wander inside it and return as spawns do. Flax and wool spin into thread at the Lords Clothiers' wheel and cotton into cloth
+at its loom (`cgg-craft` by the recipe whose first input is the raw), and each sells to the tailor.
+A worker the inn cannot house is not founded and the server starts without it. They log as
+`WORKER flax-picker`, `cotton-picker` and `shepherd`, and bend (action 32) at their node.
+
+A lumberjack follows them (`WORKER lumberjack`): it fells Britain's map trees inside the residents'
+map at the town's place, so its trees are the ones players chop. At home, when its tree is not
+ready, `cg-lumber-pick` takes a registered tree that has grown back, else registers the map tree
+nearest home that has an open neighbour cell and no site (a timber site and node, as a player's chop
+makes, at most 16 and never past site 240), and walks to a free tile beside the trunk. A chop
+swings the axe (action 13, sound 0x13E); the felled tree draws as a stump and regrows through
+`cg-flora-sync`. It saws 2 logs into 4 boards at The Saw Horse and sells them to the carpenter. At the blacksmith it stands on a
 free tile within two of the shopkeeper and sells the ingot through vendor
 checkout (`gv-checkout`) at the blacksmith's own bid (`gvb-bid`), then walks
-home. A refused checkout (the buyer cannot pay) keeps the lot and backs off: no buyer leg until a game day passes or the buyer's coin count rises (`cgg-waiting`); meanwhile the gatherer smelts nothing more, leaves a node of its raw material once it carries two (`cgg-capped`), and keeps vein-mining copper and silver for the crown mint. The crown is the town's reserve buyer: at its counter the blacksmith sells it one longsword a game day while it holds two or more (`csn-crown-buy`), so the coin the smith pays for ingots comes back. An NPC's death deletes its body, so the gatherer's and the fighter's deaths settle at the blow (the composite's death hook, `cg-deaths`, before `cb-die`): their vendor lots leave the ledger as consumed goods into the corpse, which takes an NPC's backpack whole, their owner rows go, and each is recorded dead (serial 0, written so in CGG1 and CGF1); the next step raises it at home for the same economy actor, the gatherer with a new backpack and owner row. A tick with no living watcher still steps the gatherer (`cg-tick`). `proofs/CompositeGathererProof.codex` grades the trip, the smelt, the
+home. A refused checkout (the buyer cannot pay) keeps the lot and backs off: no buyer leg until a game day passes or the buyer's coin count rises (`cgg-waiting`); meanwhile the gatherer smelts nothing more, stockpiles its raw material to sixteen, leaves a node of it at that cap (`cgg-capped`) and then rests at home instead of walking out, and keeps vein-mining copper and silver for the crown mint. The crown is the town's reserve buyer: at its counter the blacksmith sells it one longsword a game day while it holds two or more (`csn-crown-buy`), so the coin the smith pays for ingots comes back. An NPC's death deletes its body, so the gatherer's and the fighter's deaths settle at the blow (the composite's death hook, `cg-deaths`, before `cb-die`): their vendor lots leave the ledger as consumed goods into the corpse, which takes an NPC's backpack whole, their owner rows go, and each is recorded dead (serial 0, written so in CGG1 and CGF1); the next step raises it at home for the same economy actor, the gatherer with a new backpack and owner row. A tick with no living watcher still steps the gatherer (`cg-tick`). `proofs/CompositeGathererProof.codex` grades the trip, the smelt, the
 sale, the census and three restarts on one disk across four boots. A restart proof runs one boot per codex-vm process against the same disk: compile it once, create a blank disk of at least 64 MiB (`us-open 0 131072`), then run `tools/codex-vm.exe -kernel <proof cdx> -disk <that disk> -output <log> -headless -mem 3072` once per boot; each boot reads the store and takes the branch its saved state selects (`proofs/CompositeFighterProof.codex`: fresh, hunting, dead, revived), so the boots must run in order on one disk and never in parallel against it. After the
 gatherer's step, the same tick steps the blacksmith (`csn-smith-step`, `CompositeStation.codex`):
 holding two bought ingots, it walks from its counter to a free tile within two of the anvil and the
@@ -243,13 +286,28 @@ forge, forges there (`bb-forge`, BritainShops.md), refuses anywhere else, and wa
 
 Packet and pulse handlers return replies to the encompassing owner (UOAIX-48, fault
 isolation). A handler failure drops only its session; after a world change it also logs
-`FAULT isolated connection=`. A commit the codecs refuse keeps the last good commit on
-disk and logs `SAVE REFUSED` (`cs-save-refused`): a route's own change drops that route's
-session, and a pulse, tick, timer or disconnect commit carries on (`cs-commit-soft`). The
-next valid commit logs `SAVE RESUMED`. The owner latches only for a store write failure,
-an exhausted sequence, a map window or decoration rebind failure, or saves refused for
-`cs-save-limit` (300 s); the latch records its reason (`cs-latched`), the world tick
+`FAULT isolated connection=`.
+
+The server always saves, and a failed save never stops serving (Damian, 2026-10-07: "the
+server should always save, and failure to save should not shut things down. this isn't
+good behavior in a service app"). Every commit runs the binding checks and logs, never
+enforces, them (`cs-check`): the vendor binding (`gvsc-valid`) and the townsfolk binding
+(`tlc-valid`). Currency is not replayed on save or load (`StateUnification.md`, step 4).
+A failing check logs `SAVE CHECK FAILED, saving anyway: <clause>` as an error when the
+failure first appears or changes, the commit writes, boot loads that state the same way
+(`euc-write`, `gvsc-write`, `tlc-write` and their `-decode-any` readers; the strict
+codecs keep refusing for their own proofs), and the next clean commit logs `SAVE CHECK
+CLEARED`. A commit a codec cannot lay out (an extent or a structural binding) logs `SAVE
+FAILED` (`cs-save-refused`), keeps the last good commit on disk and answers `Ok`, so the
+route, pulse or tick is served; the next valid commit logs `SAVE RESUMED`. A store write
+failure is the same: the journal still ends at its head (`us-append` zeroes the header
+first and advances only after readback), so the owner clears the store fault, logs `SAVE
+FAILED ... store write failed, retrying at the next commit`, stays dirty and rewrites the
+same place at its next commit (`cs-store-failed`); a compaction whose snapshot committed
+before the retired half's wipe failed counts as landed (`cs-landed`). The owner latches
+only for an exhausted sequence, or a map window or decoration rebind failure; the latch records its reason (`cs-latched`), the world tick
 answers `Ok -1`, and GameLinks stops serving so the guest exits for the host supervisor.
+`proofs/CompositeFaultProof.codex` grades the policy on a blank 64 MiB disk.
 
 The first64 MiB of the disk is the append-only journal. Whole-map and
 decoration install data follow it. Reuse that exact disk for restart grading.

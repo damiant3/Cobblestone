@@ -1,0 +1,55 @@
+Chapter: BvtLoanDouble
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter BvtSealLoans
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-246: the loan tables double at the growth point (a never-retired loan table grown a block at a time cost the
+ square of its length); the start tables follow and the economy stays valid. Answers the three metals' lengths after
+ two growths, or -1 when the fixture economy is refused.
+  bldb-lengths : EuCurrency -> List Integer
+  bldb-lengths (x) = [list-length x.copper.loans, list-length x.silver.loans, list-length x.world.money.loans, list-length x.start.copper.loans, list-length x.start.silver.loans, list-length x.start.gold.loans]
+  bldb-all : List Integer, Integer, Integer -> Boolean
+  bldb-all (xs) (n) (i) = if i >= list-length xs then True else list-at xs i == n & bldb-all xs n (i + 1)
+ Days of the town step's crown-loan half (borrow, then repay); answers the loans lent.
+  bldb-days : EuCurrency, Integer, Integer, Integer -> Integer
+  bldb-days (x) (actor) (left) (lent) = if left == 0 then lent
+    else let borrowed = bb-borrow-one x actor
+    in let repaid = bb-repay x actor
+    in bldb-days x actor (left - 1) (lent + borrowed)
+ UOAIX-246 churn: an empty shop borrows from the king; once repaid down to its working capital it borrows no more over
+ 60 days, where the old rule lent it a loan a day. Answers loans lent in the 60 days, or a negative fixture code.
+  bldb-churn : EuCurrency -> Integer
+  bldb-churn (x) = let opened = bsl-open x
+    in let shop = cg-label-actor x 1001
+    in if shop < 1 then -2
+    else let purse = (ep-actor x.world shop).purse
+    in let drained = eu-pay x True purse 1 (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
+    in if cgf-value x purse /= 0 then -7
+    else let first = bb-borrow-one x shop
+    in if first /= 1 then -3
+    else let customer = cg-label-actor x 1002
+    in let payer = if customer < 1 then 0 else (ep-actor x.world customer).purse
+    in if payer < 2 | eu-lend x True 1 payer 3 2 0 em-limit < 1 then -4
+    else if eu-pay x True payer purse 0 0 1 /= 0 then -5
+    else let repaid = bb-repay x shop
+    in if bb-debt x.world.money purse 0 /= 0 then -6
+    else let count = x.world.money.loan-count
+    in let length = list-length x.world.money.loans
+    in let lent = bldb-days x shop 60 0
+    in if x.world.money.loan-count /= count | list-length x.world.money.loans /= length then 100 + lent else lent
+  bvt-loan-double : Integer -> [Console] Integer
+  bvt-loan-double (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("loan doubling fixture economy: " & e) False
+    is Ok (x) -> let before = bldb-lengths x
+      in let once = eu-grow-loans x
+      in let first = bldb-lengths x
+      in let twice = eu-grow-loans x
+      in let second = bldb-lengths x
+      in act
+        a <- bvt-check ("each metal's loan table and its start table double at each growth, 128 to 256 to 512, not a block at a time (UOAIX-246): gold " & show (list-at before 2) & ", " & show (list-at first 2) & ", " & show (list-at second 2)) (bldb-all before em-loan-block 0 & bldb-all first (2 * em-loan-block) 0 & bldb-all second (4 * em-loan-block) 0)
+        b <- bvt-check "the doubled economy validates and leaves no loan due" (euv-valid x & not (cg-loans-tight x.world.money) & not (cg-loans-tight x.copper) & not (cg-loans-tight x.silver))
+        churn <- when bb-economy 0 is Err (_) -> -1 is Ok (y) -> bldb-churn y
+        c <- bvt-check ("an empty shop borrows from the king, and a shop holding its working capital borrows no more over 60 days of borrow and repay (UOAIX-246 ruling; code " & show churn & ", 0 is flat)") (churn == 0)
+        a + b + c
+      end

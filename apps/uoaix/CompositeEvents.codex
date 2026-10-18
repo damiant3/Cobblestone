@@ -5,13 +5,16 @@ Chapter: CompositeEvents
  A bounded ring of recent speech and combat packets that every other connection's pulse delivers once,
  in range, or to one listener alone. Packet bytes are copied into buffers allocated with the ring, because
  a callback's own allocations lie above the serving loop's scratch mark. Volatile: a restart empties it.
- 256 rows hold a pulse's swings, health and deaths for eight links between one connection's pulses.
+ 1024 rows hold a pulse's swings, health and deaths for 32 game links between one connection's pulses.
   CeEvent = record { sequence : Integer, serial : Integer, also : Integer, only : Integer, x : Integer, y : Integer,
     buffer : Integer, length : Integer, ghost : Boolean }
   CeRing = record { events : List CeEvent, next : Integer }
-  ce-limit : Integer = 256
+  ce-limit : Integer = 1024
   ce-range : Integer = 18
-  ce-bytes : Integer = 512
+ A row holds a whole gump: a card table's or the battleship board's 0xB0 told to the other seat runs to several KiB,
+ and a longer packet is dropped (UOAIX-230: 512 dropped every card gump, so the other seat never saw a move).
+ 1024 rows of 16 KiB are 16 MiB, made once at boot.
+  ce-bytes : Integer = 16384
   ce-rows : Integer, List CeEvent -> List CeEvent
   ce-rows (i) (xs) = if i == ce-limit then xs
     else ce-rows (i + 1) (list-push xs (CeEvent { sequence = 0, serial = 0, also = 0, only = 0, x = 0, y = 0,
@@ -25,7 +28,7 @@ Chapter: CompositeEvents
   ce-add (ring) (serial) (x) (y) (packet) = ce-add-to ring serial 0 0 x y packet
   ce-add-to : CeRing, Integer, Integer, Integer, Integer, Integer, List Integer -> Integer
   ce-add-to (ring) (serial) (also) (only) (x) (y) (packet) = if list-length packet > ce-bytes then 0
-    else let row = list-at ring.events (int-mod ring.next ce-limit)
+    else let row = list-at ring.events (int-mod ring.next (list-length ring.events))
     in let copied = ce-copy row.buffer packet 0
     in let a = __record-set row "sequence" ring.next
     in let b = __record-set row "serial" serial
@@ -42,13 +45,13 @@ Chapter: CompositeEvents
  SOCK_SPIRITSPEAK) hears them in ghost speech.
   ce-add-ghost : CeRing, Integer, Integer, Integer, List Integer -> Integer
   ce-add-ghost (ring) (serial) (x) (y) (packet) = let added = ce-add-to ring serial 0 0 x y packet
-    in if added == 0 then 0 else let marked = __record-set (list-at ring.events (int-mod (ring.next - 1) ce-limit)) "ghost" True in 1
+    in if added == 0 then 0 else let marked = __record-set (list-at ring.events (int-mod (ring.next - 1) (list-length ring.events))) "ghost" True in 1
  A source the listener must not perceive (`quiet`: concealed, UOAIX-84) reaches no other connection, because every
  ring packet names its source by serial or position and the client would draw or locate it from either. `unseen` (an
  unrevealed ghost) is asked of a ghost's own words only: a combat notice's serial is the pulsing player, not its source.
   ce-pending : CeRing, Integer, (Integer -> Boolean), (Integer -> Boolean), Boolean, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
-  ce-pending (ring) (listener) (quiet) (unseen) (clear) (x) (y) (heard) (i) (acc) = if i == ce-limit then acc
-    else let event = list-at ring.events (int-mod (ring.next + i) ce-limit)
+  ce-pending (ring) (listener) (quiet) (unseen) (clear) (x) (y) (heard) (i) (acc) = if i >= list-length ring.events then acc
+    else let event = list-at ring.events (int-mod (ring.next + i) (list-length ring.events))
     in let wanted = event.sequence > heard & (if event.only /= 0 then event.only == listener
       else event.serial /= listener & event.also /= listener & ce-near event x y & not (quiet event.serial)
         & not (event.ghost & unseen event.serial))

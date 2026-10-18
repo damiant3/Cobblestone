@@ -59,7 +59,7 @@ Chapter: TownStateValid
 
   ts-people-valid : TfWorld, WorldTable, Integer, Integer, Integer -> Boolean
   ts-people-valid (w) (world) (i) (counts) (seen) =
-    if i == 128 then True
+    if i >= list-length w.people then True
     else let p = list-at w.people i
     in if list-length p.schedule /= 24 | list-length p.memories /= 16 | text-length p.name > 64 then False
     else if i >= w.used then ts-unused-person p & ts-people-valid w world (i + 1) counts seen
@@ -71,12 +71,32 @@ Chapter: TownStateValid
     in let counted = if p.alive == 1 then poke-qword counts ((p.town - 1) * 8) (peek-qword counts ((p.town - 1) * 8) + 1) else 0
     in binding & ts-people-valid w world (i + 1) counts seen
 
+ The first person ts-people-valid refuses and the check that refuses it; ts-state-fault calls it after its restore. Two
+ people bound to one mobile pass here and answer "people".
+  ts-people-fault : TfWorld, WorldTable, Integer -> Text
+  ts-people-fault (w) (world) (i) = if i >= list-length w.people then "people"
+    else let p = list-at w.people i
+    in let check = if list-length p.schedule /= 24 | list-length p.memories /= 16 | text-length p.name > 64 then "lists or name"
+      else if i >= w.used then (if ts-unused-person p then "" else "unused person not cleared")
+      else if p.serial /= i + 1 | p.town < 1 | p.town > w.town-count | text-length p.name == 0 | p.home == 0 | p.workplace == 0 | p.place == 0 then "serial, town, name or places"
+      else if not (ts-person-values p w) then "values"
+      else if p.parent-a > 0 & p.parent-a == p.parent-b then "parents"
+      else if not (ts-person-link w p) then "spouse link"
+      else if not (ts-person-memory p 0 0) then "memories"
+      else ts-mobile-fault world p
+    in if check == "" then ts-people-fault w world (i + 1) else "people: person " & show (i + 1) & " " & check
+  ts-mobile-fault : WorldTable, TfPerson -> Text
+  ts-mobile-fault (world) (p) = if p.world-serial == 0 | p.alive == 0 then ""
+    else let slot = world-slot world p.world-serial
+    in if slot < 0 then "mobile " & show p.world-serial & " missing"
+    else if peek-qword (wi-object world.buffer slot) 8 /= 1 then "mobile " & show p.world-serial & " not a character"
+    else ""
   ts-mobile-valid : WorldTable, TfPerson, Integer -> Boolean
   ts-mobile-valid (world) (p) (seen) =
     if p.world-serial == 0 | p.alive == 0 then True
     else let slot = world-slot world p.world-serial
     in if slot < 0 then False
-    else if peek-qword world.buffer (24 + slot * 80) /= 1 | peek-byte seen slot /= 0 then False
+    else if peek-qword (wi-object world.buffer slot) 8 /= 1 | peek-byte seen slot /= 0 then False
     else let marked = poke-byte seen slot 1 in True
 
   ts-town-values : TfTown -> Boolean
@@ -125,7 +145,7 @@ Chapter: TownStateValid
   ts-families : TfWorld, Integer, Integer -> Boolean
   ts-families (w) (marks) (i) =
     if i > w.used then True
-    else ts-family-dfs w marks i 129 & ts-families w marks (i + 1)
+    else ts-family-dfs w marks i (w.used + 1) & ts-families w marks (i + 1)
 
   ts-events-valid : TfWorld, Integer -> Boolean
   ts-events-valid (w) (i) =
@@ -140,7 +160,7 @@ Chapter: TownStateValid
 
   ts-personas-valid : TfWorld, TmMind, Integer -> Boolean
   ts-personas-valid (w) (m) (i) =
-    if i == 128 then True
+    if i >= list-length m.personas then True
     else let p = list-at m.personas i
     in if p.npc /= 0 & (p.npc /= i + 1 | p.npc > w.used) then False
     else if p.call-limit < 1 | p.call-limit > 8 | p.token-budget < 1 | p.token-budget > 512 | p.gift-limit < 0 | p.gift-limit > 10 then False
@@ -170,8 +190,8 @@ Chapter: TownStateValid
   ts-state-valid : WorldCheckpoint, TfWorld, TmMind -> Boolean
   ts-state-valid (checkpoint) (w) (m) =
     if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects | checkpoint.tick < 0 | checkpoint.sequence < 0 then False
-    else if list-length w.people /= 128 | list-length w.towns /= 4 | list-length w.events /= 4096 | list-length m.personas /= 128 | list-length m.audit /= 6144 then False
-    else if w.used < 0 | w.used > 128 | w.town-count < 0 | w.town-count > 4 | w.hour < 0 | w.hour > 8760000 then False
+    else if list-length w.people < tf-people-block | list-length w.towns /= 4 | list-length w.events /= 4096 | list-length m.personas /= list-length w.people | list-length m.audit /= 6144 then False
+    else if w.used < 0 | w.used > list-length w.people | w.town-count < 0 | w.town-count > 4 | w.hour < 0 | w.hour > 8760000 then False
     else if w.event-count < 0 | w.event-count > 1024 | not (ts-counter w.sequence) | w.sequence < w.event-count then False
     else if m.audit-count < 0 | m.audit-count > 1024 | not (ts-counter m.sequence) | m.sequence < m.audit-count then False
     else if not (ts-counter m.fallbacks) | not (ts-counter m.refusals) | not (ts-counter m.accepted) then False
@@ -180,11 +200,36 @@ Chapter: TownStateValid
     else let mark = __heap-save
     in let counts = alloc-bytes 32
     in let seen = alloc-bytes checkpoint.world.capacity
-    in let families = alloc-bytes 128
+    in let families = alloc-bytes (list-length w.people)
     in let z1 = ts-zero counts 32 0
     in let z2 = ts-zero seen checkpoint.world.capacity 0
-    in let z3 = ts-zero families 128 0
+    in let z3 = ts-zero families (list-length w.people) 0
     in let people = ts-people-valid w checkpoint.world 0 counts seen
     in let valid = if not people then False else ts-towns-valid w 0 counts & ts-families w families 1 & ts-events-valid w 0 & ts-personas-valid w m 0 & ts-audit-valid w m 0
     in let restored = __heap-restore mark
     in valid
+ The first ts-state-valid condition that fails, for the save check's log line (UOAIX-143). Past the mark it answers only
+ literals, so the restore frees nothing the answer holds.
+  ts-state-fault : WorldCheckpoint, TfWorld, TmMind -> Text
+  ts-state-fault (checkpoint) (w) (m) =
+    if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects | checkpoint.tick < 0 | checkpoint.sequence < 0 then "checkpoint"
+    else if list-length w.people < tf-people-block | list-length w.towns /= 4 | list-length w.events /= 4096 | list-length m.personas /= list-length w.people | list-length m.audit /= 6144 then
+      "table sizes: people " & show (list-length w.people) & " towns " & show (list-length w.towns) & " events " & show (list-length w.events) & " personas " & show (list-length m.personas) & " audit " & show (list-length m.audit)
+    else if w.used < 0 | w.used > list-length w.people | w.town-count < 0 | w.town-count > 4 | w.hour < 0 | w.hour > 8760000 then "used " & show w.used & " towns " & show w.town-count & " hour " & show w.hour
+    else if w.event-count < 0 | w.event-count > 1024 | not (ts-counter w.sequence) | w.sequence < w.event-count then "events " & show w.event-count & " sequence " & show w.sequence
+    else if m.audit-count < 0 | m.audit-count > 1024 | not (ts-counter m.sequence) | m.sequence < m.audit-count then "audit " & show m.audit-count & " sequence " & show m.sequence
+    else if not (ts-counter m.fallbacks) | not (ts-counter m.refusals) | not (ts-counter m.accepted) | m.sequence /= m.accepted + m.fallbacks | m.refusals > m.fallbacks then
+      "mind tally: sequence " & show m.sequence & " accepted " & show m.accepted & " fallbacks " & show m.fallbacks & " refusals " & show m.refusals
+    else if not (ws-table-valid checkpoint.world) then "world table"
+    else let mark = __heap-save
+    in let counts = alloc-bytes 32
+    in let seen = alloc-bytes checkpoint.world.capacity
+    in let families = alloc-bytes (list-length w.people)
+    in let z1 = ts-zero counts 32 0
+    in let z2 = ts-zero seen checkpoint.world.capacity 0
+    in let z3 = ts-zero families (list-length w.people) 0
+    in let fault = if not (ts-people-valid w checkpoint.world 0 counts seen) then "people" else if not (ts-towns-valid w 0 counts) then "towns"
+      else if not (ts-families w families 1) then "families" else if not (ts-events-valid w 0) then "events" else if not (ts-personas-valid w m 0) then "personas"
+      else if not (ts-audit-valid w m 0) then "audit" else "none"
+    in let restored = __heap-restore mark
+    in if fault == "people" then ts-people-fault w checkpoint.world 0 else fault

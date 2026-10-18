@@ -1,0 +1,52 @@
+Chapter: BvtDoorReach
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter DecorationLoad
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-154 (trial 41725): the corn-picker's bed is behind a door at z 27 reached by stone stairs whose walker stands at 24,
+ and the garlic-picker's behind a door at z 6 from stairs standing at 3. A one-door decoration (DecorationReplay's DWD1
+ layout) with the door's sill at 27: answers a bit per check, 1 a walker 3 below finds it, 2 one 5 below does, 4 one
+ level with it does, 8 one 6 below does not, 16 one a storey (20) below does not; 31 is all.
+  bdr-text : Integer, Text, Integer -> Integer
+  bdr-text (buffer) (text) (i) = if i == text-length text then 0 else let wrote = poke-byte buffer i (to-unicode (char-code (char-at text i)))
+    in bdr-text buffer text (i + 1)
+  bdr-fixture : WalkMap -> Integer
+  bdr-fixture (map) = let data = alloc-bytes 240
+    in let zero = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 16 map.x
+    in let d = poke-qword data 24 map.y
+    in let e = poke-qword data 32 (map.width + 8)
+    in let f = poke-qword data 40 map.height
+    in let g = poke-qword data 48 44
+    in let x = poke-qword data 64 1422
+    in let y = poke-qword data 72 1698
+    in let z = poke-qword data 80 27
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 -1
+    in let dy = poke-qword data 144 1
+    in let light = poke-qword data 152 -1
+    in let named = bdr-text (data + 176) "door" 0 in data
+  bdr-land : WalkMap, Integer -> Integer
+  bdr-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bdr-land map (i + 1)
+  bdr-checks : Integer -> Integer
+  bdr-checks (unused) = when walk-map-new 1408 1680 64 64
+    is Err (_) -> -1
+    is Ok (map) -> let land = bdr-land map 0 in when wd-read (bdr-fixture map) 240 map 200
+      is Err (_) -> -2
+      is Ok (doors) -> (if tl-door-find doors 1422 1698 24 0 == 0 then 1 else 0) + (if tl-door-find doors 1422 1698 22 0 == 0 then 2 else 0)
+        + (if tl-door-find doors 1422 1698 27 0 == 0 then 4 else 0) + (if tl-door-find doors 1422 1698 21 0 < 0 then 8 else 0)
+        + (if tl-door-find doors 1422 1698 7 0 < 0 then 16 else 0)
+  bvt-door-reach : Integer -> [Console] Integer
+  bvt-door-reach (unused) = act
+    n <- bdr-checks 0
+    a <- bvt-check ("a walker on a stair below a door's sill finds the door, one a storey away does not (UOAIX-154, code " & show n & ")") (n == 31)
+    a
+  end

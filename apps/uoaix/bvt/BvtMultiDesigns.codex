@@ -1,0 +1,154 @@
+Chapter: BvtMultiDesigns
+  cites Uoaix chapter MultiDesigns
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter CompositePaging
+  cites Uoaix chapter BvtCheck
+
+ Placed multis collide (UoaixMultis.md). A three-row MCP1 table for multi 5: a wall (TILEDATA 0x40, height 20) at the
+ origin at dz 0 and dz 20, and a floor (0x200) one tile east; a 16 by 16 window at 1000,1000 with room for 2 colliders a
+ cell. Answers a bit per check: 1 the counts (5 has 3 rows, 6 none, no table none), 2 laying at 1002,1002 puts 2 walls
+ on the origin and 1 floor east, 4 laying again adds nothing, 8 lifting leaves both cells empty, 16 a cell holding one
+ collider has no room for the two walls, 32 a wall lifted past z 127 is reported unlaid, 64 a directory entry past the
+ rows reads as no rows, 128 the decorator's multi item at 1004,1004 is laid by a sync and a second sync adds nothing
+ while a plain item lays nothing, 256 a lifted and removed multi is not laid again, 512 the name "shrine" finds 5 and
+ reads back while "shrin" and "shrinex" find nothing, 1024 design 0x205 (the same rows) covers 0..1 by 0..0, a deed
+ house of it at 1008,1008 is laid by cp-lay-sites and, torn (field 0 cleared, the id in field 15), lifted by
+ cp-lift-torn, which clears field 15, 2048 a cut named "hall" closes only after it opens, is found by its name, lists
+ in the export with its corners, and "Hall" and an empty name are refused, 4096 design 0x205's one front door (0x06E5,
+ opening to 0x06E6 one tile west and south) stands 2 south of a house's origin, shut until bit 0 of field 13, and the
+ house holds the tiles of its plot and no others, 8192 a compose "set" from 1003,1003 to 1010,1010 exports its origin
+ and the decorator's multi at 1004,1004 and plain item at 1006,1006 as its members, and the cut list counts it; 16383
+ is all.
+  bmd-table : Integer -> Integer
+  bmd-table (count) = let data = alloc-bytes 32920
+    in let zero = wmc-zero data 0 4115
+    in let named = poke-qword data 32 1
+    in let doored = poke-qword data 40 1
+    in let door = bmd-door data 32900 [#205, 0, 2, 0, #06E5, #06E6, 65535, 1] 0
+    in let id = poke-16 data 32868 5
+    in let name = bmd-ascii data 32872 [115, 104, 114, 105, 110, 101] 0
+    in let a = poke-qword data 0 #3150434D
+    in let b = poke-qword data 8 4096
+    in let c = poke-qword data 16 3
+    in let d = poke-qword data 24 12
+    in let e = poke-qword data (64 + 5 * 8) (count * 4294967296)
+    in let f = poke-qword data (64 + #205 * 8) (count * 4294967296)
+    in let r0 = bmd-row data 0 0 0 0 20 #40
+    in let r1 = bmd-row data 1 0 0 20 20 #40
+    in let r2 = bmd-row data 2 1 0 0 0 #200 in data
+  bmd-ascii : Integer, Integer, List Integer, Integer -> Integer
+  bmd-ascii (data) (at) (bytes) (i) = if i >= list-length bytes then 0 else let b = poke-byte data (at + i) (list-at bytes i) in bmd-ascii data at bytes (i + 1)
+  bmd-naming : Integer -> Integer
+  bmd-naming (unused) = let s = bmd-state 3
+    in let word = [91, 115, 104, 114, 105, 110, 101, 120]
+    in if md-names s == 1 & md-find-name s word 1 7 0 == 5 & md-name-text s 0 == "shrine"
+      & md-find-name s word 1 6 0 == -1 & md-find-name s word 1 8 0 == -1 then 512 else 0
+  bmd-deeds : Integer -> Integer
+  bmd-deeds (unused) = let d = bmd-state 3
+    in let b = md-bounds d #205
+    in let s = cn-new 0
+    in let a = cn-site-set s 0 0 #205
+    in let x = cn-site-set s 0 1 1008
+    in let y = cn-site-set s 0 2 1008
+    in let z = cn-site-set s 0 3 0
+    in let counted = poke-qword s.buf 8 1
+    in let map = bmd-map 2
+    in let missed = cp-lay-sites d s map 0 0
+    in let laid = missed == 0 & bmd-at map 1008 1008 == 2 & bmd-at map 1009 1008 == 1
+    in let torn = cn-site-set s 0 0 0
+    in let kept = cn-site-set s 0 cn-torn-field #205
+    in let lifted = cp-lift-torn d s (Just map) None 0
+    in if list-at b 0 == 0 & list-at b 1 == 0 & list-at b 2 == 1 & list-at b 3 == 0 & laid
+      & bmd-at map 1008 1008 == 0 & bmd-at map 1009 1008 == 0 & cn-site s 0 cn-torn-field == 0 then 1024 else 0
+  bmd-door : Integer, Integer, List Integer, Integer -> Integer
+  bmd-door (data) (at) (fields) (i) = if i >= 8 then 0 else let a = poke-16 data (at + i * 2) (list-at fields i) in bmd-door data at fields (i + 1)
+  bmd-doors : Integer -> Integer
+  bmd-doors (unused) = let d = bmd-state 3
+    in let s = cn-new 0
+    in let a = cn-site-set s 0 0 #205
+    in let x = cn-site-set s 0 1 1008
+    in let y = cn-site-set s 0 2 1008
+    in let z = cn-site-set s 0 3 0
+    in let counted = poke-qword s.buf 8 1
+    in let held = when cn-hold s 77 1006 1006 1010 1010 is Ok (p) -> cn-site-set s 0 5 p is Err (_) -> 0
+    in let at = md-door d #205 0
+    in let shut = not (cn-door-open s 0 0)
+    in let swung = cn-site-set s 0 13 1
+    in if md-door-count d #205 == 1 & md-door-count d 5 == 0 & md-door d #205 1 == 0 & md-door-field at 4 == #06E5 & md-door-field at 5 == #06E6
+      & md-door-field at 6 == -1 & md-door-field at 7 == 1 & cn-door-count s d 0 == 1 & cn-door-x s d 0 0 == 1008 & cn-door-y s d 0 0 == 1010
+      & shut & cn-door-open s 0 0 & cn-house-at s 0 1009 1009 0 == 0 & cn-house-at s 0 1011 1009 0 == -1 then 4096 else 0
+  bmd-compose : Integer -> Integer
+  bmd-compose (unused) = when cg-game 512
+    is Err (_) -> -1
+    is Ok (game) -> let items = gsi-new game.world
+      in let decor = dc-new 0
+      in let s = md-new 0
+      in let a = dc-create decor items (#4000 + 5) 0 1004 1004 0 1
+      in let b = dc-create decor items #0E75 0 1006 1006 0 1
+      in let c = dc-create decor items #0E75 0 1020 1020 0 1
+      in let word = [91, 115, 101, 116]
+      in let opened = md-compose-open s word 1 4 9 1003 1003 0
+      in let closed = md-cut-close s 1003 1003 1010 1010
+      in if opened & closed == 0 & md-cuts-json s decor game.world 0 "" == "[{\"name\":\"set\",\"x0\":1003,\"y0\":1003,\"x1\":1010,\"y1\":1010,\"account\":9,\"compose\":{\"x\":1003,\"y\":1003,\"z\":0,\"members\":[{\"art\":16389,\"x\":1004,\"y\":1004,\"z\":0},{\"art\":3701,\"x\":1006,\"y\":1006,\"z\":0}]}}]" then 8192 else 0
+  bmd-cuts : Integer -> Integer
+  bmd-cuts (unused) = let s = md-new 0
+    in let word = [91, 104, 97, 108, 108, 72, 97, 108, 108]
+    in let early = md-cut-close s 1 2 3 4
+    in let opened = md-cut-open s word 1 5 7
+    in let closed = md-cut-close s 1430 1640 1440 1650
+    in let json = when cg-game 512 is Err (_) -> "" is Ok (game) -> md-cuts-json s (dc-new 0) game.world 0 ""
+    in if early == -1 & opened & closed == 0 & s.cut-count == 1 & md-cut-find s word 1 5 0 == 0
+      & json == "[{\"name\":\"hall\",\"x0\":1430,\"y0\":1640,\"x1\":1440,\"y1\":1650,\"account\":7}]"
+      & not (md-name-valid word 5 9) & not (md-name-valid word 1 1) & md-name-valid word 1 5 then 2048 else 0
+  bmd-row : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bmd-row (data) (i) (dx) (dy) (dz) (height) (flags) = let at = 32832 + i * 12
+    in let a = poke-16 data at dx
+    in let b = poke-16 data (at + 2) dy
+    in let c = poke-16 data (at + 4) dz
+    in let d = poke-16 data (at + 6) height
+    in let e = poke-16 data (at + 8) (bit-and flags #FFFF)
+    in poke-16 data (at + 10) (flags / 65536)
+  bmd-map : Integer -> WalkMap
+  bmd-map (colliders) = when walk-map-sized 1000 1000 16 16 colliders is Ok (m) -> m is Err (_) -> bmd-map 2
+  bmd-at : WalkMap, Integer, Integer -> Integer
+  bmd-at (map) (x) (y) = peek-qword map.solids (walk-cell map x y * map.stride)
+  bmd-state : Integer -> MdState
+  bmd-state (count) = let s = md-new 0 in let a = __record-set s "data" (bmd-table count) in s
+  bmd-laying : Integer -> Integer
+  bmd-laying (unused) = let s = bmd-state 3
+    in let counted = if md-count s 5 == 3 & md-count s 6 == 0 & md-count (md-new 0) 5 == 0 then 1 else 0
+    in let map = bmd-map 2
+    in let missed = md-lay s map 5 1002 1002 0 True
+    in let laid = if missed == 0 & bmd-at map 1002 1002 == 2 & bmd-at map 1003 1002 == 1 then 2 else 0
+    in let again = md-lay s map 5 1002 1002 0 True
+    in let once = if again == 0 & bmd-at map 1002 1002 == 2 & bmd-at map 1003 1002 == 1 then 4 else 0
+    in let off = md-lay s map 5 1002 1002 0 False
+    in let lifted = if bmd-at map 1002 1002 == 0 & bmd-at map 1003 1002 == 0 then 8 else 0
+    in let held = walk-add-solid map 1002 1002 0 5 #40
+    in let short = if md-fits s map 5 1002 1002 == 1 & md-fits s (bmd-map 2) 5 1002 1002 == 0 then 16 else 0
+    in let high = if md-lay s (bmd-map 2) 5 1002 1002 120 True == 1 then 32 else 0
+    in let corrupt = if md-count (bmd-state 4) 5 == 0 then 64 else 0
+    in counted + laid + once + lifted + short + high + corrupt
+  bmd-syncing : Integer -> Integer
+  bmd-syncing (unused) = when cg-game 512
+    is Err (_) -> -1
+    is Ok (game) -> let items = gsi-new game.world
+      in let s = bmd-state 3
+      in let decor = dc-new 0
+      in let map = bmd-map 2
+      in when dc-create decor items (#4000 + 5) 0 1004 1004 0 1
+        is Err (_) -> -2
+        is Ok (serial) -> let plain = dc-create decor items #0E75 0 1006 1006 0 1
+          in let first = md-sync s decor game.world map None
+          in let second = md-sync s decor game.world map None
+          in let synced = if first == 0 & second == 0 & bmd-at map 1004 1004 == 2 & bmd-at map 1005 1004 == 1 & bmd-at map 1006 1006 == 0 then 128 else 0
+          in let lifted = md-lift s game.world serial map None
+          in let removed = dc-remove decor items serial
+          in let third = md-sync s decor game.world map None
+          in synced + (if bmd-at map 1004 1004 == 0 & bmd-at map 1005 1004 == 0 then 256 else 0)
+  bvt-multi-designs : Integer -> [Console] Integer
+  bvt-multi-designs (unused) = act
+    n <- bmd-laying 0 + bmd-syncing 0 + bmd-naming 0 + bmd-deeds 0 + bmd-cuts 0 + bmd-doors 0 + bmd-compose 0
+    a <- bvt-check ("placed multis collide: laid once, lifted clean, refused without room, synced from the decorator, found by name, laid and lifted as deed houses, cut and composed in game, with a front door and a plot (code " & show n & ")") (n == 16383)
+    a
+  end

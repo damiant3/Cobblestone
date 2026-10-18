@@ -252,7 +252,7 @@ Chapter: CompositeFighterProof
   cfp-gold-slot : GameWorldSpawn, WorldTable, Integer -> Integer
   cfp-gold-slot (g) (world) (i) = if i == list-length g.slots then -1
     else let slot = list-at g.slots i
-    in let fit = slot.serial /= 0 & (list-at g.catalog.profiles slot.profile).gold-high > 0 & cgf-alive world slot.serial
+    in let fit = slot.serial /= 0 & (list-at g.catalog.profiles slot.profile).taming == 0 & cgf-alive world slot.serial
     in if fit then i else cfp-gold-slot g world (i + 1)
   cfp-isolate : CompositeGame, WorldObject, WalkMap -> Boolean
   cfp-isolate (owner) (m) (map) = when owner.spawns
@@ -305,7 +305,7 @@ Chapter: CompositeFighterProof
     m <- cfp-mobile owner c
     revived <- cfp-check "the first world tick after boot raises the fighter at home for the same economy actor" ((when ran is Err (_) -> False is Ok (n) -> n > 0)
       & c.serial /= 0 & m.kind == 1 & m.health > 0 & m.x == c.home.x & m.y == c.home.y & c.leg == 0 & c.kills == kills & cfp-census owner.vendor.currency)
-    dressed <- cfp-check "the revived fighter wears the fighter's look for its new serial" (cst-styled owner.items c.serial cst-fighter)
+    dressed <- cfp-check "the revived fighter wears the fighter's look for its new serial" (cst-styled owner.items c.serial cst-warrior)
     fell <- cfp-fell store c
     saved <- cfp-commit store "the revived fighter and the dead gatherer commit"
     restored + revived + dressed + fell + saved
@@ -354,7 +354,7 @@ Chapter: CompositeFighterProof
   cfp-gold : GameWorldSpawn, WorldTable, Integer, List Integer -> List Integer
   cfp-gold (g) (world) (i) (out) = if i == list-length g.slots then out
     else let serial = (list-at g.slots i).serial
-    in let live = serial /= 0 & (list-at g.catalog.profiles (list-at g.slots i).profile).gold-high > 0 & cgf-alive world serial
+    in let live = serial /= 0 & (list-at g.catalog.profiles (list-at g.slots i).profile).taming == 0 & cgf-alive world serial
     in cfp-gold g world (i + 1) (if live then list-push out serial else out)
   cfp-put : WorldTable, Integer, Integer, Integer, Integer -> Integer
   cfp-put (world) (serial) (x) (y) (health) = when world-get world serial
@@ -372,7 +372,7 @@ Chapter: CompositeFighterProof
     is None -> cfp-check "spawns attached for the prey arm" False
     is Just (g) -> let world = owner.checkpoint.game.world
       in let gold = cfp-gold g world 0 []
-      in if list-length gold < 3 then cfp-check ("three live gold-carrying spawns for the prey arm, found " & show (list-length gold)) False
+      in if list-length gold < 3 then cfp-check ("three live untameable spawns for the prey arm, found " & show (list-length gold)) False
       else let a = list-at gold 0
       in let b = list-at gold 1
       in let cc = list-at gold 2
@@ -384,8 +384,17 @@ Chapter: CompositeFighterProof
       in let alone = cgf-prey g world at 0 0 4611686018427387903 (cgf-sight + 1)
       in cfp-check "the fighter passes the weakest prey while another spawn stands within 8 tiles of it, takes the weakest lone one, and takes the weak one once it is alone" (
         placed == 0 & gone == 0 & crowded == cc & alone == a)
- A fighter back at the lodging entrance with 120 gold ore of loot walks to the blacksmith, sells it all at the smith's bid,
- repays the crown's loan at value from whatever coin it holds, and walks home.
+ A fighter back at the lodging entrance with a 120 gold ore lot of loot walks to the blacksmith, sells it all at the smith's
+ bid, repays the crown's loan at value from whatever coin it holds, and walks home. The fixture finds the lot onto the
+ fighter, as a lot taken from a corpse arrives.
+  cfp-ore-lot : CompositeGame, CgFighter, Integer -> Integer
+  cfp-ore-lot (owner) (c) (amount) = let v = owner.vendor
+    in if ep-find v.currency.world c.fighter.producer.actor 6 amount < 0 then 0
+    else when world-create v.game.world (WorldObject { serial = 0, kind = 2, x = 20, y = 20, z = 0,
+      graphic = gh-output-graphic 6, hue = item-ore-hue 6, container = c.serial, amount = amount, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register owner.items serial 0 0 True True /= 0 then 0
+        else if gv-add-lot v serial c.fighter.producer.actor 6 1000 32 0 < 0 then 0 else amount
   cfp-errands : CompositeGame, CgFighter, Integer -> Integer
   cfp-errands (owner) (c) (left) = if left == 0 | c.leg == 0 then left
     else when cg-errand owner owner.checkpoint.game get-ticks
@@ -397,7 +406,7 @@ Chapter: CompositeFighterProof
     is Just (town) -> let x = owner.vendor.currency
       in let merchant = list-at owner.vendor.vendors 1
       in let purse = (ep-actor x.world c.fighter.producer.actor).purse
-      in let kept = ef-loot c.fighter 120
+      in let kept = cfp-ore-lot owner c 120
       in let ore = ep-at (ep-actor x.world c.fighter.producer.actor).stock 6
       in let smith-ore = ep-at (ep-actor x.world merchant.actor).stock 6
       in let coin = cfp-value x purse
@@ -465,7 +474,7 @@ Chapter: CompositeFighterProof
       end
   opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
     is Err (e) -> cfp-check e False
-    is Ok (map) -> when walk-map-new 1408 1536 96 160
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
      is Err (e) -> cfp-check e False
      is Ok (britain) -> when walk-map-new cgf-window.x1 cgf-window.y1 (cgf-window.x2 - cgf-window.x1 + 1) (cgf-window.y2 - cgf-window.y1 + 1)
      is Err (e) -> cfp-check ("route window " & e) False

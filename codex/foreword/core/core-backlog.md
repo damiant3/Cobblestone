@@ -48,34 +48,6 @@ OUTPUT, so each is its own changelist with its own re-recorded expectations.
 
 ## Open
 
-**CORE-10. SECURITY: every published release verifies an unsigned image one
-time in four.** `ed25519-verify` (`Ed25519.codex`, since CL 1532, 2026-05-16)
-never refused a small-order A or R. The all-zero key and signature decode to
-one point of order 4 with S = 0, and the equation then holds whenever h is 3
-mod 4, so an unsigned CDX passes for one content hash in four. Every public
-release through Update 66 carries it. Head refuses A and R whose [8]P is the
-identity; `codex/test/apps/ed25519-small-order` grades all four h classes and a
-non-canonical S, and the depot verifier accepts its h = 3 case.
-
-Callers, all exposed until the fix ships: boot and seed self-verify
-(`apps/works/SeedVerify`, `GopWake`, `codex/os/verify/WakeCeremony` via
-`GopBoot`, `build/test-self-verify.ps1` behind the seed path); image load and
-inspection (`codex/os/verify/CdxBinary` `cdx-verify-signature` and so
-`CdxVerifier` and `VerifyReport`, `apps/works/CdxChain`, `CdxInspector`,
-`AgentBundle`); the repository and fact store (`codex/foreword/core/ImportGate`
-and so `FactDisk`, `apps/works/RepoProtocol`, `RepoProtocolPersist`,
-`FactArchive`); keys and products (`apps/works/KeyManager`, `GopWizard`,
-`codex/product/ProductAuthorization`, `ProductNotary`,
-`apps/services/Revocation`); peers and transport (`codex/os/trust/Handshake`,
-`apps/fileshare/PeerDiscovery`, `codex/foreword/encode/TlsCert`, `X509Chain`);
-the browser (`apps/browser/ContentAddress`, `PageFetcher`, `TrustManager`).
-
-OTA does not reach the verifier at all: `OtaUpdate.codex` `gate-b-run-all`,
-named "full 5-phase verification", checks the magic and a 136-byte minimum and
-ignores its `trusted-pubkey`. Open: the advisory for releases through Update 66
-(Damian's call, via root), and Gate B performing the signature check its name
-claims. Owner: red.
-
 **CORE-9. We can READ a certificate and cannot WRITE one, so we cannot stand
 in for ourselves: no self-signed certificate, and no CA of our own.** Ruled
 2026-09-08 by Damian: self-signing is where this goes, and the stand-in is
@@ -169,15 +141,16 @@ key being used rarely in one place and a server key sitting in a
 network-facing process on every host. A server key is generated per
 deployment.
 
-**CORE-11. PBKDF2 is too slow on codex-vm for the current iteration guidance.**
-`pbkdf-hash` costs about 23 us per iteration on codex-vm (val 2026-10-07: four
-hashes at 20000 iterations and two at 100000, timed against a 1-iteration
-control). 600000 iterations, the current guidance for PBKDF2-HMAC-SHA256,
-would take about 14 s per verify. Every caller (`apps/market/MarketAuth`,
-`apps/uoaix/GameAccounts`) verifies on a single request loop, and both therefore
-stay at 20000. Each iteration runs `pb-prf`: two list-based `sha256` calls
-over a fresh concatenation and a word-to-byte conversion. A word-level PRF
-over the precomputed ipad and opad states is the open fix.
+**CORE-11. PBKDF2 has no native compression, for Damian to ask for.** PBKDF2-HMAC-SHA256
+runs 1.45 us per iteration on seed DF6F316E (2026-10-17,
+one 200000-iteration hash against a 1-iteration control, host wall clock), so 600000
+iterations take about 0.87 s per verify, and every caller (`apps/market/MarketAuth`,
+`apps/uoaix/GameAccounts`) stays at 20000. The four compression functions take the LIR path
+(arms `codex/test/ops/lir-bitops`, `lir-bitops-shadow`, `lir-listat`, `codex/test/apps/sha256-test`,
+each with a `.census` pin), and a profile puts 76% of the time inside them. Neither a wider
+allocator (shelf 45053, parked) nor an eight-round unroll made it faster. **Open:** a native
+compression builtin on the x86 SHA extensions with a CPUID fallback to the Codex rounds.
+Root closed the campaign at this state (2026-10-17); the builtin is a new capability.
 
 **CORE-12. SHA-1, SHA-256 and SHA-512 alias a non-octet element instead of
 refusing it.** `bytes-to-words` (`Sha256.codex`) and its siblings in
@@ -240,13 +213,3 @@ children's digest bytes and `dht-bucket-index` measures the XOR distance over by
 nothing builds a handshake yet, and `codex/test/apps/fileshare-bytes` proves the
 32-byte fields round-trip (both other lines go red with the old code). Open: the three
 held persisted sites, DamianDecisions 3.12 and 3.13.
-
-## CCE has no Dingbats block
-
-U+2700..U+27BF (Dingbats) is in neither CCE tier, so a character from it
-reaches Codex text as `?`. Measured 2026-09-30 by `codex/test/apps/spark-audio`:
-the WPF Spark's `sfx_config.json` labels its 15 Magic presets with U+2728
-(sparkles), and every other character in that file and in `music_config.json`
-(Latin-1 letters, U+2013, U+266D, U+266F, emoji) survives. The oracle
-`build/spark-audio-oracle.ps1` applies the same substitution by name, so the
-test stays green on the rest and turns red the day the block is added.

@@ -12,8 +12,8 @@ Chapter: GameScissors
   gsc-tool (state) (player) (serial) =
     let at = gv-lot state.vendor serial 0
     in if at < 0 then -1
-    else let lot = list-at state.vendor.lots at
-    in if lot.actor /= player.actor | lot.item /= 74 | lot.quantity /= 1 | not (gsi-known state.items serial)
+    else let lot = ep-lot state.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | lot.item /= 74 | ep-amount state.vendor.currency.world.goods lot.serial /= 1 | not (gsi-known state.items serial)
       | not (gv-owned state.items.world serial player.serial 65) then -1
     else when world-get state.items.world serial
       is Err (_) -> -1
@@ -42,8 +42,8 @@ Chapter: GameScissors
           is Ok (me) -> if walk-abs (sheep.x - me.x) > 3 | walk-abs (sheep.y - me.y) > 3 then gh-denied "You are too far away."
             else if sheep.graphic == #00DF then gh-denied "This sheep is not yet ready to be shorn."
             else let v = state.vendor
-            in if v.lot-count == gv-lot-limit | world-count state.items.world >= state.items.world.capacity then gh-denied "You cannot hold the wool."
-            else if ep-find v.currency.world player.actor 12 2 < 0 then gh-denied "You cannot hold the wool."
+            in if not (ep-lot-room v.currency.world.goods 1) | world-room state.items.world <= 0 then gh-denied "You cannot hold the wool."
+            else if eh-gather-from v.currency.world player.actor 12 2 < 0 then gh-denied "You cannot hold the wool."
             else let shorn = __record-set sheep "graphic" #00DF
             in when world-update state.items.world shorn
               is Err (e) -> Err e
@@ -57,14 +57,14 @@ Chapter: GameScissors
     if serial /= 0 & gsc-mobile state.items.world serial then gsc-shear state player serial now
     else let at = gv-lot state.vendor serial 0
     in if serial == 0 | at < 0 then gh-denied "You can't use the scissors on that."
-    else let lot = list-at state.vendor.lots at
+    else let lot = ep-lot state.vendor.currency.world.goods at
     in let from = lot.item
     in let into = gsc-into from
     in if into == 0 | not (eg-id state.vendor.currency.world.catalog into) then gh-denied "Scissors cannot be used on that to produce anything."
     else if lot.actor /= player.actor | not (gv-owned state.items.world serial player.serial 65) then gh-denied "You can't use the scissors on that."
     else let w = state.vendor.currency.world
     in let p = ep-actor w player.actor
-    in let n = lot.quantity
+    in let n = ep-amount w.goods lot.serial
     in if n < 1 | ep-at p.stock from < n | not (ep-room p into n) then gh-denied "Scissors cannot be used on that to produce anything."
     else let qn = lot.quality * n
     in let wn = lot.wear * n
@@ -73,6 +73,7 @@ Chapter: GameScissors
     in let q0 = ep-add p.quality from (0 - qn)
     in let w0 = ep-add p.wear from (0 - wn)
     in let c0 = ep-add p.cost from (0 - cn)
+    in let evened = ep-settle p from
     in let consumed = ep-add w.consumed from n
     in let a = ep-add p.stock into n
     in let b = ep-add p.quality into qn

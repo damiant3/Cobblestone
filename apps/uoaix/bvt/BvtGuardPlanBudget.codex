@@ -1,0 +1,43 @@
+Chapter: BvtGuardPlanBudget
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ UOAIX-216 13.45: a foot guard's plan is bounded by cv-plan-budget. The fixture is a 200 by 200 map; sealed, a wall
+ (flag 64) down the whole of x 1100 leaves 20,000 cells reachable from 1001,1001, more than the budget, and 1150,1001
+ beyond it.
+  bvgp-fill : WalkMap, Boolean, Integer -> Integer
+  bvgp-fill (map) (sealed) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let mark = __heap-save
+    in let set = walk-set-land map x y 0 (if sealed & x == 1100 then 64 else 0)
+    in let restored = __heap-restore mark in bvgp-fill map sealed (i + 1)
+  bvgp-mover : Integer -> WorldObject
+  bvgp-mover (unused) = WorldObject { serial = 0, kind = 1, x = 1001, y = 1001, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+ A bit per check: 1 the guard's budget stops a failing search at cv-plan-budget expansions, 2 the whole map's budget
+ expands past it (the cost the bound removes), 4 the guard's budget still finds a 59-step route on the open map; -9 a
+ fixture that did not build.
+  bvgp-run : Integer -> Integer
+  bvgp-run (unused) = when world-new 64
+    is Err (_) -> -9
+    is Ok (w) -> when walk-map-new 1000 1000 200 200
+      is Err (_) -> -9
+      is Ok (map) -> let filled = bvgp-fill map True 0
+        in let indexed = world-reindex w
+        in let p = tl-path-new map
+        in let capped = tl-plan-budget p w map None (bvgp-mover 0) 1150 1001 0 (alloc-bytes 4096) 4096 cv-plan-budget
+        in let a = if capped < 0 & p.expanded <= cv-plan-budget then 1 else 0
+        in let whole = tl-plan-budget p w map None (bvgp-mover 0) 1150 1001 0 (alloc-bytes 4096) 4096 (p.width * p.height)
+        in let b = if whole < 0 & p.expanded > cv-plan-budget then 2 else 0
+        in let opened = bvgp-fill map False 0
+        in let found = tl-plan-budget p w map None (bvgp-mover 0) 1060 1001 0 (alloc-bytes 4096) 4096 cv-plan-budget
+        in let c = if found > 0 then 4 else 0
+        in a + b + c
+  bvt-guard-plan-budget : Integer -> [Console] Integer
+  bvt-guard-plan-budget (unused) = act
+    n <- bvgp-run 0
+    a <- bvt-check ("a foot guard's failing plan stops at cv-plan-budget cells where the whole map's search ran on, and a near route is still found (UOAIX-216 13.45, code " & show n & ")") (n == 7 & cv-plan-budget < 117504 & cv-plans >= 1)
+    a
+  end

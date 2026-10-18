@@ -1,0 +1,54 @@
+Chapter: MerchantFleetView
+  cites Uoaix chapter MerchantFleet
+  cites Uoaix chapter MerchantFleetLanes
+  cites Uoaix chapter Ships
+  cites Uoaix chapter Construction
+
+ UOAIX-237 F2, the merchant ships at sea. On a leg of mf-leg-hours economy hours ship k lies at its port's dock for the
+ first hour, where it trades (cg-fleet-step), then sails the leg's sea route (MerchantFleetLanes) at an even pace and
+ reaches the next port's dock as the next leg begins. A route is 8-connected, so a run's length is its larger offset.
+ ServUO Multis/Boats/LargeBoat.cs: NorthID 0x8, EastID 0x9, SouthID 0xA, WestID 0xB, drawn with 0x4000 as the
+ fishing boat is.
+  mfv-serial : Integer -> Integer
+  mfv-serial (k) = #7A000010 + k
+  mfv-moored : Integer = 3600
+  mfv-art : Integer = #4008
+  mfv-length : List Integer, Integer -> Integer
+  mfv-length (r) (i) = if i + 3 >= list-length r then 0
+    else max (walk-abs (list-at r (i + 2) - list-at r i)) (walk-abs (list-at r (i + 3) - list-at r (i + 1))) + mfv-length r (i + 2)
+  mfv-heading : Integer, Integer -> Integer
+  mfv-heading (dx) (dy) = if walk-abs dx >= walk-abs dy then (if dx > 0 then 1 else 3) else (if dy > 0 then 2 else 0)
+  mfv-step : Integer, Integer -> Integer
+  mfv-step (d) (n) = if d == 0 then 0 else if d > 0 then min d n else max d (0 - n)
+ A position packs x * 65536 * 16 + y * 16 + heading, so 0 is never a drawn ship.
+  mfv-pack : Integer, Integer, Integer -> Integer
+  mfv-pack (x) (y) (heading) = (x * 65536 + y) * 16 + heading
+  mfv-along : List Integer, Integer, Integer -> Integer
+  mfv-along (r) (i) (left) = if i + 3 >= list-length r then mfv-pack (list-at r i) (list-at r (i + 1)) 0
+    else let dx = list-at r (i + 2) - list-at r i
+    in let dy = list-at r (i + 3) - list-at r (i + 1)
+    in let run = max (walk-abs dx) (walk-abs dy)
+    in if left > run then mfv-along r (i + 2) (left - run)
+    else mfv-pack (list-at r i + mfv-step dx left) (list-at r (i + 1) + mfv-step dy left) (mfv-heading dx dy)
+  mfv-pos : Integer, Integer, Integer -> Integer
+  mfv-pos (k) (hour) (seconds) = let lane = list-at (mf-lanes 0) k
+    in let leg = int-mod (max 0 hour / mf-leg-hours) (list-length lane)
+    in let from = list-at lane leg
+    in let phase = int-mod (max 0 hour) mf-leg-hours * 3600 + int-mod seconds 3600
+    in if phase < mfv-moored then mfv-pack (mfl-dock-x from) (mfl-dock-y from) 0
+    else let r = mfl-route from (mf-next lane leg)
+    in if list-length r < 2 then mfv-pack (mfl-dock-x from) (mfl-dock-y from) 0
+    else mfv-along r 0 (mfv-length r 0 * (phase - mfv-moored) / (mf-leg-hours * 3600 - mfv-moored))
+  mfv-view : ShpViewer, Integer, Integer, Integer, Integer, Integer -> List (List Integer)
+  mfv-view (v) (x) (y) (hour) (seconds) (k) = if k >= mf-ships then []
+    else let pos = mfv-pos k hour seconds
+    in let px = pos / 16 / 65536
+    in let py = int-mod (pos / 16) 65536
+    in let near = walk-abs (x - px) <= shp-reach & walk-abs (y - py) <= shp-reach
+    in let shown = peek-qword v.fleet (k * 8)
+    in let rest = mfv-view v x y hour seconds (k + 1)
+    in if not near then (if shown == 0 then rest else let gone = poke-qword v.fleet (k * 8) 0 in [sip-remove (mfv-serial k)] & rest)
+    else if shown == pos then rest
+    else let kept = poke-qword v.fleet (k * 8) pos in [cn-item (mfv-serial k) (mfv-art + int-mod pos 16) px py shp-z] & rest
+
+Page 1

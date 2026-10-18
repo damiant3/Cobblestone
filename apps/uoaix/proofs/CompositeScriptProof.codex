@@ -13,15 +13,18 @@ Chapter: CompositeScriptProof
     in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
     in let restored = __heap-restore mark in csq-fill map (i + 1)
   csq-far : GvWorld, Integer, Integer, Integer -> Integer
-  csq-far (v) (lot) (x) (y) = when world-get v.game.world (csq-vendor v (list-at v.lots lot).actor 0)
+  csq-far (v) (lot) (x) (y) = when world-get v.game.world (csq-vendor v (ep-lot v.currency.world.goods lot).actor 0)
     is Err (_) -> 1000000
     is Ok (m) -> max (abs (m.x - x)) (abs (m.y - y))
   csq-lot : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
-  csq-lot (v) (item) (x) (y) (i) (best) = if i == v.lot-count then best
-    else let lot = list-at v.lots i
-    in if lot.item == item & lot.quantity > 0 & csq-vendor v lot.actor 0 > 0
-      & (best < 0 | csq-far v i x y < csq-far v best x y) then csq-lot v item x y (i + 1) i
-    else csq-lot v item x y (i + 1) best
+  csq-lot (v) (item) (x) (y) (unused) (best) = csq-lot-from v item x y (ep-lots-first v.currency.world.goods) best
+  csq-lot-from : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
+  csq-lot-from (v) (item) (x) (y) (serial) (best) = if serial == 0 then best
+    else let lot = ep-lot v.currency.world.goods serial
+    in let next = ep-lot-after v.currency.world.goods serial
+    in if lot.item == item & (ep-amount v.currency.world.goods lot.serial) > 0 & csq-vendor v lot.actor 0 > 0
+      & (best < 0 | csq-far v serial x y < csq-far v best x y) then csq-lot-from v item x y next serial
+    else csq-lot-from v item x y next best
   csq-vendor : GvWorld, Integer, Integer -> Integer
   csq-vendor (v) (actor) (i) = if i == v.vendor-count then 0
     else if (list-at v.vendors i).actor == actor then (list-at v.vendors i).serial else csq-vendor v actor (i + 1)
@@ -57,14 +60,14 @@ Chapter: CompositeScriptProof
     y <- (when world-get owner.checkpoint.game.world me is Err (_) -> 0 is Ok (m) -> m.y)
     b <- csq-check "replayed walk packets move the character" (is-ok turned & is-ok walked & x == 1421)
     lot <- csq-lot owner.vendor 25 x y 0 -1
-    vendor <- (if lot < 0 then 0 else csq-vendor owner.vendor (list-at owner.vendor.lots lot).actor 0)
+    vendor <- (if lot < 0 then 0 else csq-vendor owner.vendor (ep-lot owner.vendor.currency.world.goods lot).actor 0)
     at <- (when world-get owner.checkpoint.game.world vendor is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
     arrived <- csp-walk-to p (list-at at 0) (list-at at 1) 1 200
     sales <- owner.vendor.sale-count
     print-line-uni ("WALK to vendor at " & show (list-at at 0) & "," & show (list-at at 1) & " " & (when arrived is Err (e) -> e is Ok (n) -> "arrived, budget left " & show n))
-    print-line-uni ("SHOP lot=" & show lot & " vendor=" & show vendor & " lots=" & show owner.vendor.lot-count & " vendors=" & show owner.vendor.vendor-count & " pack=" & show player.pack)
+    print-line-uni ("SHOP lot=" & show lot & " vendor=" & show vendor & " lots=" & show (ep-lot-count owner.vendor.currency.world.goods) & " vendors=" & show owner.vendor.vendor-count & " pack=" & show player.pack)
     menu <- csp-send p (csp-use vendor)
-    bought <- csp-send p (csp-buy vendor (if lot < 0 then 0 else (list-at owner.vendor.lots lot).serial) 1)
+    bought <- csp-send p (csp-buy vendor (if lot < 0 then 0 else (ep-lot owner.vendor.currency.world.goods lot).serial) 1)
     tool <- (if owner.vendor.sale-count == sales then 0 else (list-at owner.vendor.sales sales).delivered)
     c <- csq-check "the scripted player buys a pickaxe through the vendor packets and the sale is in the audit book" (lot >= 0 & vendor > 0 & is-ok menu & is-ok bought
       & owner.vendor.sale-count == sales + 1 & (list-at owner.vendor.sales sales).item == 25 & tool > 0)
@@ -96,9 +99,9 @@ Chapter: CompositeScriptProof
 
   opening : [Console, Device.Block] Integer = when cg-specs 0
     is Err (e) -> csq-check ("registry " & e) False
-    is Ok (specs) -> when walk-map-new 1408 1536 96 208
+    is Ok (specs) -> when walk-map-new 1408 1536 96 224
       is Err (e) -> csq-check e False
-      is Ok (map) -> when walk-map-new 1408 1536 96 160
+      is Ok (map) -> when walk-map-new 1408 1520 96 240
        is Err (e) -> csq-check e False
        is Ok (britain) -> let filled = csq-fill map 0 in let town-filled = csq-fill britain 0 in act
         opened <- us-open 0 131072

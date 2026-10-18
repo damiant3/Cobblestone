@@ -41,6 +41,11 @@ Chapter: GameMagery
   mg-poly-menu (dialog) = let title = "Polymorph Selection Menu"
     in let header = list-push (gp-put16 (gp-put32 [#7C,0,0] dialog) #A020) (text-length title)
     in mg-poly-rows (list-push (gp-ascii header title 0 (text-length title)) 18) 0
+ Magincia island lies under a field that suppresses all magic, its cause a mystery (Damian, 2026-10-13: "the whole island
+ is under a magical supression field of some sort, and is a mystery as to the cause"): the 1.25 map's island, x 3580 to
+ 3830, y 2020 to 2320, Ocllo (y 2470 on) outside it. No spell begins there.
+  mg-suppressed : Integer, Integer -> Boolean
+  mg-suppressed (x) (y) = x >= 3580 & x <= 3830 & y >= 2020 & y <= 2320
   mg-begin : Magery, GameShard, GameInput, MgActor, Integer, Integer, Integer -> GameReply
   mg-begin (magic) (shard) (input) (actor) (spell) (scroll) (form) =
     if not (mgd-supported spell) then gsi-denied "That spell is not available in this spell profile."
@@ -59,6 +64,7 @@ Chapter: GameMagery
     else when world-get shard.world actor.serial
       is Err (e) -> gsi-denied e
       is Ok (mobile) -> if mobile.health == 0 then gsi-denied "The dead cannot cast."
+        else if mg-suppressed mobile.x mobile.y then gsi-denied "Thy words of power fall dead upon the air. No magic stirs on this island."
         else let a = __record-set actor "spell" spell
         in let b = __record-set actor "stage" 1
         in let c = __record-set actor "due" (magic.tick + mgd-delay spell)
@@ -78,9 +84,9 @@ Chapter: GameMagery
     else if spell == 7 | spell == 15 then actor.absorb == 0 & actor.protected-until <= magic.tick
     else if spell == 19 then not (list-at magic.definitions (world-slot shard.world aim.object.serial)).locked
     else if spell == 23 then (list-at magic.definitions (world-slot shard.world aim.object.serial)).locked
-    else if spell == 24 | spell == 28 | spell == 39 | spell == 47 | spell == 50 then shard.world.capacity - world-count shard.world >= 2 * mga-wall-last spell + 1 & mga-wall-free magic 0 0 >= 2 * mga-wall-last spell + 1
+    else if spell == 24 | spell == 28 | spell == 39 | spell == 47 | spell == 50 then world-room shard.world >= 2 * mga-wall-last spell + 1 & mga-wall-free magic 0 0 >= 2 * mga-wall-last spell + 1
       & mga-wall-ready magic shard source aim.point spell (0 - mga-wall-last spell)
-    else if spell == 52 then shard.world.capacity - world-count shard.world >= 2 & mga-wall-free magic 0 0 >= 2
+    else if spell == 52 then world-room shard.world >= 2 & mga-wall-free magic 0 0 >= 2
     else if spell == 56 then actor.poly == 0 & actor.incognito == 0 & actor.poly-pick > 0
     else if spell == 35 then actor.poly == 0
     else True
@@ -105,7 +111,7 @@ Chapter: GameMagery
               else when (if scroll == 0 then Ok [] else mgr-spend magic scroll)
                 is Err (e) -> Err e
                 is Ok (spent) -> let mana = __record-set actor "mana" (actor.mana - mgd-mana spell)
-                in let regen = if actor.regen > 0 then 0 else let due = __record-set actor "regen" (magic.tick + mgr-regen-delay shard actor) in 0
+                in let regen = if actor.regen > 0 then 0 else let due = __record-set actor "regen" (magic.tick + mgr-regen-due magic shard actor) in 0
                 in let tracked = mgs-track magic actor
                 in let touched = mgs-touch magic
                 in act
@@ -134,7 +140,7 @@ Chapter: GameMagery
       in let inventory = gsi-session magic.items shard input slot
       in if not (gsi-access magic.items inventory item) | not (gmb-access magic.bank input slot serial) then Ok (gsi-denied "That is out of reach.")
       else let meta = list-at magic.definitions (world-slot shard.world serial)
-      in if meta.locked then Ok (gsi-denied "That container is magically locked.")
+      in if meta.locked then Ok (gsi-denied "It appears to be locked.")
       else when mga-top shard.world item 65
         is Err (e) -> Err e
         is Ok (point) -> when mga-trap magic shard input meta point
@@ -157,14 +163,14 @@ Chapter: GameMagery
         in let scroll = if dialog == actor.serial then 0 else dialog
         in if choice < 1 | choice > 18 then Ok (Just (gs-reply [] "magery:polymorph-cancelled"))
         else if mge-frozen magic shard actor.serial then Ok (Just (gs-reply [gs-system "You are frozen and cannot cast."] "magery:frozen cast"))
-        else if scroll /= 0 & (at < 0 | mgd-scroll-spell (peek-qword shard.world.buffer (56 + at * 80)) /= 56 | not (mgr-carried magic actor.serial scroll)) then
+        else if scroll /= 0 & (at < 0 | mgd-scroll-spell (peek-qword (wi-object shard.world.buffer at) 40) /= 56 | not (mgr-carried magic actor.serial scroll)) then
           Ok (Just (gsi-denied "That must be in your pack for you to use it."))
         else Ok (Just (mgp-reply magic (mg-begin magic shard input actor 56 scroll (mgd-poly-body (choice - 1)))))
   mg-drop-book : Magery, GameShard, List Integer -> Boolean
   mg-drop-book (magic) (shard) (packet) = if list-length packet /= 14 then False
     else let book = gp-u32 packet 10
     in let at = world-slot shard.world book
-    in if at < 0 then False else peek-qword shard.world.buffer (56 + at * 80) == #0EFA & mgs-known magic book
+    in if at < 0 then False else peek-qword (wi-object shard.world.buffer at) 40 == #0EFA & mgs-known magic book
  ServUO Spellbook.OnDragDrop: a scroll dropped on a book that lacks its spell writes the spell in with sound 0x249 and
  is used up, one from a stack; a book that holds the spell answers 500179 and the scroll returns.
   mg-scribe-book : Magery, GameShard, GameInput, MgActor, List Integer -> GameReply
@@ -195,7 +201,7 @@ Chapter: GameMagery
   mg-casting : List Integer, GameShard -> Boolean
   mg-casting (packet) (shard) = if list-length packet >= 4 & list-at packet 0 == #12 then list-at packet 3 == #27 | list-at packet 3 == #56
     else if list-length packet == 5 & list-at packet 0 == 6 then
-      (let at = world-slot shard.world (bit-and (gp-u32 packet 1) #7FFFFFFF) in at >= 0 & mgd-scroll-spell (peek-qword shard.world.buffer (56 + at * 80)) > 0)
+      (let at = world-slot shard.world (bit-and (gp-u32 packet 1) #7FFFFFFF) in at >= 0 & mgd-scroll-spell (peek-qword (wi-object shard.world.buffer at) 40) > 0)
     else False
   mg-handle-at : Magery, GameShard, GameInput, WalkMap, Integer, List Integer, Integer -> [Device.Block] Result (Maybe GameReply) Text
   mg-handle-at (magic) (shard) (input) (map) (port) (packet) (now) =
@@ -218,10 +224,10 @@ Chapter: GameMagery
     else if opcode == #6C & bit-and (gp-u32 packet 2) #FFFF0000 /= #4D470000 then act Ok None end
     else let serial = if opcode == 6 | opcode == 8 then bit-and (gp-u32 packet 1) #7FFFFFFF else 0
     in let at = world-slot shard.world serial
-    in let on-scroll = if at < 0 then 0 else mgd-scroll-spell (peek-qword shard.world.buffer (56 + at * 80))
+    in let on-scroll = if at < 0 then 0 else mgd-scroll-spell (peek-qword (wi-object shard.world.buffer at) 40)
     in let claimed = if opcode == 8 then on-scroll > 0 & mg-drop-book magic shard packet
       else if opcode /= 6 then True else if at < 0 then False else
-      peek-qword shard.world.buffer (56 + at * 80) == #0EFA | on-scroll > 0 | (mgs-known magic serial &
+      peek-qword (wi-object shard.world.buffer at) 40 == #0EFA | on-scroll > 0 | (mgs-known magic serial &
         (if mgs-known magic serial then (list-at magic.definitions at).locked | (list-at magic.definitions at).trapped else False))
     in if not claimed then act Ok None end
     else if now < magic.tick then act Err "magery clock moved backward" end
@@ -240,11 +246,14 @@ Chapter: GameMagery
             is Ok (value) -> Ok (Just (mgp-reply magic value))
         end
         else if list-length packet > 64 | list-at packet (list-length packet - 1) /= 0 then act Err "magery text command extent" end
-        else let number = mg-number packet 4 0
-        in if number < 0 then act Ok (Just (gsi-denied "Invalid spell command.")) end
-        else if list-at packet 3 == #43 then let book = mgr-book magic actor.serial 0
-          in act Ok (Just (if book == 0 then gsi-denied "You have no carried spellbook." else mg-book-open magic shard input book)) end
-        else act Ok (Just (mg-begin magic shard input actor number 0 0)) end
+        else act Ok (Just (mg-text-command magic shard input actor packet)) end
+ The 1.25 client's Open Spellbook macro is 0x12 type 0x43 with empty text, so the book opens before any number is read.
+  mg-text-command : Magery, GameShard, GameInput, MgActor, List Integer -> GameReply
+  mg-text-command (magic) (shard) (input) (actor) (packet) = if list-at packet 3 == #43 then let book = mgr-book magic actor.serial 0
+      in if book == 0 then gsi-denied "You have no carried spellbook." else mg-book-open magic shard input book
+    else let number = mg-number packet 4 0
+    in if number < 0 then gsi-denied "Invalid spell command."
+    else mg-begin magic shard input actor number 0 0
   mg-handler : Magery, GameShard, GameInput, WalkMap, Integer, List Integer -> [Device.Block] Result (Maybe GameReply) Text
   mg-handler (magic) (shard) (input) (map) (port) (packet) = mg-handle-at magic shard input map port packet get-ticks
  The owner calls `mg-gate-walk` after an admitted walk with the mobile captured before it (Gate Travel, MageryActions).

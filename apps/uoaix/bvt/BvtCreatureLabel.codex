@@ -1,0 +1,27 @@
+Chapter: BvtCreatureLabel
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-162: All Names' single click (0x09) on a creature answers its combat name; a double-click (0x06) and a click on
+ the viewer itself are not a creature label.
+  bcr-click : Integer, Integer -> List Integer
+  bcr-click (op) (serial) = gp-put32 [op] serial
+  bcr-note : Maybe GameReply -> Text
+  bcr-note (r) = when r is None -> "" is Just (g) -> g.note
+  bcr-length : Maybe GameReply -> Integer
+  bcr-length (r) = when r is None -> 0 is Just (g) -> if list-length g.packets == 0 then 0 else list-length (list-at g.packets 0)
+  bvt-creature-label : Integer -> [Console] Integer
+  bvt-creature-label (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("creature label fixture: " & e) False
+    is Ok (owner) -> let game = owner.checkpoint.game
+      in when world-create game.world (gs-mobile 0 1420 1700 0 #0027 0)
+        is Err (e) -> bvt-check ("creature label mobile: " & e) False
+        is Ok (bat) -> let named = cb-profile owner.combat game bat "a mongbat" 20 1 2 0
+          in let shown = cg-creature-label owner game 0 (bcr-click 9 bat)
+          in let used = cg-creature-label owner game 0 (bcr-click 6 bat)
+          in let self = cg-creature-label owner game bat (bcr-click 9 bat) in act
+          print-line-uni ("CREATURELABEL named=" & show named & " note=" & bcr-note shown & " length=" & show (bcr-length shown))
+          a <- bvt-check "All Names' single click on a creature answers its name label (0x1C carrying \"a mongbat\", UOAIX-162)" (named == 0 & bcr-note shown == "items:look creature" & bcr-length shown == 45 + 9)
+          b <- bvt-check "a double-click on the creature and a click on the viewer itself get no creature label" (bcr-note used == "" & bcr-note self == "")
+          a + b
+        end

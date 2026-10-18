@@ -1,0 +1,279 @@
+Chapter: Housing
+  cites Uoaix chapter HouseData
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter Construction
+  cites Uoaix chapter NpcSpeechText
+  cites Uoaix chapter BankCommands
+  cites Uoaix chapter Cities
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter MageryState
+  cites Encode chapter Json
+
+  HsState = record { rows : Integer, fam : Integer, fam-count : Integer, fam-room : Integer, keep : Integer, cmds : Integer, cmd-next : Integer, bans : Integer, ban-count : Integer, ban-room : Integer }
+  hs-ceiling : Integer = 65536
+  hs-reach : Integer = 3
+  hs-zero : Integer, Integer, Integer -> Integer
+  hs-zero (buf) (i) (n) = if i >= n then 0 else let z = poke-qword buf (i * 8) 0 in hs-zero buf (i + 1) n
+  hs-fill : Integer, List Integer, Integer -> Integer
+  hs-fill (buf) (xs) (i) = if i >= list-length xs then 0 else let a = poke-qword buf (i * 8) (list-at xs i) in hs-fill buf xs (i + 1)
+  hs-new : Integer -> HsState
+  hs-new (unused) = let rows = alloc-bytes (hd-count * hd-row-cells * 8)
+    in let filled = hs-fill rows (hd-rows 0) 0
+    in HsState { rows = rows, fam = hs-zeroed (hs-fam-block * hs-fam-bytes), fam-count = 0, fam-room = hs-fam-block, keep = hs-zeroed (bb-shop-count * hs-keep-bytes), cmds = hs-zeroed (hs-cmd-rows * 24), cmd-next = 0, bans = hs-zeroed (hs-ban-block * hs-ban-bytes), ban-count = 0, ban-room = hs-ban-block }
+  hs-cell : HsState, Integer, Integer -> Integer
+  hs-cell (s) (h) (k) = peek-qword s.rows ((h * hd-row-cells + k) * 8)
+  hs-house-at-sign : HsState, Integer, Integer, Integer -> Integer
+  hs-house-at-sign (s) (x) (y) (h) = if h >= hd-count then -1
+    else if hs-cell s h 0 == x & hs-cell s h 1 == y then h else hs-house-at-sign s x y (h + 1)
+  hs-tell : Text -> GameReply
+  hs-tell (text) = gs-reply [sip-message #FFFFFFFF #FFFF 6 text] "housing"
+  hs-near-sign : HsState, Integer, WorldObject -> Boolean
+  hs-near-sign (s) (h) (me) = walk-abs (me.x - hs-cell s h 0) <= hs-reach & walk-abs (me.y - hs-cell s h 1) <= hs-reach
+ A double-click on a scenery house's sign: houses come from deeds (Damian, 2026-10-17), so the crown sells none.
+  hs-sign : HsState, GameShard, GameInput, Integer -> GameReply
+  hs-sign (s) (game) (input) (h) = when world-get game.world input.session.serial
+    is Err (_) -> hs-tell "You are nowhere."
+    is Ok (me) -> if not (hs-near-sign s h me) then gsi-denied "That is out of reach." else hs-tell "This house belongs to the crown and is not for sale."
+
+Section: Growth
+
+  hs-due : HsState -> Boolean
+  hs-due (s) = (s.fam-room - s.fam-count < s.fam-room / 4 & s.fam-room < hs-ceiling) | (s.ban-room - s.ban-count < s.ban-room / 4 & s.ban-room < hs-ceiling)
+ The family and ban tables double once under a quarter is free.
+  hs-grow : HsState -> Integer
+  hs-grow (s) = let families = if s.fam-room - s.fam-count < s.fam-room / 4 then hs-fam-grow-to s (min hs-ceiling (s.fam-room * 2)) else 0
+    in if s.ban-room - s.ban-count < s.ban-room / 4 then hs-ban-grow-to s (min hs-ceiling (s.ban-room * 2)) else 0
+
+Section: House commands
+
+ rundir scripts.wombat/housecmds.m and lockdown.m (UOAIX-253): a house's holder standing inside it says "I wish to lock
+ this down", "I wish to release this", "I wish to secure this" or "I wish to unsecure this" and targets an item lying
+ inside the house. GsiItem.held keeps the state (-1 locked down, a serial secured by it): a locked or secured item is not
+ lifted ("That is locked down."), and a secured container opens only to the one who secured it. Pending commands are a
+ ring of hs-cmd-rows (holder, action, cursor context), not saved. "I ban thee" and "Remove thyself" target a player and
+ move it 3 tiles south of the sign (moveDir 4, three times); a ban first adds a ban row, which 1998 reads only to answer
+ "This person is already banned!": nothing refuses a banned player's entry, and no house counts its lock-downs. A house
+ here is a placed deed's (Construction), named by its row.
+  HsPeople = record { map : WalkMap, player : Integer -> Boolean, name : Integer -> Text, oust : Integer, Integer, Integer, Integer, Text -> Boolean }
+  hs-cmd-rows : Integer = 64
+  hs-cmd-context : Integer = #48500000
+  hs-home-of : CnState, Integer, Integer, Integer -> Integer
+  hs-home-of (land) (who) (x) (y) = cn-house-at land who x y 0
+  hs-cmd-action : Text -> Integer
+  hs-cmd-action (said) = if ns-has said "i wish to lock this down" then 1 else if ns-has said "i wish to release this" then 2
+    else if ns-has said "i wish to secure this" then 3 else if ns-has said "i wish to unsecure this" then 4
+    else if ns-has said "i ban thee" then 7 else if ns-has said "remove thyself" then 8 else 0
+  hs-cmd-prompt : Integer -> Text
+  hs-cmd-prompt (a) = if a == 1 then "Lock what down?" else if a == 2 then "Choose the item you wish to release"
+    else if a == 3 then "Choose the item you wish to secure" else if a == 4 then "Choose the item you wish to unsecure"
+    else if a == 7 then "Target the individual to ban from this house." else "Target the individual to eject from this house."
+  hs-cmd : HsState, CnState, GsiState, HsPeople, GameShard, GameInput, List Integer -> Maybe GameReply
+  hs-cmd (s) (land) (items) (people) (game) (input) (packet) = if input.mode /= 2 | input.session.phase /= 2 | list-length packet == 0 then None
+    else if list-at packet 0 == 3 & list-length packet > 9 & gp-speech-valid packet then hs-cmd-said s land game input (hs-cmd-action (gp-speech-text packet))
+    else if list-at packet 0 == #6C & list-length packet == 19 & bit-and (gp-u32 packet 2) #FFFF0000 == hs-cmd-context then hs-cmd-aimed s land items people game input packet
+    else None
+  hs-cmd-said : HsState, CnState, GameShard, GameInput, Integer -> Maybe GameReply
+  hs-cmd-said (s) (land) (game) (input) (action) = if action == 0 then None
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (me) -> if hs-home-of land me.serial me.x me.y < 0 then None
+        else let row = s.cmds + int-mod s.cmd-next hs-cmd-rows * 24
+        in let context = hs-cmd-context + int-mod s.cmd-next 65536
+        in let a = poke-qword row 0 me.serial
+        in let b = poke-qword row 8 action
+        in let c = poke-qword row 16 context
+        in let n = __record-set s "cmd-next" (s.cmd-next + 1)
+        in Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 (hs-cmd-prompt action), sip-target context] "housing:command")
+  hs-cmd-row : HsState, Integer, Integer, Integer -> Integer
+  hs-cmd-row (s) (serial) (context) (i) = if i >= hs-cmd-rows then -1
+    else if peek-qword (s.cmds + i * 24) 0 == serial & peek-qword (s.cmds + i * 24) 16 == context then i else hs-cmd-row s serial context (i + 1)
+  hs-cmd-aimed : HsState, CnState, GsiState, HsPeople, GameShard, GameInput, List Integer -> Maybe GameReply
+  hs-cmd-aimed (s) (land) (items) (people) (game) (input) (packet) = let i = hs-cmd-row s input.session.serial (gp-u32 packet 2) 0
+    in if i < 0 then None
+    else let action = peek-qword (s.cmds + i * 24) 8
+    in let a = poke-qword (s.cmds + i * 24) 0 0
+    in let b = poke-qword (s.cmds + i * 24) 16 0
+    in if gp-u16 packet 11 == 65535 | gp-u16 packet 13 == 65535 then Just (gs-reply [] "housing:cancelled")
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (me) -> let h = hs-home-of land me.serial me.x me.y
+        in if h < 0 then Just (hs-tell "You must be in your house to do this.")
+        else let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
+        in if action >= 7 then Just (hs-oust s land people h serial action)
+        else when world-get game.world serial
+          is Err (_) -> Just (hs-tell "You cannot lock that down!")
+          is Ok (it) -> if it.kind /= 2 | it.container /= 0 | serial >= #7B000000 | not (gsi-known items serial) | hs-home-of land me.serial it.x it.y /= h then Just (hs-tell "You cannot lock that down!")
+            else let touched = world-touch game.world in Just (hs-cmd-apply (gsi-meta items serial) it action me.serial)
+  hs-cmd-apply : GsiItem, WorldObject, Integer, Integer -> GameReply
+  hs-cmd-apply (meta) (it) (action) (who) =
+    if action == 1 then (if meta.held /= 0 then hs-tell "This is already locked down!" else if not meta.movable then hs-tell "You cannot lock that down!"
+      else let a = __record-set meta "held" (0 - 1) in hs-tell "Locked down!")
+    else if action == 2 then (if meta.held == 0 - 1 then let a = __record-set meta "held" 0 in hs-bark it "(no longer locked down)"
+      else if meta.held > 0 then let a = __record-set meta "held" 0 in hs-bark it "(no longer secure)" else hs-tell "This isn't locked down...")
+    else if action == 3 then (if meta.held > 0 then hs-tell "This is already secure!" else if meta.held == 0 & not meta.movable then hs-tell "You cannot lock that down!"
+      else let a = __record-set meta "held" who in hs-tell "Secure!")
+    else if meta.held > 0 then let a = __record-set meta "held" 0 in hs-bark it "(no longer secure)" else hs-tell "This isn't secure..."
+  hs-bark : WorldObject, Text -> GameReply
+  hs-bark (it) (text) = gs-reply [sip-message it.serial it.graphic 0 text] "housing"
+ A full ban table refuses the ban until the growth point doubles it. The sign of house h stands at its center plus 2, 4.
+  hs-oust : HsState, CnState, HsPeople, Integer, Integer, Integer -> GameReply
+  hs-oust (s) (land) (people) (h) (serial) (action) = if not (people.player serial) then hs-tell "You cannot eject that from the house!"
+    else if action == 7 & hs-banned s h serial 0 then hs-tell "This person is already banned!"
+    else if action == 7 & s.ban-count >= s.ban-room then hs-tell "The house's ban list is busy; say the ban again in a moment."
+    else when hs-stand people.map (cn-site land h 1 + 2) (cn-site land h 2 + 7) 0 0
+      is Err (_) -> hs-tell "There is no room outside the house to put them."
+      is Ok (spot) -> let told = if action == 7 then "You have been banned from this house."
+          else "You have been ejected from this house. If you persist in entering, you may be banned from the house."
+        in if not (people.oust serial (list-at spot 0) (list-at spot 1) (list-at spot 2) told) then hs-tell "You cannot eject that from the house!"
+        else if action == 7 then let banned = hs-ban s h serial in hs-tell (people.name serial & " has been banned from this house.")
+        else hs-tell (people.name serial & " has been ejected from this house.")
+ The nearest standing tile to x, y ring by ring out to 3, searched up to 16 above the land (cp-go-ring's search).
+  hs-stand : WalkMap, Integer, Integer, Integer, Integer -> Result (List Integer) Text
+  hs-stand (map) (x) (y) (r) (i) = if r > 3 then Err "every tile blocked"
+    else let side = r * 2 + 1
+    in if i >= side * side then hs-stand map x y (r + 1) 0
+    else let tx = x + int-mod i side - r
+    in let ty = y + i / side - r
+    in if max (walk-abs (tx - x)) (walk-abs (ty - y)) /= r | tx < 0 | ty < 0 | tx >= 6143 | ty >= 4095 then hs-stand map x y r (i + 1)
+    else when walk-ground map tx ty
+      is Err (_) -> hs-stand map x y r (i + 1)
+      is Ok (ground) -> when walk-height map tx ty (ground + 16)
+        is Err (_) -> hs-stand map x y r (i + 1)
+        is Ok (z) -> Ok [tx, ty, z]
+ A ban row: the house and the banned player's serial. The table doubles at the growth point once under a quarter is free.
+  hs-ban-bytes : Integer = 16
+  hs-ban-block : Integer = 64
+  hs-banned : HsState, Integer, Integer, Integer -> Boolean
+  hs-banned (s) (h) (serial) (i) = if i >= s.ban-count then False
+    else if peek-qword (s.bans + i * hs-ban-bytes) 0 == h & peek-qword (s.bans + i * hs-ban-bytes) 8 == serial then True
+    else hs-banned s h serial (i + 1)
+  hs-ban : HsState, Integer, Integer -> Integer
+  hs-ban (s) (h) (serial) = let at = s.bans + s.ban-count * hs-ban-bytes
+    in let a = poke-qword at 0 h in let b = poke-qword at 8 serial
+    in let n = __record-set s "ban-count" (s.ban-count + 1) in s.ban-count - 1
+  hs-ban-grow-to : HsState, Integer -> Integer
+  hs-ban-grow-to (s) (room) = if room <= s.ban-room then 0
+    else let fresh = hs-zeroed (room * hs-ban-bytes)
+    in let copied = ws-copy s.bans fresh (s.ban-count * hs-ban-bytes) 0
+    in let a = __record-set s "bans" fresh
+    in let b = __record-set s "ban-room" room in 0
+ Mark inside a house is its holder's alone (ServUO SpellHelper.CheckTravel, Mark).
+  hs-may-mark : CnState, Integer, Integer, Integer -> Boolean
+  hs-may-mark (land) (caster) (x) (y) = let k = cn-house-at land 0 x y 0 in k < 0 | cn-site land k 4 == caster
+ A house that stands deletes every rune marked inside its walls (Damian, 2026-10-10: "all previously marked runes inside
+ it are deleted"); answers how many.
+  hs-unmark : Magery, CnState, Integer, Integer, Integer -> Integer
+  hs-unmark (magic) (land) (k) (i) (n) = if i >= list-length magic.definitions then n
+    else let d = list-at magic.definitions i
+    in if not d.rune | d.serial == 0 | walk-abs (d.x - cn-site land k 1) > 3 | walk-abs (d.y - cn-site land k 2) > 3 then hs-unmark magic land k (i + 1) n
+    else when world-delete magic.items.world d.serial
+      is Err (_) -> hs-unmark magic land k (i + 1) n
+      is Ok (_) -> let cleared = __record-set d "rune" False in hs-unmark magic land k (i + 1) (n + 1)
+ The admin panel's view (panel-houses): every standing house with its design, place and holder.
+  hs-json : CnState, (Integer -> Text) -> Text
+  hs-json (land) (name) = "{\"ok\":true,\"houses\":[" & hs-houses-json land name 0 "" & "]}"
+  hs-houses-json : CnState, (Integer -> Text), Integer, Text -> Text
+  hs-houses-json (land) (name) (k) (acc) = if k >= cn-sites land then acc
+    else if cn-site land k 0 == 0 then hs-houses-json land name (k + 1) acc
+    else hs-houses-json land name (k + 1) (acc & (if text-length acc == 0 then "" else ",") & "{\"house\":" & show (k + 1) & ",\"design\":" & json-quote (cn-design-name (cn-site land k 0))
+      & ",\"where\":" & json-quote (show (cn-site land k 1) & ", " & show (cn-site land k 2)) & ",\"owner\":" & json-quote (name (cn-site land k 4)) & "}")
+
+Section: Families
+
+ A holder's family (UOAIX-239, Damian 2026-10-12: "family is not hidden"): a row per member, the holder's serial, the
+ member's world serial, its role (1 a spouse, 2 a child) and the town day it joined. The table doubles at the growth
+ point once under a quarter is free; a full table adds no one until then.
+  hs-fam-bytes : Integer = 32
+  hs-fam-block : Integer = 64
+  hs-zeroed : Integer -> Integer
+  hs-zeroed (bytes) = let buf = alloc-bytes bytes in let z = hs-zero buf 0 (bytes / 8) in buf
+  hs-fam : HsState, Integer, Integer -> Integer
+  hs-fam (s) (i) (k) = peek-qword s.fam (i * hs-fam-bytes + k * 8)
+  hs-fam-grow-to : HsState, Integer -> Integer
+  hs-fam-grow-to (s) (room) = if room <= s.fam-room then 0
+    else let fresh = hs-zeroed (room * hs-fam-bytes)
+    in let copied = ws-copy s.fam fresh (s.fam-count * hs-fam-bytes) 0
+    in let a = __record-set s "fam" fresh
+    in let b = __record-set s "fam-room" room in 0
+  hs-fam-add : HsState, Integer, Integer, Integer, Integer -> Integer
+  hs-fam-add (s) (holder) (member) (role) (day) = if s.fam-count >= s.fam-room | holder < 1 | member < 1 then -1
+    else let at = s.fam + s.fam-count * hs-fam-bytes
+    in let a = poke-qword at 0 holder in let b = poke-qword at 8 member in let c = poke-qword at 16 role in let d = poke-qword at 24 day
+    in let n = __record-set s "fam-count" (s.fam-count + 1) in s.fam-count - 1
+ Members of the holder in the role (0 any role).
+  hs-fam-of : HsState, Integer, Integer, Integer -> Integer
+  hs-fam-of (s) (holder) (role) (i) = if i >= s.fam-count then 0
+    else (if hs-fam s i 0 == holder & (role == 0 | hs-fam s i 2 == role) then 1 else 0) + hs-fam-of s holder role (i + 1)
+ The latest day a member joined the holder's family, or -1.
+  hs-fam-last : HsState, Integer, Integer, Integer -> Integer
+  hs-fam-last (s) (holder) (i) (best) = if i >= s.fam-count then best
+    else hs-fam-last s holder (i + 1) (if hs-fam s i 0 == holder & hs-fam s i 3 > best then hs-fam s i 3 else best)
+ A saved family section is read when it is whole and valid; anything else reads as no families, because a save never
+ refuses.
+  hs-read-families : HsState, Integer, Integer -> Integer
+  hs-read-families (s) (at) (room) = if room < 8 then 0
+    else let n = peek-qword at 0
+    in if n < 0 | n > hs-ceiling | 8 + n * hs-fam-bytes > room | not (hs-fam-valid (at + 8) n 0) then 0
+    else let grown = hs-fam-grow-to s (max s.fam-room (n + n / 2 + hs-fam-block))
+    in let copied = ws-copy (at + 8) s.fam (n * hs-fam-bytes) 0
+    in let c = __record-set s "fam-count" n in n
+  hs-fam-valid : Integer, Integer, Integer -> Boolean
+  hs-fam-valid (at) (n) (i) = if i >= n then True
+    else let row = at + i * hs-fam-bytes
+    in peek-qword row 0 > 0 & peek-qword row 8 > 0 & (peek-qword row 16 == 1 | peek-qword row 16 == 2) & hs-fam-valid at n (i + 1)
+
+ A shop keeper's home (UOAIX-239): a row per Britain shop, x, y and z, x 0 for none. The boot's keeper census keeps a
+ saved home and ambition moves it, so it is saved after the families; a tail without the section reads as none.
+  hs-keep-bytes : Integer = 24
+  hs-keep : HsState, Integer, Integer -> Integer
+  hs-keep (s) (i) (k) = if i < 0 | i >= bb-shop-count then 0 else peek-qword s.keep (i * hs-keep-bytes + k * 8)
+  hs-keep-set : HsState, Integer, Integer, Integer, Integer -> Integer
+  hs-keep-set (s) (i) (x) (y) (z) = if i < 0 | i >= bb-shop-count then 0
+    else let at = s.keep + i * hs-keep-bytes in let a = poke-qword at 0 x in let b = poke-qword at 8 y in let c = poke-qword at 16 z in 1
+  hs-write-keep : HsState, Integer -> Integer
+  hs-write-keep (s) (at) = let a = poke-qword at 0 bb-shop-count in ws-copy s.keep (at + 8) (bb-shop-count * hs-keep-bytes) 0
+  hs-read-keep : HsState, Integer, Integer -> Integer
+  hs-read-keep (s) (at) (room) = if room < 8 + bb-shop-count * hs-keep-bytes then 0
+    else if peek-qword at 0 /= bb-shop-count then 0
+    else let copied = ws-copy (at + 8) s.keep (bb-shop-count * hs-keep-bytes) 0 in 1
+
+Section: Codec
+
+ The persisted housing (codec tail 21): the family count and rows, the keeper homes, then the ban count and rows. A
+ section that is not whole and valid reads as empty, because a save never refuses.
+  hs-tail-size : HsState -> Integer
+  hs-tail-size (s) = 8 + s.fam-count * hs-fam-bytes + 8 + bb-shop-count * hs-keep-bytes + 8 + s.ban-count * hs-ban-bytes
+  hs-write-tail : HsState, Integer -> Integer
+  hs-write-tail (s) (at) = let f = poke-qword at 0 s.fam-count
+    in let g = ws-copy s.fam (at + 8) (s.fam-count * hs-fam-bytes) 0
+    in let keep-at = at + 8 + s.fam-count * hs-fam-bytes
+    in let k = hs-write-keep s keep-at
+    in let bans-at = keep-at + 8 + bb-shop-count * hs-keep-bytes
+    in let n = poke-qword bans-at 0 s.ban-count
+    in let m = ws-copy s.bans (bans-at + 8) (s.ban-count * hs-ban-bytes) 0 in at + hs-tail-size s
+  hs-read-tail : HsState, Integer, Integer -> Integer
+  hs-read-tail (s) (at) (room) = let families = hs-read-families s at room
+    in let keep-at = 8 + families * hs-fam-bytes
+    in let kept = hs-read-keep s (at + keep-at) (room - keep-at)
+    in let bans-at = keep-at + 8 + bb-shop-count * hs-keep-bytes
+    in let banned = if kept == 1 then hs-read-bans s (at + bans-at) (room - bans-at) else 0 in families
+  hs-read-bans : HsState, Integer, Integer -> Integer
+  hs-read-bans (s) (at) (room) = if room < 8 then 0
+    else let n = peek-qword at 0
+    in if n < 0 | n > hs-ceiling | 8 + n * hs-ban-bytes > room | not (hs-bans-valid (at + 8) n 0) then 0
+    else let grown = hs-ban-grow-to s (max s.ban-room (n + n / 2 + hs-ban-block))
+    in let copied = ws-copy (at + 8) s.bans (n * hs-ban-bytes) 0
+    in let c = __record-set s "ban-count" n in n
+  hs-bans-valid : Integer, Integer, Integer -> Boolean
+  hs-bans-valid (at) (n) (i) = if i >= n then True
+    else let row = at + i * hs-ban-bytes
+    in peek-qword row 0 >= 0 & peek-qword row 0 < cn-site-ceiling & peek-qword row 8 > 0 & hs-bans-valid at n (i + 1)

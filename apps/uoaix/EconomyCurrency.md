@@ -62,17 +62,20 @@ prices and pays no labor.
   moves. A resident's pack shows a quarter of its purse as coin piles (`tl-coins`);
   stealing a pile is this event (`as-steal-coin`), so no unbacked coin enters
   the world.
-- Change: `eu-exchange` (currency event kind 12; money rows kind 6 in, 16
-  decree, 17 out) breaks a purse's coin with the crown at the current rates,
-  at any distance (Damian, 2026-10-05). When the treasury lacks the smaller
-  coin, the crown decrees it into being and the event's party cell records the
-  amount; the composite then logs a FAULT line asking why the kingdom has gold
-  but no copper or silver. Vendor checkout breaks the payer's coin first
-  (`gv-change`), so a gold-only buyer can pay a copper price. Smaller coin
-  trades up through the same exchange: the treasury takes the smaller coin and
-  pays the larger from its reserve, never decreeing it, and pays only a whole
-  coin; a gatherer home from a trip and every shop each town step trade every
-  whole gold of their silver up (`bb-trade-up`; root, 2026-10-07).
+- Change: `eu-exchange` (currency event kind 12; money rows kind 6 in, 20
+  retired, 21 recoined, 17 out) breaks a purse's coin with the crown at the
+  current rates, at any distance (Damian, 2026-10-05). When the treasury lacks
+  the smaller coin, it recoins whole coins of the larger, which the purse has
+  just handed in, into the smaller at the rate (`em-retire`, `em-recoin`), so
+  the crown can always make change and no value is created (root, 2026-10-09,
+  UOAIX-213). The event's party cell records a decree, which no exchange makes
+  now; the composite's FAULT line for one stays as the alarm. Vendor checkout
+  breaks the payer's coin first (`gv-change`), so a gold-only buyer can pay a
+  copper price. Smaller coin trades up through the same exchange: the treasury
+  takes the smaller coin and pays the larger from its reserve and pays only a
+  whole coin; a gatherer home from a trip and every shop each town step trade
+  every whole gold of their silver up, then every whole silver of their copper
+  as far as the treasury's silver pays (`bb-trade-up`; root, 2026-10-07).
 - Residents' market: funds and bids compare in copper. The frozen town network
   reads prices in gold through `ep-price-gold`, which keeps its trained range.
 
@@ -144,19 +147,31 @@ Root's reading, binding until Damian corrects it:
   British's first economic activity is to go gold mining, as an NPC when no
   human drives him, and that gold primes the treasury before any loan is
   made. A human logged in as British can take over the same errand.
-- The crown's change decree stays as the alarm: its FAULT means the copper or
-  silver faucets fell behind demand.
-- A fresh composite world's crown starts with a one-time founding stock of 2
-  copper and 4 silver ingots, minted at founding (`bb-founding-stock`, root
-  2026-10-06), so wages break gold into small coin before any ore is mined. It
-  is material, never a coin float; after founding the mint takes only mined ore.
+- The crown always makes change by recoining the coin handed in (UOAIX-213);
+  the copper and silver faucets set how much small coin circulates, not
+  whether change can be made.
+- Damian, 2026-10-07: "the treasury should start empty. lord british should
+  get to investigate the starting world state, and see what happens when he
+  puts the gold in the treasury. having it automatically start hides the magic
+  from the admin. So new world means the npcs are all in a standby mode except
+  the harvestors, who can start getting ore and ingots ready, crops harvested
+  etc. but nobody can buy until there is a loan from the king to kick start it
+  all." A new world mints no founding ingots and makes no automatic grant or
+  loan; harvesters mine, smelt and harvest from the start; every purchase and
+  sale waits until British's own strike puts gold in the treasury. Damian,
+  2026-10-07: "the loan is entirely on the books, not a process a player can
+  take. only an npc shop keeper who isn't a harvestor. they need ingots to make
+  stuff, or wheat to make flour to make bread. then they pay back the loan from
+  revenues collected by sales of the items they sell." Each Britain shop with
+  no open crown loan borrows from the treasury on the books once it holds gold,
+  buys its inputs from the harvesters, makes and sells, and repays from revenue
+  (`bb-repay`).
 - Every faucet has a matching drain; Lord British's bank is always one gold
   drain.
 - The loop runs with zero players connected. A player takes any role (gatherer,
   refiner, maker, fighter, or several at once) through the same buy, sell and
   craft paths the NPCs use, competing with them; no step waits on a player.
-- The bank lineup (1434-1443,1694) is a testing fixture outside the loop. Every
-  shopkeeper in an actual shop is a full participant: buys inputs, borrows,
+- Every shopkeeper in an actual shop is a full participant: buys inputs, borrows,
   makes or resells, and sells, with no forced stock. Each actual shop stops
   force-stocking in the CL that lands its input chain, so residents never lose
   bread (root, 2026-10-06).
@@ -170,7 +185,7 @@ conservation must hold.
 |---|---|---|
 | Gatherer: walk out, mine low-grade iron with a self-made pickaxe, walk home, smelt at the forge, sell ingots to the blacksmith through vendor checkout | `EconomyGatherer.codex`, `CompositeGatherer.codex` | `EconomyGathererProof`, `CompositeGathererProof` |
 | Participant shops | BritainShops.md, UOAIX-55 | `BritainShopsProof`, `CompositeGathererProof`, `CompositeFarmerProof` |
-| Fighter: buy a sword on a crown loan, hunt, loot, sell loot, repay | `EconomyFighter.codex`, `CompositeFighter.codex` (below) | `EconomyFighterProof`, `CompositeFighterProof`, `CompositeWorldSpawns` |
+| Fighter: buy a sword on a crown loan, hunt, loot, sell loot, repay | `EconomyFighter.codex`, `CompositeFighter.codex` (below) | `CompositeFighterProof`, `CompositeWorldSpawns` |
 | Gold faucets and drains | below | `GoldFindTaxProof`, `CrownMintProof`, `GoldLedgerProof`, `BritishErrandProof` |
 | Laborers: residents paid hourly by their employer shop, then buy food and eat | `CompositeLabor.codex`, TownNetworkLive.md | `CompositeLaborProof` (UOAIX-79) |
 | Player parity: a scripted session (no client, packets replayed) trading through the same paths | `CompositeScript.codex` | `CompositeScriptProof` |
@@ -215,8 +230,8 @@ fighter fights as a new ServUO Warrior (profession 1: strength 45, dexterity
 35, Swordsmanship, Tactics and Anatomy 30). An NPC's death deletes its mobile,
 so the fighter's death settles at the blow: its lots leave the vendor ledger
 as consumed goods and lie in the corpse as plain items, and it is raised at
-home, unarmed, for the same economy actor. Loot gold enters as found gold ore
-(item 6) through `ep-find` and pays the crown's share through `eh-find-tax-at`.
+home, unarmed, for the same economy actor. Its loot is the lots it takes from its kill's corpse
+(`cg-fighter-loot`); a kill makes nothing from nothing.
 
 ### Crown loans (Damian, 2026-10-06)
 
@@ -256,6 +271,12 @@ step).
    NPC economic action runs until the errand has struck his gold. The server
    logs each leg ("BRITISH errand leg N"); a format 1 errand that finished stays
    finished and any other restarts at leg 0.
+
+   Damian, 2026-10-07: "lets start a fresh new world, and let me play the task
+   of lord british stocking the treasury and not let the bot do it for me." In
+   testing mode the errand never runs (`cg-british-arm`, `cg-british`). The
+   economy opens when British's own session strikes gold ingots (item 32) at
+   the Royal Minter (`cg-minter-or-plant`), in any mode.
 4. The drain is coin that reaches Lord British's bank (the treasury purse:
    taxes, loan interest, repayments) and never leaves except by grant or loan.
    `proofs/GoldLedgerProof` checks every treasury-touching gold ledger row
@@ -279,9 +300,14 @@ its copper and silver ore two at a time and strikes each ingot at the founding
 yield (`bb-crown-mint`, at most 16 ingots per metal per commit; a single ore
 waits for a second). The mint buys nothing (R8): an owner has its own ingots
 struck at the crown's mint and the Crown keeps 10% as the minting fee
-(EconomyMint.md). The copper and silver gatherer smelts its own ore with the
-fallen branches it gathered (UOAIX-80) and has each ingot struck into its own
+(EconomyMint.md). The copper and silver gatherer smelts its own ore, spending no
+fuel (UOAIX-80), and has each ingot struck into its own
 purse (`bb-coin`), so the faucet scales with mining.
+
+The Royal Mine's four gold veins (`cpr-royal-veins`, within 2 tiles of the arrival
+5360,76) never deplete (`eh-royal-gold`) and carry no marker (Damian, 2026-10-07:
+"keep them unidentified. they should look like normal surface ore spots, the
+same as iron. nothing special except the secret we share about it.").
 
 Britain's mine: `cg-install` installs a wild gold-ore node at the crown's place
 and a pickaxe harvest site at the rock tile 1451,1528 z 40 (`cpr-mine-install`),

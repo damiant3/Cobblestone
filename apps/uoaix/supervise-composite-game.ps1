@@ -2,9 +2,9 @@
 param([Parameter(Mandatory)][string]$Artifact,[Parameter(Mandatory)][string]$StateFile,[Parameter(Mandatory)][string]$OutDir,
     [switch]$Testing,[switch]$Dev,[switch]$Hosted,[switch]$Admin,[string]$Vm='',
     [ValidateRange(1024,65535)][int]$Port=2593,[ValidateRange(1024,65535)][int]$AdminPort=2594,
-    [ValidateRange(10,120)][int]$StartupSeconds=60,[ValidateRange(1,600)][int]$BackoffSeconds=5,
+    [ValidateRange(10,900)][int]$StartupSeconds=60,[ValidateRange(1,600)][int]$BackoffSeconds=5,
     [ValidateRange(1,3600)][int]$MaxBackoffSeconds=300,[ValidateRange(1,100)][int]$MaxRestarts=5,
-    [ValidateRange(60,86400)][int]$RestartWindowSeconds=600,[ValidateRange(0,3600)][int]$HeartbeatSeconds=180)
+    [ValidateRange(60,86400)][int]$RestartWindowSeconds=600,[ValidateRange(0,3600)][int]$HeartbeatSeconds=180,[ValidateRange(1,100)][int]$ClockScale=1)
 # Relaunches a composite shard after every guest exit; CompositeGame.md documents the contract.
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -43,7 +43,7 @@ try{
             $info.state='gave-up';Save-State $info;throw "supervisor gave up after $($starts.Count) launches within $RestartWindowSeconds s; see $crashes"
         }
         $run++;$dir=Join-Path $OutDir ('run-'+$run);$starts.Add($now)
-        $launch=@{Artifact=$Artifact;StateFile=$StateFile;OutDir=$dir;StartupSeconds=$StartupSeconds;Port=$Port;AdminPort=$AdminPort;NoPrompt=($run -gt 1)}
+        $launch=@{Artifact=$Artifact;StateFile=$StateFile;OutDir=$dir;StartupSeconds=$StartupSeconds;Port=$Port;AdminPort=$AdminPort;ClockScale=$ClockScale;NoPrompt=($run -gt 1)}
         if($Testing){$launch.Testing=$true};if($Dev){$launch.Dev=$true};if($Hosted){$launch.Hosted=$true};if($Admin){$launch.Admin=$true};if($Vm){$launch.Vm=$Vm}
         $started=[datetime]::UtcNow
         try{& $launcher @launch | ForEach-Object {"run-${run}: $_"}}
@@ -71,7 +71,9 @@ try{
         $up=[int]([datetime]::UtcNow-$started).TotalSeconds
         $text=Read-Shared (Join-Path $dir 'server.log')
         $lines=@($text -split "`r?`n" | Where-Object {$_})
-        $cause=@($lines | Where-Object {$_ -match 'STOP serving|requires restart|!EXC|OUT OF MEMORY|SAVE REFUSED for|^FAIL'} | Select-Object -Last 3)
+        $cause=@($lines | Where-Object {$_ -match 'STOP serving|requires restart|!EXC|OUT OF MEMORY|^FAIL'} | Select-Object -Last 3)
+        $errPath=try{(Get-Content -LiteralPath (Join-Path $dir 'run.json') | ConvertFrom-Json).stderr}catch{$null}
+        if($errPath -and (Test-Path -LiteralPath $errPath) -and $errPath -ne (Join-Path $dir 'guest.stderr')){Move-Item -LiteralPath $errPath -Destination (Join-Path $dir 'guest.stderr') -Force}
         $err=Read-Shared (Join-Path $dir 'guest.stderr')
         Write-Crash "$([datetime]::UtcNow.ToString('o')) run-$run EXIT code=$code uptime=${up}s log=$(Join-Path $dir 'server.log')"
         foreach($c in $cause){Write-Crash "  cause: $c"}

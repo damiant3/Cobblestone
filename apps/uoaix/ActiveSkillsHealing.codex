@@ -9,44 +9,29 @@ Chapter: ActiveSkillsHealing
  CCharSkill.cpp Skill_Healing, Apache-2.0; Sphere-LICENSE.txt. Item 75 is the
  Britain catalog's clean bandages.
 
-  as-bandage-stock : ActiveSkills, GvLot -> Boolean
+  as-bandage-stock : ActiveSkills, EpLot -> Boolean
   as-bandage-stock (s) (row) = let actor = ep-actor s.vendor.currency.world row.actor
     in ep-at actor.stock 75 >= 1 & ep-at actor.quality 75 >= row.quality & ep-at actor.wear 75 >= row.wear
-      & ep-at actor.cost 75 >= row.basis / row.quantity & ep-at s.vendor.currency.world.consumed 75 < ep-limit
+      & ep-at actor.cost 75 >= row.basis / max 1 (ep-amount s.vendor.currency.world.goods row.serial) & ep-at s.vendor.currency.world.consumed 75 < ep-limit
   as-bandage-lot : ActiveSkills, Integer, Integer -> Integer
   as-bandage-lot (s) (owner) (serial) = let at = gv-lot s.vendor serial 0
     in let player = gv-player s.vendor owner 0
     in let slot = world-slot s.items.world serial
     in if at < 0 | player < 0 | slot < 0 then -1
-    else let row = list-at s.vendor.lots at
+    else let row = ep-lot s.vendor.currency.world.goods at
     in let p = list-at s.vendor.players player
-    in if row.item /= 75 | row.actor /= p.actor | row.quantity < 1 | peek-qword s.items.world.buffer (80 + slot * 80) /= row.quantity then -1
+    in if row.item /= 75 | row.actor /= p.actor | peek-qword (wi-object s.items.world.buffer slot) 64 < 1 then -1
     else if not (gv-under s.items.world serial p.pack 65) | gmb-root s.items serial 65 /= 0 | not (as-bandage-stock s row) then -1
     else at
-  as-bandage-debit : ActiveSkills, Integer -> Integer
-  as-bandage-debit (s) (at) = let lot = list-at s.vendor.lots at
-    in let actor = ep-actor s.vendor.currency.world lot.actor
-    in let basis = lot.basis / lot.quantity
-    in let remaining = lot.quantity - 1
-    in let a = ep-add actor.stock 75 -1
-    in let b = ep-add actor.quality 75 (0 - lot.quality)
-    in let c = ep-add actor.wear 75 (0 - lot.wear)
-    in let d = ep-add actor.cost 75 (0 - basis)
-    in let e = ep-add s.vendor.currency.world.consumed 75 1
-    in let f = __record-set lot "basis" (lot.basis - basis)
-    in let g = __record-set lot "quantity" remaining
-    in let retired = if remaining == 0 then gh-retire-lot s.vendor at else 0
-    in gh-invalidate-quotes s.vendor 0
   as-bandage-take : ActiveSkills, Integer, Integer -> Result (List Integer) Text
-  as-bandage-take (s) (at) (serial) = when world-get s.items.world serial
-    is Err (e) -> Err e
-    is Ok (item) -> if item.amount == 1 then when world-delete s.items.world serial
-        is Err (e) -> Err e
-        is Ok (_) -> let debited = as-bandage-debit s at in Ok (sip-remove serial)
-      else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
-      in when world-update s.items.world reduced
-        is Err (e) -> Err e
-        is Ok (_) -> let debited = as-bandage-debit s at in Ok (sip-item reduced)
+  as-bandage-take (s) (at) (serial) = let w = s.vendor.currency.world
+    in when ep-take w (ep-lot w.goods at).actor 75 1 serial
+      is Err (e) -> Err e
+      is Ok (_) -> let used = ep-add w.consumed 75 1
+        in let invalidated = gh-invalidate-quotes s.vendor 0
+        in when world-get s.items.world serial
+          is Err (_) -> Ok (sip-remove serial)
+          is Ok (left) -> Ok (sip-item left)
   as-bandage-use : ActiveSkills, AsActor, WorldObject, Integer, Integer, Integer -> Result (Maybe GameReply) Text
   as-bandage-use (s) (a) (mobile) (direction) (serial) (now) = if now < a.next then Ok (Just (gsi-denied "You must wait to perform another action."))
     else if a.due > 0 then Ok (Just (gsi-denied "You are already applying bandages."))
@@ -64,12 +49,19 @@ Chapter: ActiveSkillsHealing
   as-heal-skill (services) (patient) = if services.animal patient then 39 else 17
   as-heal-lore : Integer -> Integer
   as-heal-lore (skill) = if skill == 39 then 2 else 1
+ A living, unpoisoned patient at full hits is refused before the bandaging begins (UOAIX-205, Damian 2026-10-09: "should
+ say 'But that is not injured!'"); a maximum that cannot be read (0) refuses nothing.
+  as-heal-maximum : ActiveSkills, GameShard, Integer -> Integer
+  as-heal-maximum (s) (game) (patient) = when cb-ensure s.combat game patient is Err (_) -> 0 is Ok (c) -> c.maximum
+  as-heal-needless : Integer, Integer, Integer -> Boolean
+  as-heal-needless (health) (maximum) (poison) = health > 0 & maximum > 0 & poison < 0 & health >= maximum
   as-heal-begin : AsServices, ActiveSkills, AsActor, GameShard, WorldObject, WorldObject, Integer -> GameReply
   as-heal-begin (services) (s) (a) (game) (player) (patient) (now) =
     let skill = as-heal-skill services patient.serial
     in if patient.kind /= 1 | not (as-near player patient 2) | not (as-visible s player.serial patient.serial) then gsi-denied "You cannot reach that being."
     else if as-bandage-lot s player.serial a.bandage < 0 then gsi-denied "Those bandages cannot be used."
     else if patient.health <= 0 & (as-level a skill < 800 | as-level a (as-heal-lore skill) < 800) then gsi-denied "You are not skilled enough to resurrect that being."
+    else if as-heal-needless patient.health (as-heal-maximum s game patient.serial) (services.poison patient.serial) then gsi-denied "But that is not injured!"
     else let bound = __record-set a "patient" patient.serial
     in let due = __record-set a "due" (now + as-heal-delay s game player.serial patient.serial)
     in gs-reply [as-say "You begin applying the bandages."] "skills:bandage-begun"

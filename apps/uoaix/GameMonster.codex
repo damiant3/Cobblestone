@@ -11,8 +11,8 @@ Chapter: GameMonster
   MonsterSlot = record { serial : Integer, direction : Integer, due : Integer, seen : Integer }
   GameMonster = record { combat : GameCombat, slots : List MonsterSlot,
     x : Integer, y : Integer, z : Integer, radius : Integer, links : List Integer, viewer : Integer, unseen : Integer }
- GameLinks serves at most eight links; bit i of a slot's seen is viewer i.
-  gm-link-limit : Integer = 8
+ GameLinks serves at most 32 game links; bit i of a slot's seen is viewer i.
+  gm-link-limit : Integer = 32
   gm-links : Integer, List Integer -> List Integer
   gm-links (left) (xs) = if left == 0 then xs else gm-links (left - 1) (list-push xs (0 - 1))
   gm-link-at : List Integer, Integer, Integer, Integer -> Integer
@@ -48,7 +48,7 @@ Chapter: GameMonster
   gm-occupied-tile : GameShard, Integer -> Boolean
   gm-occupied-tile (shard) (serial) = if serial == 0 then False
     else let slot = world-slot shard.world serial
-    in if slot < 0 then False else if peek-qword shard.world.buffer (24 + slot * 80) == 1 then True
+    in if slot < 0 then False else if peek-qword (wi-object shard.world.buffer slot) 8 == 1 then True
     else gm-occupied-tile shard (world-tile-next shard.world serial)
   gm-spawn : GameMonster, GameShard, WalkMap, MonsterSlot, Integer -> Result Integer Text
   gm-spawn (g) (shard) (map) (slot) (attempt) =
@@ -60,7 +60,7 @@ Chapter: GameMonster
         let x = g.x + walk-dx direction
         in let y = g.y + walk-dy direction
         in if gm-occupied shard x y 0 then gm-spawn g shard map slot (attempt + 1)
-        else if peek-qword shard.world.buffer 0 >= shard.world.capacity then Ok 0
+        else if world-room shard.world <= 0 then Ok 0
         else when world-create shard.world (__record-set (gs-mobile 0 x y z 17 0) "health" 30)
           is Err (e) -> Err e
           is Ok (serial) ->
@@ -74,7 +74,7 @@ Chapter: GameMonster
   gm-step (g) (shard) (map) (slot) (m) (direction) =
     let x = m.x + walk-dx direction
     in let y = m.y + walk-dy direction
-    in if not (gm-near x y g.x g.y g.radius) | gm-occupied shard x y 0 then False
+    in if not (gm-near x y g.x g.y g.radius) | world-blocked shard.world x y then False
     else when walk-step map m.x m.y m.z direction
       is Err (_) -> False
       is Ok (z) ->
@@ -118,7 +118,7 @@ Chapter: GameMonster
     let near = gm-near m.x m.y viewer.x viewer.y 18
     in let was = gm-slot-seen g slot
     in let seen = gm-slot-mark g slot near
-    in let a = list-at g.combat.actors (int-mod (m.serial - 1) (list-length g.combat.actors))
+    in let a = list-at g.combat.actors (cb-actor-slot m.serial (list-length g.combat.actors))
     in if near & not was then list-push packets (cbp-mobile m slot.direction (cbp-flags a.war False) 3)
     else if near & moved then list-push packets (cbp-move m slot.direction (cbp-flags a.war False) 3)
     else if was & not near then list-push packets (cbp-remove m.serial)

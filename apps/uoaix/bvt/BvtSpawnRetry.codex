@@ -1,0 +1,61 @@
+Chapter: BvtSpawnRetry
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bsy-refuse : WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text
+  bsy-refuse (map) (r) (p) (x) (y) = Err "wall"
+  bsy-accept : WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text
+  bsy-accept (map) (r) (p) (x) (y) = Ok 0
+  bsy-map : Integer -> WalkMap
+  bsy-map (unused) = when walk-map-new 1440 1520 24 32
+    is Err (_) -> WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+    is Ok (map) -> map
+  bsy-set : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  bsy-set (g) (i) (pop) (since) = let a = poke-qword g.populations (i * 8) pop in poke-qword g.shortfalls (i * 8) since
+  bsy-pop : GameWorldSpawn, Integer -> Integer
+  bsy-pop (g) (i) = peek-qword g.populations (i * 8)
+  bsy-since : GameWorldSpawn, Integer -> Integer
+  bsy-since (g) (i) = peek-qword g.shortfalls (i * 8)
+  bsy-wake : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, WalkMap, Integer -> Integer
+  bsy-wake (terrain) (g) (shard) (map) (i) = when gws-wake-region terrain g shard map i is Err (_) -> -1 is Ok (_) -> 0
+ UOAIX-218: answers a bit per check on the Britain mine region: 1 a boot refill whose every placement is refused keeps
+ its shortfall at -1 and bears nothing, 2 the next wake with ground bears the primals at once, 4 a home emptied by kills
+ (shortfall 0) still marks the game-day wait and bears nothing, 8 a home at its 3 primals with a living parent bears
+ its batch (UOX3 CALL 3) at one wake, not one; 15 is all, negative when not buildable.
+  bsy-checks : Integer -> Integer
+  bsy-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let i = list-length g.catalog.regions - 1
+        in let map = bsy-map 0
+        in let shard = owner.checkpoint.game
+        in if (list-at g.catalog.regions i).name /= "Britain mine" | map.width == 0 then -2
+        else let clock = __record-set g.combat "tick" (gm-ticks 1000000)
+        in let booted = bsy-set g i 0 (0 - 1)
+        in let w1 = bsy-wake bsy-refuse g shard map i
+        in let kept = w1 == 0 & bsy-pop g i == 0 & bsy-since g i == (0 - 1)
+        in let w2 = bsy-wake bsy-accept g shard map i
+        in let born = w2 == 0 & bsy-pop g i > 0
+        in let killed = bsy-set g i 0 0
+        in let w3 = bsy-wake bsy-accept g shard map i
+        in let waits = w3 == 0 & bsy-pop g i == 0 & bsy-since g i == g.combat.tick
+        in let r = list-at g.catalog.regions i
+        in let batch = r.batch
+        in let most = r.maximum
+        in let wide = __record-set r "batch" 3
+        in let room = __record-set r "maximum" 10
+        in let primed = bsy-set g i 3 0
+        in let w4 = bsy-wake bsy-accept g shard map i
+        in let bred = w4 == 0 & bsy-pop g i == 6
+        in let b1 = __record-set r "batch" batch
+        in let b2 = __record-set r "maximum" most
+        in (if kept then 1 else 0) + (if born then 2 else 0) + (if waits then 4 else 0) + (if bred then 8 else 0)
+  bvt-spawn-retry : Integer -> [Console] Integer
+  bvt-spawn-retry (unused) = act
+    n <- bsy-checks 0
+    bvt-check ("a home whose first refill bore nothing tries again at its next wake; a home emptied by kills still waits a game day; a living home breeds its UOX3 batch a wake (UOAIX-218, code " & show n & ")") (n == 15)
+  end

@@ -1,0 +1,26 @@
+Chapter: BvtBedBlocked
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-154 (trial 41755): miner-1's bed at 1508,1540 lay on ServUO's water trough. A flat window at z 25 with an
+ impassable collider (TILEDATA flag 0x40, 6 high) on that tile: answers a bit per check, 1 the bed on the collider is
+ blocked, 2 the free tile beside it is not, 4 a bed outside the loaded window is not judged blocked; 7 is all.
+  bbb-land : WalkMap, Integer -> Integer
+  bbb-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let set = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 25 0
+    in let restored = __heap-restore mark in bbb-land map (i + 1)
+  bbb-checks : Integer -> Integer
+  bbb-checks (unused) = when walk-map-new 1500 1530 32 32
+    is Err (_) -> -1
+    is Ok (map) -> let land = bbb-land map 0
+      in when walk-add-solid map 1508 1540 25 6 64
+        is Err (_) -> -2
+        is Ok (_) -> (if cgg-bed-blocked (BbSpot { x = 1508, y = 1540, z = 25 }) map then 1 else 0)
+          + (if cgg-bed-blocked (BbSpot { x = 1509, y = 1540, z = 25 }) map then 0 else 2)
+          + (if cgg-bed-blocked (BbSpot { x = 1400, y = 1400, z = 25 }) map then 0 else 4)
+  bvt-bed-blocked : Integer -> [Console] Integer
+  bvt-bed-blocked (unused) = act
+    n <- bbb-checks 0
+    a <- bvt-check ("a bed on a collider is blocked, the tile beside it and an unloaded bed are not (UOAIX-154, code " & show n & ")") (n == 7)
+    a
+  end

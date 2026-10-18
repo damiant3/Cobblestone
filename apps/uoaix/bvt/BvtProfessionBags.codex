@@ -1,0 +1,37 @@
+Chapter: BvtProfessionBags
+  cites Uoaix chapter CompositeProduction
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bpb-arts : EpWorld, List Integer, Integer -> Integer
+  bpb-arts (w) (inputs) (i) = if i == list-length inputs then 0
+    else (if cpr-material-art (list-at inputs i) == 0 then 1 else 0) + bpb-arts w inputs (i + 1)
+  bpb-tool-arts : List Integer, Integer -> Integer
+  bpb-tool-arts (tools) (i) = if i == list-length tools then 0
+    else (if cpr-art-of cpr-kit-item (list-at tools i) 0 == 0 then 1 else 0) + bpb-tool-arts tools (i + 1)
+  bpb-missing : EpWorld, Integer -> Integer
+  bpb-missing (w) (category) = if category > 6 then 0
+    else let recipes = gcr-recipes w category
+    in bpb-arts w (cpr-inputs w recipes 0 []) 0 + bpb-tool-arts (cpr-tools-of w recipes 0 []) 0
+      + (if cpr-opener-art category == 0 then 1 else 0) + bpb-missing w (category + 1)
+  bpb-names : EpWorld, Integer -> Text
+  bpb-names (w) (category) = if category > 6 then ""
+    else let recipes = gcr-recipes w category
+    in bpb-name-list (cpr-inputs w recipes 0 []) True 0 & bpb-name-list (cpr-tools-of w recipes 0 []) False 0 & bpb-names w (category + 1)
+  bpb-name-list : List Integer, Boolean, Integer -> Text
+  bpb-name-list (xs) (material) (i) = if i == list-length xs then ""
+    else let x = list-at xs i
+    in (if (if material then cpr-material-art x else cpr-art-of cpr-kit-item x 0) == 0 then " " & (if material then "m" else "t") & show x else "") & bpb-name-list xs material (i + 1)
+  bpb-inputs : EpWorld, Integer -> Integer
+  bpb-inputs (w) (category) = if category > 6 then 0
+    else list-length (cpr-inputs w (gcr-recipes w category) 0 []) + bpb-inputs w (category + 1)
+  bvt-profession-bags : Integer -> [Console] Integer
+  bvt-profession-bags (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("profession bag fixture economy: " & e) False
+    is Ok (currency) -> let w = currency.world
+      in let missing = bpb-missing w 1
+      in act
+        a <- bvt-check ("every craft menu's opener, working tools and materials have art for the bank's profession bags (cpr-profession-bags, entry); missing=" & show missing & bpb-names w 1) (missing == 0 & bpb-inputs w 1 > 6)
+        b <- bvt-check "the smith's bag holds 2 iron ingots per broadsword row: one of each item, from the recipes" (cpr-need w (gcr-recipes w 1) 31 0 >= 2 & cpr-has (cpr-inputs w (gcr-recipes w 1) 0 []) 31 0)
+        a + b
+      end

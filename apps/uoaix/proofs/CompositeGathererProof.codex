@@ -71,9 +71,11 @@ Chapter: CompositeGathererProof
   cgp-sold : GvWorld, Integer, Integer, Integer -> Integer
   cgp-sold (v) (seller) (item) (i) = if i == v.sale-count then 0 else let s = list-at v.sales i in (if s.seller == seller & s.item == item then s.quantity else 0) + cgp-sold v seller item (i + 1)
   cgp-stocked : GvWorld, Integer, Integer, Integer -> Integer
-  cgp-stocked (v) (item) (container) (i) = if i == v.lot-count then 0
-    else let l = list-at v.lots i
-    in (if (item == 0 | l.item == item) & gv-under v.game.world l.serial container 65 then l.quantity else 0) + cgp-stocked v item container (i + 1)
+  cgp-stocked (v) (item) (container) (unused) = cgp-stocked-from v item container (ep-lots-first v.currency.world.goods)
+  cgp-stocked-from : GvWorld, Integer, Integer, Integer -> Integer
+  cgp-stocked-from (v) (item) (container) (serial) = if serial == 0 then 0
+    else let l = ep-lot v.currency.world.goods serial
+    in (if (item == 0 | l.item == item) & gv-under v.game.world l.serial container 65 then (ep-amount v.currency.world.goods l.serial) else 0) + cgp-stocked-from v item container (ep-lot-after v.currency.world.goods serial)
   cgp-idle : CgGatherer -> Boolean
   cgp-idle (c) = c.leg == 0 & c.lot == 0 & cgg-held c 5 < 2 & not (cgg-ready c)
   cgp-settle : CompositeGame, CgGatherer, WalkMap, Integer, Integer -> Integer
@@ -209,7 +211,7 @@ Chapter: CompositeGathererProof
   cgp-styled : CompositeGame -> [Console] Integer
   cgp-styled (owner) = let ok = list-length owner.miners == cgm-limit & cgp-miners-styled owner 0
       & (when owner.gatherer is None -> False is Just (g) -> cst-styled owner.items g.serial cst-miner)
-      & (when owner.fighter is None -> False is Just (f) -> cst-styled owner.items f.serial cst-fighter)
+      & (when owner.fighter is None -> False is Just (f) -> cst-styled owner.items f.serial cst-warrior)
     in cgp-check "the gatherer and every miner wear the miner's look with a pickaxe in hand, and the fighter the fighter's look" ok
   cgp-steps : CgGatherer, TownLive, WalkMap, Maybe WdState, Integer -> Integer
   cgp-steps (c) (t) (map) (doors) (n) = if n == 0 then 0 else let r = cgg-step c t map doors in cgp-steps c t map doors (n - 1)
@@ -250,7 +252,7 @@ Chapter: CompositeGathererProof
         end
   opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64
     is Err (e) -> cgp-check e False
-    is Ok (map) -> when walk-map-new 1408 1536 96 160
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
      is Err (e) -> cgp-check e False
      is Ok (britain) -> let filled = cgp-fill map 0
       in let town-filled = cgp-fill britain 0

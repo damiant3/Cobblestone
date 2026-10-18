@@ -11,7 +11,9 @@ pwsh apps/uoaix/install-map-cache.ps1 -ClientRoot <client-directory> -WorldDisk 
 `-ClientRoot` is the original client in both: the server's collision comes from
 its statics, so the installer refuses the flora-stripped `STATICS0.MUL`. Without
 `-FloraFile` the server logs `FLORA off` and draws no flora items, which leaves a
-player who stripped their client without trees.
+player who stripped their client without trees. The flora table's kind 3 rows are
+furnishings `premises.cfg` strips from the player's statics; the installer
+installs no collider for them.
 
 Installation covers the entire6144 by4096 map. It reads the original MULs in
 place, decodes land flags/heights and all movement-relevant static colliders,

@@ -52,6 +52,11 @@ Chapter: MageryActions
       in let point = mga-point x y z
       in if x >= 6144 | y >= 4096 | not (mga-visible magic source point) then Err "That location is out of sight."
       else Ok (MgAim { object = point, point = point, door = -1 })
+    else if spell == 34 & serial == 0 then
+      (when world-get shard.world (mga-wall-on magic shard.world (gp-u16 packet 11) (gp-u16 packet 13) 0)
+        is Err (_) -> Err "That cannot be dispelled."
+        is Ok (piece) -> if not (mga-visible magic source piece) then Err "That target is out of sight."
+          else Ok (MgAim { object = piece, point = piece, door = -1 }))
     else if spell == 21 & serial > wd-serial-base & serial <= wd-serial-base + magic.decoration.count then
       let at = serial - wd-serial-base - 1
       in let point = mga-point (wd-x magic.decoration at) (wd-y magic.decoration at) (wd-field magic.decoration at 2)
@@ -74,6 +79,7 @@ Chapter: MageryActions
           else if spell == 45 then
             if target.kind /= 2 | target.graphic /= #1F14 then Err "Target a recall rune."
             else if not (mga-under shard.world target.container (gsi-pack-find shard.world source.serial 0) 65) then Err "You must have this rune in your backpack in order to mark it."
+            else if not (magic.mark-hook source.serial source.x source.y) then Err "You cannot mark a rune in another's home."
             else Ok (MgAim { object = target, point = point, door = -1 })
           else if spell == 21 then
             if target.kind /= 2 | not (gsi-known magic.items serial) then Err "This spell won't work on that!"
@@ -124,15 +130,28 @@ Chapter: MageryActions
           is Err (e) -> Err e
           is Ok (item) -> Ok [sip-item item,mgp-sound source #01E2]
  ServUO effects and sounds: Magic Arrow and Fireball fly (0x36E4, 0x36D4), Energy Bolt flies 0x379F with 0x20A; Harm,
- Mind Blast (0x213), Explosion (0x36BD, 0x307) and Flame Strike (0x3709, 0x208) show on the target; Lightning is a bolt
- (Effects.SendBoltEffect) whose only sound is 0x29.
+ Mind Blast (0x213), Explosion (0x36BD, 0x207) and Flame Strike (0x3709, 0x208) show on the target; Lightning is a bolt
+ (Effects.SendBoltEffect) whose only sound is 0x29. The 1998 client's SOUNDIDX.MUL holds no 0x44B, 0x307, 0x3C4 or
+ 0x299, so Fireball, Explosion, Invisibility and the Arch spells' area sound take UOX3 spells.dfn's 0x15E, 0x207, 0x203,
+ 0x1E8 and 0x1F7.
   mga-damage-show : WorldObject, WorldObject, Integer -> List (List Integer)
   mga-damage-show (source) (target) (spell) = if spell == 30 then [mgp-sound target #0029]
     else let graphic = if spell == 5 then #36E4 else if spell == 18 then #36D4 else if spell == 42 then #379F
       else if spell == 43 then #36BD else if spell == 51 then #3709 else #374A
-    in let sound = if spell == 5 then #01E5 else if spell == 18 then #044B else if spell == 37 then #0213 else if spell == 42 then #020A
-      else if spell == 43 then #0307 else if spell == 51 then #0208 else #01F1
+    in let sound = if spell == 5 then #01E5 else if spell == 18 then #015E else if spell == 37 then #0213 else if spell == 42 then #020A
+      else if spell == 43 then #0207 else if spell == 51 then #0208 else #01F1
     in [mgp-effect source target graphic (spell == 5 | spell == 18 | spell == 42),mgp-sound target sound]
+ ServUO First/Clumsy, Feeblemind and Weaken sound 0x1DF; Second/Agility 0x1E7, Cunning 0x1EB, Strength 0x1EE; Third/Bless
+ 0x1EA; Fourth/Curse 0x1E1.
+ Their effects: Clumsy, Feeblemind and Weaken 0x3779; Agility, Cunning and Strength 0x375A; Bless 0x373A; Curse 0x374A.
+  mga-stat-effect : Integer -> Integer
+  mga-stat-effect (spell) = if spell == 9 | spell == 10 | spell == 16 then #375A else if spell == 17 then #373A else if spell == 27 then #374A else #3779
+ Incognito: ServUO and UOX3 play 0x3BD, which the 1998 SOUNDIDX.MUL lacks, so the spell was silent; it plays Polymorph's
+ 0x20F (UOX3's), the other spell that changes its caster's look, which the client holds (UOAIX-170).
+  mga-incognito-sound : Integer = #020F
+  mga-stat-sound : Integer -> Integer
+  mga-stat-sound (spell) = if spell == 9 then #01E7 else if spell == 10 then #01EB else if spell == 16 then #01EE
+    else if spell == 17 then #01EA else if spell == 27 then #01E1 else #01DF
   mga-stat-mods : Magery, GameShard, GameInput, MgActor, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
   mga-stat-mods (magic) (shard) (input) (actor) (source) (target) (spell) =
     let amount = 1 + mgs-skill shard source.serial 25 / 100
@@ -143,12 +162,17 @@ Chapter: MageryActions
     in let first = mge-mod magic actor stat signed until
     in let rest = if spell /= 17 & spell /= 27 & spell /= 46 then 0 else let dex = mge-mod magic actor 1 signed until in mge-mod magic actor 2 signed until
     in mge-stats magic shard input actor
- ServUO Fourth/ManaDrain and Seventh/ManaVampire (pre-AOS): Mana Drain takes 1 to 100 of the target's mana and Mana
- Vampire all of it, moving only what fits into the caster; the landed share scales either. Effect 0x374A, sound
- 0x1F8 (drain) and 0x1F9 (vampire).
+ ServUO Fourth/ManaDrain and Seventh/ManaVampire (pre-AOS), made stronger (UOAIX-202): Mana Drain takes half to all of
+ the target's mana (ServUO 1 to 100 points) and Mana Vampire all of it, moving only what fits into the caster; the
+ landed share scales either, and either leaves the target regaining mana slowly for a minute (mgr-drained-delay).
+ Effect 0x374A, sound 0x1F8 (drain) and 0x1F9 (vampire).
+  mga-drain-take : Integer, Integer -> Integer
+  mga-drain-take (mana) (roll) = mana * (50 + roll) / 100
+  mga-drain-ticks : Integer = mgd-ticks 60000
   mga-drain : Magery, GameShard, GameInput, MgActor, MgActor, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
   mga-drain (magic) (shard) (input) (caster) (actor) (source) (target) (spell) =
-    let taken = if spell == 31 then 1 + mgs-random magic (max 1 (min 100 actor.mana)) else actor.mana
+    let taken = if spell == 31 then mga-drain-take actor.mana (mgs-random magic 51) else actor.mana
+    in let slowed = __record-set actor "drained-until" (magic.tick + mga-drain-ticks)
     in let landed = min actor.mana (taken * mge-share shard source.serial target.serial / 1000)
     in let given = if spell == 53 then min landed (max 0 (mgs-stat caster 2 - caster.mana)) else 0
     in let moved = if spell == 53 then given else landed
@@ -181,9 +205,9 @@ Chapter: MageryActions
             is Err (e) -> Err e
             is Ok (shown) -> mga-curse-tile magic shard input source next (packets & shown & [mgp-effect m m #374A False,mgp-sound m #01E1])
  ServUO pre-AOS area spells. Arch Cure (25) cures within 2 tiles of its point at Cure's chance less 1%; Arch Protection
- (26) gives everyone within 3 tiles Protection; Chain Lightning (49) and Meteor Swarm (55) split 27 to 48 among the
- harmful targets within 2 tiles; Earthquake (57) strikes within 1 + Magery/15 tiles of the caster for 60% of each
- target's hits, at least 10 on a creature and at most 75, unscaled by Eval Int (ServUO applies no damage scalar to it).
+ (26) gives everyone within 3 tiles Protection; Chain Lightning (49) and Meteor Swarm (55) split their pool among the
+ harmful targets within 2 tiles (mge-base-roll); Earthquake (57) strikes within 1 + Magery/15 tiles of the caster for its own base
+ (mge-base-roll), scaled as every damage spell is (Damian's 8th-circle bar, UOAIX-201).
  Reveal (48, Sixth/Reveal) uncovers every hidden player within 1 + Magery/20 tiles of its point: pre-AOS CheckDifficulty
  always passes, and a player caster reveals players only (effect 0x375A, sound 0x1FD).
  Every harmful one rolls each target's resist and lands its share (UOAIX-77). Mobiles are found tile by tile through the
@@ -250,8 +274,7 @@ Chapter: MageryActions
         in Ok [mgp-appearance magic input m,mgp-effect m m #373A False,mgp-sound m #01E0])
       else if spell == 26 then let given = mga-protect magic shard source.serial actor in Ok [mgp-effect m m #375A False,mgp-sound m #01F7]
       else if mge-resisted magic shard source.serial m.serial then Ok [sip-message m.serial m.graphic 6 "You feel yourself resisting magical energy."]
-      else let damage = if spell == 57 then max 1 ((if cb-slot shard m.serial 0 < 0 then max 10 (min 75 (m.health * 6 / 10)) else min 75 (m.health * 6 / 10)) * mge-share shard source.serial m.serial / 1000)
-        else mge-scaled shard source m base 1000
+      else let damage = mge-scaled shard source m (if spell == 57 then mge-base-roll magic 57 else base) 1000
       in when mge-harm magic shard input source.serial m.serial damage cb-cause-spell
         is Err (e) -> Err e
         is Ok (hurt) -> Ok ((if spell == 49 then [mgp-sound m #0029] else if spell == 55 then [mgp-effect m m #36BD False] else []) & hurt)
@@ -264,7 +287,7 @@ Chapter: MageryActions
     in let spent = __record-set actor "reflect" (max 0 left)
     in let touched = mgs-touch magic in left >= 0
  ServUO Sixth/Invisibility (pre-AOS): the target is hidden for 1.2 x Magery.Fixed / 10 seconds (Magery 0-1000 times
- 120 ms), effect 0x376A, sound 0x3C4; acting or being struck reveals it as Hiding does. Flag 0x80 on the 0x20 self
+ 120 ms), effect 0x376A, sound 0x203; acting or being struck reveals it as Hiding does. Flag 0x80 on the 0x20 self
  packet draws the caster's own body hidden. The timer is volatile.
   mga-self-shown : Magery, GameShard, GameInput, WorldObject, Boolean -> List Integer
   mga-self-shown (magic) (shard) (input) (m) (hidden) = let combat = list-at magic.combat.actors (world-slot shard.world m.serial)
@@ -275,7 +298,7 @@ Chapter: MageryActions
     in let until = __record-set actor "invisible" (magic.tick + mgd-ticks (mgs-skill shard source.serial 25 * 120))
     in let tracked = mgs-track magic actor
     in let touched = mgs-touch magic
-    in Ok ([mgp-effect target target #376A False,mgp-sound target #03C4]
+    in Ok ([mgp-effect target target #376A False,mgp-sound target #0203]
       & (if target.serial == input.session.serial then [mga-self-shown magic shard input target True] else []))
  ServUO Seventh/Polymorph (pre-AOS): the caster takes the body chosen from the form menu (GameMagery), a human body with
  a random skin hue and any other with hue 0, for Magery seconds, at most 120; MageryTick and MageryIncognito return the
@@ -294,7 +317,7 @@ Chapter: MageryActions
     in when world-update shard.world changed
       is Err (e) -> Err e
       is Ok (_) -> let tracked = mgs-track magic actor
-        in let touched = mgs-touch magic in Ok [mgp-appearance magic input changed]
+        in let touched = mgs-touch magic in Ok [mgp-appearance magic input changed,mgp-sound changed #020F]
  ServUO Sixth/Dispel and Seventh/MassDispel: a summoned creature the roll beats goes (effect 0x3728, sound 0x201) through
  the owner's dismiss-hook; one that resists shows effect 0x3779. Mass Dispel rolls for every summoned creature within 8
  tiles of its point.
@@ -319,7 +342,7 @@ Chapter: MageryActions
         else if spell == 36 then
           if actor.reflect > 0 then Ok [sip-message target.serial target.graphic 6 "This spell is already in effect."]
           else let charged = __record-set actor "reflect" (8 + (mgs-skill shard source.serial 25 + mgs-skill shard source.serial 23) / 2000 * 7)
-          in let touched = mgs-touch magic in Ok [mgp-effect target target #375A False,mgp-sound target #01ED]
+          in let touched = mgs-touch magic in Ok [mgp-effect target target #375A False,mgp-sound target #01E9]
         else if spell == 44 then mga-invisible magic shard input actor source target
         else if spell == 56 then mga-polymorph magic shard input actor target
         else if spell == 59 then
@@ -340,7 +363,7 @@ Chapter: MageryActions
         else if spell == 1 | spell == 3 | spell == 8 | spell == 9 | spell == 10 | spell == 16 | spell == 17 | spell == 27 then
           when mga-stat-mods magic shard input actor source target spell
             is Err (e) -> Err e
-            is Ok (packets) -> Ok (packets & [mgp-effect target target #376A False,mgp-sound target (if spell == 27 then #01E1 else #01EA)])
+            is Ok (packets) -> Ok (packets & [mgp-effect target target (mga-stat-effect spell) False,mgp-sound target (mga-stat-sound spell)])
         else if spell == 31 | spell == 53 then mga-drain magic shard input caster actor source target spell
         else if spell == 38 then
           when cb-ensure magic.combat shard target.serial
@@ -394,7 +417,7 @@ Chapter: MageryActions
             is Ok (_) -> when world-get shard.world target.serial
               is Err (e) -> Err e
               is Ok (now) -> Ok ([mgp-appearance magic input now] & mga-worn shard target.serial 11 & mga-worn shard target.serial 16
-                & [mgp-effect now now #373A False,mgp-sound now #03BD])
+                & [mgp-effect now now #373A False,mgp-sound now mga-incognito-sound])
         else Err "spell effect is not a mobile effect"
   mga-worn : GameShard, Integer, Integer -> List (List Integer)
   mga-worn (shard) (owner) (layer) = let serial = world-layer-serial shard.world owner layer
@@ -408,7 +431,7 @@ Chapter: MageryActions
       is Ok (mobile) -> let near = walk-abs (mobile.x - point.x) <= 1 & walk-abs (mobile.y - point.y) <= 1
         in when (if near then mge-harm magic shard input meta.trapper mobile.serial 1 cb-cause-trap else Ok [])
           is Err (e) -> Err e
-          is Ok (packets) -> Ok ([mgp-effect point point #36BD False,mgp-sound point #0307] & packets)
+          is Ok (packets) -> Ok ([mgp-effect point point #36BD False,mgp-sound point #0207] & packets)
   mga-container : Magery, GameShard, GameInput, MgAim, Integer -> Result (List (List Integer)) Text
   mga-container (magic) (shard) (input) (aim) (spell) = if aim.door >= 0 then when wd-toggle magic.decoration shard aim.door
     is Err (e) -> Err e
@@ -461,7 +484,7 @@ Chapter: MageryActions
   mga-refresh : Magery -> Result Integer Text
   mga-refresh (magic) = let state = magic.decoration
     in if not (wd-bound state) then Err "magic field map requires rebind"
-    else let reset = wd-copy state.base state.solids 0 (state.width * state.height * state.stride / 8)
+    else let reset = wd-restore state
     in when wd-solids state (wd-lower state (state.map.x - 1) 0 state.count)
       is Err (e) -> Err e
       is Ok (_) -> mga-overlay magic 0
@@ -469,21 +492,25 @@ Chapter: MageryActions
   mga-occupied (world) (serial) (except) (z) (left) = if serial == 0 | left == 0 then False
     else let at = world-slot world serial
     in if at < 0 then False else let next = world-tile-next world serial
-    in let base = peek-qword world.buffer (48 + at * 80)
-    in if serial /= except & peek-qword world.buffer (24 + at * 80) == 1 & peek-qword world.buffer (88 + at * 80) > 0 & base < z + 16 & base + 16 > z then True
+    in let base = peek-qword (wi-object world.buffer at) 32
+    in if serial /= except & peek-qword (wi-object world.buffer at) 8 == 1 & peek-qword (wi-object world.buffer at) 72 > 0 & base < z + 16 & base + 16 > z then True
     else mga-occupied world next except z (left - 1)
   mga-wall-point : WorldObject, WorldObject, Integer -> WorldObject
   mga-wall-point (source) (target) (i) = let dx = source.x - target.x
     in let dy = source.y - target.y
     in let horizontal = (dx - dy >= 0 & dx + dy < 0) | (dx - dy < 0 & dx + dy >= 0)
     in mga-point (target.x + (if horizontal then i else 0)) (target.y + (if horizontal then 0 else i)) target.z
-  mga-wall-ready : Magery, GameShard, WorldObject, WorldObject, Integer, Integer -> Boolean
-  mga-wall-ready (magic) (shard) (source) (target) (spell) (i) = if i == mga-wall-last spell + 1 then True
-    else let point = mga-wall-point source target i
+ ServUO SpellHelper.AdjustField: each tile of a wall or field is placed only where it fits, the rest are skipped, and
+ the spell is cast when at least one tile fits.
+  mga-wall-fits : Magery, GameShard, WorldObject, WorldObject, Integer, Integer -> Boolean
+  mga-wall-fits (magic) (shard) (source) (target) (spell) (i) = let point = mga-wall-point source target i
     in if (spell == 24 | spell == 50) & mga-occupied shard.world (world-tile-first shard.world point.x point.y) 0 point.z shard.world.capacity then False
     else when walk-height magic.decoration.map point.x point.y point.z
       is Err (_) -> False
-      is Ok (z) -> if z /= point.z then False else mga-wall-ready magic shard source target spell (i + 1)
+      is Ok (z) -> z == point.z
+  mga-wall-ready : Magery, GameShard, WorldObject, WorldObject, Integer, Integer -> Boolean
+  mga-wall-ready (magic) (shard) (source) (target) (spell) (i) = if i == mga-wall-last spell + 1 then False
+    else mga-wall-fits magic shard source target spell i | mga-wall-ready magic shard source target spell (i + 1)
  ServUO pre-AOS fields (Fourth/FireField, Fifth/PoisonField, Sixth/ParalyzeField, Seventh/EnergyField): five tiles,
  art east-west or north-south, lasting Fire 4 s + 50% of Magery, Poison 3 s + Magery/2.5, Paralyze 3 s + Magery/3,
  Energy 2 s + 28% of Magery. Only Wall of Stone and Energy Field block; the others act on whoever stands in them
@@ -505,6 +532,7 @@ Chapter: MageryActions
   mga-walls (magic) (shard) (source) (target) (spell) (i) (packets) = if i == mga-wall-last spell + 1 then when mga-refresh magic
       is Err (e) -> Err e
       is Ok (_) -> Ok (list-push packets (mgp-sound target (if spell == 24 then #01F6 else if spell == 28 then #020C else #020B)))
+    else if not (mga-wall-fits magic shard source target spell i) then mga-walls magic shard source target spell (i + 1) packets
     else let point = mga-wall-point source target i
     in let item = WorldObject { serial = 0, kind = 2, x = point.x, y = point.y, z = point.z,
       graphic = mga-field-art spell ((mga-wall-point source target 1).y == target.y),
@@ -521,7 +549,7 @@ Chapter: MageryActions
         in let registered = gsi-register magic.items serial 0 0 False False
         in when world-get shard.world serial
           is Err (e) -> Err e
-          is Ok (placed) -> mga-walls magic shard source target spell (i + 1) (list-push packets (sip-ground placed))
+          is Ok (placed) -> mga-walls magic shard source target spell (i + 1) (packets & [sip-ground placed, mgp-effect placed placed #376A False])
   mga-prepare : Magery, GameShard, GameInput, WorldObject, MgAim, Integer -> [Device.Block] Result (Maybe MgAim) Text
   mga-prepare (magic) (shard) (input) (source) (aim) (spell) = if spell /= 22 & spell /= 32 & spell /= 52 then act Ok (Just aim) end
     else let point = if spell == 22 then aim.point else let rune = list-at magic.definitions (world-slot shard.world aim.object.serial)
@@ -546,20 +574,35 @@ Chapter: MageryActions
                   is Ok (_) -> Ok (if valid then Just (MgAim { object = aim.object, point = point, door = -1 }) else None)
             end
   end
+ Teleport and a gate step sound 0x1FE with flash 0x3728 at both ends; Recall sounds 0x1FC with no flash (ServUO Third/
+ Teleport, Fourth/Recall).
   mga-travel : Magery, GameShard, GameInput, WorldObject, WorldObject -> Result (List (List Integer)) Text
-  mga-travel (magic) (shard) (input) (source) (point) =
+  mga-travel (magic) (shard) (input) (source) (point) = mga-travel-with magic shard input source point #01FE
+  mga-travel-with : Magery, GameShard, GameInput, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
+  mga-travel-with (magic) (shard) (input) (source) (point) (sound) = when mga-travel-moved magic shard input source point sound
+    is Err (e) -> Err e
+    is Ok (shown) -> Ok (if sound == #01FC then mga-unflash shown 0 [] else shown)
+  mga-unflash : List (List Integer), Integer, List (List Integer) -> List (List Integer)
+  mga-unflash (shown) (i) (out) = if i >= list-length shown then out
+    else let p = list-at shown i in mga-unflash shown (i + 1) (if list-length p == 0 then out & [p] else if list-at p 0 == #70 then out else out & [p])
+  mga-travel-moved : Magery, GameShard, GameInput, WorldObject, WorldObject, Integer -> Result (List (List Integer)) Text
+  mga-travel-moved (magic) (shard) (input) (source) (point) (sound) =
     let moved = WorldObject { serial = source.serial, kind = 1, x = point.x, y = point.y, z = point.z,
       graphic = source.graphic, hue = source.hue, container = 0, amount = 1, health = source.health }
     in when world-update shard.world moved
       is Err (e) -> Err e
       is Ok (_) -> let combat = list-at magic.combat.actors (world-slot shard.world source.serial)
         in Ok [mgp-effect source source #3728 False,cbp-player moved input.session.direction (cbp-flags combat.war False),
-          mgp-effect moved moved #3728 False,mgp-sound moved #01FE]
+          mgp-effect moved moved #3728 False,mgp-sound moved sound]
  ServUO Fifth/DispelField: the targeted tile of a magery field or wall goes (effect 0x376A, sound 0x201). The wall
  is expired here and removed by the next pulse's wall pass, the path that removes every expired field.
   mga-wall-index : Magery, Integer, Integer -> Integer
   mga-wall-index (magic) (serial) (i) = if i == 32 then -1
     else if (list-at magic.walls i).serial == serial then i else mga-wall-index magic serial (i + 1)
+  mga-wall-on : Magery, WorldTable, Integer, Integer, Integer -> Integer
+  mga-wall-on (magic) (world) (x) (y) (i) = if i == 32 then 0 else let wall = list-at magic.walls i
+    in if wall.serial /= 0 & wall.until > magic.tick & (when world-get world wall.serial is Err (_) -> False is Ok (item) -> item.x == x & item.y == y) then wall.serial
+    else mga-wall-on magic world x y (i + 1)
   mga-dispel-field : Magery, WorldObject -> Result (List (List Integer)) Text
   mga-dispel-field (magic) (target) = let i = mga-wall-index magic target.serial 0
     in if i < 0 then Err "That cannot be dispelled."
@@ -633,25 +676,25 @@ Chapter: MageryActions
     in let spot = if ground then mga-summon-at magic shard point else mga-summon-spot magic shard source 0
     in let ms = if ground then (80 + mgs-random magic 40) * 1000 else mgs-skill shard source.serial 25 * 400
     in let serial = if spot.z == -1000 then 0 else magic.summon-hook source.serial (mgd-summon-key spell (mgs-random magic 18)) spot.x spot.y spot.z (not ground) ms
-    in if serial == 0 then Ok [sip-message source.serial source.graphic 6 "That location is blocked."]
-    else Ok [mgp-sound spot (mgd-summon-sound spell)]
+    in if serial == 0 then Ok [sip-message source.serial source.graphic 6 (if spot.z == -1000 then "That location is blocked." else "The spell fizzles.")]
+    else Ok ((if spell == 61 then [mgp-effect spot spot #3728 False] else []) & [mgp-sound spot (mgd-summon-sound spell)])
   mga-apply :Magery, GameShard, GameInput, MgActor, WorldObject, MgAim, Integer -> [Device.Block] Result (List (List Integer)) Text
   mga-apply (magic) (shard) (input) (caster) (source) (aim) (spell) =
     if spell == 2 then act mga-food magic shard source end
     else if spell == 13 | spell == 14 | spell == 19 | spell == 21 | spell == 23 then act mga-container magic shard input aim spell end
     else if spell == 24 | spell == 28 | spell == 39 | spell == 47 | spell == 50 then act mga-walls magic shard source aim.point spell (0 - mga-wall-last spell) [] end
-    else if spell == 22 | spell == 32 then act mga-travel magic shard input source aim.point end
+    else if spell == 22 | spell == 32 then act mga-travel-with magic shard input source aim.point (if spell == 32 then #01FC else #01FE) end
     else if spell == 52 then act mga-gate magic shard source aim.point end
     else if mgd-summon-cost spell > 0 then act mga-summon magic shard source aim.point spell end
     else if spell == 54 then act mga-area magic shard input source aim.point 8 spell 0 0 [] end
     else if spell == 45 then act mga-mark magic source aim.object end
     else if spell == 34 then act mga-dispel-field magic aim.object end
     else if spell == 46 then act mga-mass-curse magic shard input source aim.point 0 [] end
-    else if spell == 25 | spell == 26 then act mga-area magic shard input source aim.point (if spell == 25 then 2 else 3) spell 0 0 [mgp-sound aim.point #0299] end
+    else if spell == 25 | spell == 26 then act mga-area magic shard input source aim.point (if spell == 25 then 2 else 3) spell 0 0 [mgp-sound aim.point (if spell == 25 then #01E8 else #01F7)] end
     else if spell == 49 | spell == 55 then act
       let count = max 1 (mga-area-count magic shard source aim.point 2 spell 0 0)
-      in mga-area magic shard input source aim.point 2 spell ((27 + mgs-random magic 22) / count) 0 (if spell == 55 then [mgp-sound aim.point #0160] else [])
+      in mga-area magic shard input source aim.point 2 spell (mge-base-roll magic spell / count) 0 (if spell == 55 then [mgp-sound aim.point #0160] else [])
     end
-    else if spell == 57 then act mga-area magic shard input source source (1 + mgs-skill shard source.serial 25 / 150) spell 0 0 [] end
+    else if spell == 57 then act mga-area magic shard input source source (1 + mgs-skill shard source.serial 25 / 150) spell 0 0 [mgp-sound source #020D] end
     else if spell == 48 then act mga-area magic shard input source aim.point (1 + mgs-skill shard source.serial 25 / 200) spell 0 0 [] end
     else act mga-mobile magic shard input caster source aim spell end

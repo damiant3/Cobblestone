@@ -1,0 +1,126 @@
+Chapter: BvtLockdown
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GsiCodec
+  cites Uoaix chapter BvtHouseKey
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-253: BvtHouseKey's town, a deed house centered on 1510, 1610 held for a player standing inside, and a chest (0x0E43,
+ gump 0x49) on the floor inside. The commands go through hs-cmd as the client's speech and target packets. Answers a bit per check: 1 the
+ holder's "I wish to lock this down" answers a cursor and a stranger outside gets none; 2 the locked chest refuses a lift
+ and after "I wish to release this" lifts; 4 a chest the holder secures refuses a stranger's double-click and opens to the
+ holder; 8 GSI1 keeps the secured serial and a lock-down through a write and read; 16 "I ban thee" on the stranger moves
+ it 3 tiles south of the sign with the 1998 line and adds one ban row, and a second ban answers "This person is already
+ banned!" and moves nothing; 32 "Remove thyself" moves the stranger and adds no row, and a chest answers "You cannot eject
+ that from the house!"; 64 the housing tail keeps the ban row; 127 is
+ all, negative when not buildable.
+  blk-text : Text, Integer, List Integer -> List Integer
+  blk-text (t) (i) (out) = if i >= text-length t then list-push out 0 else blk-text t (i + 1) (list-push out (to-unicode (char-code (char-at t i))))
+  blk-say : Text -> List Integer
+  blk-say (t) = let n = 8 + text-length t + 1 in [3, n / 256, int-mod n 256, 0, 3, 178, 0, 3] & blk-text t 0 []
+  blk-aim : Integer, WorldObject -> List Integer
+  blk-aim (context) (it) = gp-put16 (list-push (list-push (gp-put16 (gp-put16 (gp-put32 (list-push (gp-put32 [#6C, 0] context) 0) it.serial) it.x) it.y) 0) it.z) it.graphic
+  blk-input : Integer -> GameInput
+  blk-input (serial) = let input = gn-input 3
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let who = __record-set input.session "serial" serial in input
+  blk-context : Maybe GameReply -> Integer
+  blk-context (r) = when r is None -> 0 is Just (reply) -> if list-length reply.packets < 2 then 0 else gp-u32 (list-at reply.packets 1) 2
+  blk-run : CompositeGame, Integer, HsPeople, Text, WorldObject -> Maybe GameReply
+  blk-run (owner) (who) (people) (said) (it) = let game = owner.checkpoint.game
+    in let asked = hs-cmd owner.housing owner.construction owner.items people game (blk-input who) (blk-say said)
+    in let context = blk-context asked
+    in if context == 0 then None else hs-cmd owner.housing owner.construction owner.items people game (blk-input who) (blk-aim context it)
+ The ban arms' people: one player (the stranger), and an oust that records its calls in a log buffer (count, serial, x, y,
+ the told line's length) instead of moving anyone.
+  blk-player : Integer, Integer -> Boolean
+  blk-player (stranger) (serial) = serial == stranger
+  blk-name : Integer -> Text
+  blk-name (serial) = "Stranger"
+  blk-oust : Integer, Integer, Integer, Integer, Integer, Text -> Boolean
+  blk-oust (log) (serial) (x) (y) (z) (said) = let n = poke-qword log 0 (peek-qword log 0 + 1)
+    in let a = poke-qword log 8 serial in let b = poke-qword log 16 x in let c = poke-qword log 24 y in let d = poke-qword log 32 (text-length said) in True
+  blk-told : Maybe GameReply, Text -> Boolean
+  blk-told (r) (text) = when r is None -> False is Just (reply) -> reply.packets == (hs-tell text).packets
+  blk-actor : CompositeGame, Integer -> GsiActor
+  blk-actor (owner) (serial) = let a = list-at owner.items.actors 0
+    in let s = __record-set a "serial" serial in let h = __record-set a "holding" 0 in let n = __record-set a "next-lift" 0 in a
+  blk-lifted : GameReply -> Boolean
+  blk-lifted (r) = r.note == "items:lift"
+ A deed house's row, written as a placed deed writes it.
+  blk-house : CnState, Integer, Integer, Integer -> Integer
+  blk-house (land) (x) (y) (holder) = let k = cn-free-site land 0
+    in let a = cn-site-set land k 0 1 in let b = cn-site-set land k 1 x in let c = cn-site-set land k 2 y
+    in let d = cn-site-set land k 4 holder in let e = poke-qword land.buf 8 (k + 1) in k
+  blk-checks : Integer -> Integer
+  blk-checks (unused) = let x = 1510 in let y = 1610
+    in when bhk-founded 1500 1600
+      is Err (_) -> -2
+      is Ok (owner) -> let world = owner.items.world
+        in when world-create world (gs-mobile 0 x y 0 400 1002)
+          is Err (_) -> -3
+          is Ok (holder) -> when world-create world (gs-mobile 0 (x - 30) y 0 400 1002)
+            is Err (_) -> -3
+            is Ok (stranger) -> when world-create world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = #0E43, hue = 0, container = 0, amount = 1, health = 0 })
+              is Err (_) -> -3
+              is Ok (chest) -> let known = gsi-register owner.items chest 0 #0049 True False
+                in let h = blk-house owner.construction x y holder
+                    in when world-get world chest
+                      is Err (_) -> -5
+                      is Ok (it) -> let game = owner.checkpoint.game
+                        in let sx = x + 2
+                        in let sy = y + 4
+                        in when walk-map-new (sx - 16) (sy - 16) 64 64
+                          is Err (_) -> -6
+                          is Ok (map) -> let filled = bwd-fill map 0
+                        in let log = alloc-bytes 40
+                        in let cleared = poke-qword log 0 0
+                        in let people = HsPeople { map = map, player = blk-player stranger, name = blk-name, oust = blk-oust log }
+                        in let prompt = hs-cmd owner.housing owner.construction owner.items people game (blk-input holder) (blk-say "I wish to lock this down")
+                        in let outsider = hs-cmd owner.housing owner.construction owner.items people game (blk-input stranger) (blk-say "I wish to lock this down")
+                        in let asked = if blk-context prompt /= 0 & (when outsider is None -> True is Just (_) -> False) then 1 else 0
+                        in let locked = blk-run owner holder people "I wish to lock this down" it
+                        in let refused = not (blk-lifted (gsi-lift owner.items (blk-actor owner holder) chest 1 1))
+                        in let released = blk-run owner holder people "I wish to release this" it
+                        in let lifted = blk-lifted (gsi-lift owner.items (blk-actor owner holder) chest 1 1)
+                        in let dropped = __record-set (blk-actor owner holder) "holding" 0
+                        in let lock-bit = if refused & lifted & (gsi-meta owner.items chest).held == 0 then 2 else 0
+                        in let secured = blk-run owner holder people "I wish to secure this" it
+                        in let near = when world-get world stranger is Err (_) -> 0 is Ok (m) -> (when world-update world (__record-set (__record-set m "x" (x + 1)) "y" y) is Err (_) -> 0 is Ok (_) -> 1)
+                        in let barred = gsi-use owner.items game (blk-actor owner stranger) 0 chest
+                        in let opened = gsi-use owner.items game (blk-actor owner holder) 0 chest
+                        in let secure-bit = if (gsi-meta owner.items chest).held == holder & barred.note == "That is secure." & opened.note == "items:container" then 4 else 0
+                        in let size = gic-size owner.items
+                        in let buf = alloc-bytes size
+                        in let written = gic-write owner.items buf size
+                        in let secured-back = when gic-read world buf size is Err (_) -> False is Ok (back) -> (gsi-meta back chest).held == holder
+                        in let relock = __record-set (gsi-meta owner.items chest) "held" (0 - 1)
+                        in let written2 = gic-write owner.items buf size
+                        in let locked-back = when gic-read world buf size is Err (_) -> False is Ok (back) -> (gsi-meta back chest).held == 0 - 1 & (gsi-meta back chest).movable
+                        in let codec-bit = if is-ok written & secured-back & locked-back then 8 else 0
+                        in when world-get world stranger
+                          is Err (_) -> -7
+                          is Ok (them) -> let bans = owner.housing.ban-count
+                            in let banned = blk-run owner holder people "I ban thee" them
+                            in let ban-moved = peek-qword log 0 == 1 & peek-qword log 8 == stranger & peek-qword log 16 == sx & peek-qword log 24 == sy + 3
+                              & peek-qword log 32 == text-length "You have been banned from this house."
+                            in let again = blk-run owner holder people "I ban thee" them
+                            in let ban-bit = if blk-told banned "Stranger has been banned from this house." & ban-moved & owner.housing.ban-count == bans + 1
+                              & hs-banned owner.housing h stranger 0 & blk-told again "This person is already banned!" & peek-qword log 0 == 1 then 16 else 0
+                            in let ejected = blk-run owner holder people "Remove thyself" them
+                            in let eject-moved = peek-qword log 0 == 2 & peek-qword log 32 == text-length "You have been ejected from this house. If you persist in entering, you may be banned from the house."
+                            in let not-player = blk-run owner holder people "Remove thyself" it
+                            in let eject-bit = if blk-told ejected "Stranger has been ejected from this house." & eject-moved & owner.housing.ban-count == bans + 1
+                              & blk-told not-player "You cannot eject that from the house!" & peek-qword log 0 == 2 then 32 else 0
+                            in let tail-buf = alloc-bytes (hs-tail-size owner.housing)
+                            in let tailed = hs-write-tail owner.housing tail-buf
+                            in let back = hs-new 0
+                            in let read-n = hs-read-tail back tail-buf (hs-tail-size owner.housing)
+                            in let tail-bit = if read-n >= 0 & hs-banned back h stranger 0 & back.ban-count == owner.housing.ban-count then 64 else 0
+                            in asked + lock-bit + secure-bit + codec-bit + ban-bit + eject-bit + tail-bit
+  bvt-lockdown : Integer -> [Console] Integer
+  bvt-lockdown (unused) = act
+    n <- blk-checks 0
+    bvt-check ("a house holder locks down, releases and secures an item inside the house, bans and ejects a player, and the save keeps all three (UOAIX-253, code " & show n & ")") (n == 127)
+  end

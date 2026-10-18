@@ -177,10 +177,47 @@ additional client input through the live
 sender. The 72 echo is a test handler, not the combat implementation. Real
 client handler acceptance remains root's run; this proof is synthetic.
 
+## Client packets in play (1.25.32)
+
+The packets a player's 1.25.32 client sends after world entry, and what answers each. The set is ServUO
+`Server/Network/PacketHandlers.cs`'s client registrations through 0xB3 (the client's length table, `go-lengths`, ends
+there), plus 0x56, 0x66, 0x69, 0x71 and 0x93.
+
+| Opcode | Client action | Answered by |
+|---|---|---|
+| 01 | logout | `gs-handle` (close) |
+| 02 | walk | `gs-walk` |
+| 03 | speech | `gs-speech` and the composite's speech handlers |
+| 05 | attack | `GameCombat` |
+| 06 | double-click | the composite chain (craft, harvest, vendors, doors, games, deeds) |
+| 07, 08, 13 | lift, drop, equip | `GameSkillsItems` |
+| 09 | single click (and All Names) | `GameSkillsItems` labels, `cg-creature-label` for creatures |
+| 12 | skill, spell or action command | `ActiveSkillsHandler`, `MageryActions` |
+| 22 | resync | `gs-resync` |
+| 2C | death menu answer | `GameCombat` |
+| 34 | status (type 4, any serial) and skills (type 5) | `GameCombat`; `ActiveSkillsHandler` and `GameHarvest` |
+| 3B, 9F | buy, sell | `GameVendor` |
+| 56, 66, 75, 93 | map pin, book page, pet rename, book title | skipped with a note (UOAIX-175 to 177) |
+| 69 | text or emote colour change (5 bytes, sent twice, no colour carried; UOX3 CPTextEmoteColour) | skipped by `gn-default-handler` (correct: it carries nothing) |
+| 6C | target | the cursor's owner |
+| 6F | secure trade | the composite |
+| 71 | bulletin board | `BulletinBoard` |
+| 72 | war mode | `GameCombat` |
+| 73 | ping | echoed |
+| 7D | menu choice | craft, skills and paging menus |
+| 95 | dye | `GameDye` |
+| 9B | help | `CompositeHelpCommands` |
+| A7 | tip or notice request | ignored |
+| B1 | gump answer | craft, decorator, plays, battleship, cards |
+
+Not counted as player packets: 04, 0A, 14, 47, 48, 58, 61, 79, 7E and 9D are god-client requests; 9A and AC answer a
+prompt or a text entry the server never sends. To re-run the audit, count `PACKET <n> unhandled packet skipped` in the
+server logs (`gn-default-handler` skips every packet with no fixed size, `gs-handle` the fixed ones it does not claim): across 137 trial and live logs (2026-10-06 to 2026-10-09) the only one was 0x69.
+
 ## Proof
 
 ```powershell
-pwsh -File apps/uoaix/proofs/test-game-dispatch.ps1 -ClientRoot C:/Users/Damian/uo1998-client -CompressionSource <Compression.cs> -Kernel seed/Codex.cdx -OutDir <new directory>
+pwsh -File apps/uoaix/proofs/test-game-dispatch.ps1 -ClientRoot D:/Games/UO1998com-Client1 -CompressionSource <Compression.cs> -Kernel seed/Codex.cdx -OutDir <new directory>
 ```
 
 The harness creates a synthetic block fixture, checks the exact native

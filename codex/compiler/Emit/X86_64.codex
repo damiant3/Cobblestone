@@ -953,7 +953,8 @@ Section: Function Emission
 
   emit-function-standard : CodegenState, IRDef -> CodegenState
   emit-function-standard (st0) (def) =
-    let st1 = if st0.cover & st0.cover-slot >= 0 then st-append-code (emit-cover-base st0 reg-r11 (st0.cover-slot * 8)) [73, 255, 3]
+    let cover-on = st0.cover & st0.cover-slot >= 0
+    in let st1 = if cover-on then st-append-code (emit-cover-base st0 reg-r11 (st0.cover-slot * 8)) [73, 255, 3]
       else st0
     in let func-start = st1.code-len
     in let st2 = emit-prologue st1
@@ -1625,13 +1626,15 @@ Section: Expression Emission
   emit-try-head-addr (st) =
     if st-hosted st then st-append-code st (li reg-rsi (st-cell st (proc-table-base + try-frame-head-offset)))
     else let st1 = emit-load-current-proc st reg-rsi
-    in st-append-code st1 (li reg-r11 proc-entry-size & imul-rr reg-rsi reg-r11 & li reg-r11 (proc-table-base + try-frame-head-offset) & add-rr reg-rsi reg-r11)
+    in let addr-calc = li reg-r11 proc-entry-size & imul-rr reg-rsi reg-r11
+    in st-append-code st1 (addr-calc & li reg-r11 (proc-table-base + try-frame-head-offset) & add-rr reg-rsi reg-r11)
 
   emit-try-push-frame : CodegenState -> CodegenState
   emit-try-push-frame (st) =
     let st1 = st-append-code st (lea-rip-rel reg-rax 0 & emit-sub-rsp-imm32 try-frame-bytes & mov-store reg-rsp reg-rax 88)
-    in let regs = mov-store reg-rsp reg-rbp 16 & mov-store reg-rsp reg-rbx 24 & mov-store reg-rsp reg-r12 32 & mov-store reg-rsp reg-r13 40
-    in let st2 = st-append-code st1 (regs & mov-store reg-rsp reg-r14 48 & mov-store reg-rsp reg-r15 56 & mov-store reg-rsp reg-r10 64)
+    in let regs0 = mov-store reg-rsp reg-rbp 16 & mov-store reg-rsp reg-rbx 24 & mov-store reg-rsp reg-r12 32
+    in let regs = regs0 & mov-store reg-rsp reg-r13 40 & mov-store reg-rsp reg-r14 48 & mov-store reg-rsp reg-r15 56
+    in let st2 = st-append-code st1 (regs & mov-store reg-rsp reg-r10 64)
     in let st3 = st-append-code st2 (mov-rr reg-rax reg-rsp & mov-store reg-rsp reg-rax 8)
     in let deck = li reg-r11 (st-cell st3 deck-bound-counter-addr) & mov-load reg-rax reg-r11 0 & mov-store reg-rsp reg-rax 72
     in let ceiling = li reg-r11 (st-cell st3 deck-ceiling-addr) & mov-load reg-rax reg-r11 0 & mov-store reg-rsp reg-rax 80
@@ -1671,9 +1674,11 @@ Section: Expression Emission
      is otherwise -> emit-print-text st2j reg-rdi
     in let st4 = st-append-code st3 [15, 11]
     in let st5 = patch-jcc-at st4 have-pos (st4.code-len)
-    in let regs = mov-load reg-rbp reg-rax 16 & mov-load reg-rbx reg-rax 24 & mov-load reg-r12 reg-rax 32 & mov-load reg-r13 reg-rax 40
-    in let st6 = st-append-code st5 (mov-store reg-rax reg-rdi 96 & regs & mov-load reg-r14 reg-rax 48 & mov-load reg-r15 reg-rax 56)
-    in let cmp = li reg-r11 (st-cell st6 deck-bound-counter-addr) & mov-load reg-rdx reg-r11 0 & mov-load reg-rcx reg-rax 72 & cmp-rr reg-rdx reg-rcx
+    in let regs0 = mov-load reg-rbp reg-rax 16 & mov-load reg-rbx reg-rax 24 & mov-load reg-r12 reg-rax 32
+    in let regs = regs0 & mov-load reg-r13 reg-rax 40 & mov-load reg-r14 reg-rax 48 & mov-load reg-r15 reg-rax 56
+    in let st6 = st-append-code st5 (mov-store reg-rax reg-rdi 96 & regs)
+    in let cmp0 = li reg-r11 (st-cell st6 deck-bound-counter-addr) & mov-load reg-rdx reg-r11 0
+    in let cmp = cmp0 & mov-load reg-rcx reg-rax 72 & cmp-rr reg-rdx reg-rcx
     in let st7 = st-append-code st6 cmp
     in let skip1-pos = st7.code-len
     in let st8 = st-append-code st7 (jcc cc-le 0 & test-rr reg-rcx reg-rcx)
@@ -1681,9 +1686,11 @@ Section: Expression Emission
     in let st9 = st-append-code st8 (jcc cc-ne 0 & li reg-r11 (st-cell st8 deck-pos-addr) & mov-store reg-r11 reg-r10 0)
     in let skip-pos = st9.code-len
     in let st10 = patch-jcc-at (patch-jcc-at st9 skip1-pos skip-pos) skip2-pos skip-pos
-    in let restore = li reg-r11 (st-cell st10 deck-bound-counter-addr) & mov-store reg-r11 reg-rcx 0 & mov-load reg-rcx reg-rax 80
+    in let restore0 = li reg-r11 (st-cell st10 deck-bound-counter-addr) & mov-store reg-r11 reg-rcx 0
+    in let restore = restore0 & mov-load reg-rcx reg-rax 80
     in let st11 = st-append-code st10 (restore & li reg-r11 (st-cell st10 deck-ceiling-addr) & mov-store reg-r11 reg-rcx 0)
-    in st-append-code st11 (mov-load reg-r10 reg-rax 64 & mov-load reg-rsp reg-rax 8 & mov-load reg-rax reg-rax 88 & jmp-r reg-rax)
+    in let unwind-seq = mov-load reg-r10 reg-rax 64 & mov-load reg-rsp reg-rax 8 & mov-load reg-rax reg-rax 88
+    in st-append-code st11 (unwind-seq & jmp-r reg-rax)
 
   emit-try-refail : CodegenState, Integer -> CodegenState
   emit-try-refail (st) (msg-loc) =

@@ -1,0 +1,76 @@
+Chapter: BvtCityStables
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CityStables
+  cites Uoaix chapter GameWorldSpawnCodec
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ Damian, 2026-10-10: "add stablemasters to all the stable shops, i didn't see one in trin". Answers a bit per check:
+ 1 boot installs one stablemaster at each of the 9 stables and a second install adds none; 2 a click on one answers
+ the stablemaster and on another mobile does not; 4 a speaker beside Trinsic's is heard and one in the street is not;
+ 8 "stable" takes the speaker's pet beside him to the pen, owner negated, staying, counted against no follower limit,
+ and leaves a pet out in the street alone; 16 the stabled slot saves and loads; 32 "claim" brings it back beside its
+ owner, following him, and a second claim or another player's brings nothing; 64 every one of ServUO's 12 animals has a
+ price and a spawn profile, the pack horse body 291, and an unknown animal has neither. 127 is all, below 0 when it cannot be built.
+  bcst-mobile : GameShard, Integer, Integer -> Integer
+  bcst-mobile (game) (x) (y) = when world-create game.world (__record-set (gs-mobile 0 x y 0 400 1015) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bcst-note : Maybe GameReply -> Text
+  bcst-note (r) = when r is None -> "" is Just (g) -> g.note
+  bcst-checks : Integer -> Integer
+  bcst-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let world = game.world
+        in let first = csm-install owner.items
+        in let again = csm-install owner.items
+        in let keepers = csm-serials world (csm-spots 0) 0 []
+        in let trinsic = csm-serial world (list-at (csm-spots 0) 2)
+        in let installed = owner.items.world.buffer == world.buffer & first == 9 & again == 0 & list-length keepers == 9 & trinsic > 0
+        in let master = bcst-mobile game 2012 2804
+        in let other = bcst-mobile game 2013 2803
+        in let street = bcst-mobile game 2060 2804
+        in let profile = gws-claim-profile g "horse" 0
+        in if master == 0 | other == 0 | street == 0 | profile < 0 then -2
+        else let labelled = bcst-note (csm-label world (gp-put32 [9] trinsic)) == "stable:name" & bcst-note (csm-label world (gp-put32 [9] master)) == ""
+        in let heard = csm-near world master == trinsic & csm-near world street == 0
+        in when gws-summon g game profile 2011 2805 0 master (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (pet) -> when gws-summon g game profile 2061 2805 0 master (g.combat.tick + gws-forever)
+            is Err (_) -> -4
+            is Ok (stray) -> let slot = list-at g.slots (gws-slot-of g pet 0)
+              in let before = gws-followers g world master 0
+              in let stabled = csm-stable g world master trinsic
+              in let penned = when world-get world pet is Err (_) -> False is Ok (p) -> p.x >= csm-pen-x & p.y >= csm-pen-y
+              in let kept = list-length stabled == 1 & list-at stabled 0 == pet & slot.owner == 0 - master & slot.order == gws-order-stay & penned
+                & gws-followers g world master 0 == before - 1 & csm-stabled g master 0 == 1
+                & (list-at g.slots (gws-slot-of g stray 0)).owner == master
+              in let now = g.combat.tick
+              in let buf = alloc-bytes (gwsc-size g)
+              in let encoded = gwsc-encode g world now buf (gwsc-size g)
+              in let decoded = if is-ok encoded then gwsc-decode g world now buf (gwsc-size g) else Err "not encoded"
+              in let saved = is-ok encoded & is-ok decoded & (list-at g.slots (gws-slot-of g pet 0)).owner == 0 - master
+              in let strangers = csm-claim g world other [[2014, 2803, 0]]
+              in let claimed = csm-claim g world master [[2013, 2804, 0]]
+              in let slot-back = list-at g.slots (gws-slot-of g pet 0)
+              in let beside = when world-get world pet is Err (_) -> False is Ok (p) -> p.x == 2013 & p.y == 2804
+              in let twice = csm-claim g world master [[2013, 2804, 0]]
+              in let back = list-length strangers == 0 & list-length claimed == 1 & slot-back.owner == master & slot-back.order == gws-order-follow & beside & list-length twice == 0
+              in let goods = bcst-goods g ["cat", "dog", "horse", "pack horse", "pack llama", "rabbit", "eagle", "brown bear", "grizzly bear", "panther", "timber wolf", "rat"] 0
+              in let pack = gws-profile-key g "packhorse" 0
+              in let sells = goods == 12 & csm-price "horse" == 550 & csm-price "unicorn" < 0 & csm-key "unicorn" == ""
+                & pack >= 0 & (list-at g.catalog.profiles pack).body == 291 & (list-at g.catalog.profiles pack).taming == 291
+              in (if installed then 1 else 0) + (if labelled then 2 else 0) + (if heard then 4 else 0) + (if kept then 8 else 0) + (if saved then 16 else 0) + (if back then 32 else 0) + (if sells then 64 else 0)
+ How many of the names the stablemaster prices and finds a spawn profile for.
+  bcst-goods : GameWorldSpawn, List Text, Integer -> Integer
+  bcst-goods (g) (names) (i) = if i == list-length names then 0
+    else let name = list-at names i
+    in (if csm-price name > 0 & gws-profile-key g (csm-key name) 0 >= 0 then 1 else 0) + bcst-goods g names (i + 1)
+  bvt-city-stables : Integer -> [Console] Integer
+  bvt-city-stables (unused) = act
+    n <- bcst-checks 0
+    bvt-check ("a stablemaster keeps every city stable, stables a pet beside him, gives it back on claim and prices all 12 of ServUO's animals (code " & show n & ")") (n == 127)
+  end

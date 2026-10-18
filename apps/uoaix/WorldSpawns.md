@@ -2,9 +2,22 @@
 
 GameWorldSpawn adapts UOX3 region populations and NPC tables to the shared
 GameCombat world. Sphere Source-X supplies bounded movement and obstacle
-turning. This unit creates real world mobiles with persistent combat profiles;
+turning. The controller creates real world mobiles with persistent combat profiles;
 it creates no inventory, equipment or gold. The larger living-wilds population,
-breeding, food, overflow and raids design remains in UOAIX.md.
+food, overflow and raids design remains in UOAIX.md.
+
+## Primal spawns and descendants
+
+Damian, 2026-10-07: "monsters should respawn, but not for a game world day";
+"a killed primary spawner... not their decendants"; on the name, "maybe primal
+is correct". A region's first `batch` creatures are its primal spawns: when the
+region falls short of them, the missing primals return only after it has been
+short for one game day (7200 real seconds). Every other creature is a
+descendant, born one per region spawn timer only while a living creature of the
+region remains, and never respawned on a timer: a killed descendant is gone
+until the living breed again, and a region emptied of every creature waits for
+its primals (`gws-births`). The shortfall marks are kept in memory only and
+start at -1 at a boot, so a region short at a boot refills at once.
 
 ## Composite contract
 
@@ -30,8 +43,8 @@ within the intersection of the region and loaded WalkMap, excluding the final
 row/column required for four-corner land height. Region exclusions and indexed
 mobile occupancy are checked before the predicate. The supplied `gws-ground`
 handles walking land and fixed/preferred height; it refuses ONLYOUTSIDE because
-WalkMap alone does not establish building membership. Fester owns the live
-installed-world predicate. Water-only profiles are not admitted by this land
+WalkMap alone does not establish building membership (the composite's
+predicate is below). Water-only profiles are not admitted by this land
 controller; amphibious profiles may use land.
 
 The pulse checks16 region records per second with a persistent round-robin
@@ -58,7 +71,7 @@ the scared-animal mode cancels combat and flees instead.
 Casters currently share hostile melee targeting; spells, hunger and race
 relations require their owning adapters. Other AI modes and profiles with
 zero minimum DEX/damage/HP are refused rather than assigned invented stats.
-Source NPC loot/equipment/script tags are not imported into this controller.
+Source NPC loot and script tags are not imported; a human's equipment is (below).
 
 ## Recovery
 
@@ -117,6 +130,15 @@ Cemetery regions 5505 and 5506, north of the forge, draw low-end undead only
 (`location_25_light` without its lich: skeleton 3, zombie 4, bone axeman 2,
 ghoul 2).
 
+Regions no reference holds are authored in the importer in UOX3's own region
+form (`$authored`, ids 9401 on), each where Damian stood on 2026-10-10: harts,
+hinds and sheep on the peninsula east of Trinsic (89 at most, 8 a thousand land
+tiles), liches in the ruin at 842..860, 1536..1551, one daemon in each half of
+the labyrinth at 1033..1258, 2157..2299, Britain's low undead in the three
+graveyards no reference spawns (Nujel'm, west and north of Trinsic), and
+scorpions on Nujel'm's island under the open sky (ONLYOUTSIDE). Orc lords and
+orc mages join UOX3's orc fort at the palisade (region 5511, a theme).
+
 The client is 1.25 and animates fewer bodies than UOX3 uses; a body with no
 `ANIM.IDX` row (offset -1) is drawn as nothing while it still fights. The
 importer reads the installed client's `ANIM.IDX` (`-AnimIndex`) and the later
@@ -168,11 +190,29 @@ also searches the bounded free-slot list; it never scans world capacity.
 Packets, temporary world objects and Results stay in request scratch.
 Codec validation uses O(regions*slots + slots squared) time for population
 and duplicate checks with no retained decode scratch. Both dimensions are
-bounded at construction. Compiler heap/time and seed behavior are unchanged.
+bounded at construction.
 
 An all-digit UOX3 `NAME` (`NAME=5123//a bone axeman`) is a key into
 `data/dictionaries/dictionary.ENG`; the importer resolves it there and refuses
 a key the dictionary lacks.
+
+A human (body 400 or 401) drawn from a `NAMELIST` has no `NAME`: its profile
+name is its `TITLE` ("the Brigand", dictionary keys resolved) or empty, and the
+composite names it when it dresses it, a first name fixed by serial from
+NpcNames before the title (`cg-dress-spawns`, `cg-spawn-name`). Its `SKINLIST`
+becomes the profile's hue range (`colors.dfn` `RANDOMCOLOR`, the 0x8000
+partial-hue bit dropped: 1002..1058). Its `EQUIPITEM` lines, a GET parent's
+first, become `WorldSpawnOutfitData.codex` (`wso-rows profile serial`): an
+`ITEMLIST` drawn by weight, an item section's art through its `ID` or first
+`GET` parent, the wear layer from the client's `TILEDATA.MUL` (`-TileData`),
+`COLORLIST`/`HAIRCOLOR` dyeing the item before them and `COLORMATCHHAIR`
+copying the hair's hue. A human with no imported outfit wears
+`cst-spawn-rows`. A hue with bit 0x4000 (UOX3's spectre 0x6677, ServUO's 0x4001)
+is imported as 0x4000, the translucent class: `cbp-mobile` and `cbp-move` send
+it as hue 0 with status flag 0x80. `WorldSpawnIntData` also carries each
+profile's 0x78 notoriety from its `FLAG` (`wsi-notoriety`: Evil 6, Innocent and
+Good 1, Neutral or none 3), which the composite's client view draws unless the
+law marks the mobile (`cg-view-notoriety`).
 
 WorldSpawnCatalogProof checks table bounds, references, unique region IDs,
 classic orc resolution, inherited Rat Valley geometry and that no profile name
@@ -181,8 +221,7 @@ checks authenticated spawning, caps, exclusion/occupancy, type targeting,
 timer replacement, no created loot and malformed/rebased recovery.
 WorldSpawnAggroProof checks aggro at 8 tiles, a hidden British left alone, the
 start-attack sound once, the 0.3 s chase out of the region, pursuit after the
-player walks off, the 18-tile drop and the walk home. These
-native proofs do not establish installed-map placement or client acceptance.
+player walks off, the 18-tile drop and the walk home.
 
 The composite binds the controller at server boot (`cg-spawn-attach`, 128
 slots, `CompositeGameServer` `cgs-ready`) and calls `gws-after` after its
@@ -194,5 +233,4 @@ held at decode and decoded when the controller attaches.
 `cg-world-tick owner game map watcher tick` runs it around an NPC watcher over
 a caller-loaded walk window and discards the packets.
 `proofs/CompositeWorldSpawns.codex` grades spawning, the headless tick, drawing within 18 tiles,
-the outside predicate both ways and restart restoration; the real-client grade
-remains root's.
+the outside predicate both ways and restart restoration.

@@ -1,6 +1,9 @@
 Chapter: TestingStockProof
   cites Uoaix chapter CompositeStore
 
+  tsp-tools-bag : WorldTable, Integer -> Integer
+  tsp-tools-bag (world) (serial) = if serial == 0 then 0
+    else if cts-holds world (world-first-child world serial) #1057 0 > 0 then serial else tsp-tools-bag world (world-next-sibling world serial)
   tsp-check : Text, Boolean -> [Console] Integer
   tsp-check (name) (ok) = act
     print-line-uni ((if ok then "PASS " else "FAIL ") & name)
@@ -59,10 +62,6 @@ Chapter: TestingStockProof
       in let count = gp-u16 packet 3
       in let i = tsp-row packet serial 0 count
       in i >= 0 & not (tsp-covered packet i (i + 1) count)
-  tsp-other : WorldTable, Integer, Integer -> Integer
-  tsp-other (world) (serial) (bag) = if serial == 0 then 0
-    else if serial /= bag & (when world-get world serial is Err (_) -> False is Ok (item) -> item.graphic == #0E76) then serial
-    else tsp-other world (world-next-sibling world serial) bag
   tsp-zero-position : WorldTable, Integer -> Result Integer Text
   tsp-zero-position (world) (serial) = when world-get world serial
     is Err (e) -> Err e
@@ -79,17 +78,18 @@ Chapter: TestingStockProof
       enabled <- __record-set owner.state "testing" True
       entry <- cg-entry owner.state game input map (gs-reply [] "testing entry")
       pack <- gsi-pack-find game.world serial 0
-      bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
+      bank-first <- gmb-bank-find owner.state.items serial 0
+      bag <- tsp-tools-bag game.world (world-first-child game.world bank-first)
       bank <- gmb-bank-find owner.state.items serial 0
       coin <- gsi-child-art game.world (world-first-child game.world bank) #0EED 0
-      reagents <- tsp-other game.world (world-first-child game.world pack) bag
+      reagents <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
       book <- gsi-child-art game.world (world-first-child game.world pack) #0EFA 0
       rune <- gsi-child-art game.world (world-first-child game.world pack) #1F14 0
       amount <- when world-get game.world coin is Err (_) -> 0 is Ok (item) -> item.amount
       shield <- gsi-child-art game.world (world-first-child game.world pack) cts-shield 0
       crook <- gsi-child-art game.world (world-first-child game.world pack) cts-crook 0
-      stocked <- tsp-check "testing entry creates tools spell kit, a heater shield and a shepherd's crook in the pack and bank stock" (is-ok entry & bag > 0 & reagents > 0 & bank > 0 & book > 0 & rune > 0 & shield > 0 & crook > 0 & amount == 10000 & world-child-count game.world bag == list-length cts-tools + 3 & world-child-count game.world reagents == list-length cts-reagents + 1 & world-child-count game.world bank == list-length cts-materials + 1 & peek-byte game.characters 144 == 1)
-      visible <- tsp-check "3C lists correct parents counts and visible gump coordinates" (tsp-contents owner.state.items pack 6 & tsp-contents owner.state.items bag (list-length cts-tools + 3) & tsp-contents owner.state.items reagents (list-length cts-reagents + 1) & tsp-contents owner.state.items bank 8)
+      stocked <- tsp-check "testing entry keeps the pack light (spell kit, chests and key, shield, crook, deed) and stocks the bank: the tools bag, the coins and 13 profession bags, no loose materials" (is-ok entry & bag > 0 & reagents > 0 & bank > 0 & book > 0 & rune > 0 & shield > 0 & crook > 0 & amount == 10000 & world-child-count game.world bag == list-length cts-tools & world-child-count game.world reagents == list-length cts-reagents + 1 & world-child-count game.world bank == 15 & peek-byte game.characters 144 == 1)
+      visible <- tsp-check "3C lists correct parents counts and visible gump coordinates" (tsp-contents owner.state.items pack 9 & tsp-contents owner.state.items bag (list-length cts-tools) & tsp-contents owner.state.items reagents (list-length cts-reagents + 1) & tsp-contents owner.state.items bank 15)
       pack-spread <- tsp-spread owner.state.items pack
       bag-spread <- tsp-spread owner.state.items bag
       reagent-spread <- tsp-spread owner.state.items reagents
@@ -105,13 +105,13 @@ Chapter: TestingStockProof
       old-bag <- tsp-zero-position game.world bag
       old-book <- tsp-zero-position game.world kit-book
       repaired <- cg-entry owner.state game input map (gs-reply [] "repair old positions")
-      repair <- tsp-check "legacy zero-coordinate contents repaired without restocking" (is-ok old-bag & is-ok old-book & is-ok repaired & world-count game.world == count & tsp-contents owner.state.items pack 6 & tsp-contents owner.state.items bag (list-length cts-tools + 3))
+      repair <- tsp-check "legacy zero-coordinate contents repaired without restocking" (is-ok old-bag & is-ok old-book & is-ok repaired & world-count game.world == count & tsp-contents owner.state.items pack 9 & tsp-contents owner.state.items bag (list-length cts-tools))
       consumed <- world-delete game.world coin
       saved <- cs-commit owner False
       durable <- tsp-check "spent testing coin and grant marker commit together" (is-ok consumed & is-ok saved)
       other <- ga-create game.accounts [79,116,104,101,114] [112,119]
       first-account <- ga-bound game.accounts
-      switched <- when other is Err (_) -> False is Ok (index) -> ga-bind game.accounts game.characters index
+      switched <- when other is Err (_) -> False is Ok (index) -> gs-bind game index
       left <- __record-set game "active" 0
       second <- gn-input 3
       second-mode <- __record-set second "mode" 2
@@ -121,7 +121,7 @@ Chapter: TestingStockProof
       stocked2 <- gmb-bank-find owner.state.items serial2 0 > 0 & peek-byte game.characters 144 == 1 & peek-qword game.characters 0 == serial2
       count2 <- world-count game.world
       left2 <- __record-set game "active" 0
-      back <- ga-bind game.accounts game.characters first-account
+      back <- gs-bind game first-account
       returned <- __record-set game "active" serial
       again <- cg-entry owner.state game input map (gs-reply [] "first account again")
       settled <- cs-commit owner False
@@ -147,8 +147,9 @@ Chapter: TestingStockProof
       coin <- gsi-child-art game.world (world-first-child game.world bank) #0EED 0
       once <- tsp-check "restart cannot refill spent testing supplies" (is-ok entered & world-count game.world == count & coin == 0)
       pack <- gsi-pack-find game.world serial 0
-      bag <- gsi-child-art game.world (world-first-child game.world pack) #0E76 0
-      visible <- tsp-check "restored packet contents retain visible positions" (tsp-contents owner.state.items pack 6 & tsp-contents owner.state.items bag (list-length cts-tools + 3) & tsp-contents owner.state.items bank 7)
+      bank-first <- gmb-bank-find owner.state.items serial 0
+      bag <- tsp-tools-bag game.world (world-first-child game.world bank-first)
+      visible <- tsp-check "restored packet contents retain visible positions" (tsp-contents owner.state.items pack 9 & tsp-contents owner.state.items bag (list-length cts-tools) & tsp-contents owner.state.items bank 7)
       normal + once + visible
     end
   opening : [Console, Device.Block] Integer = when walk-map-new 1408 1680 64 64

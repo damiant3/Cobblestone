@@ -1,0 +1,47 @@
+Chapter: BvtDeathLog
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bdl-owner : Integer -> Result CompositeGame Text
+  bdl-owner (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> when cg-founded game vendor (gsi-new game.world)
+          is Err (e) -> Err e
+          is Ok (owner) -> when cg-spawn-attach owner
+            is Err (e) -> Err e
+            is Ok (_) -> Ok owner
+  bdl-row : CompositeGame, Integer, Integer -> Integer
+  bdl-row (owner) (k) (cell) = peek-qword (owner.death-log + 16 + k * 64) (cell * 8)
+ A killer (body 0x32) at 1001,1001 strikes a townsman (body 400) at 1010,1012 and then the first shopkeeper, each through
+ the combat death hook; answers 1 when the log holds both rows in order with the killer, bodies, tile and roles, else a
+ negative code naming the first difference.
+  bdl-kills : Integer -> Integer
+  bdl-kills (unused) = when bdl-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let world = owner.checkpoint.game.world
+        in when world-create world (WorldObject { serial = 0, kind = 1, x = 1001, y = 1001, z = 0, graphic = #32, hue = 0, container = 0, amount = 1, health = 10 })
+          is Err (_) -> -1
+          is Ok (killer) -> when world-create world (gs-mobile 0 1010 1012 0 400 1002)
+            is Err (_) -> -1
+            is Ok (victim) -> let before = peek-qword owner.death-log 0
+              in let hit = g.combat.death-hook killer victim
+              in let keeper = (list-at owner.vendor.vendors 0).serial
+              in let second = g.combat.death-hook killer keeper
+              in if before /= 0 then -2
+              else if peek-qword owner.death-log 0 /= 2 then -3
+              else if bdl-row owner 0 1 /= victim | bdl-row owner 0 2 /= killer | bdl-row owner 0 3 /= 400 | bdl-row owner 0 4 /= #32 then -4
+              else if bdl-row owner 0 5 /= 1010 | bdl-row owner 0 6 /= 1012 | bdl-row owner 0 7 /= 0 then -5
+              else if bdl-row owner 1 1 /= keeper | bdl-row owner 1 2 /= killer | bdl-row owner 1 7 /= 4 then -6
+              else 1
+  bvt-death-log : Integer -> [Console] Integer
+  bvt-death-log (unused) = act
+    n <- bdl-kills 0
+    a <- bvt-check ("every combat death is noted for the DEATH log with its killer, bodies, tile and role, a townsman then a shopkeeper (code " & show n & ")") (n == 1)
+    a
+  end

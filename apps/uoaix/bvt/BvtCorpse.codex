@@ -1,0 +1,62 @@
+Chapter: BvtCorpse
+  cites Uoaix chapter GameMobileBank
+  cites Uoaix chapter GameCombatPackets
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-corpse-made : Result Integer Text -> Integer
+  bvt-corpse-made (r) = when r
+    is Ok (serial) -> serial
+    is Err (_) -> 0
+  bvt-corpse-worn : GsiState, Integer -> Boolean
+  bvt-corpse-worn (items) (serial) = when world-get items.world serial
+    is Ok (o) -> gsi-on-mobile items o
+    is Err (_) -> False
+  bvt-corpse-row : List Integer, Integer, Integer, Integer -> Boolean
+  bvt-corpse-row (p) (layer) (serial) (at) = if at + 5 > list-length p then False
+    else if list-at p at == layer & gp-u32 p (at + 1) == serial then True
+    else bvt-corpse-row p layer serial (at + 5)
+  bvt-corpse-draw : GsiState, Integer -> GameReply
+  bvt-corpse-draw (items) (serial) = when world-get items.world serial
+    is Ok (o) -> gmb-reply items (gs-reply [(if o.graphic == #2006 then cbp-corpse o o.amount 0 else sip-ground o)] "draw")
+    is Err (_) -> gs-reply [] "absent"
+  bvt-corpse-drawn : GameReply, Integer, Integer -> Boolean
+  bvt-corpse-drawn (drawn) (shirt) (pack) = if list-length drawn.packets /= 3 then False
+    else let equip = list-at drawn.packets 1
+    in list-at equip 0 == #89 & bvt-corpse-row equip 5 shirt 7 & not (bvt-corpse-row equip 21 pack 7)
+      & list-at (list-at drawn.packets 2) 0 == #3C
+  bvt-corpse : Integer -> [Console] Integer
+  bvt-corpse (unused) = when world-new 64
+    is Err (e) -> bvt-check ("corpse fixture world: " & e) False
+    is Ok (world) -> act
+      items <- gsi-new world
+      npc <- bvt-corpse-made (world-create world (gs-mobile 0 1420 1698 0 400 1002))
+      worn <- bvt-corpse-made (world-create world (gs-item npc #1517 0))
+      ground <- bvt-corpse-made (world-create world (WorldObject { serial = 0, kind = 2, x = 1421, y = 1698, z = 0, graphic = #1517, hue = 0, container = 0, amount = 1, health = 0 }))
+      body <- bvt-corpse-made (world-create world (WorldObject { serial = 0, kind = 2, x = 1422, y = 1698, z = 0, graphic = #2006, hue = 0, container = 0, amount = 400, health = 0 }))
+      shirt <- bvt-corpse-made (world-create world (gs-item body #1517 0))
+      pack <- bvt-corpse-made (world-create world (gs-item body #0E75 0))
+      ore <- bvt-corpse-made (world-create world (gs-item pack #19B9 0))
+      a <- gsi-register items worn 5 0 False False
+      b <- gsi-register items shirt 5 0 False False
+      c <- gsi-register items pack 21 0 False False
+      p <- bvt-check "a click names an item a mobile wears (paperdoll look, 40081)" (bvt-corpse-worn items worn)
+      q <- bvt-check "an item on the ground or inside a pack is not a worn item" (not (bvt-corpse-worn items ground) & not (bvt-corpse-worn items ore))
+      drawn <- bvt-corpse-draw items body
+      r <- bvt-check "a corpse draw adds 0x89 naming the worn shirt but not the pack, then the 0x3C contents (40137)" (bvt-corpse-drawn drawn shirt pack)
+      s <- bvt-check "after the draw the corpse's shirt and the ore in its pack lift and the pack opens (40137)" ((gsi-meta items shirt).movable & (gsi-meta items pack).movable
+        & (gsi-meta items pack).gump == #003C & gsi-known items ore & (gsi-meta items ore).movable)
+      plain <- bvt-corpse-draw items ground
+      t <- bvt-check "a draw that is not a corpse is unchanged and a living NPC's clothing stays fixed" (list-length plain.packets == 1 & not (gsi-meta items worn).movable)
+      fallen <- bvt-corpse-made (world-create world (WorldObject { serial = 0, kind = 2, x = 1495, y = 1615, z = 0, graphic = #2006, hue = 0, container = 0, amount = 400, health = 0 }))
+      dress <- bvt-corpse-made (world-create world (gs-item fallen #1517 0))
+      d <- gsi-register items dress 5 0 False False
+      ring <- ce-new 0
+      told <- when world-get world fallen is Ok (o) -> ce-add ring 7 o.x o.y (cbp-corpse o o.amount 0) is Err (_) -> 0
+      pending <- ce-pending ring 9 (\x -> False) (\x -> False) False 1495 1615 0 0 []
+      heard <- cs-heard-dress items pending
+      u <- bvt-check "a corpse another pulse drew reaches a player through the event ring dressed, its dress liftable (Sweet Dreams miner, live 40204)" (bvt-corpse-drawn (gs-reply heard "ring") dress 0 & (gsi-meta items dress).movable)
+      v <- bvt-check "the ring alone hands over the bare corpse draw, so the dressing is cs-heard's" (list-length pending == 1 & list-at (list-at pending 0) 0 == #1A)
+      p + q + r + s + t + u + v
+    end

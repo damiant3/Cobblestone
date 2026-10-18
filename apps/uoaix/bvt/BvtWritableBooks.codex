@@ -1,0 +1,60 @@
+Chapter: BvtWritableBooks
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-177: a writable book. Answers a bit per check: 1 a 0x93 sets the title and author and the header reads them
+ back in 98 bytes, 2 a 0x66 stores page 3's two lines and the page packet carries every page (256 bytes), 4 a
+ rewrite with one line clears the second, 8 a page past 20 is refused, 16 the save tail reads the book back;
+ 31 is all.
+  bwb-text : List Integer, List Integer, Integer -> List Integer
+  bwb-text (p) (bytes) (n) = bwb-pad (p & bytes) (list-length p + n)
+  bwb-pad : List Integer, Integer -> List Integer
+  bwb-pad (p) (n) = if list-length p >= n then p else bwb-pad (list-push p 0) n
+  bwb-title : Integer -> List Integer
+  bwb-title (serial) = let head = gp-put16 (gp-put32 [#93] serial & [1]) 20
+    in let titled = bwb-text head [76, 111, 114, 101] 60
+    in bwb-text titled [86, 97, 108] 30
+  bwb-page : Integer, List Integer -> List Integer
+  bwb-page (serial) (lines) = let body = gp-put16 (gp-put16 (gp-put16 (gp-put32 [#66, 0, 0] serial) 1) 3) (bwb-count lines 0 0) & lines
+    in let a = list-set-at body 2 (list-length body) in body
+  bwb-count : List Integer, Integer, Integer -> Integer
+  bwb-count (lines) (i) (n) = if i >= list-length lines then n else bwb-count lines (i + 1) (if list-at lines i == 0 then n + 1 else n)
+  bwb-checks : Integer -> Integer
+  bwb-checks (unused) = let s = wbk-new 0
+    in let i = wbk-ensure s 9001
+    in let title = bwb-title 9001
+    in let t = wbk-take (wbk-row s i + 8) title 8 60 0
+    in let w = wbk-take (wbk-row s i + 72) title 68 30 0
+    in let head = wbk-header s 9001 True
+    in let titled = list-length title == 98 & list-length head == 98 & list-at head 5 == 1 & list-at head 8 == 76 & list-at head 11 == 101 & list-at head 12 == 0 & list-at head 68 == 86 & list-at head 71 == 0
+    in let wrote = wbk-write-pages s i (bwb-page 9001 [72, 105, 0, 116, 104, 101, 114, 101, 0])
+    in let base = wbk-page-base s i 3
+    in let pages = wbk-page-packet s 9001
+    in let paged = wrote == 0 & peek-byte base 0 == 72 & peek-byte base 2 == 0 & peek-byte (base + 40) 0 == 116 & list-length pages == 256 & list-at pages 1 == 1 & list-at pages 2 == 0
+    in let again = wbk-write-pages s i (bwb-page 9001 [79, 107, 0])
+    in let cleared = again == 0 & peek-byte base 0 == 79 & peek-byte (base + 40) 0 == 0
+    in let bad = gp-put16 (gp-put16 (gp-put16 (gp-put32 [#66, 0, 15] 9001) 1) 21) 0
+    in let refused = wbk-write-pages s i bad == -1
+    in let buf = alloc-bytes (wbk-tail-size s)
+    in let written = wbk-write-tail s buf
+    in let back = wbk-new 0
+    in let read = wbk-read-tail back buf (wbk-tail-length buf (wbk-tail-size s))
+    in let round = read == 0 & back.count == 1 & peek-byte (wbk-page-base back 0 3) 0 == 79 & peek-byte (wbk-row back 0 + 8) 0 == 76
+    in (if titled then 1 else 0) + (if paged then 2 else 0) + (if cleared then 4 else 0) + (if refused then 8 else 0) + (if round then 16 else 0)
+ A 0x93 for something that is not a book the sender carries is refused and keeps no row.
+  bwb-refused : Integer -> Boolean
+  bwb-refused (unused) = when cg-new 0
+    is Err (_) -> False
+    is Ok (owner) -> let game = owner.checkpoint.game
+      in when world-create game.world (gs-mobile 0 1420 1700 0 400 0)
+        is Err (_) -> False
+        is Ok (player) -> when cg-wbook-write owner game player (bwb-title player)
+          is None -> False
+          is Just (r) -> r.note == "book refused" & owner.books.count == 0
+  bvt-writable-books : Integer -> [Console] Integer
+  bvt-writable-books (unused) = act
+    n <- bwb-checks 0
+    a <- bvt-check ("a blank book keeps its title, author and pages and reads back from the save tail (UOAIX-177, code " & show n & ")") (n == 31)
+    b <- bvt-check "a book write for something the sender does not carry as a book is refused (UOAIX-177)" (bwb-refused 0)
+    a + b
+  end

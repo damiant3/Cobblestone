@@ -143,12 +143,34 @@ Chapter: WorldDiskPair
     udp-check "a live first half beside a garbage second half is picked" (is-ok built & udp-picked c4 128 1)
   end
 
+ UOAIX-246: the commit flight writes a snapshot into the twin over several world ticks.
+  udp-spread : UoDevice, Integer, Integer -> [Console, Device.Block] Nothing
+  udp-spread (device) (snapshot) (delta) = act
+    w0 <- us-wipe device 192
+    w1 <- us-wipe device 224
+    opened <- us-open-pair device 192 64
+    when opened
+      is Err (e) -> print-line-uni ("FAIL spread pair " & e)
+      is Ok (store) -> act
+        saved <- us-append store 1 0 0 snapshot 2000
+        logged <- us-append store 2 1 1 delta 100
+        twin <- us-twin-open store 2000
+        part <- us-twin-part store snapshot 2000 0 1024
+        torn <- us-open-pair device 192 64
+        udp-check "a snapshot half written to the twin leaves the live half picked at its sequence" (is-ok saved & is-ok logged & is-ok twin & is-ok part & udp-picked torn 192 1)
+        rest <- us-twin-part store snapshot 2000 1024 2000
+        closed <- us-twin-close store 2 2 snapshot 2000
+        done <- us-open-pair device 192 64
+        udp-check "the snapshot's last part and close switch the halves like a whole switch" (is-ok rest & is-ok closed & store.start == 224 & store.twin == 192 & store.head == 5 & store.sequence == 2 & udp-picked done 224 2)
+      end
+  end
   opening : [Console, Device.Block] Nothing = let snapshot = udp-fill (alloc-bytes 2048) 2000 0
     in let delta = udp-fill (alloc-bytes 1024) 600 0
     in act
       udp-live UoIde snapshot delta
       udp-crash UoIde snapshot delta
       udp-refusals UoIde snapshot delta
+      udp-spread UoIde snapshot delta
     end
 
 Page 1

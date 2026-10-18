@@ -1,0 +1,51 @@
+Chapter: BvtCastleGate
+  cites Uoaix chapter CastleGate
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bcg-dwd : WalkMap -> Integer
+  bcg-dwd (map) = let d = alloc-bytes 64
+    in let a = poke-qword d 0 #31445744
+    in let b = poke-qword d 8 0
+    in let c = poke-qword d 16 map.x
+    in let e = poke-qword d 24 map.y
+    in let f = poke-qword d 32 map.width
+    in let g = poke-qword d 40 map.height
+    in let h = poke-qword d 48 1
+    in let i = poke-qword d 56 0 in d
+  bcg-floor : WalkMap, Integer, Integer -> Boolean
+  bcg-floor (map) (x) (y) = if y > 1626 then True
+    else if x > cgt-x + 1 then bcg-floor map (cgt-x - 2) (y + 1)
+    else is-ok (walk-set-land map x y cgt-z 0) & bcg-floor map (x + 1) y
+  bcg-steps : WalkMap -> Boolean
+  bcg-steps (map) = when walk-step map (cgt-x - 1) 1625 cgt-z 2 is Ok (_) -> True is Err (_) -> False
+  bcg-map : Integer -> Result WalkMap Text
+  bcg-map (unused) = when walk-map-sized (cgt-x - 6) 1616 16 16 4
+    is Err (e) -> Err e
+    is Ok (map) -> if bcg-floor map (cgt-x - 2) 1624 then Ok map else Err "floor"
+  bvt-castle-gate : Integer -> [Console] Integer
+  bvt-castle-gate (unused) = when bcg-map 0
+    is Err (e) -> act bvt-check ("castle gate player map fixture: " & e) False end
+    is Ok (shown) -> when bcg-map 0
+      is Err (e) -> act bvt-check ("castle gate town map fixture: " & e) False end
+      is Ok (town) -> when wd-read (bcg-dwd shown) 64 shown shown.stride
+        is Err (e) -> act bvt-check ("castle gate decoration fixture: " & e) False end
+        is Ok (d1) -> when wd-read (bcg-dwd town) 64 town town.stride
+          is Err (e) -> act bvt-check ("castle gate town decoration fixture: " & e) False end
+          is Ok (d2) -> let free = bcg-steps shown & bcg-steps town
+            in let added = cgt-add-all [d1, d2] cgt-x 1625 True 0
+            in let shut-player = not (bcg-steps shown)
+            in let shut-npc = not (bcg-steps town)
+            in let opened = cgt-set-all [d1, d2] cgt-x 1625 False 0
+            in let passes = bcg-steps shown & bcg-steps town
+            in let closed = cgt-set-all [d1, d2] cgt-x 1625 True 0
+            in let refilled = wd-copy d2.base town.solids 0 (town.width * town.height * town.stride / 8)
+            in let rebound = wd-rebind d2 town town.stride
+            in let still = not (bcg-steps town)
+            in act
+              a <- bvt-check "a closed portcullis blocks the player's step and an opened one lets it through" (free & is-ok added & shut-player & is-ok opened & passes)
+              b <- bvt-check "a closed portcullis blocks NPC pathing like a wall, and stays blocking after the town map refills" (shut-npc & is-ok closed & is-ok rebound & still)
+              a + b
+            end

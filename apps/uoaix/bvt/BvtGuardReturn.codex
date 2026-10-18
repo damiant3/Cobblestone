@@ -1,0 +1,48 @@
+Chapter: BvtGuardReturn
+  cites Uoaix chapter CivicLiveState
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-216 13.45, trial 43802: the south beat walks the street, not Premier Gems (x 1449-1457, y 1677-1693) or the hall
+ to its west (x 1428-1441, y 1682-1692); a guard whose plans keep failing reaches cv-stuck-fails and is set back on its
+ waypoint, and one plan that succeeds clears the count.
+  bvgr-in : Integer, Integer -> Boolean
+  bvgr-in (x) (y) = (x >= 1449 & x <= 1457 & y >= 1677 & y <= 1693) | (x >= 1428 & x <= 1441 & y >= 1682 & y <= 1692)
+  bvgr-clear : Integer -> Boolean
+  bvgr-clear (i) = if i == 4 then True else not (bvgr-in (cv-route-x 0 i) (cv-route-y 0 i)) & bvgr-clear (i + 1)
+  bvgr-fails : RteWalk, Integer -> Integer
+  bvgr-fails (w) (n) = if n == 0 then w.fails else let paced = rte-pace w -1 in bvgr-fails w (n - 1)
+  bvgr-mob : Integer -> WorldObject
+  bvgr-mob (z) = WorldObject { serial = 1, kind = 1, x = 1417, y = 1548, z = z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+  bvt-guard-return : Integer -> [Console] Integer
+  bvt-guard-return (unused) = act
+    a <- bvt-check "every south beat waypoint stands outside both buildings; the old 1450,1680 and 1432,1688 stood inside" (bvgr-clear 0 & bvgr-in 1450 1680 & bvgr-in 1432 1688)
+    w <- rte-walk 0
+    b <- bvt-check "seven failed plans bring a guard to cv-stuck-fails, and a plan that succeeds clears it" (bvgr-fails w 7 == cv-stuck-fails & (let ok = rte-pace w 3 in w.fails) == 0)
+    v <- rte-walk 0
+    f1 <- rte-pace v -1
+    s1 <- cv-stuck-after v 0
+    chased <- rte-pace v 3
+    dropped <- rte-drop v
+    f2 <- rte-pace v -1
+    s2 <- cv-stuck-after v s1
+    c <- bvt-check "a chase plan that succeeds clears fails but not the patrol's count: fail, chase, fail is stuck 2 at fails 1" (s1 == 1 & s2 == 2 & v.fails == 1)
+    waited <- __record-set v "rest" (v.rest - 1)
+    s3 <- cv-stuck-after v s2
+    routed <- __record-set v "route" 0
+    s4 <- cv-stuck-after v s3
+    d <- bvt-check "a waiting step keeps the patrol's count and a patrol plan that succeeds clears it" (s3 == 2 & s4 == 0)
+    floor <- BbSpot { x = 1357, y = 1613, z = cv-castle-floor }
+    street <- BbSpot { x = 1424, y = 1696, z = 20 }
+    below <- cv-leg-goal (bvgr-mob 30) floor
+    on <- cv-leg-goal (bvgr-mob cv-castle-floor) floor
+    out <- cv-leg-goal (bvgr-mob 30) street
+    e <- bvt-check "a castle guard below the main floor walks to the north stair's top, one on the floor goes straight to its waypoint" (below.x == cv-castle-stair-x & below.y == cv-castle-stair-y & below.z == cv-castle-floor & on.x == 1357 & on.y == 1613)
+    f <- bvt-check "a street waypoint is never redirected to the castle stair" (out.x == 1424 & out.y == 1696 & out.z == 20)
+    step-w <- cv-leg-goal (WorldObject { serial = 1, kind = 1, x = 1352, y = 1617, z = 72, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) floor
+    step-e <- cv-leg-goal (WorldObject { serial = 1, kind = 1, x = 1353, y = 1617, z = 72, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) floor
+    beside <- cv-leg-goal (WorldObject { serial = 1, kind = 1, x = 1355, y = 1617, z = 72, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) floor
+    g <- bvt-check "a guard on the stair's top steps at z 72 still walks to the stair top (trial 44158, 1352,1617,72); a floor tile beside the stair goes straight to its waypoint" (step-w.x == cv-castle-stair-x & step-w.y == cv-castle-stair-y & step-e.x == cv-castle-stair-x & step-e.y == cv-castle-stair-y & beside.x == 1357 & beside.y == 1613)
+    a + b + c + d + e + f + g
+  end

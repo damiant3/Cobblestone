@@ -119,10 +119,17 @@ per rollover).
 
 At the default 7200 s game day (288 economy hours per real day) a world with
 no trading seals every 7168 / 288 = 24.9 real days; the gold ledger, which also
-takes tax, valuation and default rows, seals first in a trading world. A live
-shard's rate is measured in stage 2 and recorded here. A 64 MiB UOS1 store holds
-about 20 segments beside its snapshots, so archive export is open work before a
-world runs about 16 real months.
+takes tax, valuation and default rows, seals first in a trading world.
+
+Measured 2026-10-07 (blu) from the `ECONOMY ROWS` lines of the live shard on a
+fresh world (main 38946 build, one player), economy hours 2 to 8 over 28 real
+minutes: copper ledger 8.7 rows per economy hour, events 6.5, gold 5.5, trades
+3.2, silver 3.0. The copper ledger seals first, at about 816 economy hours, about
+2.6 real days. A 6-bot soak of the same build (hours 1 to 5) ran copper 10.3 and
+trades 5.5 per hour, the trade log first at about 650 hours, about 2.3 real days.
+At about 2.4 MB a segment the 256 MiB archive region holds about 106 segments,
+about 9 real months at the one-player rate, so archive export is open work
+before then.
 
 ## Stages
 
@@ -139,7 +146,12 @@ world runs about 16 real months.
    segment 1, 2,105,960 bytes: 7,224 events and 6,867 gold rows), the
    `EconomyArchiveRead` walk, `compact-world.ps1`, `install-map-cache.ps1`, and
    the same walk again, byte for byte. `EconomySealProof` grades the capture
-   and the refusal of a seal that would not fit. Open: a live shard's seal rate,
-   read from the `ECONOMY ROWS` line each commit logs (economy hour; event,
-   copper, silver, gold and trade rows).
+   and the refusal of a seal that would not fit. The live seal rate is measured
+   above.
 3. A fresh live world on the new format (UCC1 24 and a reinstalled cache).
+4. Built: the export. `export-archive.ps1 -WorldDisk <stopped disk> -OutDir <new dir>` refuses a disk a codex-vm
+   holds, verifies ARC1, walks every SEG1 by its FNV32 and its link to the one before, and writes
+   `segment-NNNNNN.seg` and `index.txt` (file, number, bytes, FNV32, previous FNV32). `-Clear` then rewrites ARC1
+   with next free sector 1, the same segment count and the last FNV32: the server numbers a segment from the
+   economy's seal count and links it from ARC1's last, so the first segment written after a clear chains onto the
+   last one exported. `EconomyArchiveRead` walks a region from its first segment's number.

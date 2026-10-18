@@ -1,0 +1,26 @@
+Chapter: BvtEconomyValidGate
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bevg-write : EuCurrency, Boolean -> Text
+  bevg-write (x) (check) = let size = euc-size x
+    in when euc-write-timed (CurrencyCheckpoint { currency = x, tick = 0, sequence = 0 }) (alloc-bytes size) size 0 0 check
+      is Err (e) -> e
+      is Ok (_) -> "encoded"
+  bvt-economy-valid-gate : Integer -> [Console] Integer
+  bvt-economy-valid-gate (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("economy valid gate fixture: " & e) False
+    is Ok (x) -> act
+      before <- bevg-write x True
+      a <- bvt-check ("a valid gold economy encodes with the check on: " & before) (before == "encoded" & x.world.money.purse-count > 0)
+      purse <- em-purse x.world.money 1
+      broken <- __record-set purse "coin" (purse.coin + 1)
+      checked <- bevg-write x True
+      b <- bvt-check ("a gold purse off its ledger is refused with the check on: " & checked) (checked /= "encoded")
+      unchecked <- bevg-write x False
+      c <- bvt-check ("the same economy encodes with the check off, as the composite commit does within one economy hour (UOAIX-196): " & unchecked) (unchecked == "encoded")
+      a + b + c
+    end

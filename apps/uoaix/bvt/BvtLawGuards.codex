@@ -1,0 +1,34 @@
+Chapter: BvtLawGuards
+  cites Uoaix chapter LawStateCodec
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvlg-made : Result Integer Text -> Integer
+  bvlg-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvlg-add : LawWorld, Integer, Integer -> Integer
+  bvlg-add (w) (i) (n) = if i >= n then w.guard-count
+    else let serial = bvlg-made (world-create w.world (gs-mobile 0 1400 1600 0 400 1002))
+    in let id = lw-add-guard w True serial 2 in bvlg-add w (i + 1) n
+  bvt-law-guards : Integer -> [Console] Integer
+  bvt-law-guards (unused) = when gs-new 0
+    is Err (e) -> act bvt-check ("law guards fixture shard: " & e) False end
+    is Ok (shard) -> let w = lw-new shard.world
+      in let first = bvlg-add w 0 33
+      in let grown = lw-grow w
+      in let more = bvlg-add w 0 8
+      in let last = (list-at w.guards 39).serial
+      in let buf = alloc-bytes lsc-bytes
+      in let encoded = lsc-encode w buf lsc-bytes
+      in let tail = alloc-bytes (lsc-tail-size w)
+      in let ended = lsc-write-tail w tail
+      in let decoded = lsc-decode-tail buf lsc-bytes shard.world tail (lsc-tail-size w)
+      in let old = alloc-bytes 16
+      in let blank = poke-qword old 0 0
+      in let blank2 = poke-qword old 8 0
+      in act
+        print-line-uni ("LAWGUARDS first=" & show first & " after=" & show more & " rows=" & show (list-length w.guards) & " encoded=" & (if is-ok encoded then "ok" else "err") & " decoded=" & (when decoded is Ok (d) -> show d.guard-count is Err (e) -> e))
+        a <- bvt-check "the law holds 32 guards until it grows, then a block more (the city guards pass 32; UOAIX-217)" (first == 32 & more == 40 & list-length w.guards >= 64)
+        b <- bvt-check "40 guards save and load: 32 in the fixed rows, 8 in the law tail, the 40th by serial" (is-ok encoded & (when decoded is Ok (d) -> d.guard-count == 40 & (list-at d.guards 39).serial == last & last > 0 is Err (_) -> False))
+        c <- bvt-check "an old law tail with no guard part reads as 16 bytes and no extra guards" (lsc-tail-length old 16 == 16)
+        a + b + c
+      end

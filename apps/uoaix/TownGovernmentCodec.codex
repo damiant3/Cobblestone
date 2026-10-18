@@ -32,7 +32,11 @@ Chapter: TownGovernmentCodec
   tgc-workers-at : Integer = tgc-militia-at + 128 * 8
   tgc-cases-at : Integer = tgc-workers-at + 128 * 8
   tgc-disputes-at : Integer = tgc-cases-at + 128 * 128
-  tgc-bytes : Integer = tgc-disputes-at + 256 * 48
+ Version 1 held 2048 civic rows; version 2 holds tg-event-limit, and every section after the rows moves by tgc-tail.
+  tgc-v1-bytes : Integer = tgc-disputes-at + 256 * 48
+  tgc-tail : Integer -> Integer
+  tgc-tail (rows) = (rows - 2048) * 64
+  tgc-bytes : Integer = tgc-v1-bytes + tgc-tail tg-event-limit
 
   tgc-mode : Maybe EuCurrency -> Integer
   tgc-mode (currency) = when currency
@@ -60,14 +64,14 @@ Chapter: TownGovernmentCodec
     in tgc-read-guards buf s (i + 1)
 
   tgc-write-civics : Integer, GovernmentCheckpoint, Integer -> Integer
-  tgc-write-civics (buf) (s) (i) = if i == 2048 then 0
+  tgc-write-civics (buf) (s) (i) = if i == tg-event-limit then 0
     else let a = tgf-write-civic buf (tgc-events-at + i * 64) (list-at s.government.events i)
     in tgc-write-civics buf s (i + 1)
 
-  tgc-read-civics : Integer, GovernmentCheckpoint, Integer -> Integer
-  tgc-read-civics (buf) (s) (i) = if i == 2048 then 0
+  tgc-read-civics : Integer, GovernmentCheckpoint, Integer, Integer -> Integer
+  tgc-read-civics (buf) (s) (rows) (i) = if i == rows then 0
     else let a = tgf-read-civic buf (tgc-events-at + i * 64) (list-at s.government.events i)
-    in tgc-read-civics buf s (i + 1)
+    in tgc-read-civics buf s rows (i + 1)
 
   tgc-write-towns : Integer, GovernmentCheckpoint, Integer -> Integer
   tgc-write-towns (buf) (s) (i) = if i == 4 then 0
@@ -132,15 +136,15 @@ Chapter: TownGovernmentCodec
   tgc-write-meta : Integer, GovernmentCheckpoint -> Integer
   tgc-write-meta (buf) (s) =
     let f0 = poke-qword buf 64 s.government.town-count
-    in let f1 = poke-qword buf 72 s.government.guard-count
-    in let f2 = poke-qword buf 80 s.government.event-count
+    in let f1 = poke-qword buf 72 (min s.government.guard-count 64)
+    in let f2 = poke-qword buf 80 (min s.government.event-count tg-event-limit)
     in let f3 = poke-qword buf 88 s.government.sequence
     in let f4 = poke-qword buf 96 s.government.day
-    in let f5 = poke-qword buf 104 s.government.royal-actor
-    in let f6 = poke-qword buf 112 s.works.order-count
-    in let f7 = poke-qword buf 120 s.works.bounty-count
-    in let f8 = poke-qword buf 128 s.disputes.used
-    in let f9 = poke-qword buf 136 s.disputes.count
+    in let f5 = poke-qword buf 104 0
+    in let f6 = poke-qword buf 112 (min s.works.order-count 128)
+    in let f7 = poke-qword buf 120 (min s.works.bounty-count 128)
+    in let f8 = poke-qword buf 128 (min s.disputes.used 128)
+    in let f9 = poke-qword buf 136 (min s.disputes.count 256)
     in let f10 = poke-qword buf 144 s.disputes.hour
     in 0
   tgc-read-meta : Integer, GovernmentCheckpoint -> Integer
@@ -150,7 +154,7 @@ Chapter: TownGovernmentCodec
     in let f2 = __record-set s.government "event-count" (peek-qword buf 80)
     in let f3 = __record-set s.government "sequence" (peek-qword buf 88)
     in let f4 = __record-set s.government "day" (peek-qword buf 96)
-    in let f5 = __record-set s.government "royal-actor" (peek-qword buf 104)
+    in let f5 = 0
     in let f6 = __record-set s.works "order-count" (peek-qword buf 112)
     in let f7 = __record-set s.works "bounty-count" (peek-qword buf 120)
     in let f8 = __record-set s.disputes "used" (peek-qword buf 128)
@@ -158,29 +162,37 @@ Chapter: TownGovernmentCodec
     in let f10 = __record-set s.disputes "hour" (peek-qword buf 144)
     in 0
 
+  tgc-stamps-out : Integer, Integer, Integer, Integer -> Integer
+  tgc-stamps-out (from) (stride) (to) (town) = if town >= 4 then 0
+    else let copied = ep-seal-cells (from + town * stride * 8) (to + town * 256 * 8) 256 0 in tgc-stamps-out from stride to (town + 1)
+  tgc-stamps-more : Integer, Integer, Integer, Boolean, Integer -> Integer
+  tgc-stamps-more (stamps) (stride) (at) (read) (town) = if town >= 4 then 0
+    else let more = stride - 256
+    in let copied = if read then ep-seal-cells (at + town * more * 8) (stamps + (town * stride + 256) * 8) more 0 else ep-seal-cells (stamps + (town * stride + 256) * 8) (at + town * more * 8) more 0
+    in tgc-stamps-more stamps stride at read (town + 1)
   tgc-write-body : Integer, GovernmentCheckpoint -> Integer
-  tgc-write-body (buf) (s) =
-    let meta = tgc-write-meta buf s
-    in let office = tgc-write-offices buf s 0
-    in let guard = tgc-write-guards buf s 0
-    in let civic = tgc-write-civics buf s 0
+  tgc-write-body (start) (s) = let buf = start + tgc-tail tg-event-limit
+    in let meta = tgc-write-meta start s
+    in let office = tgc-write-offices start s 0
+    in let guard = tgc-write-guards start s 0
+    in let civic = tgc-write-civics start s 0
     in let town = tgc-write-towns buf s 0
     in let site = tgc-write-sites buf s 0
     in let order = tgc-write-orders buf s 0
     in let bounty = tgc-write-bountys buf s 0
     in let case = tgc-write-cases buf s 0
     in let dispute = tgc-write-disputes buf s 0
-    in let stamps = es-copy-cells s.government.dues-stamps (buf + tgc-stamps-at) 1024 0
+    in let stamps = tgc-stamps-out s.government.dues-stamps s.government.stamp-stride (buf + tgc-stamps-at) 0
     in let militia = es-copy-cells s.works.militia (buf + tgc-militia-at) 128 0
     in let workers = es-copy-cells s.works.worker-stamps (buf + tgc-workers-at) 128 0
     in 0
 
-  tgc-read-body : Integer, GovernmentCheckpoint -> Integer
-  tgc-read-body (buf) (s) =
-    let meta = tgc-read-meta buf s
-    in let office = tgc-read-offices buf s 0
-    in let guard = tgc-read-guards buf s 0
-    in let civic = tgc-read-civics buf s 0
+  tgc-read-body : Integer, GovernmentCheckpoint, Integer -> Integer
+  tgc-read-body (start) (s) (rows) = let buf = start + tgc-tail rows
+    in let meta = tgc-read-meta start s
+    in let office = tgc-read-offices start s 0
+    in let guard = tgc-read-guards start s 0
+    in let civic = tgc-read-civics start s rows 0
     in let town = tgc-read-towns buf s 0
     in let site = tgc-read-sites buf s 0
     in let order = tgc-read-orders buf s 0
@@ -195,9 +207,8 @@ Chapter: TownGovernmentCodec
   tgc-encode : GovernmentCheckpoint, Integer, Integer -> Result Integer Text
   tgc-encode (s) (buf) (capacity) =
     if capacity < tgc-bytes | not (ev-range s.tick ep-limit) | not (ev-range s.sequence ep-limit) then Err "government destination or metadata invalid"
-    else if not (tgv-valid s.government s.works s.disputes) then Err "government state invalid"
     else let h0 = poke-qword buf 0 #31434754
-    in let h1 = poke-qword buf 8 1
+    in let h1 = poke-qword buf 8 2
     in let h2 = poke-qword buf 16 tgc-bytes
     in let h3 = poke-qword buf 24 (tgc-mode s.government.currency)
     in let h4 = poke-qword buf 32 s.tick
@@ -213,14 +224,107 @@ Chapter: TownGovernmentCodec
     is None -> if b.royal-actor /= 0 | eu-catalog b.economy then Err "government legacy binding invalid" else Ok (tg-new b.people b.economy)
     is Just (x) -> tg-new-currency b.people x b.royal-actor
   tgc-decode : Integer, Integer, GovernmentBindings -> Result GovernmentCheckpoint Text
-  tgc-decode (buf) (size) (b) =
-    if size /= tgc-bytes then Err "government checkpoint length invalid"
-    else if peek-qword buf 0 /= #31434754 | peek-qword buf 8 /= 1 | peek-qword buf 16 /= size | peek-qword buf 56 /= 0 | peek-qword buf 152 /= 0 then Err "government checkpoint format invalid"
+  tgc-decode (buf) (size) (b) = tgc-decode-tail buf size b 0 0
+ The government tail holds what passes the first blocks: nine counts (extra orders, bounties, dispute cases, dispute
+ events, sites, militia cells, worker cells, civic events, guards, dues stamp stride past 256), then those order, bounty,
+ case and event rows (120, 64, 128, 48 bytes), site rows (16), the militia and worker cells (8), civic event rows (64),
+ guard rows (48), and for each of the four towns the dues stamp cells past purse 256 (8). The composite closes its image with it after the law tail.
+  tgc-extras : GovernmentCheckpoint -> List Integer
+  tgc-extras (s) = [max 0 (s.works.order-count - 128), max 0 (s.works.bounty-count - 128), max 0 (s.disputes.used - 128), max 0 (s.disputes.count - 256),
+    max 0 (list-length s.works.sites - 64), max 0 (s.works.militia-cells - 128), max 0 (s.works.worker-cells - 128),
+    max 0 (s.government.event-count - tg-event-limit), max 0 (s.government.guard-count - 64), max 0 (s.government.stamp-stride - 256)]
+  tgc-rows-bytes : List Integer -> Integer
+  tgc-rows-bytes (e) = list-at e 0 * 120 + list-at e 1 * 64 + list-at e 2 * 128 + list-at e 3 * 48
+  tgc-tail-size : GovernmentCheckpoint -> Integer
+  tgc-tail-size (s) = let e = tgc-extras s in 80 + tgc-rows-bytes e + list-at e 4 * 16 + list-at e 5 * 8 + list-at e 6 * 8 + list-at e 7 * 64 + list-at e 8 * 48 + list-at e 9 * 32
+  tgc-tail-civics : GovernmentCheckpoint, Integer, Boolean, Integer, Integer -> Integer
+  tgc-tail-civics (s) (at) (read) (n) (i) = if i >= n then 0
+    else let done = if read then tgf-read-civic at (i * 64) (list-at s.government.events (tg-event-limit + i)) else tgf-write-civic at (i * 64) (list-at s.government.events (tg-event-limit + i))
+    in tgc-tail-civics s at read n (i + 1)
+  tgc-tail-guards : GovernmentCheckpoint, Integer, Boolean, Integer, Integer -> Integer
+  tgc-tail-guards (s) (at) (read) (n) (i) = if i >= n then 0
+    else let done = if read then tgf-read-guard at (i * 48) (list-at s.government.guards (64 + i)) else tgf-write-guard at (i * 48) (list-at s.government.guards (64 + i))
+    in tgc-tail-guards s at read n (i + 1)
+  tgc-tail-rows : GovernmentCheckpoint, Integer, Boolean, List Integer, Integer -> Integer
+  tgc-tail-rows (s) (at) (read) (e) (i) = let o = list-at e 0 in let b = list-at e 1 in let c = list-at e 2 in let d = list-at e 3
+    in if i >= o + b + c + d then 0
+    else let done = if i < o then (if read then tgf-read-order at (i * 120) (list-at s.works.orders (128 + i)) else tgf-write-order at (i * 120) (list-at s.works.orders (128 + i)))
+      else if i < o + b then (let k = i - o in if read then tgf-read-bounty at (o * 120 + k * 64) (list-at s.works.bounties (128 + k)) else tgf-write-bounty at (o * 120 + k * 64) (list-at s.works.bounties (128 + k)))
+      else if i < o + b + c then (let k = i - o - b in if read then tgf-read-case at (o * 120 + b * 64 + k * 128) (list-at s.disputes.cases (128 + k)) else tgf-write-case at (o * 120 + b * 64 + k * 128) (list-at s.disputes.cases (128 + k)))
+      else (let k = i - o - b - c in if read then tgf-read-dispute at (o * 120 + b * 64 + c * 128 + k * 48) (list-at s.disputes.events (256 + k)) else tgf-write-dispute at (o * 120 + b * 64 + c * 128 + k * 48) (list-at s.disputes.events (256 + k)))
+    in tgc-tail-rows s at read e (i + 1)
+  tgc-tail-sites : GovernmentCheckpoint, Integer, Boolean, Integer, Integer -> Integer
+  tgc-tail-sites (s) (at) (read) (n) (i) = if i >= n then 0
+    else let done = if read then tgf-read-site at (i * 16) (list-at s.works.sites (64 + i)) else tgf-write-site at (i * 16) (list-at s.works.sites (64 + i))
+    in tgc-tail-sites s at read n (i + 1)
+  tgc-write-tail : GovernmentCheckpoint, Integer -> Integer
+  tgc-write-tail (s) (at) = let e = tgc-extras s
+    in let counted = tgc-put-counts at e 0
+    in let rows = tgc-tail-rows s (at + 80) False e 0
+    in let sites-at = at + 80 + tgc-rows-bytes e
+    in let sites = tgc-tail-sites s sites-at False (list-at e 4) 0
+    in let militia-at = sites-at + list-at e 4 * 16
+    in let militia = es-copy-cells (s.works.militia + 1024) militia-at (list-at e 5) 0
+    in let workers = es-copy-cells (s.works.worker-stamps + 1024) (militia-at + list-at e 5 * 8) (list-at e 6) 0
+    in let civics-at = militia-at + list-at e 5 * 8 + list-at e 6 * 8
+    in let civics = tgc-tail-civics s civics-at False (list-at e 7) 0
+    in let guards = tgc-tail-guards s (civics-at + list-at e 7 * 64) False (list-at e 8) 0
+    in let stamps = tgc-stamps-more s.government.dues-stamps s.government.stamp-stride (civics-at + list-at e 7 * 64 + list-at e 8 * 48) False 0
+    in at + tgc-tail-size s
+  tgc-put-counts : Integer, List Integer, Integer -> Integer
+  tgc-put-counts (at) (e) (i) = if i >= list-length e then 0 else let a = poke-qword at (i * 8) (list-at e i) in tgc-put-counts at e (i + 1)
+  tgc-tail-length : Integer, Integer -> Integer
+  tgc-tail-length (at) (room) = if room < 80 | tgc-counts-bad at room 0 then -1
+    else 80 + peek-qword at 72 * 32 + peek-qword at 0 * 120 + peek-qword at 8 * 64 + peek-qword at 16 * 128 + peek-qword at 24 * 48 + peek-qword at 32 * 16 + peek-qword at 40 * 8 + peek-qword at 48 * 8
+      + peek-qword at 56 * 64 + peek-qword at 64 * 48
+  tgc-counts-bad : Integer, Integer, Integer -> Boolean
+  tgc-counts-bad (at) (room) (i) = if i >= 10 then False else peek-qword at (i * 8) < 0 | peek-qword at (i * 8) > room / 8 | tgc-counts-bad at room (i + 1)
+  tgc-read-tail : GovernmentCheckpoint, Integer, Integer -> Integer
+  tgc-read-tail (s) (at) (size) = if size == 0 then 0
+    else if tgc-tail-length at size /= size then -1
+    else let e = [peek-qword at 0, peek-qword at 8, peek-qword at 16, peek-qword at 24, peek-qword at 32, peek-qword at 40, peek-qword at 48, peek-qword at 56, peek-qword at 64, peek-qword at 72]
+    in if (list-at e 0 > 0 & s.works.order-count /= 128) | (list-at e 1 > 0 & s.works.bounty-count /= 128)
+      | (list-at e 2 > 0 & s.disputes.used /= 128) | (list-at e 3 > 0 & s.disputes.count /= 256)
+      | (list-at e 7 > 0 & s.government.event-count /= tg-event-limit) | (list-at e 8 > 0 & s.government.guard-count /= 64) then -1
+    else let a = __record-set s.works "orders" (tw-orders (128 - list-at e 0) s.works.orders)
+    in let b = __record-set s.works "bounties" (tw-bounties (128 - list-at e 1) s.works.bounties)
+    in let c = __record-set s.disputes "cases" (td-cases (128 - list-at e 2) s.disputes.cases)
+    in let d = __record-set s.disputes "events" (td-events (256 - list-at e 3) s.disputes.events)
+    in let f = __record-set s.works "order-count" (s.works.order-count + list-at e 0)
+    in let g = __record-set s.works "bounty-count" (s.works.bounty-count + list-at e 1)
+    in let h = __record-set s.disputes "used" (s.disputes.used + list-at e 2)
+    in let j = __record-set s.disputes "count" (s.disputes.count + list-at e 3)
+    in let rows = tgc-tail-rows s (at + 80) True e 0
+    in let sites-at = at + 80 + tgc-rows-bytes e
+    in let grown = __record-set s.works "sites" (tw-sites-to (64 + list-at e 4) s.works.sites)
+    in let sites = tgc-tail-sites s sites-at True (list-at e 4) 0
+    in let militia-at = sites-at + list-at e 4 * 16
+    in let m = __record-set s.works "militia" (tw-cells s.works.militia 128 (128 + list-at e 5))
+    in let mc = __record-set s.works "militia-cells" (128 + list-at e 5)
+    in let w = __record-set s.works "worker-stamps" (tw-cells s.works.worker-stamps 128 (128 + list-at e 6))
+    in let wc = __record-set s.works "worker-cells" (128 + list-at e 6)
+    in let mread = es-copy-cells militia-at (s.works.militia + 1024) (list-at e 5) 0
+    in let wread = es-copy-cells (militia-at + list-at e 5 * 8) (s.works.worker-stamps + 1024) (list-at e 6) 0
+    in let civics-at = militia-at + list-at e 5 * 8 + list-at e 6 * 8
+    in let ge = if list-at e 7 > 0 then __record-set s.government "events" (tg-events (tg-event-limit - list-at e 7) s.government.events) else s.government
+    in let gg = if list-at e 8 > 0 then __record-set s.government "guards" (tg-guards (64 - list-at e 8) s.government.guards) else s.government
+    in let ce = __record-set s.government "event-count" (s.government.event-count + list-at e 7)
+    in let cg = __record-set s.government "guard-count" (s.government.guard-count + list-at e 8)
+    in let civics = tgc-tail-civics s civics-at True (list-at e 7) 0
+    in let guards = tgc-tail-guards s (civics-at + list-at e 7 * 64) True (list-at e 8) 0
+    in let fitted = tg-fit-stamps s.government (256 + list-at e 9)
+    in let stamps = if list-at e 9 == 0 then 0 else tgc-stamps-more s.government.dues-stamps s.government.stamp-stride (civics-at + list-at e 7 * 64 + list-at e 8 * 48) True 0
+    in 0
+  tgc-decode-tail : Integer, Integer, GovernmentBindings, Integer, Integer -> Result GovernmentCheckpoint Text
+  tgc-decode-tail (buf) (size) (b) (tail) (tail-size) =
+    let rows = if size == tgc-v1-bytes & peek-qword buf 8 == 1 then 2048 else if size == tgc-bytes & peek-qword buf 8 == 2 then tg-event-limit else 0
+    in if rows == 0 then Err "government checkpoint length or version invalid"
+    else if peek-qword buf 0 /= #31434754 | peek-qword buf 16 /= size | peek-qword buf 56 /= 0 | peek-qword buf 152 /= 0 then Err "government checkpoint format invalid"
     else if not (ev-range (peek-qword buf 32) ep-limit) | not (ev-range (peek-qword buf 40) ep-limit) then Err "government checkpoint metadata invalid"
-    else if peek-qword buf 24 /= tgc-mode b.currency | peek-qword buf 104 /= b.royal-actor then Err "government checkpoint binding mismatch"
-    else if not (ev-range (peek-qword buf 64) 4) | not (ev-range (peek-qword buf 72) 64) | not (ev-range (peek-qword buf 80) 2048)
+    else if not (ev-range (peek-qword buf 64) 4) | not (ev-range (peek-qword buf 72) 64) | not (ev-range (peek-qword buf 80) rows)
       | not (ev-range (peek-qword buf 112) 128) | not (ev-range (peek-qword buf 120) 128) | not (ev-range (peek-qword buf 128) 128) | not (ev-range (peek-qword buf 136) 256) then Err "government checkpoint counts invalid"
     else if peek-qword buf 48 /= ws-hash buf size 0 2166136261 then Err "government checkpoint checksum invalid"
+    else if (peek-qword buf 24 /= 0 & peek-qword buf 24 /= tgc-mode b.currency) | peek-qword buf 104 /= 0 then Err "government checkpoint binding mode invalid"
     else when tgc-construct b
       is Err (e) -> Err e
       is Ok (g) ->
@@ -228,11 +332,11 @@ Chapter: TownGovernmentCodec
         in let disputes = td-new g b.registry b.admin g.currency
         in let s = GovernmentCheckpoint { government = g, works = works, disputes = disputes,
           tick = peek-qword buf 32, sequence = peek-qword buf 40 }
-        in let read = tgc-read-body buf s
-        in if not (tgv-valid g works disputes) then Err "government checkpoint state invalid" else Ok s
+        in let read = tgc-read-body buf s rows
+        in if tail-size > 0 & tgc-read-tail s tail tail-size < 0 then Err "government checkpoint tail invalid"
+        else if not (tgv-valid g works disputes) then Err "government checkpoint state invalid" else Ok s
   tgc-decode-record : Integer, Integer, Integer, Integer, GovernmentBindings -> Result GovernmentCheckpoint Text
   tgc-decode-record (buf) (size) (tick) (sequence) (bindings) =
-    if size /= tgc-bytes then Err "government record length invalid"
-    else if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "government record metadata mismatch"
+    if peek-qword buf 32 /= tick | peek-qword buf 40 /= sequence then Err "government record metadata mismatch"
     else tgc-decode buf size bindings
 

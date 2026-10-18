@@ -827,6 +827,28 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
   multi-boot proof run through it restarts from an empty disk every boot and
   never reaches its restore arms. Boot `tools/codex-vm.exe -kernel X -disk D
   -output O -mem 3072 -headless` directly, once per boot, on one disk.
+- **A proof whose `opening` carries `Device.Block` needs `-disk`** (a fresh
+  64 MiB file). Without one it fails at its first store open (the text varies; GameDispatchProof prints "fixture disk missing") and reads as a
+  regression; grep the opening's effects before reading a red.
+- **A hand-run comparison grades the whole `.expected`**, after dropping the
+  `HEAP:`, `WD:` and `STACK:` lines, never the PASS/FAIL lines alone: a stray
+  diagnostic line is a red that a PASS/FAIL-only runner reports green.
+- **A test that cites compiler chapters runs the TREE's source, whatever
+  kernel compiles it**, so a seed or sabotaged kernel is no control for it.
+  The control swaps the source file: `p4 print` the depot revision over it,
+  compile, restore (a printed copy is read-only).
+- **A sabotage is `p4 edit` first, and its write is checked.** On a file not
+  opened the write throws inside a pipeline that carries on, and the
+  "sabotaged" build is the real one, so its green proves nothing.
+- **A semantics change that re-pins a shared `.expected` reddens every backend
+  still on the old semantics.** Run the subject under `test-cross.ps1` per
+  arch before landing, or land the plug ports with it.
+- **Folding another lane's shelf into a seed arc, run the BVT before folding
+  the next one**: a shelf green on its own tests can redden BVT subjects
+  through callers outside its audit.
+- **In composite proofs `csp-wait N` does not outlast a real-time cooldown of
+  N ms**; clear the request's `next` (`owner.production.harvest.requests`)
+  as test setup instead.
 - **A pane F12 shot takes roughly 16 to 110 s in the bed**, because
   `med-selected` is unset under DeskVm so every sector op pays the AHCI
   and NVMe probes before falling through to IDE. **A capture deadline
@@ -3843,8 +3865,7 @@ junk, and an 8-byte runt killed the guest, `!EXC=06` with `RDI=-1` (a
 
 `fb-ttf-plausible buf size` now runs before the parse and `gfont-load`
 answers `gfont-none` (the CBF fallback) when it says no. It reads only bytes
-already proven inside the buffer, in dependency order by nested `if` (the
-`&` operator is not a short circuit): the directory fits (`12 + tables*16`),
+already proven inside the buffer, in dependency order by nested `if`: the directory fits (`12 + tables*16`),
 all seven required tables are present with `offset + length <= size` and a
 per-table minimum (`head` 54, `maxp` 6, `hhea` 36), `numGlyphs >= 1`,
 `numHMetrics >= 1` and `*4` inside `hmtx`, `indexToLoc` is 0 or 1 and
@@ -5663,7 +5684,7 @@ pwsh build/lir-dump-test.ps1 -Accept                        # re-record the pin
 
 The dump rides the info channel as **CDX4030** under `-Passes lir-dump`, so it
 lands in the compile log and the comparison is a string compare. Measured
-2026-07-18 against seed `00F5F34F`: **83 lines, all verifiers ok.**
+2026-10-17 against seed `DF6F316E`: **127 lines, all verifiers ok.**
 
 **It fails two ways, and both were run rather than assumed.** A one-register
 perturbation of the pin (`v1->r4` to `v1->r9`) fails with a two-line diff.
@@ -5672,12 +5693,10 @@ floor** -- which exists because an empty actual compared against an
 accidentally-emptied pin is the classic function that always answers the same
 thing. A pin nobody can fail is a comment.
 
-**The pin is RED on purpose as of 2026-08-05, and it is a stale pin rather
-than a defect.** 113 lines pinned against 119 emitted; the six extra lines
-are `math-isqrt` / `math-isqrt-loop`, both carrying `[check: ok]`. Damian
-parked LIR that day, so nobody re-recorded it. **Whoever picks LIR back up
-re-records it**; do not `-Accept` it as a drive-by, and do not report it as
-a regression.
+**`build/cite-gate.ps1` runs this pin and `build/lir-a64-test.ps1` on every
+`codex/compiler` change**, whatever the BVT answers. Both harnesses delete
+their previous log and binary first and fail when the compile writes neither,
+so a missing `-Kernel` is a FAIL rather than a PASS over the last run.
 
 **`-Accept` records whatever the compiler just did, including whatever it did
 wrong** -- the same hazard as `test-gui.ps1 -Accept` and the same rule: it

@@ -9,31 +9,43 @@ Chapter: GameHarvestState
 
   GhRequest = record { serial : Integer, connection : Integer, tool : Integer,
     target : Integer, expires : Integer, next : Integer }
-  GhSite = record { x : Integer, y : Integer, z : Integer, resource : Integer, node : Integer, base : Integer }
+  GhSite = record { x : Integer, y : Integer, z : Integer, resource : Integer, node : Integer, base : Integer, species : Integer, felled : Integer }
   GameHarvest = record { vendor : GvWorld, items : GsiState, requests : List GhRequest,
     sites : List GhSite, count : Integer, nonce : Integer, vein : (Integer, Integer, Integer -> Integer),
-    seam : (Integer, Integer, Integer -> Integer) }
+    seam : (Integer, Integer, Integer -> Integer), swing : (Integer, Integer, Integer, Integer, Integer -> Integer),
+    restore : (Integer -> Integer), temper : (Integer, Integer, Integer -> Integer) }
   gh-requests : Integer, List GhRequest -> List GhRequest
   gh-requests (i) (out) = if i == 5 then out
     else gh-requests (i + 1) (list-push out (GhRequest {
       serial = 0, connection = -1, tool = 0, target = 0, expires = 0, next = 0 }))
   gh-sites : Integer, List GhSite -> List GhSite
   gh-sites (i) (out) = if i == 256 then out
-    else gh-sites (i + 1) (list-push out (GhSite { x = 0, y = 0, z = 0, resource = 0, node = 0, base = 0 }))
+    else gh-sites (i + 1) (list-push out (GhSite { x = 0, y = 0, z = 0, resource = 0, node = 0, base = 0, species = 0, felled = 0 }))
+  gh-grow-sites : GameHarvest, Integer -> Integer
+  gh-grow-sites (state) (count) = if list-length state.sites >= count then list-length state.sites
+    else let grown = __record-set state "sites" (list-push state.sites (GhSite { x = 0, y = 0, z = 0, resource = 0, node = 0, base = 0, species = 0, felled = 0 })) in gh-grow-sites state count
   gh-state : GvWorld, GsiState -> GameHarvest
   gh-state (vendor) (items) = GameHarvest { vendor = vendor, items = items,
-    requests = gh-requests 0 (__list-with-capacity 5), sites = gh-sites 0 (__list-with-capacity 256), count = 0, nonce = 1, vein = gh-vein-none, seam = gh-seam-dice }
+    requests = gh-requests 0 (__list-with-capacity 5), sites = gh-sites 0 (__list-with-capacity 256), count = 0, nonce = 1, vein = gh-vein-none, seam = gh-seam-dice, swing = gh-swing-none, restore = gh-restore-none, temper = gh-temper-none }
+  gh-restore-none : Integer -> Integer
+  gh-restore-none (serial) = -1
+  gh-temper-none : Integer, Integer, Integer -> Integer
+  gh-temper-none (serial) (graphic) (band) = 0
   gh-vein-none : Integer, Integer, Integer -> Integer
   gh-vein-none (resource) (x) (y) = resource
+  gh-swing-none : Integer, Integer, Integer, Integer, Integer -> Integer
+  gh-swing-none (striker) (resource) (graphic) (x) (y) = 0
   gh-ticks : Integer -> Integer
   gh-ticks (milliseconds) = (milliseconds * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
   gh-tool-type : Integer -> Integer
-  gh-tool-type (item) = if item == 25 then 5 else if item == 26 then 15 else if item == 29 then 9 else 0
+  gh-tool-type (item) = if item == 25 then 5 else if item == 26 then 15 else if item == 29 then 9 else if item == 28 then 17 else if item == 120 then 13 else 0
   gh-tool-graphic : Integer, Integer -> Boolean
   gh-tool-graphic (item) (graphic) =
     if item == 25 then graphic == #0E85 | graphic == #0E86 | graphic == #0F39 | graphic == #0F3A
     else if item == 26 then graphic == #0F49 | graphic == #0F4A | graphic == #0F43 | graphic == #0F44
-    else if item == 29 then graphic == #0DBF | graphic == #0DC0 else False
+    else if item == 29 then graphic == #0DBF | graphic == #0DC0
+    else if item == 28 then graphic == #10E7
+    else if item == 120 then graphic == #0E87 | graphic == #0E88 else False
  UOX3 dictionary.ENG wording, js/skill/mining.js, js/item/axe.js and js/skill/fishing.js: 446, 801, 799,
  802, 803, 982 for ore; 443, 1967, 393, 840, 842, 1435 for wood; 9310, 846, 9313, 9311, 9314, 9315 for fish.
  Case 0 prompt, 1 wrong target, 2 out of range, 3 empty, 4 failed attempt, 5 success.
@@ -46,6 +58,14 @@ Chapter: GameHarvestState
       (if which == 0 then "What water do you want to fish in?" else if which == 1 then "You can't fish there!"
       else if which == 2 then "You need to be closer to the water to fish!" else if which == 3 then "The fish don't seem to be biting here."
       else if which == 4 then "You fish a while, but fail to catch anything." else "You pull out an item : fish")
+    else if resource == 13 then
+      (if which == 0 then "What do you want to reap?" else if which == 1 then "A pitchfork reaps wheat and flax."
+      else if which == 2 then "That is too far away." else if which == 3 then "There is nothing here to reap."
+      else if which == 4 then "You work the field, but gather nothing." else "You reap the crop.")
+    else if resource == 17 then
+      (if which == 0 then "Which root do you want to dig up?" else if which == 1 then "A trowel digs only ginseng, garlic, mandrake and nightshade."
+      else if which == 2 then "That is too far away." else if which == 3 then "There is nothing here to dig."
+      else if which == 4 then "You dig, but turn up nothing." else "You dig up the root.")
     else if which == 0 then "Where do you want to dig?" else if which == 1 then "You cannot mine there."
     else if which == 2 then "You are too far away to mine that!" else if which == 3 then "There is no metal to mine here."
     else if which == 4 then "You sifted through the dirt and rocks, but found nothing usable." else "You place some ore in your pack."
@@ -57,7 +77,9 @@ Chapter: GameHarvestState
  Binds a player's economy actor to its character's skill row, so its practice reads and writes the one store.
   gh-row : GvWorld, GvPlayer -> Integer
   gh-row (v) (player) = let row = gs-skill-row v.game player.serial
-    in let bound = __record-set (ep-actor v.currency.world player.actor) "row" row in row
+    in let bound = __record-set (ep-actor v.currency.world player.actor) "row" row
+    in let carded = __record-set (ep-actor v.currency.world player.actor) "card" (gs-card v.game player.serial)
+    in let hooked = __record-set (ep-actor v.currency.world player.actor) "learn-hook" v.currency.world.learn-hook in row
   gh-skills : GameHarvest, GvPlayer, Integer -> List Integer
   gh-skills (state) (player) (slot) = gs-skills state.vendor.game player.serial
   gh-session : GameHarvest, GameInput, GvPlayer, Integer -> GhRequest
@@ -91,7 +113,7 @@ Chapter: GameHarvestState
   gh-site (state) (player) (resource) (x) (y) (z) =
     let found = gh-site-column state resource x y 0
     in if found >= 0 then (list-at state.sites found).node
-    else if state.count == 256 then -1
+    else if state.count >= list-length state.sites then -1
     else let world = state.vendor.currency.world
     in let node = eh-source world (state.vein resource x y) (ep-actor world player.actor).place
     in if node < 1 then -1
@@ -102,6 +124,8 @@ Chapter: GameHarvestState
     in let d = __record-set site "resource" resource
     in let e = __record-set site "node" node
     in let f = __record-set site "base" 0
+    in let g = __record-set site "species" 0
+    in let h = __record-set site "felled" 0
     in let count = __record-set state "count" (state.count + 1)
     in node
  A mining attempt can turn up a seam (UOAIX-86, Damian 2026-10-07; a gold site, the Royal Mine, takes none): a temporary gold, silver or copper node the site

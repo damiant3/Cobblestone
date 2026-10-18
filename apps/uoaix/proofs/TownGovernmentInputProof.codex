@@ -1,0 +1,118 @@
+Chapter: TownGovernmentInputProof
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter TownGovernmentInput
+  cites Uoaix chapter TownGovernmentInputFixtures
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter AdminQueueCodec
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  tgip-check : Text, Boolean -> [Console] Nothing
+  tgip-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tgip-equal : Integer, Integer, Integer, Integer -> Boolean
+  tgip-equal (a) (b) (size) (i) = if i == size then True
+    else if peek-qword a i /= peek-qword b i then False else tgip-equal a b size (i + 8)
+  tgip-pack : GovernmentCheckpoint, Integer -> Boolean
+  tgip-pack (s) (buf) =
+    let civic = is-ok (tgc-encode s buf tgc-bytes)
+    in let queue = is-ok (ac-encode s.disputes.admin s.tick s.sequence (buf + tgc-bytes) ac-size)
+    in let money = when s.government.currency
+      is None -> False
+      is Just (x) -> let state = CurrencyCheckpoint { currency = x, tick = s.tick, sequence = s.sequence }
+        in is-ok (euc-encode state (buf + tgc-bytes + ac-size) us-max-payload)
+    in civic & queue & money
+  tgip-bytes : Integer = tgc-bytes + ac-size + us-max-payload
+  tgip-frames : TgiScenario, Integer, Integer -> Boolean
+  tgip-frames (s) (buf) (i) = if i == list-length s.entries then True
+    else is-ok (tgi-encode (list-at s.entries i) (buf + i * tgi-bytes) tgi-bytes) & tgip-frames s buf (i + 1)
+  tgip-corrupt : Integer, Integer, Integer -> Boolean
+  tgip-corrupt (buf) (at) (value) =
+    let old = peek-qword buf at
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf tgi-bytes 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (tgi-decode buf tgi-bytes)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at old
+    in let rehash = poke-qword buf 48 (ws-hash buf tgi-bytes 0 2166136261)
+    in refused
+  tgip-recovered : GovernmentCheckpoint, GovernmentCheckpoint, Integer, Integer -> [Console] Nothing
+  tgip-recovered (direct) (s) (one) (two) = act
+    a <- tgip-pack direct one
+    b <- tgip-pack s two
+    tgip-check "ordered civic replay matches money inventories queue and civic state" (a & b & tgif-valid s & tgip-equal one two tgip-bytes 0)
+  end
+  tgip-hours : Integer, Integer -> Integer
+  tgip-hours (buf) (i) = if i == 512 then 0
+    else let mark = __heap-save
+    in let entry = tgi-new (i + 1) (i + 1) (if int-mod i 2 == 0 then 31 else 11)
+    in let written = is-ok (tgi-encode entry (buf + i * tgi-bytes) tgi-bytes)
+    in let restored = __heap-restore mark
+    in if not written then -1 else tgip-hours buf (i + 1)
+  tgip-budget : GovernmentCheckpoint -> [Console] Nothing
+  tgip-budget (source) = act
+    frames <- alloc-bytes (512 * tgi-bytes)
+    written <- tgip-hours frames 0
+    small-before <- __heap-save
+    small <- tgi-replay source frames (2 * tgi-bytes)
+    small-after <- __heap-save
+    small-bytes <- small-after - small-before
+    tgip-check "small civic replay succeeds" (written == 0 & is-ok small)
+    reclaimed <- __heap-restore small-before
+    full-before <- __heap-save
+    full <- tgi-replay source frames (512 * tgi-bytes)
+    full-after <- __heap-save
+    print-line-uni ("CIVIC-REPLAY-BYTES " & show (full-after - full-before))
+    tgip-check "512 civic inputs retain same heap as two" (is-ok full & full-after - full-before == small-bytes & small-bytes < 12582912)
+    when full
+      is Err (e) -> print-line-uni ("FAIL large civic replay " & e)
+      is Ok (s) -> tgip-check "clock and payroll cursors advance without changing source" (s.sequence == 512 & s.government.economy.hour == 280 & s.government.day == 11 & source.sequence == 0 & source.government.economy.hour == 24 & source.government.day == 1)
+    cleaned <- __heap-restore full-before
+    tgip-check "oversized and partial civic batches refuse" (is-err (tgi-replay source frames (513 * tgi-bytes)) & is-err (tgi-replay source frames 1))
+  end
+  tgip-run : GovernmentCheckpoint, TgiScenario -> [Console] Nothing
+  tgip-run (source) (scenario) = act
+    count <- list-length scenario.entries
+    print-line-uni ("CIVIC-INPUTS " & show count & " FRAME-BYTES " & show tgi-bytes)
+    tgip-check "direct civic fixture valid" (scenario.failed == 0 & tgif-valid scenario.state)
+    frames <- alloc-bytes (count * tgi-bytes)
+    one <- alloc-bytes tgip-bytes
+    two <- alloc-bytes tgip-bytes
+    written <- tgip-frames scenario frames 0
+    tgip-check "all civic arguments and report text encode" written
+    mark <- __heap-save
+    replay <- tgi-replay source frames (count * tgi-bytes)
+    when replay
+      is Err (e) -> print-line-uni ("FAIL civic replay " & e)
+      is Ok (s) -> tgip-recovered scenario.state s one two
+    restored <- __heap-restore mark
+    baseline <- tgip-pack source one
+    tgip-check "successful replay leaves every source component unchanged" (baseline & source.sequence == 0 & source.government.town-count == 0 & source.disputes.admin.report-count == 0 & source.government.economy.hour == 24)
+    last <- frames + (count - 1) * tgi-bytes
+    mismatch <- poke-qword last 56 0
+    rehash <- poke-qword last 48 (ws-hash last tgi-bytes 0 2166136261)
+    failed-mark <- __heap-save
+    failure <- tgi-replay source frames (count * tgi-bytes)
+    after <- tgip-pack source two
+    tgip-check "late failure cannot leak earlier payments or queued reports" (is-err failure & after & tgip-equal one two tgip-bytes 0)
+    failure-cleaned <- __heap-restore failed-mark
+    rewritten <- tgi-encode (list-at scenario.entries (count - 1)) last tgi-bytes
+    tgip-check "rehashed permissions spare arguments and reserved cells refuse" (tgip-corrupt frames 64 2 & tgip-corrupt frames 184 1 & tgip-corrupt frames 1080 1)
+    tgip-check "rehashed text length padding and wrong command text refuse" (tgip-corrupt last 192 65 & tgip-corrupt last 256 1 & tgip-corrupt last 24 11)
+    tgip-check "metadata mismatch truncation and unknown operation refuse" (is-err (tgi-decode-record frames tgi-bytes 11 1) & is-err (tgi-decode frames (tgi-bytes - 1)) & tgip-corrupt frames 24 32)
+    tgip-budget source
+  end
+  tgip-source : GovernmentCheckpoint -> [Console] Nothing
+  tgip-source (source) = act
+    when tgif-source 0
+      is Err (e) -> print-line-uni ("FAIL direct civic source " & e)
+      is Ok (state) -> tgip-run source (tgif-build state)
+  end
+  opening : [Console] Nothing = act
+    when tgif-source 0
+      is Err (e) -> print-line-uni ("FAIL civic source " & e)
+      is Ok (source) -> tgip-source source
+  end

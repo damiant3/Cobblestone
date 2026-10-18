@@ -1,0 +1,46 @@
+Chapter: TownGovernmentStore
+  cites Uoaix chapter TownGovernmentInput
+  cites Uoaix chapter TownGovernmentBundle
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter TownGovernmentValid
+  cites Uoaix chapter WorldDisk
+  cites Foreword chapter Result
+
+  GovernmentRecovery = record { state : GovernmentCheckpoint, inputs : Integer }
+  government-store-suffix : UoStore, GovernmentCheckpoint, Integer, Integer, Integer -> [Device.Block] Result GovernmentRecovery Text
+  government-store-suffix (store) (state) (at) (buf) (count) =
+    if at == store.head then
+      if state.sequence /= store.sequence | state.tick /= store.tick then act Err "civic recovery head metadata mismatch" end
+      else if not (tgv-valid state.government state.works state.disputes) then act Err "civic recovered state invalid" end
+      else act Ok (GovernmentRecovery { state = state, inputs = count }) end
+    else if at < 0 | at > store.head | count >= 512 then act Err "civic recovery extent or input budget invalid" end
+    else let mark = __heap-save
+    in act
+      read <- us-read store at buf tgi-bytes
+      when read
+        is Err (e) -> Err e
+        is Ok (row) ->
+          if row.kind /= 2 | row.next <= at | row.next > store.head then Err "civic recovery input record invalid"
+          else let next = row.next
+          in when tgi-decode-record buf row.length row.tick row.sequence
+            is Err (e) -> Err e
+            is Ok (entry) -> when tgi-apply state entry
+              is Err (e) -> Err e
+              is Ok (result) -> let restored = __heap-restore mark in government-store-suffix store state next buf (count + 1)
+    end
+  government-store-restore : UoStore, GovernmentAnchors -> [Device.Block] Result GovernmentRecovery Text
+  government-store-restore (store) (anchors) =
+    if store.fault /= 0 | store.tail /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "civic recovery requires clean committed checkpoint" end
+    else let input = alloc-bytes tgi-bytes
+    in act
+      sized <- us-record-length store store.snapshot
+      room <- when sized is Ok (n) -> n is Err (_) -> 512
+      snapshot <- alloc-bytes room
+      read <- us-read store store.snapshot snapshot room
+      when read
+        is Err (e) -> Err e
+        is Ok (row) -> if row.kind /= 1 | row.next > store.head then Err "civic recovery checkpoint record invalid"
+          else when tgb-decode-record snapshot row.length row.tick row.sequence anchors
+            is Err (e) -> Err e
+            is Ok (state) -> government-store-suffix store state row.next input 0
+    end

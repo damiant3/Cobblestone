@@ -30,6 +30,12 @@ PROMPTS = [
     '1024x768 3.14 v2.0 (masterpiece:1.2) [bad] {x} <lora:foo:0.8> !!! ... ?! --- @#$%^&*_=+~`|\\/"',
     'a<|endoftext|>b <|startoftext|> Supercalifragilisticexpialidocious',
     'Caf\u00e9 \u00c9COLE \u00fcber \u0416\u0418\u0417\u041d\u042c na\u00efve \u2018quoted\u2019 \u201cdouble\u201d',
+    '\u039f\u0394\u039f\u03a3 \u039b\u039f\u0393\u039f\u03a3, \u03a3 \u03a3\u0391\u03a3\u0391',
+    '\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e \u0967\u0968\u0969 \u0915\u093f\u0932\u093e\u0964',
+    '\u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35 \u0e42\u0e25\u0e01 \u0e51\u0e52\u0e53 \u0e46',
+    '\u0eaa\u0eb0\u0e9a\u0eb2\u0e8d\u0e94\u0eb5 \u0ed1\u0ed2 \u0edc',
+    '\u2126 \u212bngstrom \u2103 \u216b x\u00b2 H\u2082O \u2115 \u2776 \u2071',
+    '\u1100\u1101 \u3131\u3134 \u3105\u3106 \u3005\u3007',
 ]
 
 def main():

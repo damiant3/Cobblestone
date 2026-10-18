@@ -1,0 +1,30 @@
+Chapter: CryptoArm
+  cites WebApp chapter WebRuntime
+  cites Foreword chapter StringUtils
+
+  cp-key : Text = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  cp-aes : Text = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+  cp-nonce : Text = "000000000500000000000000"
+  cp-opened : Text -> Integer
+  cp-opened (plain) = local-storage-set "open" plain
+  cp-tampered : Text -> Integer
+  cp-tampered (r) = local-storage-set "tamper" r
+  cp-sealed : Text -> Integer
+  cp-sealed (sealed) = let lf = text-index-of sealed "\n"
+    in let cipher = substring sealed 0 lf
+    in let tag = substring sealed (lf + 1) (text-length sealed - lf - 1)
+    in let a = local-storage-set "seal" (show (text-length cipher) & " " & show (text-length tag))
+    in let b = crypto-open-then cp-aes cp-nonce "UOAIX1/response/4/5" cipher tag cp-opened
+    in crypto-open-then cp-aes cp-nonce "UOAIX1/response/4/5" cipher "00000000000000000000000000000000" cp-tampered
+  cp-verified : Text -> Integer
+  cp-verified (r) = local-storage-set ("verify" & r) r
+  cp-hmac : Text -> Integer
+  cp-hmac (tag) = let a = local-storage-set "hmac" tag
+    in let b = crypto-hmac-verify-then cp-key tag "Hi There" cp-verified
+    in crypto-hmac-verify-then cp-key tag "Hi There!" cp-verified
+  opening : [Console] Integer
+  opening = act
+    a <- print-line-uni ("READY " & show (crypto-ready 0) & " RANDOM " & show (text-length (crypto-random-hex 32)))
+    let b = crypto-hmac-then cp-key "Hi There" cp-hmac
+    in crypto-seal-then cp-aes cp-nonce "UOAIX1/response/4/5" "{\"ok\":true,\"name\":\"Lord British\"}" cp-sealed
+  end

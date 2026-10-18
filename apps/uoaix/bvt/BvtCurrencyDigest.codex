@@ -1,0 +1,33 @@
+Chapter: BvtCurrencyDigest
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bcdg-write : EuCurrency -> Integer
+  bcdg-write (x) = let size = euc-size-in x 0
+    in let buf = alloc-bytes size
+    in when euc-write-in (CurrencyCheckpoint { currency = x, tick = 0, sequence = 0 }) buf size 0
+      is Err (_) -> 0
+      is Ok (_) -> buf
+  bcdg-copy : Integer, Integer, Integer -> Integer
+  bcdg-copy (from) (to) (i) = if i >= peek-qword from 16 then to else let c = poke-byte to i (peek-byte from i) in bcdg-copy from to (i + 1)
+  bcdg-decodes : Integer -> Boolean
+  bcdg-decodes (buf) = is-ok (euc-decode buf (peek-qword buf 16))
+  bvt-currency-digest : Integer -> [Console] Integer
+  bvt-currency-digest (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("currency digest fixture: " & e) False
+    is Ok (x) -> act
+      buf <- bcdg-write x
+      size <- if buf == 0 then 0 else peek-qword buf 16
+      a <- bvt-check "a currency checkpoint is format 12 and carries ws-digest of itself, and decodes (UOAIX-196)" (buf /= 0 & peek-qword buf 8 == 12 & peek-qword buf 48 == ws-digest buf size 0 2166136261 & bcdg-decodes buf)
+      old <- if buf == 0 then 0 else bcdg-copy buf (alloc-bytes size) 0
+      hashed <- if old == 0 then 0 else poke-qword old 48 (ws-hash old size 0 2166136261)
+      b <- bvt-check "the same record checked by the old ws-hash is refused" (old /= 0 & ws-hash old size 0 2166136261 /= ws-digest old size 0 2166136261 & not (bcdg-decodes old))
+      v11 <- if buf == 0 then 0 else bcdg-copy buf (alloc-bytes size) 0
+      older <- if v11 == 0 then 0 else poke-qword v11 8 11
+      rehashed <- if v11 == 0 then 0 else poke-qword v11 48 (ws-digest v11 size 0 2166136261)
+      c <- bvt-check "a format 11 record is refused even with a good digest: a fresh world" (v11 /= 0 & not (bcdg-decodes v11))
+      a + b + c
+    end

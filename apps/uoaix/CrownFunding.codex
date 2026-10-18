@@ -1,0 +1,24 @@
+Chapter: CrownFunding
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter EconomyCurrency
+
+ UOAIX-132/135: a fresh world's treasury is empty and the crown's purse (2) holds nothing until coin is struck, so a
+ fixture that trades from the crown funds it the way the live server does (cg-open-treasury): the crown, the mint's
+ owner, takes a smith's hammer and the ingots (bb-require), strikes them at its Royal Mint station (kind 12) into the
+ treasury (purse 1, event 7, which euv-valid replays), then grants the coin to itself as the lord (eu-grant). Ingots
+ are copper (65), silver (66) and gold (32), each struck at its metal's yield.
+  cf-strike : EuCurrency, Integer, Integer, Integer, Integer -> Integer
+  cf-strike (x) (crown) (station) (metal) (ingots) = if ingots <= 0 then 0
+    else when bb-require (bb-producer x crown) (if metal == 1 then 65 else if metal == 2 then 66 else 32) ingots
+      is Err (_) -> -1
+      is Ok (_) -> if eu-strike x True crown station metal ingots /= 0 then -1 else 0
+  cf-fund-crown : EuCurrency, Integer, Integer, Integer -> Integer
+  cf-fund-crown (x) (copper) (silver) (gold) = let crown = x.world.mint-owner
+    in if crown <= 0 | not (ep-valid-actor x.world crown) then -1
+    else when bb-require (bb-producer x crown) 62 1
+      is Err (_) -> -1
+      is Ok (_) -> let station = bb-station x.world crown 12 0
+        in if station < 1 then -1
+        else let struck = if cf-strike x crown station 1 copper < 0 then -1 else if cf-strike x crown station 2 silver < 0 then -1 else cf-strike x crown station 3 gold
+        in if struck < 0 then -1
+        else eu-grant x True 1 2 ((em-purse x.copper 1).coin) ((em-purse x.silver 1).coin) ((em-purse x.world.money 1).coin)

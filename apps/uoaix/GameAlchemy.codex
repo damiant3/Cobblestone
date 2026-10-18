@@ -4,6 +4,7 @@ Chapter: GameAlchemy
   cites Uoaix chapter ActiveSkillsTracking
   cites Uoaix chapter GameCombat
   cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter CraftGump
 
  UOX3 js/skill/alchemy.js, dfndata/create/alchemy.dfn ITEM 292 and 298, js/item/potion.js and dictionary.ENG 469,
  470, 1344, 1345, 1346, 1349, 1464, 1466, 6001, 6002, 9058, 9059: a mortar and pestle (0x0E9B, 0x0E9C) grinds ginseng
@@ -26,29 +27,26 @@ Chapter: GameAlchemy
         else let inner = if depth > 0 & world-child-count world serial > 0 then gal-find world (world-first-child world serial) graphic (depth - 1) else 0
         in if inner > 0 then inner else gal-find world (world-next-sibling world serial) graphic depth
   gal-take : GameHarvest, Integer -> Result (List Integer) Text
-  gal-take (h) (serial) = when world-get h.items.world serial
-    is Err (e) -> Err e
-    is Ok (o) -> let at = gv-lot h.vendor serial 0
-      in let economy = if at < 0 then 0 else
-        (let lot = list-at h.vendor.lots at
-        in let w = h.vendor.currency.world
-        in let p = ep-actor w lot.actor
-        in let cost = lot.basis / lot.quantity
-        in let s1 = ep-add p.stock lot.item (0 - 1)
-        in let q1 = ep-add p.quality lot.item (0 - lot.quality)
-        in let w1 = ep-add p.wear lot.item (0 - lot.wear)
-        in let c1 = ep-add p.cost lot.item (0 - cost)
-        in let used = ep-add w.consumed lot.item 1
-        in let based = __record-set lot "basis" (lot.basis - cost)
-        in let counted = __record-set lot "quantity" (lot.quantity - 1)
-        in let retired = if lot.quantity == 0 then gh-retire-lot h.vendor at else 0
-        in gh-invalidate-quotes h.vendor 0)
-      in if o.amount > 1 then when world-update h.items.world (__record-set o "amount" (o.amount - 1))
+  gal-take (h) (serial) = let w = h.vendor.currency.world
+    in let at = gv-lot h.vendor serial 0
+    in if at >= 0 then
+      (let lot = ep-lot w.goods at
+      in let item = lot.item
+      in when ep-take w lot.actor item 1 serial
         is Err (e) -> Err e
-        is Ok (_) -> when world-get h.items.world serial is Err (e) -> Err e is Ok (left) -> Ok (sip-item left)
-      else when world-delete h.items.world serial
-        is Err (e) -> Err e
-        is Ok (_) -> Ok (sip-remove serial)
+        is Ok (_) -> let used = ep-add w.consumed item 1
+          in let invalidated = gh-invalidate-quotes h.vendor 0
+          in when world-get h.items.world serial
+            is Err (_) -> Ok (sip-remove serial)
+            is Ok (left) -> Ok (sip-item left))
+    else when world-get h.items.world serial
+      is Err (e) -> Err e
+      is Ok (o) -> if o.amount > 1 then when world-update h.items.world (__record-set o "amount" (o.amount - 1))
+          is Err (e) -> Err e
+          is Ok (_) -> when world-get h.items.world serial is Err (e) -> Err e is Ok (left) -> Ok (sip-item left)
+        else when world-delete h.items.world serial
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (sip-remove serial)
   gal-give : GameHarvest, Integer, Integer -> Result (List Integer) Text
   gal-give (h) (pack) (graphic) = gal-give-tier h pack graphic 0
   gal-give-tier : GameHarvest, Integer, Integer, Integer -> Result (List Integer) Text
@@ -56,6 +54,23 @@ Chapter: GameAlchemy
     is Err (e) -> Err e
     is Ok (serial) -> if gsi-register h.items serial 0 0 True False /= 0 then Err "potion registration refused"
       else when world-get h.items.world serial is Err (e) -> Err e is Ok (made) -> Ok (sip-item made)
+ A drunk potion leaves the bottle it was poured into (ItemOrigins.md): a single potion becomes the empty bottle in place,
+ and one potion split from a stack leaves one bottle.
+  gal-empty : GameHarvest, Integer, Integer -> Result (List (List Integer)) Text
+  gal-empty (h) (pack) (serial) = when world-get h.items.world serial
+    is Err (e) -> Err e
+    is Ok (potion) -> if potion.amount > 1 then gal-split h pack potion
+      else when world-update h.items.world (__record-set (__record-set potion "graphic" #0F0E) "health" 0)
+        is Err (e) -> Err e
+        is Ok (_) -> when world-get h.items.world serial is Err (e) -> Err e is Ok (bottle) -> Ok [sip-item bottle]
+  gal-split : GameHarvest, Integer, WorldObject -> Result (List (List Integer)) Text
+  gal-split (h) (pack) (potion) = when world-update h.items.world (__record-set potion "amount" (potion.amount - 1))
+    is Err (e) -> Err e
+    is Ok (_) -> when world-get h.items.world potion.serial
+      is Err (e) -> Err e
+      is Ok (left) -> when gal-give h pack #0F0E
+        is Err (e) -> Err e
+        is Ok (bottle) -> Ok [sip-item left, bottle]
   gal-say : Text -> List Integer
   gal-say (text) = sip-message #FFFFFFFF #FFFF 6 text
   gal-begin : GameHarvest, GhRequest, Integer, Integer -> Result (Maybe GameReply) Text
@@ -96,6 +111,20 @@ Chapter: GameAlchemy
     else gal-menu-rows reagent tiers (i + 1) (as-menu-row out (gal-potion-of reagent) (gal-tier-name reagent (list-at tiers i)))
   gal-menu : Integer, Integer, List Integer -> List Integer
   gal-menu (serial) (reagent) (tiers) = sip-length (gal-menu-rows reagent tiers 0 (as-menu-head serial (gal-menu-id reagent) "Alchemy" (list-length tiers)))
+ The craft gump (CraftGump) for a ground reagent: its potion tiers under DefAlchemy's Healing and Curative or Toxic, each
+ with what it needs; no Make Last, because the menu is bound to the reagent the alchemist targeted.
+  gal-reagent-name : Integer -> Text
+  gal-reagent-name (reagent) = if reagent == #0F85 then "ginseng" else if reagent == #0F88 then "nightshade" else "garlic"
+  gal-lines : Integer, List Integer, Integer, List Text -> List Text
+  gal-lines (reagent) (tiers) (i) (out) = if i >= list-length tiers then out
+    else let tier = list-at tiers i
+    in gal-lines reagent tiers (i + 1) (out & [gal-tier-name reagent tier & " potion: " & show (gal-tier-count reagent tier) & " " & gal-reagent-name reagent & ", 1 empty bottle"])
+  gal-cats : Integer, List Integer, Integer, List Integer -> List Integer
+  gal-cats (reagent) (tiers) (i) (out) = if i >= list-length tiers then out else gal-cats reagent tiers (i + 1) (out & [(if reagent == #0F88 then 2 else 0)])
+  gal-gump : Integer, Integer, List Integer -> List Integer
+  gal-gump (serial) (reagent) (tiers) = let lines = gal-lines reagent tiers 0 []
+    in let cats = gal-cats reagent tiers 0 []
+    in crg-gump-ids serial (gal-menu-id reagent) "Alchemy" (crg-labels crg-alchemy) lines cats (crg-count (list-length tiers) 1 []) "" False
   gal-take-n : GameHarvest, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
   gal-take-n (h) (serial) (left) (out) = if left == 0 then Ok out
     else when gal-take h serial
@@ -112,8 +141,8 @@ Chapter: GameAlchemy
         else if reagent.graphic == #0F7A then gal-make h s a me pack serial potion 1 1 250
         else let tiers = gal-tiers a reagent.graphic
         in let bound = __record-set request "tool" serial
-        in let expires = __record-set request "expires" (now + gh-ticks 30000)
-        in Ok (Just (gs-reply [gal-menu serial reagent.graphic tiers] "alchemy menu"))
+        in let expires = __record-set request "expires" (now + gh-ticks 120000)
+        in Ok (Just (gs-reply [gal-gump serial reagent.graphic tiers] "alchemy menu"))
   gal-choice : GameHarvest, ActiveSkills, AsActor, WorldObject, Integer, GhRequest, List Integer, Integer -> Result (Maybe GameReply) Text
   gal-choice (h) (s) (a) (me) (pack) (request) (packet) (now) =
     if request.tool == 0 | request.target /= 0 | gp-u32 packet 1 /= request.tool then gh-denied "That menu is no longer active."
@@ -122,7 +151,7 @@ Chapter: GameAlchemy
     in let closed = __record-set request "tool" 0
     in if choice == 0 then Ok (Just (gs-reply [] "alchemy cancelled"))
     else if now > request.expires then gh-denied "That menu expired."
-    else if gal-find h.items.world (world-first-child h.items.world pack) #0E9B 2 == 0 & gal-find h.items.world (world-first-child h.items.world pack) #0E9C 2 == 0 then
+    else if gal-mortar-in h.items.world pack == 0 then
       gh-denied "Your mortar and pestle must be in your pack."
     else when world-get h.items.world serial
       is Err (_) -> gh-denied "You can't make anything useful from that."
@@ -133,18 +162,20 @@ Chapter: GameAlchemy
         else let tier = list-at tiers (choice - 1)
         in if reagent.amount < gal-tier-count reagent.graphic tier then gh-denied "You have insufficient resources on hand to do that"
         else gal-make h s a me pack serial (gal-potion-of reagent.graphic) tier (gal-tier-count reagent.graphic tier) (gal-tier-difficulty reagent.graphic tier)
+  gal-mortar-in : WorldTable, Integer -> Integer
+  gal-mortar-in (world) (pack) = let a = gal-find world (world-first-child world pack) #0E9B 2 in if a /= 0 then a else gal-find world (world-first-child world pack) #0E9C 2
   gal-make : GameHarvest, ActiveSkills, AsActor, WorldObject, Integer, Integer, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
   gal-make (h) (s) (a) (me) (pack) (serial) (potion) (tier) (count) (difficulty) =
     let bottle = gal-find h.items.world (world-first-child h.items.world pack) #0F0E 2
     in if bottle == 0 then gh-denied "Where is an empty bottle for your potion?"
-    else if world-count h.items.world >= h.items.world.capacity then gh-denied "No room for the potion."
+    else if world-room h.items.world <= 0 then gh-denied "No room for the potion."
     else let made = as-roll s a 0 difficulty
     in when gal-take-n h serial count []
       is Err (e) -> Err e
       is Ok (spent) -> if not made then Ok (Just (gs-reply (spent & [gal-say "You toss the failed mixture from the mortar, unable to create a potion from it."]) "alchemy failed"))
         else when gal-take h bottle
           is Err (e) -> Err e
-          is Ok (emptied) -> when gal-give-tier h pack potion tier
+          is Ok (emptied) -> when gal-give-tier h (gh-into h pack (gal-mortar-in h.items.world pack)) potion tier
             is Err (e) -> Err e
             is Ok (filled) -> Ok (Just (gs-reply (spent & [emptied, filled] & gsi-sound-at h.items me.serial #0242
               & [gal-say "You pour the completed potion into a bottle."]) "alchemy made"))
@@ -160,33 +191,31 @@ Chapter: GameAlchemy
       is Ok (c) -> let poison = services.poison me.serial
         in if potion.graphic == #0F0C & me.health >= max 1 c.maximum then gh-denied "You decide against drinking this potion, as you are already at full health."
         else if potion.graphic == #0F0C & poison >= 0 then gh-denied "You can not heal yourself in your current state."
-        else when gal-take h potion.serial
+        else when gal-empty h pack potion.serial
           is Err (e) -> Err e
-          is Ok (gone) -> when gal-give h pack #0F0E
-            is Err (e) -> Err e
-            is Ok (bottle) -> if potion.graphic == #0F0B then gal-refresh h game me gone bottle
+          is Ok (emptied) -> if potion.graphic == #0F0B then gal-refresh h game me emptied
               else if potion.graphic == #0F0A then
                 (let sick = services.envenom me.serial (min 4 (max 1 potion.health) - 1) me.serial
-                in Ok (Just (gs-reply [gone, bottle, gal-say (if sick then "You have been poisoned!" else "The potion had no effect.")] "potion poison")))
+                in Ok (Just (gs-reply (emptied & [gal-say (if sick then "You have been poisoned!" else "The potion had no effect.")]) "potion poison")))
               else if potion.graphic == #0F0C then
                 (let tier = max 1 potion.health in let healed = min (max 1 c.maximum) (me.health + 3 * tier + skc-random a.skills (if tier == 1 then 8 else if tier == 2 then 15 else 22))
                 in when world-update h.items.world (__record-set me "health" healed)
                   is Err (e) -> Err e
-                  is Ok (_) -> Ok (Just (gs-reply ([gone, bottle, cbp-health me.serial healed (max 1 c.maximum) True] & gsi-sound-at h.items me.serial #01E3
+                  is Ok (_) -> Ok (Just (gs-reply (emptied & [cbp-health me.serial healed (max 1 c.maximum) True] & gsi-sound-at h.items me.serial #01E3
                     & [gal-say "You feel a little better!"]) "potion heal")))
-              else if poison < 0 then Ok (Just (gs-reply [gone, bottle, gal-say "The potion had no effect."] "potion no effect"))
+              else if poison < 0 then Ok (Just (gs-reply (emptied & [gal-say "The potion had no effect."]) "potion no effect"))
               else if gal-cures (max 1 potion.health) poison (skc-random a.skills 100) & services.cure me.serial then
-                Ok (Just (gs-reply ([gone, bottle] & gsi-sound-at h.items me.serial #01E0 & [gal-say "The poison was cured!"]) "potion cure"))
-              else Ok (Just (gs-reply [gone, bottle, gal-say "The potion was not able to cure this poison."] "potion cure failed"))
-  gal-refresh : GameHarvest, GameShard, WorldObject, List Integer, List Integer -> Result (Maybe GameReply) Text
-  gal-refresh (h) (game) (me) (gone) (bottle) = let slot = gsi-slot game me.serial 0
+                Ok (Just (gs-reply (emptied & gsi-sound-at h.items me.serial #01E0 & [gal-say "The poison was cured!"]) "potion cure"))
+              else Ok (Just (gs-reply (emptied & [gal-say "The potion was not able to cure this poison."]) "potion cure failed"))
+  gal-refresh : GameHarvest, GameShard, WorldObject, List (List Integer) -> Result (Maybe GameReply) Text
+  gal-refresh (h) (game) (me) (emptied) = let slot = gsi-slot game me.serial 0
     in if slot < 0 then Err "refresh character slot"
     else let at = game.characters + slot * 160
     in let dexterity = gp-stat at 1
     in let spent = max 0 (peek-byte at 145 - 21 - int-mod (bit-and (mix-bits me.serial (peek-byte at 145)) #7FFFFFFF) 10)
     in let saved = poke-byte at 145 spent
     in let touched = world-touch h.items.world
-    in Ok (Just (gs-reply ([gone, bottle, gp-put16 (gp-put16 (gp-put32 [#A3] me.serial) dexterity) (max 0 (dexterity - spent))] & gsi-sound-at h.items me.serial #01F2
+    in Ok (Just (gs-reply (emptied & [gp-put16 (gp-put16 (gp-put32 [#A3] me.serial) dexterity) (max 0 (dexterity - spent))] & gsi-sound-at h.items me.serial #01F2
       & [gal-say "You feel more energetic!"]) "potion refresh"))
   gal-handler-at : GameHarvest, ActiveSkills, AsServices, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
   gal-handler-at (h) (s) (services) (game) (input) (packet) (now) =

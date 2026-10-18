@@ -1,0 +1,78 @@
+Chapter: BvtLand
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bld-map : WalkMap = WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }
+  bld-tool : Integer, Integer, Integer -> GldTool
+  bld-tool (op) (value) (brush) = GldTool { connection = 7, serial = 4242, op = op, value = value, brush = brush, stamp = 0 }
+ Bits: 1 a name, 2 and 4 hex with and without 0x, 8 an unknown word and 16 an art past land's 0x3FFF are refused; 31 is all.
+  bld-names : Integer -> Integer
+  bld-names (unused) = (if gld-art "water" == #00A8 then 1 else 0) + (if gld-art "0x00a8" == #00A8 then 2 else 0)
+    + (if gld-art "a8" == #00A8 then 4 else 0) + (if gld-art "nope" < 0 then 8 else 0) + (if gld-art "4000" < 0 then 16 else 0)
+ Bits: 1 three tiles set and found, 2 a second set of a tile keeps one row with the new values, 4 a sweep drops a marked
+ tile and the rest are still found, 8 growth doubles the room and every row is still found, 16 a miss stays a miss; 31.
+  bld-store : Integer -> Integer
+  bld-store (unused) = let s = gld-new 0
+    in let a = gld-set s 10 20 #0003 5 1 in let b = gld-set s 11 20 #0016 6 1 in let c = gld-set s 4000 3000 #00A8 (0 - 3) 2
+    in let found = if gld-find s 10 20 >= 0 & gld-find s 11 20 >= 0 & gld-find s 4000 3000 >= 0 & s.count == 3 then 1 else 0
+    in let again = gld-set s 11 20 #0071 9 2
+    in let over = if s.count == 3 & gld-field s (gld-find s 11 20) 2 == #0071 & gld-field s (gld-find s 11 20) 3 == 9 then 2 else 0
+    in let marked = gld-mark s 10 20
+    in let swept = gld-sweep s
+    in let sweep = if swept == 1 & s.count == 2 & gld-find s 10 20 < 0 & gld-find s 11 20 >= 0 & gld-find s 4000 3000 >= 0 then 4 else 0
+    in let filled = bld-fill s 0
+    in let room = s.room
+    in let grown = gld-grow s
+    in let growth = if s.room == room * 2 & bld-all-found s 0 & gld-find s 4000 3000 >= 0 then 8 else 0
+    in let miss = if gld-find s 4001 3000 < 0 then 16 else 0
+    in found + over + sweep + growth + miss
+  bld-fill : GmLand, Integer -> Integer
+  bld-fill (s) (i) = if gld-due s then i else let set = gld-set s (500 + int-mod i 100) (600 + i / 100) #0003 0 1 in bld-fill s (i + 1)
+  bld-all-found : GmLand, Integer -> Boolean
+  bld-all-found (s) (i) = if i >= s.count then True
+    else if gld-find s (gld-field s i 0) (gld-field s i 1) /= i then False else bld-all-found s (i + 1)
+ With no loaded map every height falls back to the picked tile's. Bits: 1 painting water under a radius-1 brush sets 9
+ tiles at height 5, 2 raising the centre by 10 keeps its water at 15, 4 raising a fresh tile keeps the client's art (-1),
+ 8 flattening to the centre sets the 9 tiles to 15, 16 dropping under the brush removes the 9 and leaves the fresh tile,
+ 32 the bake drops the named tile and ignores an unknown one; 63 is all.
+  bld-ops : Integer -> Integer
+  bld-ops (unused) = let s = gld-new 0
+    in let painted = gld-apply s bld-map (bld-tool 1 #00A8 1) 1 100 100 5
+    in let paint = if painted == 9 & s.count == 9 & gld-field s (gld-find s 99 99) 2 == #00A8 & gld-field s (gld-find s 101 101) 3 == 5 then 1 else 0
+    in let raised = gld-apply s bld-map (bld-tool 2 10 0) 1 100 100 5
+    in let raise = if raised == 1 & gld-field s (gld-find s 100 100) 3 == 15 & gld-field s (gld-find s 100 100) 2 == #00A8 then 2 else 0
+    in let fresh = gld-apply s bld-map (bld-tool 2 10 0) 1 300 300 7
+    in let keep = if fresh == 1 & gld-field s (gld-find s 300 300) 2 == gld-keep & gld-field s (gld-find s 300 300) 3 == 17 then 4 else 0
+    in let flat = gld-apply s bld-map (bld-tool 3 0 1) 1 100 100 0
+    in let level = if flat == 9 & gld-field s (gld-find s 99 101) 3 == 15 & gld-field s (gld-find s 101 99) 3 == 15 then 8 else 0
+    in let dropped = gld-apply s bld-map (bld-tool 4 0 1) 1 100 100 0
+    in let drop = if dropped == 9 & s.count == 1 & gld-find s 300 300 >= 0 then 16 else 0
+    in let baked = gld-baked s "300,300;5,5"
+    in let bake = if baked == 1 & s.count == 0 then 32 else 0
+    in paint + raise + keep + level + drop + bake
+ Bits: 1 a decorator showing land edits gets one rune for the one edit in view, at its new height 20, 2 a second pulse
+ sends nothing, 4 the rune's click names the edit, 8 with land edits hidden nothing is drawn; 15 is all.
+  bld-runes : Integer -> Integer
+  bld-runes (unused) = let s = gld-new 0
+    in let set = gld-set s 1451 1530 #00A8 20 1
+    in let o = gmo-new 0
+    in let row = gmo-show o 7 4242 gmo-land
+    in let me = WorldObject { serial = 4242, kind = 1, x = 1450, y = 1530, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 10 }
+    in let first = gmo-view o None [] s bld-map 7 me
+    in let rune = if list-length first == 1 & gp-u32 (list-at first 0) 3 == gmo-serial gmo-land-base 1451 1530 then 1 else 0
+    in let quiet = if list-length (gmo-view o None [] s bld-map 7 me) == 0 then 2 else 0
+    in let named = when gmo-click o None None s 7 (gp-put32 [9] (gmo-serial gmo-land-base 1451 1530))
+      is None -> 0
+      is Just (r) -> if r.note == "overlay:name" & list-length r.packets == 1 then 4 else 0
+    in let o2 = gmo-new 0
+    in let other = gmo-show o2 7 4242 gmo-spawns
+    in let hidden = if list-length (gmo-view o2 None [] s bld-map 7 me) == 0 then 8 else 0
+    in rune + quiet + named + hidden
+  bvt-land : Integer -> [Console] Integer
+  bvt-land (unused) = act
+    n <- bvt-check ("decorator land: names and hex resolve, unknown and non-land art refused (code " & show (bld-names 0) & ")") (bld-names 0 == 31)
+    s <- bvt-check ("decorator land: the edit table sets, overwrites, sweeps and grows by tile (code " & show (bld-store 0) & ")") (bld-store 0 == 31)
+    o <- bvt-check ("decorator land: paint, raise, keep-art, flatten, drop and the bake's drop under the brush (code " & show (bld-ops 0) & ")") (bld-ops 0 == 63)
+    r <- bvt-check ("decorator land: a pending edit shows once as a rune at its height, only while land edits are shown (code " & show (bld-runes 0) & ")") (bld-runes 0 == 15)
+    n + s + o + r
+  end

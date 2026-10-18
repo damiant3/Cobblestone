@@ -1,0 +1,161 @@
+Chapter: AdminLoginPage
+  cites WebApp chapter WebRuntime
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
+
+ The keeper's login page in Codex DOM (AdminPanel.md, "Graphs and the page in Codex DOM"; the wire protocol is
+ AdminPanel.md, "Browser protocol"). It derives the role's request and response keys from the typed key, reserves a
+ sequence range, seals each request (AES-GCM, nonce = 4 zero bytes then the sequence as 8 little-endian bytes) and
+ opens each reply. After panel-open it mounts the returned panel page in the sandboxed frame and serves the frame's
+ requests one at a time.
+  al-css : Text = ":root{font-family:system-ui,sans-serif;color:#23312c;background:#f3f1e8;line-height:1.5}*{box-sizing:border-box}body{margin:0}"
+    & "header{background:#153c32;color:#fff;padding:22px 24px;display:flex;align-items:center;justify-content:space-between}header b{font:28px Georgia,serif;letter-spacing:2px}"
+    & "header span{font-size:12px;letter-spacing:1.5px;color:#d3d5bb}main{max-width:1180px;margin:24px auto;padding:0 24px}"
+    & ".login{max-width:510px;margin:60px auto;padding:32px;background:#fff;border:1px solid #d4d9cd}h1{font:400 32px Georgia,serif;margin:0 0 8px}"
+    & ".muted{color:#647068}label{display:block;font-size:13px;margin:16px 0 6px}input{width:100%;padding:10px 12px;border:1px solid #bfc8bd;border-radius:3px;font:inherit}"
+    & "button{width:100%;margin-top:22px;border:1px solid #234c3e;background:#234c3e;color:#fff;padding:10px 16px;border-radius:3px;font:inherit;cursor:pointer}"
+    & "#message{white-space:pre-wrap;padding:12px 16px;border-left:3px solid #ae9140;background:#fff;margin-bottom:20px}#message:empty{display:none}[hidden]{display:none!important}@media(max-width:460px){main{padding:0 8px;margin-top:12px}.login{padding:24px;margin-top:30px}}"
+
+  al-el : Text, Text, Text -> DomElement
+  al-el (tag) (id) (text) = dom-set-text (dom-set-attr (dom-create tag) "id" id) text
+  al-note : Text -> Integer
+  al-note (text) = let shown = dom-set-text (dom-get "message") text in 0
+  al-fail : Text -> Integer
+  al-fail (text) = let busy = state-set "busy" 0 in let open = dom-set-attr (dom-get "connect") "aria-busy" "false" in al-note text
+
+ Hex and the nonce.
+  al-hex-ok : Text, Integer, Integer -> Boolean
+  al-hex-ok (t) (i) (n) = if i >= text-length t then i == n else is-hex-digit (char-at t i) & al-hex-ok t (i + 1) n
+  al-byte-hex : Integer -> Text
+  al-byte-hex (b) = substring "0123456789abcdef" (b / 16) 1 & substring "0123456789abcdef" (int-mod b 16) 1
+  al-le64 : Integer, Integer -> Text
+  al-le64 (v) (i) = if i >= 8 then "" else al-byte-hex (int-mod v 256) & al-le64 (v / 256) (i + 1)
+  al-nonce : Integer -> Text
+  al-nonce (sequence) = "00000000" & al-le64 sequence 0
+  al-lines : Text -> List Text
+  al-lines (t) = text-split t "\n"
+
+ Login: role 4 for the owner key, else UOAIXGM1:<role>:<key>.
+  al-connect : Text -> Integer
+  al-connect (unused) = if state-get "busy" == 1 then 0
+    else let typed = text-trim (dom-get-value (dom-get "key"))
+    in let parts = text-split typed ":"
+    in let gm = list-length parts == 3 & list-at parts 0 == "UOAIXGM1"
+    in let role = if gm then text-to-int (list-at parts 1) else 4
+    in let key = if gm then list-at parts 2 else typed
+    in if role < 4 | role > 132 | not (al-hex-ok key 0 64) then al-note "Invalid administrator credential"
+    else if crypto-ready 0 /= 1 then al-note "A secure browser connection is required. The local development address is supported."
+    else let busy = state-set "busy" 1
+    in let r = state-set "role" role
+    in let k = state-set-text "raw" key
+    in let cleared = dom-set-value (dom-get "key") ""
+    in let said = al-note "Authenticating..."
+    in fetch-with-then "/handshake" "GET" "{}" "" al-hello
+  al-hello : Text -> Integer
+  al-hello (text) = let f = al-lines text
+    in if list-length f /= 2 | list-at f 0 /= "UOAIX1" | not (al-hex-ok (list-at f 1) 0 64) then al-fail "Invalid shard handshake"
+    else let e = state-set-text "epoch" (list-at f 1)
+    in crypto-hmac-then (state-get-text "raw") ("UOAIX1/request/" & show (state-get "role") & "/" & list-at f 1) al-incoming
+  al-incoming : Text -> Integer
+  al-incoming (key) = if text-starts-with key "!" then al-fail key
+    else let a = state-set-text "in" key
+    in crypto-hmac-then (state-get-text "raw") ("UOAIX1/response/" & show (state-get "role") & "/" & state-get-text "epoch") al-outgoing
+  al-outgoing : Text -> Integer
+  al-outgoing (key) = if text-starts-with key "!" then al-fail key
+    else let a = state-set-text "out" key
+    in let wiped = state-set-text "raw" ""
+    in al-reserve (\done -> al-request "{\"command\":\"panel-open\",\"codex\":1}" al-opened)
+
+ Reserve a range of 1024 sequence numbers: probe the issued ceiling, verify it, reserve it, verify the receipt.
+  al-reserve : (Integer -> Integer) -> Integer
+  al-reserve (next) = let challenge = crypto-random-hex 32
+    in let c = state-set-text "challenge" challenge
+    in crypto-hmac-then (state-get-text "in") ("UOAIX1/sequence/" & show (state-get "role") & "/" & challenge) (\tag -> fetch-with-then "/handshake" "POST" "{}" (show (state-get "role") & "\n" & challenge & "\n" & tag) (\t -> al-probed t next))
+  al-probed : Text, (Integer -> Integer) -> Integer
+  al-probed (text) (next) = let p = al-lines text
+    in if list-length p /= 2 | text-length (list-at p 0) < 1 | text-length (list-at p 0) > 9 then al-fail "Authentication refused"
+    else let floor = list-at p 0
+    in let label = "UOAIX1/sequence/" & show (state-get "role") & "/" & state-get-text "challenge"
+    in crypto-hmac-verify-then (state-get-text "out") (list-at p 1) (label & "/" & floor) (\ok -> if ok /= "1" then al-fail "Handshake authentication failed" else al-reserve-floor floor next)
+  al-reserve-floor : Text, (Integer -> Integer) -> Integer
+  al-reserve-floor (floor) (next) = if text-to-int floor > 999998975 then al-fail "Sequence exhausted"
+    else let label = "UOAIX1/reserve/" & show (state-get "role") & "/" & state-get-text "challenge" & "/" & floor
+    in crypto-hmac-then (state-get-text "in") label (\tag -> fetch-with-then "/handshake" "POST" "{}" (show (state-get "role") & "\n" & state-get-text "challenge" & "\n" & floor & "\n" & tag) (\t -> al-reserved t floor label next))
+  al-reserved : Text, Text, Text, (Integer -> Integer) -> Integer
+  al-reserved (text) (floor) (label) (next) = let p = al-lines text
+    in if list-length p /= 2 | list-at p 0 /= floor then al-fail "Sequence reservation refused"
+    else crypto-hmac-verify-then (state-get-text "out") (list-at p 1) label (\ok -> if ok /= "1" then al-fail "Sequence reservation refused"
+      else let s = state-set "seq" (text-to-int floor) in let l = state-set "lease" (text-to-int floor + 1024) in next 0)
+
+ One sealed request; the session joins the command's JSON object.
+  al-with-session : Text -> Text
+  al-with-session (command) = let body = text-trim command
+    in let inner = substring body 1 (text-length body - 2)
+    in "{" & inner & (if text-length (text-trim inner) == 0 then "" else ",") & "\"session\":" & show (state-get "session") & "}"
+  al-request : Text, (Text -> Integer) -> Integer
+  al-request (command) (reply) = if state-get "seq" >= state-get "lease" then al-reserve (\done -> al-request command reply)
+    else if state-get "seq" >= 999999999 then reply "{\"error\":\"session sequence exhausted\"}"
+    else let seq = state-get "seq" + 1
+    in let s = state-set "seq" seq
+    in let body = al-with-session command
+    in if text-length body > 2048 then reply "{\"error\":\"request too large\"}"
+    else crypto-seal-then (state-get-text "in") (al-nonce seq) ("UOAIX1/request/" & show (state-get "role") & "/" & show seq) body (\sealed -> al-send sealed seq reply)
+  al-send : Text, Integer, (Text -> Integer) -> Integer
+  al-send (sealed) (seq) (reply) = if text-starts-with sealed "!" then reply ("{\"error\":" & "\"seal refused\"}")
+    else let p = al-lines sealed
+    in fetch-with-then "/admin" "POST" "{}" (show (state-get "role") & "\n" & show seq & "\n" & list-at p 0 & "\n" & list-at p 1) (\t -> al-open t seq reply)
+  al-open : Text, Integer, (Text -> Integer) -> Integer
+  al-open (text) (seq) (reply) = let p = al-lines text
+    in if list-length p /= 2 then reply "{\"error\":\"Request refused. Reconnect and review the action log before repeating an action.\"}"
+    else crypto-open-then (state-get-text "out") (al-nonce seq) ("UOAIX1/response/" & show (state-get "role") & "/" & show seq) (list-at p 0) (list-at p 1) (al-opened-reply reply)
+  al-opened-reply : (Text -> Integer), Text -> Integer
+  al-opened-reply (reply) (plain) = if text-starts-with plain "!" then reply "{\"error\":\"Invalid response\"}" else reply plain
+
+ panel-open answers the session and the panel page; the page runs in the frame, whose requests are served one at a time.
+  al-opened : Text -> Integer
+  al-opened (answer) = let o = json-parse-obj answer
+    in let error = json-obj-field o "error"
+    in if text-length error > 0 then al-fail error
+    else let s = state-set "session" (text-to-int (json-obj-field o "session"))
+    in let page = json-obj-field o "page"
+    in if text-length page == 0 then al-fail "This shard serves no Codex panel page yet."
+    else let hidden = dom-set-style (dom-get "login") "display" "none"
+    in let said = al-note ("Authenticated as " & json-obj-field o "actor" & ".")
+    in let served = if state-get "served" == 1 then 0 else let once = state-set "served" 1 in frame-serve al-serve
+    in frame-mount "panel" page
+  al-serve : Text, (Text -> Integer) -> Integer
+  al-serve (command) (reply) = if state-get "serving" == 1 then reply "{\"error\":\"busy\"}"
+    else let s = state-set "serving" 1
+    in al-request command (\answer -> let free = state-set "serving" 0 in let r = reply answer in if text-contains command "\"panel-close\"" then al-closed answer else r)
+ After panel-close the keys, the session and the frame are dropped whether or not the server confirmed the close.
+  al-closed : Text -> Integer
+  al-closed (answer) = let error = json-obj-field (json-parse-obj answer) "error"
+    in let a = state-set-text "in" ""
+    in let b = state-set-text "out" ""
+    in let s = state-set "session" 0
+    in let q = state-set "seq" 0
+    in let l = state-set "lease" 0
+    in let busy = state-set "busy" 0
+    in let frame = dom-set-html (dom-get "panel") ""
+    in let shown = dom-set-style (dom-get "login") "display" ""
+    in al-note (if text-length error > 0 then "Local panel cleared. Server close was not confirmed: " & error else "Administrator session closed.")
+
+  opening : [Console] Integer
+  opening = let app = dom-get "app"
+    in let style = al-add app (dom-set-text (dom-create "style") al-css)
+    in let head = al-add app (dom-append (dom-append (dom-create "header") (dom-set-text (dom-create "b") "UOAIX")) (dom-set-text (dom-create "span") "THE KEEPER'S DESK"))
+    in let main = al-add app (al-el "main" "main" "")
+    in let msg = al-add main (dom-set-attr (dom-set-attr (al-el "div" "message" "") "role" "status") "aria-live" "polite")
+    in let login = al-add main (dom-add-class (al-el "section" "login" "") "login")
+    in let h = al-add login (dom-set-text (dom-create "h1") "Enter the keeper's desk")
+    in let p = al-add login (dom-add-class (dom-set-text (dom-create "p") "Use the owner key or your personal GM credential. World reports and controls become available after authentication.") "muted")
+    in let l = al-add login (dom-set-attr (dom-set-text (dom-create "label") "Administrator key") "for" "key")
+    in let k = al-add login (dom-on-key (dom-set-attr (dom-set-attr (dom-set-attr (al-el "input" "key" "") "type" "password") "autocomplete" "off") "placeholder" "Owner key or UOAIXGM1 credential") al-key)
+    in let b = al-add login (dom-on-click (al-el "button" "connect" "Authenticate") al-connect)
+    in let frame = al-add main (al-el "div" "panel" "")
+    in 0
+  al-add : DomElement, DomElement -> DomElement
+  al-add (parent) (child) = let a = dom-append parent child in child
+  al-key : Text -> Integer
+  al-key (key) = if key == "Enter" then al-connect "" else 0

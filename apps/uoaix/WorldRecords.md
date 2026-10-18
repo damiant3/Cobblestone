@@ -81,7 +81,6 @@ explicit depot kernel and compare its entire filtered output against
 `proofs/WorldRecordsProof.expected`, removing CR only. The proof fills an
 8192-slot table with no retained transient heap between inserts, and grades
 capacity, namespaces, generation reuse, references, cycles and refusals.
-The population is synthetic storage acceptance, not a populated Britain
-or stage-2 gameplay acceptance. `WorldIndexProof.codex` adds layer, child and
+`WorldIndexProof.codex` adds layer, child and
 tile maintenance, page recycling, snapshot rebuild and rollback checks.
 The table alone is volatile; WorldDisk and the encompassing codecs own storage.

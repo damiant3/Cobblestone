@@ -1,0 +1,158 @@
+Chapter: BvtGuardWard
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ The guard campaign (Damian's live reports D-20, D-21, D-23, D-24, 2026-10-13) on BvtWorkerDay's town, every guard but
+ the first two parked at 1500,1750 on. Bits: 1 a struck guard turns on its striker, 2 the striker is the focus, 4 a guard
+ 30 tiles off does not join, 8 one 4 tiles off joins; 16 a falling guard's death draws 0xAF, 32 a male death sound, 64
+ its corpse's 0x89 lists one row per worn layer, 128 every copy is unliftable after the draw; 256 a corpse keeps its
+ facing past the carved bit, 512 death sounds by body; 1024 a struck townsperson's killing is no crime without an
+ assault, 2048 is murder after one; 4096 no guard in sight leaves the cry pending, 8192 a guard in sight raises it;
+ 16384 only a townsperson's death notes a killer. 32767 is all, negative when the scene cannot be built.
+  bgk-move : CompositeGame, Integer, Integer, Integer -> Integer
+  bgk-move (owner) (serial) (x) (y) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> 0
+    is Ok (m) -> when world-update owner.checkpoint.game.world (__record-set (__record-set (__record-set m "x" x) "y" y) "z" 0)
+      is Err (_) -> 0
+      is Ok (_) -> 1
+  bgk-mobile : CompositeGame, Integer, Integer -> Integer
+  bgk-mobile (owner) (x) (y) = when world-create owner.checkpoint.game.world (gs-mobile 0 x y 0 400 1002) is Err (_) -> 0 is Ok (serial) -> serial
+  bgk-park : CompositeGame, CivicLive, Integer -> Integer
+  bgk-park (owner) (c) (i) = if i >= list-length c.guards then 0
+    else bgk-move owner (list-at c.guards i).serial (1500 + i) 1750 + bgk-park owner c (i + 1)
+  bgk-calm : CompositeGame, Integer -> Integer
+  bgk-calm (owner) (serial) = when cb-ensure owner.combat owner.checkpoint.game serial is Err (_) -> 0 is Ok (a) -> cb-stop owner.combat a
+  bgk-at : List (List Integer), Integer, Integer -> Integer
+  bgk-at (packets) (op) (i) = if i >= list-length packets then -1
+    else if list-length (list-at packets i) > 0 & list-at (list-at packets i) 0 == op then i else bgk-at packets op (i + 1)
+  bgk-worn : CompositeGame, Integer -> Integer
+  bgk-worn (owner) (serial) = if serial == 0 then 0
+    else let layer = if gsi-known owner.items serial then (gsi-meta owner.items serial).layer else 0
+    in (if layer >= 1 & layer <= 24 & layer /= 21 then 1 else 0) + bgk-worn owner (world-next-sibling owner.items.world serial)
+  bgk-fixed : CompositeGame, Integer -> Integer
+  bgk-fixed (owner) (serial) = if serial == 0 then 0
+    else let fixed = when world-get owner.items.world serial
+      is Err (_) -> False
+      is Ok (o) -> o.health == gmb-shown & gsi-known owner.items serial & not (gsi-meta owner.items serial).movable
+    in (if fixed then 1 else 0) + bgk-fixed owner (world-next-sibling owner.items.world serial)
+  bgk-corpse : WorldTable, Integer -> Integer
+  bgk-corpse (world) (serial) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.graphic == 8198 & o.amount == 400 then serial else bgk-corpse world (world-tile-next world serial)
+  bgk-kill : CompositeGame, Integer -> Result (List (List Integer)) Text
+  bgk-kill (owner) (serial) = let game = owner.checkpoint.game
+    in when cb-ensure owner.combat game serial
+      is Err (e) -> Err e
+      is Ok (a) -> when world-get game.world serial
+        is Err (e) -> Err e
+        is Ok (m) -> let fell = __record-set (__record-set (__record-set m "x" 1430) "y" 1600) "health" 0
+          in when world-update game.world fell
+            is Err (e) -> Err e
+            is Ok (_) -> cb-die owner.combat game (gn-input 1) 0 a fell
+  bgk-defend : CompositeGame, CivicLive, GameWorldSpawn -> Integer
+  bgk-defend (owner) (c) (s) = let g0 = (list-at c.guards 0).serial
+    in let g1 = (list-at c.guards 1).serial
+    in let striker = bgk-mobile owner 1431 1600
+    in let placed = bgk-move owner g0 1430 1600 + bgk-move owner g1 1460 1600
+    in if striker == 0 | placed /= 2 then 0 - 3
+    else let swung = cg-swings owner striker g0 False
+    in let back = if cg-fights owner g0 striker then 1 else 0
+    in let named = if c.focus == striker & c.focus-by == g0 then 2 else 0
+    in let far = cg-focus-join owner c s (list-at c.guards 1)
+    in let stayed = if cg-fights owner g1 striker then 0 else 4
+    in let near = bgk-move owner g1 1434 1600
+    in let joined = cg-focus-join owner c s (list-at c.guards 1)
+    in back + named + stayed + (if cg-fights owner g1 striker then 8 else 0)
+  bgk-death : CompositeGame, CivicLive -> Integer
+  bgk-death (owner) (c) = let p = list-at c.guards 0
+    in let worn = bgk-worn owner (world-first-child owner.items.world p.serial)
+    in let spot = list-at p.route p.waypoint
+    in if worn == 0 | (spot.x == 1430 & spot.y == 1600) then 0 - 4
+    else when bgk-kill owner p.serial
+      is Err (_) -> 0 - 5
+      is Ok (packets) -> let world = owner.checkpoint.game.world
+        in let death = bgk-at packets #AF 0
+        in let acted = if death >= 0 & gp-u32 (list-at packets death) 1 == p.serial then 16 else 0
+        in let sound = bgk-at packets #54 0
+        in let cried = if sound >= 0 & gp-u16 (list-at packets sound) 2 >= #015A & gp-u16 (list-at packets sound) 2 <= #015D then 32 else 0
+        in when world-get world (bgk-corpse world (world-tile-first world 1430 1600))
+          is Err (_) -> acted + cried
+          is Ok (body) -> let drawn = gmb-rewrite owner.items [cbp-corpse body 400 (cb-corpse-facing body.health)] 0 []
+            in let equip = bgk-at drawn #89 0
+            in let rows = if equip < 0 then 0 else (list-length (list-at drawn equip) - 8) / 5
+            in acted + cried + (if rows == worn then 64 else 0) + (if bgk-fixed owner (world-first-child world body.serial) == worn then 128 else 0)
+  bgk-units : Integer -> Integer
+  bgk-units (unused) = (if cb-corpse-facing (bit-or (2 + 5 * 8) 1) == 5 & cb-corpse-facing 2 == 0 then 256 else 0)
+    + (if cb-death-sound #C9 7 == 0 & cb-death-sound 401 6 == #0152 & cb-death-sound 400 5 == #015B then 512 else 0)
+  bgk-player : CompositeGame, Integer, Integer -> Integer
+  bgk-player (owner) (serial) (person) = when world-create owner.checkpoint.game.world (gs-item serial #0E75 0)
+    is Err (_) -> 0 - 1
+    is Ok (pack) -> gv-add-player owner.vendor serial (cg-crew-actor owner person) pack
+  bgk-cry : CompositeGame, CivicLive, WalkMap -> Integer
+  bgk-cry (owner) (c) (britain) = let k = bgk-mobile owner 1440 1600
+    in let k2 = bgk-mobile owner 1440 1603
+    in let g1 = (list-at c.guards 1).serial
+    in let placed = bgk-move owner g1 1470 1600 + bgk-move owner c.mayor 1441 1600 + bgk-move owner (list-at c.guards 0).serial 1499 1750
+    in let p1 = if k == 0 then 0 - 1 else bgk-player owner k 77011
+    in let p2 = if k2 == 0 then 0 - 1 else bgk-player owner k2 77012
+    in if placed /= 3 | p1 < 0 | p2 < 0 then 0 - 6
+    else let still = bgk-calm owner g1 + bgk-calm owner c.mayor
+    in let turned = cg-attack owner c.mayor k2
+    in let excused = if turned == 1 & cg-crime owner k2 c.mayor 3 == 0 then 1024 else 0
+    in let calmed = bgk-calm owner c.mayor
+    in let assault = cg-crime owner k c.mayor 2
+    in let back = cg-attack owner c.mayor k
+    in let murder = cg-crime owner k c.mayor 3
+    in let charged = if assault > 0 & back == 1 & murder > 0 then 2048 else 0
+    in if murder < 1 then excused + charged
+    else let row = cb-zeroed cg-dead-bytes
+    in let pending = poke-qword row 32 k
+    in when world-create owner.checkpoint.game.world (WorldObject { serial = 0, kind = 2, x = 1442, y = 1600, z = 0, graphic = 8198, hue = 0, container = 0, amount = 400, health = 0 })
+      is Err (_) -> excused + charged
+      is Ok (made) -> when world-get owner.checkpoint.game.world made
+        is Err (_) -> excused + charged
+        is Ok (body) -> let quiet = cg-dead-cry owner c britain body row
+          in let unheard = if peek-qword row 32 == k then 4096 else 0
+          in let near = bgk-move owner g1 1444 1600
+          in let heard = cg-dead-cry owner c britain body row
+          in let held = lw-case c.law murder
+          in let raised = if peek-qword row 32 == 0 & held.known & held.guard > 0 then 8192 else 0
+          in excused + charged + unheard + raised + bgk-noted owner c k
+  bgk-noted : CompositeGame, CivicLive, Integer -> Integer
+  bgk-noted (owner) (c) (killer) = let plain = bgk-mobile owner 1450 1610
+    in let first = cg-dead-free owner.dead 0
+    in let a = cg-dead-note owner plain killer
+    in let plain-row = if first < 0 then 0 - 1 else peek-qword (owner.dead + first * cg-dead-bytes) 32
+    in let second = cg-dead-free owner.dead 0
+    in let b = cg-dead-note owner c.mayor killer
+    in let mayor-row = if second < 0 then 0 else peek-qword (owner.dead + second * cg-dead-bytes) 32
+    in if plain /= 0 & first >= 0 & second >= 0 & plain-row == 0 & mayor-row == killer then 16384 else 0
+  bgk-checks : Integer -> Integer
+  bgk-checks (unused) = when bwd-founded 0
+    is Err (_) -> 0 - 1
+    is Ok (owner) -> let attached = when owner.spawns is Just (_) -> Ok 0 is None -> cg-spawn-attach owner
+      in when owner.civic
+      is None -> 0 - 2
+      is Just (c) -> when owner.spawns
+        is None -> 0 - 2
+        is Just (s) -> when owner.town-map
+          is None -> 0 - 2
+          is Just (britain) -> if list-length c.guards < 2 | c.mayor == 0 then 0 - 2
+            else let parked = bgk-park owner c 2
+            in let d = bgk-defend owner c s
+            in if d < 0 then d
+            else let e = bgk-death owner c
+            in if e < 0 then e
+            else let f = bgk-cry owner c britain
+            in if f < 0 then f else d + e + f + bgk-units 0
+  bvt-guard-ward : Integer -> [Console] Integer
+  bvt-guard-ward (unused) = act
+    n <- bgk-checks 0
+    a <- bvt-check ("D-20 a struck guard turns on its striker and a guard in sight joins, one out of sight does not (code " & show n & ")") (n >= 0 & bit-and n 15 == 15)
+    b <- bvt-check ("D-21 a falling guard dies with the death action and a death sound (code " & show n & ")") (n >= 0 & bit-and n 48 == 48 & bit-and n 512 == 512)
+    d <- bvt-check ("D-24 a rising guard's corpse is drawn dressed in unliftable copies and keeps its facing (code " & show n & ")") (n >= 0 & bit-and n 448 == 448)
+    e <- bvt-check ("D-23 a killing after an assault is murder, a guard in sight of the corpse raises the cry (code " & show n & ")") (n >= 0 & bit-and n 31744 == 31744)
+    a + b + d + e
+  end

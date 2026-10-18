@@ -1,0 +1,89 @@
+Chapter: BvtCopperReturn
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bcop-owner : Integer -> Result CompositeGame Text
+  bcop-owner (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> cg-founded game vendor (gsi-new game.world)
+  bcop-sync : EuCurrency -> Integer
+  bcop-sync (x) = let a = __record-set x "copper-seq" x.copper.sequence
+    in let b = __record-set x "silver-seq" x.silver.sequence
+    in let c = __record-set x "gold-seq" x.world.money.sequence in 0
+ The first shop holds only copper coins; the treasury holds reserve silver (the rest moved to a new purse). Answers
+ the shop's copper after a trade-up, plus 1000 times its silver, plus 1000000 when any silver was decreed; -1 when the
+ scenario cannot be built.
+  bcop-after : Integer, Integer -> Integer
+  bcop-after (copper) (reserve) = when bcop-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> let v = owner.vendor
+      in let x = v.currency
+      in let actor = (list-at v.vendors 0).actor
+      in let p = (ep-actor x.world actor).purse
+      in let q = eu-open x 2 7002
+      in let a = em-reclaim x.copper p (em-purse x.copper p).coin
+      in let b = em-reclaim x.silver p (em-purse x.silver p).coin
+      in let d = em-reclaim x.world.money p (em-purse x.world.money p).coin
+      in let e = em-decree x.copper copper
+      in let f = em-payout x.copper p copper
+      in let held = (em-purse x.silver 1).coin
+      in let g = if held > 0 & q > 0 then em-payout x.silver q held else 0
+      in let h = if reserve > 0 then em-decree x.silver reserve else 0
+      in let synced = bcop-sync x
+      in if q < 0 | (em-purse x.copper p).coin /= copper | (em-purse x.silver p).coin /= 0 | (em-purse x.silver 1).coin /= reserve then -1
+      else let issued = x.silver.issued
+      in let traded = bb-trade-up x actor
+      in (em-purse x.copper p).coin + 1000 * (em-purse x.silver p).coin + (if x.silver.issued > issued then 1000000 else 0)
+ The first shop holds one gold and nothing else; the treasury holds reserve silver. The shop breaks the gold into
+ silver. Answers 1 when the shop holds a gold's worth of silver, plus 10 when the treasury keeps what is left of its
+ reserve, plus 100 when gold issued fell by one, plus 1000 when any silver was decreed, plus 10000 when a gold or
+ silver purse no longer balances against its ledger rows and issued; -1 when not built, -2 when the break is refused.
+  bcop-break : Integer -> Integer
+  bcop-break (reserve) = when bcop-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> let v = owner.vendor
+      in let x = v.currency
+      in let p = (ep-actor x.world (list-at v.vendors 0).actor).purse
+      in let q = eu-open x 2 7002
+      in let a = em-reclaim x.copper p (em-purse x.copper p).coin
+      in let b = em-reclaim x.silver p (em-purse x.silver p).coin
+      in let d = em-reclaim x.world.money p (em-purse x.world.money p).coin
+      in let e = em-decree x.world.money 1
+      in let f = em-payout x.world.money p 1
+      in let held = (em-purse x.silver 1).coin
+      in let g = if held > 0 & q > 0 then em-payout x.silver q held else 0
+      in let h = if reserve > 0 then em-decree x.silver reserve else 0
+      in let synced = bcop-sync x
+      in if q < 0 | (em-purse x.world.money p).coin /= 1 | (em-purse x.silver p).coin /= 0 | (em-purse x.silver 1).coin /= reserve then -1
+      else let gold = x.world.money.issued
+      in let decreed = bcop-decrees x 0 0
+      in let broke = eu-exchange x p 3 1 2
+      in if broke < 0 then -2
+      else let ratio = eu-unit x 3 / eu-unit x 2
+      in (if (em-purse x.silver p).coin == ratio then 1 else 0)
+        + (if (em-purse x.silver 1).coin == (if reserve >= ratio then reserve - ratio else 0) then 10 else 0)
+        + (if x.world.money.issued + 1 == gold then 100 else 0)
+        + (if bcop-decrees x 0 0 > decreed then 1000 else 0) + (if em-balanced x.world.money 1 & em-balanced x.silver 1 then 0 else 10000)
+  bcop-decrees : EuCurrency, Integer, Integer -> Integer
+  bcop-decrees (x) (i) (sum) = if i == x.count then sum
+    else let e = list-at x.events i in bcop-decrees x (i + 1) (if e.kind == 12 then sum + e.party else sum)
+  bvt-copper-return : Integer -> [Console] Integer
+  bvt-copper-return (unused) = act
+    n <- bcop-after 35 10
+    m <- bcop-after 35 2
+    k <- bcop-after 35 0
+    j <- bcop-after 9 10
+    a <- bvt-check ("a shop's 35 copper trade up as 3 silver from the treasury, 5 copper kept (UOAIX-213, live 42390; got " & show n & ")") (n == 3005)
+    b <- bvt-check ("a treasury holding 2 silver takes back 20 copper, not none (got " & show m & ")") (m == 2015)
+    c <- bvt-check ("a treasury with no silver takes no copper and decrees none (got " & show k & ")") (k == 35)
+    d <- bvt-check ("9 copper, less than a silver, stay in the purse (got " & show j & ")") (j == 9)
+    r <- bcop-break 0
+    s <- bcop-break 1000
+    e <- bvt-check ("a gold broken while the treasury holds no silver is recoined into a gold's worth of silver, gold issued one less, nothing decreed, and the ledgers balance (UOAIX-213; got " & show r & ")") (r == 111)
+    f <- bvt-check ("a gold broken while the treasury holds 1000 silver is paid from the reserve, nothing recoined (got " & show s & ")") (s == 11)
+    a + b + c + d + e + f
+  end

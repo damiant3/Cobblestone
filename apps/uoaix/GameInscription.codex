@@ -2,6 +2,7 @@ Chapter: GameInscription
   cites Uoaix chapter GameAlchemy
   cites Uoaix chapter MageryResources
   cites Uoaix chapter ActiveSkillsTracking
+  cites Uoaix chapter CraftGump
 
  UOX3 js/skill/inscription.js, source/skills.cpp NewMakeMenu and MakeItem, dfndata/create/inscribe.dfn ITEM 400 to 447
  and dictionary.ENG 778, 865, 921, 984, 985, 1651, 6001, 6019: pen and ink (0x0FBF, 0x0FC0) in the user's pack targets
@@ -65,6 +66,32 @@ Chapter: GameInscription
   ins-spell-menu : Integer, Integer, List Integer -> List Integer
   ins-spell-menu (scroll) (circle) (spells) =
     sip-length (ins-spell-rows spells 0 (as-menu-head scroll (ins-menu + circle + 1) (ins-circle-name circle) (list-length spells)))
+ The craft gump (CraftGump) for a blank scroll: every circle the scribe can inscribe is a category, each ready spell a
+ line with its blank scroll and reagents; a button answers circle x 100 + its place in that circle (from 1), which
+ ins-choice makes directly. No Make Last: the menu is bound to the scroll the scribe targeted.
+  ins-reagent-names : List Text = ["black pearl", "bloodmoss", "garlic", "ginseng", "mandrake root", "nightshade", "spiders' silk", "sulfurous ash"]
+  ins-needs : Integer, Integer, Text -> Text
+  ins-needs (mask) (i) (out) = if i >= 8 then out
+    else ins-needs mask (i + 1) (if bit-and mask (bit-shl 1 i) == 0 then out else out & ", 1 " & list-at ins-reagent-names i)
+  ins-gump-rows : Magery, AsActor, Integer, List Integer, Integer, List Text -> List Text
+  ins-gump-rows (magic) (a) (owner) (circles) (j) (out) = if j >= list-length circles then out
+    else let spells = ins-pick magic a owner (list-at circles j) 0 []
+    in ins-gump-rows magic a owner circles (j + 1) (ins-gump-names spells 0 out)
+  ins-gump-names : List Integer, Integer, List Text -> List Text
+  ins-gump-names (spells) (i) (out) = if i >= list-length spells then out
+    else let spell = list-at spells i in ins-gump-names spells (i + 1) (out & [ins-name spell & ": 1 blank scroll" & ins-needs (mgd-reagents spell) 0 ""])
+  ins-gump-keys : Magery, AsActor, Integer, List Integer, Integer, Boolean, List Integer -> List Integer
+  ins-gump-keys (magic) (a) (owner) (circles) (j) (ids) (out) = if j >= list-length circles then out
+    else let circle = list-at circles j
+    in let n = list-length (ins-pick magic a owner circle 0 [])
+    in ins-gump-keys magic a owner circles (j + 1) ids (ins-gump-fill circle n 1 ids out)
+  ins-gump-fill : Integer, Integer, Integer, Boolean, List Integer -> List Integer
+  ins-gump-fill (circle) (n) (i) (ids) (out) = if i > n then out else ins-gump-fill circle n (i + 1) ids (out & [(if ids then (circle + 1) * 100 + i else circle)])
+  ins-gump : Magery, AsActor, Integer, Integer, List Integer -> List Integer
+  ins-gump (magic) (a) (owner) (scroll) (circles) = let names = ins-gump-rows magic a owner circles 0 []
+    in let cats = ins-gump-keys magic a owner circles 0 False []
+    in let ids = ins-gump-keys magic a owner circles 0 True []
+    in crg-gump-ids scroll ins-menu "Inscription" (crg-labels crg-inscription) names cats ids "" False
   ins-pen-held : GameHarvest, Integer -> Boolean
   ins-pen-held (h) (pack) = if gal-find h.items.world (world-first-child h.items.world pack) #0FBF 2 > 0 then True
     else gal-find h.items.world (world-first-child h.items.world pack) #0FC0 2 > 0
@@ -91,8 +118,8 @@ Chapter: GameInscription
     else let circles = ins-circles magic a me.serial 0 []
     in if list-length circles == 0 then gh-denied "You lack the skill to inscribe any spell in your spellbook."
     else let bound = __record-set request "tool" serial
-    in let expires = __record-set request "expires" (now + gh-ticks 30000)
-    in Ok (Just (gs-reply [ins-circle-menu serial circles] "inscription menu"))
+    in let expires = __record-set request "expires" (now + gh-ticks 120000)
+    in Ok (Just (gs-reply [ins-gump magic a me.serial serial circles] "inscription menu"))
   ins-choice : GameHarvest, ActiveSkills, Magery, AsActor, WorldObject, Integer, GhRequest, List Integer, Integer -> Result (Maybe GameReply) Text
   ins-choice (h) (s) (magic) (a) (me) (pack) (request) (packet) (now) =
     if request.tool == 0 | request.target /= 0 | gp-u32 packet 1 /= request.tool then gh-denied "That menu is no longer active."
@@ -105,6 +132,7 @@ Chapter: GameInscription
     else let refused = ins-check h magic me scroll
     in if text-length refused > 0 then gh-denied refused
     else if not (ins-pen-held h pack) then gh-denied "This must be in your backpack or equipped before it can be used."
+    else if menu == ins-menu & choice > 100 then ins-gump-make h s magic a me pack request scroll (choice / 100 - 1) (int-mod choice 100) now
     else if menu == ins-menu then ins-open-circle h magic a me request scroll choice now
     else let spells = ins-pick magic a me.serial (menu - ins-menu - 1) 0 []
     in if choice > list-length spells then gh-denied "That selection is no longer available."
@@ -117,10 +145,18 @@ Chapter: GameInscription
     in let reopened = __record-set request "tool" scroll
     in let expires = __record-set request "expires" (now + gh-ticks 30000)
     in Ok (Just (gs-reply [ins-spell-menu scroll circle (ins-pick magic a me.serial circle 0 [])] "inscription spells"))
+  ins-gump-make : GameHarvest, ActiveSkills, Magery, AsActor, WorldObject, Integer, GhRequest, Integer, Integer, Integer, Integer -> Result (Maybe GameReply) Text
+  ins-gump-make (h) (s) (magic) (a) (me) (pack) (request) (scroll) (circle) (place) (now) =
+    let spells = if circle < 0 | circle > 5 then [] else ins-pick magic a me.serial circle 0 []
+    in if place < 1 | place > list-length spells then gh-denied "That selection is no longer available."
+    else if now < request.next then gh-denied "You must wait to perform another action."
+    else ins-make h s magic a me pack request scroll (list-at spells (place - 1)) now
+  ins-pen-in : WorldTable, Integer -> Integer
+  ins-pen-in (world) (pack) = let a = gal-find world (world-first-child world pack) #0FBF 2 in if a /= 0 then a else gal-find world (world-first-child world pack) #0FC0 2
   ins-make : GameHarvest, ActiveSkills, Magery, AsActor, WorldObject, Integer, GhRequest, Integer, Integer, Integer -> Result (Maybe GameReply) Text
   ins-make (h) (s) (magic) (a) (me) (pack) (request) (scroll) (spell) (now) =
     if not (mgr-ready magic me.serial (mgd-reagents spell) 0) then gh-denied "You have insufficient resources on hand to do that"
-    else if world-count h.items.world >= h.items.world.capacity then gh-denied "No room for the scroll."
+    else if world-room h.items.world <= 0 then gh-denied "No room for the scroll."
     else let next = __record-set request "next" (now + gh-ticks 3000)
     in let sound = gsi-sound-at h.items me.serial #0249
     in if not (as-roll s a 23 (ins-difficulty (mgd-circle spell))) then Ok (Just (gs-reply (sound & [gal-say "You fail to create the item."]) "inscription failed"))
@@ -128,7 +164,7 @@ Chapter: GameInscription
       is Err (e) -> Err e
       is Ok (spent) -> when gal-take h scroll
         is Err (e) -> Err e
-        is Ok (blank) -> when gal-give h pack (mgd-scroll spell)
+        is Ok (blank) -> when gal-give h (gh-into h pack (ins-pen-in h.items.world pack)) (mgd-scroll spell)
           is Err (e) -> Err e
           is Ok (made) -> Ok (Just (gs-reply (spent & [blank, made] & sound & [gal-say "You create the item and place it in your backpack."])
             ("inscription made spell=" & show spell)))

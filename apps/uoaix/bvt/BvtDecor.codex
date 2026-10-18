@@ -1,0 +1,47 @@
+Chapter: BvtDecor
+  cites Uoaix chapter Decorator
+  cites Uoaix chapter CompositePaging
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter BvtCheck
+
+  bvt-decor-filled : Integer -> DcState
+  bvt-decor-filled (unused) = let s = dc-new 0
+    in let a = dc-add s 1001 7
+    in let b = dc-add s 1002 7
+    in let c = dc-add s 1003 9
+    in let d = dc-set-mark s 1002 True in s
+  bvt-decor-removal : Integer -> DcState
+  bvt-decor-removal (unused) = let s = dc-new 0
+    in let a = dc-add s 1001 7
+    in let b = dc-add s 1002 7
+    in let c = poke-qword s.rows (dc-row-bytes + 16) 2 in s
+  bvt-decor-round : DcState -> DcState
+  bvt-decor-round (s) = let buf = alloc-bytes (dc-tail-size s)
+    in let written = dc-write-tail s buf
+    in let fresh = dc-new 0
+    in let read = dc-read-tail fresh buf (dc-tail-length buf (dc-tail-size s)) in fresh
+  bvt-decor : Integer -> [Console] Integer
+  bvt-decor (unused) = act
+    s <- bvt-decor-filled 0
+    back <- bvt-decor-round s
+    a <- bvt-check "a decorator row is found, marked and counted (dc-add, dc-set-mark, dc-marked-count)" (s.count == 3 & dc-find s 1003 0 == 2 & dc-marked s 1 & dc-marked-count s 0 0 == 1 & dc-account s 2 == 9)
+    b <- bvt-check "the decorator save tail reads back every row and mark (dc-write-tail, dc-read-tail)" (back.count == 3 & dc-serial back 1 == 1002 & dc-marked back 1 & not (dc-marked back 0) & dc-account back 2 == 9)
+    grown <- dc-grow-to s 256
+    c <- bvt-check "growing the decorator table keeps its rows (dc-grow-to)" (s.room == 256 & s.count == 3 & dc-serial s 2 == 1003 & dc-marked s 1)
+    dropped <- dc-drop s 1001
+    d <- bvt-check "removing a decoration drops its row and keeps the others (dc-drop)" (dropped == 0 & s.count == 2 & dc-find s 1001 0 < 0 & dc-find s 1002 0 >= 0 & dc-find s 1003 0 >= 0)
+    e <- bvt-check "a serial that is not a decoration is refused for mark and drop" (dc-set-mark s 4242 True < 0 & dc-drop s 4242 < 0 & dc-marked-count s 0 0 == 1)
+    f <- bvt-check "a decorator tail claiming more rows than its room is refused (dc-tail-length)" (let buf = alloc-bytes 64 in let p = poke-qword buf 0 100 in dc-tail-length buf 64 < 0)
+    g <- bvt-check "[decor is a decorator request and [decorx is not (cp-decor-request)" (cp-decor-request [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 108, 105, 115, 116, 0] & not (cp-decor-request [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 120, 0]))
+    h <- bvt-check "[decor place names the place subcommand and not list (cp-sub)" (cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 112, 108, 97, 99, 101, 32, 48, 70, 66, 49, 0] cp-dc-place & not (cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 112, 108, 97, 99, 101, 0] cp-dc-list))
+    i <- bvt-check "the decorate power is bit 8192 and an unknown action has none (gm-power)" (gm-power "decorate" == 8192 & gm-power "decorator" == 0)
+    j <- bvt-check "a 0x7D answer to the decorator menu (0xDC00) is the decorator's; magery's 0xA020 and a short packet are not (cp-decor-choice-request)" (cp-decor-choice-request [#7D, 0, 0, 0, 1, #DC, 0, 0, 2, 0, 0, 0, 0] & not (cp-decor-choice-request [#7D, 0, 0, 0, 1, #A0, #20, 0, 2, 0, 0, 0, 0]) & not (cp-decor-choice-request [#7D, 0, 0, 0, 1, #DC, 0, 0, 2]))
+    k <- bvt-check "the decorator menu lists eight entries, each with an icon (cp-decor-entries, cp-decor-icons)" (list-length cp-decor-entries == 8 & list-length cp-decor-icons == 8)
+    l <- bvt-check "[decor set splits the story and set names at the space and the end (cp-word-end)" (cp-word-end [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 115, 101, 116, 32, 102, 97, 105, 114, 32, 115, 116, 97, 108, 108, 0] 19 == 23 & cp-word-end [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 115, 101, 116, 32, 102, 97, 105, 114, 32, 115, 116, 97, 108, 108, 0] 24 == 29 & cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 115, 101, 116, 32, 102, 0] cp-dc-set & not (cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 115, 101, 116, 120, 0] cp-dc-set))
+    r <- bvt-decor-removal 0
+    m <- bvt-check "a removal row is no bake placement and refuses a mark, which leaves it a removal; a plain row is no removal (dc-removal, dc-set-mark)" (dc-removal r 1 & not (dc-marked r 1) & dc-set-mark r 1002 True < 0 & dc-removal r 1 & dc-marked-count r 0 0 == 0 & not (dc-removal r 0) & not (dc-removal r (0 - 1)) & dc-set-mark r 1001 True == 0 & dc-marked r 0)
+    rback <- bvt-decor-round r
+    n <- bvt-check "a removal mark survives the save tail (dc-write-tail, dc-read-tail)" (rback.count == 2 & dc-removal rback 1 & not (dc-removal rback 0))
+    o <- bvt-check "[decor unstatic names the unstatic subcommand; unmark and [decor unstaticx do not (cp-sub)" (cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 117, 110, 115, 116, 97, 116, 105, 99, 0] cp-dc-unstatic & not (cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 117, 110, 109, 97, 114, 107, 0] cp-dc-unstatic) & not (cp-sub [3, 0, 0, 0, 0, 0, 0, 0, 91, 100, 101, 99, 111, 114, 32, 117, 110, 115, 116, 97, 116, 105, 99, 120, 0] cp-dc-unstatic))
+    a + b + c + d + e + f + g + h + i + j + k + l + m + n + o
+  end

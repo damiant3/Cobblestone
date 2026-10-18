@@ -30,10 +30,12 @@ Chapter: EconomyCurrencyStore
   currency-store-restore : UoStore -> [Device.Block] Result CurrencyRecovery Text
   currency-store-restore (store) =
     if store.fault /= 0 | store.tail /= 0 | store.snapshot < 0 | store.head <= 0 then act Err "currency recovery requires clean committed checkpoint" end
-    else let snapshot = alloc-bytes euc-bytes
-    in let input = alloc-bytes eui-frame-bytes
+    else let input = alloc-bytes eui-frame-bytes
     in act
-      read <- us-read store store.snapshot snapshot euc-bytes
+      sized <- us-record-length store store.snapshot
+      room <- when sized is Ok (n) -> n is Err (_) -> 512
+      snapshot <- alloc-bytes room
+      read <- us-read store store.snapshot snapshot room
       when read
         is Err (e) -> Err e
         is Ok (row) -> if row.kind /= 1 | row.next > store.head then Err "currency recovery checkpoint record invalid"

@@ -1,0 +1,59 @@
+Chapter: BvtRouteFailCache
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ UOAIX-216: a failed plan is refused again without a search (rte-failed), until rte-fail-epochs searches have run, and a
+ budgeted search stops at its budget. The fixture is a 64 by 64 map with a wall (flag 64) down the whole of x 1030, so
+ 1001,1001 cannot reach 1060,1001; the open map (sealed False) reaches it.
+  bvrf-fill : WalkMap, Boolean, Integer -> Integer
+  bvrf-fill (map) (sealed) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let mark = __heap-save
+    in let set = walk-set-land map x y 0 (if sealed & x == 1030 then 64 else 0)
+    in let restored = __heap-restore mark in bvrf-fill map sealed (i + 1)
+  bvrf-mover : Integer -> WorldObject
+  bvrf-mover (unused) = WorldObject { serial = 0, kind = 1, x = 1001, y = 1001, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+ A bit per check: 1 the first plan fails after a search, 2 the same plan again searches nothing (the epoch stands),
+ 4 rte-fail-epochs later it searches again; -9 a fixture that did not build.
+  bvrf-cache : Integer -> Integer
+  bvrf-cache (unused) = when world-new 64
+    is Err (_) -> -9
+    is Ok (w) -> when walk-map-new 1000 1000 64 64
+      is Err (_) -> -9
+      is Ok (map) -> let filled = bvrf-fill map True 0
+        in let indexed = world-reindex w
+        in let p = tl-path-new map
+        in let first = rte-plan p w map None (bvrf-mover 0) 1060 1001 0
+        in let after-first = p.epoch
+        in let a = if first < 0 & after-first > 0 & p.expanded > 64 then 1 else 0
+        in let again = rte-plan p w map None (bvrf-mover 0) 1060 1001 0
+        in let b = if again < 0 & p.epoch == after-first then 2 else 0
+        in let aged = __record-set p "epoch" (p.epoch + rte-fail-epochs)
+        in let later = rte-plan p w map None (bvrf-mover 0) 1060 1001 0
+        in let c = if later < 0 & p.epoch > after-first + rte-fail-epochs then 4 else 0
+        in a + b + c
+ A bit per check: 1 a budget of 30 cells stops the search at 30 expansions and fails (the route is 59 steps, so no budget
+ under 59 can find it), 2 the whole map's budget finds the route on the open map; -9 a fixture that did not build.
+  bvrf-budget : Integer -> Integer
+  bvrf-budget (unused) = when world-new 64
+    is Err (_) -> -9
+    is Ok (w) -> when walk-map-new 1000 1000 64 64
+      is Err (_) -> -9
+      is Ok (map) -> let filled = bvrf-fill map False 0
+        in let indexed = world-reindex w
+        in let p = tl-path-new map
+        in let small = tl-plan-budget p w map None (bvrf-mover 0) 1060 1001 0 (alloc-bytes 4096) 4096 30
+        in let a = if small < 0 & p.expanded <= 30 then 1 else 0
+        in let whole = tl-plan-budget p w map None (bvrf-mover 0) 1060 1001 0 (alloc-bytes 4096) 4096 (p.width * p.height)
+        in let b = if whole > 0 then 2 else 0
+        in a + b
+  bvt-route-fail-cache : Integer -> [Console] Integer
+  bvt-route-fail-cache (unused) = act
+    c <- bvrf-cache 0
+    a <- bvt-check ("a failed plan is refused again without a search until rte-fail-epochs searches have run (UOAIX-216, code " & show c & ")") (c == 7)
+    n <- bvrf-budget 0
+    b <- bvt-check ("a budgeted search stops at its budget; the whole map's budget finds the route (UOAIX-216, code " & show n & ")") (n == 3)
+    a + b
+  end

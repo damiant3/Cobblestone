@@ -1,0 +1,28 @@
+Chapter: BvtTradeStale
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ Claims the first free row for a pair as cg-trade-open does, boxes box and box + 1.
+  bvt-tradestale-claim : List CgSwap, Integer, Integer, Integer -> Integer
+  bvt-tradestale-claim (ts) (a) (b) (box) = let i = cg-trade-free ts 0 in if i < 0 then -1
+    else let t = list-at ts i in let x = __record-set t "a" a in let y = __record-set t "b" b
+    in let z = __record-set t "box-a" box in let w = __record-set t "box-b" (box + 1) in i
+  bvt-tradestale : Integer -> [Console] Integer
+  bvt-tradestale (unused) =
+    let party = cg-trade-party 10 20 10 & cg-trade-party 10 20 20 & not (cg-trade-party 10 20 30) & not (cg-trade-party 0 0 0) & not (cg-trade-party 0 20 20)
+    in let stale = cg-trade-stale 10 False False
+    in let kept = not (cg-trade-stale 10 True False) & not (cg-trade-stale 10 False True) & not (cg-trade-stale 0 False False)
+    in let ts = cg-trade-block 4 []
+    in let one = bvt-tradestale-claim ts 11 12 100
+    in let two = bvt-tradestale-claim ts 21 22 200
+    in let three = bvt-tradestale-claim ts 31 32 300
+    in let rows = one == 0 & two == 1 & three == 2 & cg-trade-find ts 12 0 == 0 & cg-trade-find ts 21 0 == 1 & cg-trade-find ts 32 0 == 2
+    in let boxes = cg-trade-box-find ts 201 0 == 1 & cg-trade-box-find ts 300 0 == 2 & cg-trade-box-find ts 999 0 == -1
+    in let room = cg-trade-free-count ts 0 0 == 1 & cg-trade-free ts 0 == 3 & cg-trade-find ts 99 0 == -1
+    in act
+      a <- bvt-check "a player leaving ends the trade only when that player is one of its two (UOAIX-206)" party
+      b <- bvt-check "asking to trade ends an open trade whose players stand out of reach (UOAIX-206)" stale
+      c <- bvt-check "the trade's own pair, players still in reach and no trade at all end nothing" kept
+      d <- bvt-check "three pairs trade at once, each player and box finding its own pair's row, one row still free (UOAIX-206)" (rows & boxes & room)
+      a + b + c + d
+    end

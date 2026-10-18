@@ -1,0 +1,196 @@
+Chapter: ShipwrightBattleship
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter GamePackets
+  cites Uoaix chapter CraftGump
+  cites Games chapter Rng
+
+ Battleship in the shipwright's (UOAIX-178, Damian 2026-10-09: "a game of battleship in the shipwright building would be
+ hillarious"), played as the tavern's backgammon is: the first two players to double-click the two ship plans on the
+ western Oaken Oar's table (1415,1750 and 1415,1752, floor z 10, table top z 16) command the Navy and the Pirates, each
+ fleet laid at random, and the table locks until a fleet is sunk or swb-idle-ticks pass with no shot; anyone else
+ watches. Rules are Hasbro's (apps/games/classic Battleship): fleets of 5, 4, 3, 3 and 2 squares, one shot a turn, the
+ Navy first, a sunk ship announced, 17 hits win.
+  swb-art : Integer = #14F1
+  swb-tag : Integer = #42530000
+  swb-idle-ticks : Integer = 300000
+  swb-hue : Integer -> Integer
+  swb-hue (side) = if side == 0 then #0059 else #0021
+  swb-name : Integer -> Text
+  swb-name (side) = if side == 0 then "Navy" else "Pirates"
+  swb-ship-name : Integer -> Text
+  swb-ship-name (id) = if id == 1 then "carrier" else if id == 2 then "battleship" else if id == 3 then "cruiser" else if id == 4 then "submarine" else "destroyer"
+  swb-size : Integer -> Integer
+  swb-size (id) = if id == 1 then 5 else if id == 2 then 4 else if id == 5 then 2 else 3
+  swb-x : Integer = 1415
+  swb-y : Integer -> Integer
+  swb-y (side) = 1750 + 2 * side
+  swb-z : Integer = 16
+
+ The table buffer (allocated with the owner at boot, below the serving mark): qwords 0 and 8 the Navy's and the
+ Pirates' serials (0 an empty seat), 16 the phase (0 free, 1 one seat taken, 2 the Navy to fire, 3 the Pirates to
+ fire), 24 the tick of the last seat or shot; from byte 32 each side's fleet (100 cells, a ship's id 1 to 5 or 0), from
+ byte 232 each side's shots at the other (0 unknown, 1 miss, 2 hit).
+  swb-bytes : Integer = 432
+  swb-seat : Integer, Integer -> Integer
+  swb-seat (t) (side) = peek-qword t (side * 8)
+  swb-phase : Integer -> Integer
+  swb-phase (t) = peek-qword t 16
+  swb-last : Integer -> Integer
+  swb-last (t) = peek-qword t 24
+  swb-ship : Integer, Integer, Integer -> Integer
+  swb-ship (t) (side) (cell) = peek-byte t (32 + side * 100 + cell)
+  swb-shot : Integer, Integer, Integer -> Integer
+  swb-shot (t) (side) (cell) = peek-byte t (232 + side * 100 + cell)
+  swb-clear : Integer, Integer -> Integer
+  swb-clear (t) (i) = if i >= swb-bytes then 0 else let z = poke-byte t i 0 in swb-clear t (i + 1)
+  swb-set : Integer, Integer, Integer, Integer -> Integer
+  swb-set (t) (phase) (now) (unused) = let a = poke-qword t 16 phase in poke-qword t 24 now
+
+ Fleet placement: random places first, then after 200 misses the first place that fits in a scan.
+  swb-fits : Integer, Integer, Integer, Integer, Boolean, Integer -> Boolean
+  swb-fits (t) (side) (cell) (size) (horiz) (i) = if i >= size then True
+    else let row = cell / 10 + (if horiz then 0 else i)
+    in let col = int-mod cell 10 + (if horiz then i else 0)
+    in row < 10 & col < 10 & swb-ship t side (row * 10 + col) == 0 & swb-fits t side cell size horiz (i + 1)
+  swb-lay : Integer, Integer, Integer, Integer, Boolean, Integer, Integer -> Integer
+  swb-lay (t) (side) (cell) (size) (horiz) (id) (i) = if i >= size then 0
+    else let at = cell + (if horiz then i else i * 10)
+    in let put = poke-byte t (32 + side * 100 + at) id in swb-lay t side cell size horiz id (i + 1)
+  swb-scan : Integer, Integer, Integer, Integer -> Integer
+  swb-scan (t) (side) (id) (k) = if k >= 200 then -1
+    else let horiz = k >= 100
+    in let cell = int-mod k 100
+    in if swb-fits t side cell (swb-size id) horiz 0 then swb-lay t side cell (swb-size id) horiz id 0 else swb-scan t side id (k + 1)
+  swb-try : Integer, Integer, Integer, Rng, Integer -> Rng
+  swb-try (t) (side) (id) (r) (attempts) = if attempts >= 200 then (let scanned = swb-scan t side id 0 in r)
+    else let a = rng-next r
+    in let b = rng-next a
+    in let horiz = rng-bit b == 0
+    in let cell = rng-range a 0 99
+    in if swb-fits t side cell (swb-size id) horiz 0 then (let laid = swb-lay t side cell (swb-size id) horiz id 0 in b)
+    else swb-try t side id b (attempts + 1)
+  swb-fleet : Integer, Integer, Rng, Integer -> Rng
+  swb-fleet (t) (side) (r) (id) = if id > 5 then r else swb-fleet t side (swb-try t side id r 0) (id + 1)
+
+  swb-hits : Integer, Integer, Integer, Integer -> Integer
+  swb-hits (t) (side) (cell) (n) = if cell >= 100 then n else swb-hits t side (cell + 1) (if swb-shot t side cell == 2 then n + 1 else n)
+  swb-sunk : Integer, Integer, Integer, Integer -> Boolean
+  swb-sunk (t) (side) (id) (cell) = if cell >= 100 then True
+    else (swb-ship t (1 - side) cell /= id | swb-shot t side cell == 2) & swb-sunk t side id (cell + 1)
+ A shot by side at cell: the answer is 0 a miss, the ship's id for a hit, 10 + id when it sinks that ship, 20 when it
+ sinks the last; -1 when the cell was fired at before.
+  swb-fire : Integer, Integer, Integer, Integer -> Integer
+  swb-fire (t) (side) (cell) (now) = if cell < 0 | cell >= 100 | swb-shot t side cell /= 0 then -1
+    else let id = swb-ship t (1 - side) cell
+    in let marked = poke-byte t (232 + side * 100 + cell) (if id > 0 then 2 else 1)
+    in if id > 0 & swb-hits t side 0 0 >= 17 then (let freed = swb-clear t 0 in 20)
+    else let turned = swb-set t (3 - side) now 0
+    in if id == 0 then 0 else if swb-sunk t side id 0 then 10 + id else id
+
+  swb-plans : WorldTable, Integer -> Integer
+  swb-plans (world) (side) = swb-plans-at world side (world-tile-first world swb-x (swb-y side))
+  swb-plans-at : WorldTable, Integer, Integer -> Integer
+  swb-plans-at (world) (side) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == swb-art & o.hue == swb-hue side & o.container == 0) then serial
+    else swb-plans-at world side (world-tile-next world serial)
+  swb-side-of : WorldTable, Integer -> Integer
+  swb-side-of (world) (serial) = if serial == 0 then -1 else if swb-plans world 0 == serial then 0 else if swb-plans world 1 == serial then 1 else -1
+  swb-install : GsiState -> Integer
+  swb-install (items) = swb-install-side items 0 + swb-install-side items 1
+  swb-install-side : GsiState, Integer -> Integer
+  swb-install-side (items) (side) = if swb-plans items.world side /= 0 | world-room items.world <= 0 then 0
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = swb-x, y = swb-y side, z = swb-z, graphic = swb-art, hue = swb-hue side, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (made) -> if gsi-register items made 0 0 False False /= 0 then 0 else let touched = world-touch items.world in 1
+
+ The board gump: on the left the viewer's own waters (a spectator sees the Navy's), on the right the other side's as
+ the viewer has fired on them; "#" a ship, "X" a hit, "o" a miss, "." unknown water, and a round button on each
+ unknown square when it is the viewer's turn (its answer is the square, from 1).
+  swb-cell-text : Integer, Integer, Integer, Boolean -> Integer
+  swb-cell-text (t) (owner) (cell) (show-ships) = let shot = swb-shot t (1 - owner) cell
+    in if shot == 2 then 5 else if shot == 1 then 6 else if show-ships & swb-ship t owner cell > 0 then 8 else 7
+  swb-grid : Integer, Integer, Integer, Boolean, Boolean, Integer, Text -> Text
+  swb-grid (t) (owner) (x0) (show-ships) (fire) (cell) (layout) = if cell >= 100 then layout
+    else let x = x0 + int-mod cell 10 * 22
+    in let y = 110 + cell / 10 * 22
+    in let k = swb-cell-text t owner cell show-ships
+    in let piece = if fire & k == 7 then "{ button " & show x & " " & show y & " 2117 2118 1 0 " & show (cell + 1) & " }"
+      else "{ text " & show (x + 4) & " " & show y & " " & show (if k == 5 then 33 else 0) & " " & show k & " }"
+    in swb-grid t owner x0 show-ships fire (cell + 1) (layout & piece)
+ The status in at most two rows of 62 characters, broken at the last space that fits.
+  swb-space : Text, Integer -> Integer
+  swb-space (t) (i) = if i <= 0 then 0 else if to-unicode (char-code (char-at t i)) == 32 then i else swb-space t (i - 1)
+  swb-status-rows : Text -> List Text
+  swb-status-rows (status) = if status == "" then [" ", " "] else if text-length status <= 62 then [status, " "]
+    else let cut = swb-space status 62
+    in let at = if cut <= 0 then 62 else cut
+    in let rest = substring status (if cut <= 0 then at else at + 1) (text-length status - (if cut <= 0 then at else at + 1))
+    in [substring status 0 at, if text-length rest > 62 then substring rest 0 62 else rest]
+ Gump 2600's concave corners are 47 by 44 and its right edge 45 wide (1998 GUMPIDX), so every text and grid square lies
+ from x 52 to 535 and y 50 to 380 of the 580 by 420 backing.
+  swb-gump : Integer, Integer, Integer, Text -> List Integer
+  swb-gump (t) (serial) (viewer) (status) = let mine = if viewer < 0 then 0 else viewer
+    in let fire = viewer >= 0 & swb-phase t == 2 + viewer
+    in let texts = ["Battleship at the Oaken Oar", (if viewer < 0 then "Navy waters" else "Your fleet"), (if viewer < 0 then "Pirate waters" else "Enemy waters")] & swb-status-rows status
+      & ["X", "o", ".", "#", "#  ship      X  hit      o  miss      .  open water"]
+    in let head = "{ page 0 }{ resizepic 0 0 2600 580 420 }{ text 52 50 0 0 }{ text 52 80 0 1 }{ text 300 80 0 2 }{ text 52 336 0 3 }{ text 52 356 0 4 }{ text 52 380 0 9 }"
+    in let left = swb-grid t mine 52 (viewer >= 0) False 0 head
+    in let layout = swb-grid t (1 - mine) 300 False fire 0 left
+    in let start = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) (swb-tag + viewer + 1)) 60) 60) (text-length layout + 1)
+    in let counted = gp-put16 (gp-ascii start layout 0 (text-length layout + 1)) (list-length texts)
+    in crg-finish (crg-lines counted texts 0)
+  swb-say : Integer, Integer, Text, List (List Integer) -> Maybe GameReply
+  swb-say (serial) (side) (text) (more) = Just (gs-reply ((if text == "" then [] else [sip-message serial swb-art 6 text]) & more) (if text == "" then "shipwright:board" else "shipwright:battleship"))
+
+  swb-handler-at : GsiState, Integer, GameShard, GameInput, List Integer, Integer -> Maybe GameReply
+  swb-handler-at (items) (t) (game) (input) (packet) (now) =
+    if list-length packet == 0 | input.mode /= 2 | input.session.phase /= 2 then None
+    else if list-at packet 0 == 6 & list-length packet == 5 then swb-open items t game input (bit-and (gp-u32 packet 1) #7FFFFFFF) now
+    else if list-at packet 0 == #B1 & list-length packet >= 15 & bit-and (gp-u32 packet 7) #FFFF0000 == swb-tag then swb-answer items t input (gp-u32 packet 3) (gp-u32 packet 11) now
+    else None
+  swb-open : GsiState, Integer, GameShard, GameInput, Integer, Integer -> Maybe GameReply
+  swb-open (items) (t) (game) (input) (serial) (now) = let side = swb-side-of items.world serial
+    in if side < 0 then None
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (m) -> if walk-abs (m.x - swb-x) > 3 | walk-abs (m.y - swb-y side) > 3 then Just (gsi-denied "That is too far away.")
+        else let idle = swb-phase t > 0 & now - swb-last t >= swb-idle-ticks
+        in let freed = if idle then swb-clear t 0 else 0
+        in let lead = if idle then "The table stood idle five minutes and is free again. " else ""
+        in let player = m.serial
+        in let phase = swb-phase t
+        in let mine = swb-seat t side
+        in let theirs = swb-seat t (1 - side)
+        in if phase == 0 then
+          (let sat = poke-qword t (side * 8) player
+          in let opened = swb-set t 1 now 0
+          in swb-say serial side (lead & "You command the " & swb-name side & ". The first to take the other plans commands the " & swb-name (1 - side) & ".") [])
+        else if phase == 1 then
+          (if mine == player then swb-say serial side "Wait for an opponent at the other plans." []
+          else if theirs == player then swb-say serial side "You command the other fleet." []
+          else if mine /= 0 then swb-say serial side "That fleet is taken; take the other plans." []
+          else let sat = poke-qword t (side * 8) player
+          in let r = rng-new (bit-and (mix-bits now (swb-seat t 0 + swb-seat t 1)) #7FFFFFFF)
+          in let navy = swb-fleet t 0 r 1
+          in let pirates = swb-fleet t 1 (rng-next navy) 1
+          in let locked = swb-set t 2 now 0
+          in swb-say serial side "The fleets are set. The Navy fires first. The table is locked; everyone else watches." [swb-gump t serial side "The Navy fires first."])
+        else if player == swb-seat t 0 then swb-say serial 0 "" [swb-gump t serial 0 (if phase == 2 then "Your shot." else "The Pirates' shot.")]
+        else if player == swb-seat t 1 then swb-say serial 1 "" [swb-gump t serial 1 (if phase == 3 then "Your shot." else "The Navy's shot.")]
+        else swb-say serial side "This game is in play; you are watching." [swb-gump t serial -1 ""]
+  swb-answer : GsiState, Integer, GameInput, Integer, Integer, Integer -> Maybe GameReply
+  swb-answer (items) (t) (input) (serial) (button) (now) = let player = input.session.serial
+    in let side = if player == swb-seat t 0 & player /= 0 then 0 else if player == swb-seat t 1 & player /= 0 then 1 else -1
+    in if button == 0 | swb-side-of items.world serial < 0 then Just (gs-reply [] "shipwright:closed")
+    else if side < 0 then Just (gsi-denied "You are watching this game.")
+    else if swb-phase t /= 2 + side then swb-say serial side "It is the other fleet's shot." [swb-gump t serial side "Wait for your turn."]
+    else let result = swb-fire t side (button - 1) now
+    in let square = list-at ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"] ((button - 1) / 10) & show (int-mod (button - 1) 10 + 1)
+    in if result < 0 then swb-say serial side "That square was fired on before." [swb-gump t serial side "Your shot."]
+    else if result == 20 then swb-say serial side ("The " & swb-name side & " sink the last ship at " & square & " and win!") []
+    else let said = if result == 0 then "Miss at " & square & "." else if result > 10 then "Hit at " & square & ": the " & swb-name side & " sink the " & swb-ship-name (result - 10) & "!" else "Hit at " & square & "!"
+    in swb-say serial side said [swb-gump t serial side (said & " The " & swb-name (1 - side) & " fire next.")]

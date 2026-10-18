@@ -2,13 +2,17 @@ Chapter: BritainProduction
   cites Uoaix chapter BritainCatalog
   cites Uoaix chapter EconomyCurrency
   cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter EconomyProduction
   cites Foreword chapter Result
 
   BbProducer = record { currency : EuCurrency, actor : Integer, remaining : Integer,
     item : Integer, quantity : Integer, quality : Integer, wear : Integer, basis : Integer }
   bb-producer : EuCurrency, Integer -> BbProducer
-  bb-producer (x) (actor) = BbProducer { currency = x, actor = actor, remaining = 8192,
+  bb-producer (x) (actor) = BbProducer { currency = x, actor = actor, remaining = bb-budget,
     item = 0, quantity = 0, quality = 0, wear = 0, basis = 0 }
+ One production call (bb-produce, bb-require) may take at most bb-budget harvest and craft steps; each call starts with a
+ full budget, so a worker's long-lived producer is not capped for its life.
+  bb-budget : Integer = 8192
   bb-resource : EgCatalog, Integer, Integer -> Integer
   bb-resource (c) (item) (i) = if i == list-length c.resources then 0
     else let r = list-at c.resources i
@@ -73,17 +77,21 @@ Chapter: BritainProduction
     let w = p.currency.world
     in let r = list-at w.catalog.recipes (recipe - 1)
     in if r.station == 12 then Err "Britain mint requires currency coordinator"
-    else when bb-ensure p r.one (r.one-count + (if r.tool == r.one then 1 else 0)) (depth + 1)
+    else let one = ep-unfueled r r.one
+    in let two = ep-unfueled r r.two
+    in let three = ep-unfueled r r.three
+    in when bb-ensure p one (r.one-count + (if r.tool == one then 1 else 0)) (depth + 1)
       is Err (e) -> Err e
-      is Ok (_) -> when bb-ensure p r.two (r.two-count + (if r.tool > 0 & r.tool == r.two then 1 else 0)) (depth + 1)
+      is Ok (_) -> when bb-ensure p two (r.two-count + (if r.tool > 0 & r.tool == two then 1 else 0)) (depth + 1)
         is Err (e) -> Err e
-        is Ok (_) -> when bb-ensure p r.three (r.three-count + (if r.tool > 0 & r.tool == r.three then 1 else 0)) (depth + 1)
+        is Ok (_) -> when bb-ensure p three (r.three-count + (if r.tool > 0 & r.tool == three then 1 else 0)) (depth + 1)
           is Err (e) -> Err e
           is Ok (_) -> when bb-ensure p r.tool 1 (depth + 1)
             is Err (e) -> Err e
             is Ok (_) ->
               let station = bb-station w p.actor r.station 0
-              in if station < 1 | p.remaining <= 0 then Err "Britain workplace budget exhausted"
+              in if not (bb-holds (ep-actor w p.actor) r) then bb-craft p item recipe (depth + 1)
+              else if station < 1 | p.remaining <= 0 then Err "Britain workplace budget exhausted"
               else let a = ep-actor w p.actor
               in let stock = ep-at a.stock item
               in let quality = ep-at a.quality item
@@ -91,7 +99,7 @@ Chapter: BritainProduction
               in let basis = ep-at a.cost item
               in let budget = __record-set p "remaining" (p.remaining - 1)
               in let result = ep-craft w p.actor recipe station
-              in if result == -2 then Ok 0
+              in if result == -2 | result == -3 then Ok 0
               else if result < 0 then Err ("Britain recipe refused item=" & show item)
               else bb-receipt p item stock quality wear basis
   bb-make : BbProducer, Integer, Integer -> Result Integer Text
@@ -106,13 +114,24 @@ Chapter: BritainProduction
       is Err (e) -> Err e
       is Ok (n) -> if n == 0 then bb-make p item depth else Ok n
 
+ A production founds nodes and stations (eh-source, ep-station); a table grown inside the mark below would be reclaimed
+ at its restore and leave the world a dangling list (L-BELOWMARK: the boot trap of main 44085, a city smith stocking 49
+ smith rows). The tables grow first, before the mark, whenever fewer than bb-make-slack slots are free.
+  bb-make-slack : Integer = 256
+  bb-make-room : EpWorld -> Integer
+  bb-make-room (w) = let nodes = if list-length w.nodes - w.node-count < bb-make-slack & w.goods.world.growing then ep-grow-nodes w ep-node-limit else 0
+    in if list-length w.stations - w.station-count < bb-make-slack & w.goods.world.growing then ep-grow-stations w ep-station-limit else 0
   bb-produce : BbProducer, Integer -> Result Integer Text
-  bb-produce (p) (item) = let mark = __heap-save
+  bb-produce (p) (item) = let roomy = bb-make-room p.currency.world
+    in let mark = __heap-save
+    in let budget = __record-set p "remaining" bb-budget
     in when bb-make p item 0
       is Err (e) -> Err e
       is Ok (n) -> let restored = __heap-restore mark in Ok n
   bb-require : BbProducer, Integer, Integer -> Result Integer Text
-  bb-require (p) (item) (quantity) = let mark = __heap-save
+  bb-require (p) (item) (quantity) = let roomy = bb-make-room p.currency.world
+    in let mark = __heap-save
+    in let budget = __record-set p "remaining" bb-budget
     in when bb-ensure p item quantity 0
       is Err (e) -> Err e
       is Ok (n) -> let restored = __heap-restore mark in Ok n
@@ -121,6 +140,13 @@ Chapter: BritainProduction
   bb-placeholder-gold-yield : Integer = 1000
   bb-placeholder-copper-yield : Integer = 1000
   bb-placeholder-silver-yield : Integer = 100
+ A new world opens the Royal Mint and sets each metal's yield, and strikes nothing (Damian 2026-10-07: "the treasury
+ should start empty").
+  bb-mint-policy : BbProducer, Integer, Integer -> Result Integer Text
+  bb-mint-policy (p) (metal) (yield) = when bb-require p 62 1
+    is Err (e) -> Err e
+    is Ok (_) -> let station = bb-station p.currency.world p.actor 12 0
+      in if station < 1 | eu-mint-policy p.currency True p.actor metal yield /= 0 then Err "Britain mint policy refused" else Ok 0
   bb-mint : BbProducer, Integer, Integer, Integer -> Result Integer Text
   bb-mint (p) (metal) (item) (yield) = when bb-require p item 1
     is Err (e) -> Err e
@@ -150,8 +176,8 @@ Chapter: BritainProduction
         else 1 + bb-coin x owner metal (left - 1)
  An owner other than the crown smelts only from inputs it already holds; bb-craft's ensure would harvest and craft the rest.
   bb-holds : EpActor, EgRecipe -> Boolean
-  bb-holds (p) (r) = (r.one == 0 | ep-at p.stock r.one >= r.one-count) & (r.two == 0 | ep-at p.stock r.two >= r.two-count)
-    & (r.three == 0 | ep-at p.stock r.three >= r.three-count) & (r.tool == 0 | ep-tool p r.tool)
+  bb-holds (p) (r) = (ep-unfueled r r.one == 0 | ep-at p.stock r.one >= r.one-count) & (ep-unfueled r r.two == 0 | ep-at p.stock r.two >= r.two-count)
+    & (ep-unfueled r r.three == 0 | ep-at p.stock r.three >= r.three-count) & (r.tool == 0 | ep-tool p r.tool)
   bb-crown-coin : EuCurrency, Integer, Integer -> Integer
   bb-crown-coin (x) (metal) (left) = bb-coin x x.world.mint-owner metal left
   bb-crown-smelt : EuCurrency, Integer, Integer, Integer, Integer -> Result Integer Text
@@ -178,11 +204,11 @@ Chapter: BritainProduction
         in let actor = ep-admit w purse 100
         in if purse /= 2 | actor /= 1 then Err "Britain royal actor refused"
         else let p = bb-producer x actor
-        in when bb-mint p 3 32 bb-placeholder-gold-yield
+        in when bb-mint-policy p 3 bb-placeholder-gold-yield
           is Err (e) -> Err e
-          is Ok (_) -> when bb-mint p 1 65 bb-placeholder-copper-yield
+          is Ok (_) -> when bb-mint-policy p 1 bb-placeholder-copper-yield
             is Err (e) -> Err e
-            is Ok (_) -> when bb-mint p 2 66 bb-placeholder-silver-yield
+            is Ok (_) -> when bb-mint-policy p 2 bb-placeholder-silver-yield
               is Err (e) -> Err e
-              is Ok (_) -> if eu-grant x True actor purse 200 40 100 /= 0 | eu-tax x True actor 1000 /= 0 | eu-rates x True actor bb-coin-copper bb-coin-silver /= 0 then Err "Britain royal funding refused"
+              is Ok (_) -> if eu-tax x True actor 1000 /= 0 | eu-rates x True actor bb-coin-copper bb-coin-silver /= 0 then Err "Britain royal funding refused"
                 else Ok x

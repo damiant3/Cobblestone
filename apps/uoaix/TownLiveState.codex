@@ -1,4 +1,5 @@
 Chapter: TownLiveState
+  cites Foreword chapter Hamt
   cites Uoaix chapter TownLivePath
   cites Uoaix chapter TownRoutes
   cites Uoaix chapter BritainShops
@@ -18,13 +19,30 @@ Chapter: TownLiveState
   TlViewer = record { serial : Integer, connection : Integer, inside : Integer }
   TownLive = record { vendors : GvWorld, items : GsiState, people : TfWorld, mind : TmMind,
     residents : List TlResident, viewers : List TlViewer, count : Integer, home-capacity : Integer,
-    entrance : BbSpot, nav : TlPath, now : Integer, cursor : Integer, lines : NlLibrary, feel : List Integer }
+    entrance : BbSpot, nav : TlPath, now : Integer, cursor : Integer, lines : NlLibrary, feel : List Integer,
+    warn-hook : (Integer, Integer -> Boolean), seeded-hook : (Integer -> Boolean) }
+  tl-warn-none : Integer, Integer -> Boolean
+  tl-warn-none (npc) (viewer) = False
+  tl-seeded-any : Integer -> Boolean
+  tl-seeded-any (unused) = True
   tl-move-seconds : Integer = 12
   tl-retry-seconds : Integer = 60
   tl-speech-seconds : Integer = 600
   tl-max-seconds : Integer = 8760000 * 3600
-  tl-home-region : BbShop = BbShop { title = "Shared lodging", premises = "Sweet Dreams Inn", x1 = 1493, y1 = 1610, x2 = 1498, y2 = 1617 }
-  tl-tavern-region : BbShop = BbShop { title = "Tavern", premises = "The Blue Boar", x1 = 1487, y1 = 1687, x2 = 1491, y2 = 1690 }
+ Beds stop a row short of the door (y 1617 is the row just inside 1495,1618): a sleeper there plugged the inn's one door
+ at night for every walker bound through it (red's smoke run of 39833, ten workers sidestepping 2,900 times).
+  tl-home-region : BbShop = BbShop { title = "Shared lodging", premises = "Sweet Dreams Inn", x1 = 1493, y1 = 1610, x2 = 1498, y2 = 1616 }
+ Home is the whole Sweet Dreams Inn, every floor (Damian, 2026-10-07: "lets make the whole building "home" for them,
+ they can be happy in any room"): ServUO Data/Regions.xml's Britain inn rectangle 1492,1602 8x19. A walker bound home has
+ arrived anywhere inside it above the doorway rows (y below 1617, the row inside the door): a walker that stopped on the
+ entrance blocked every walker bound through it (live 39829: the farmer parked on 1495,1618 and four miners sidestepped
+ 2,700 times outside), so one reaching the doorway walks on to its own bed.
+  tl-door-x : Integer = 1495
+  tl-door-y : Integer = 1618
+  tl-inn-building : BbShop = BbShop { title = "Sweet Dreams Inn", premises = "Sweet Dreams Inn", x1 = 1492, y1 = 1602, x2 = 1499, y2 = 1620 }
+  tl-in-lodging : WorldObject -> Boolean
+  tl-in-lodging (m) = m.x >= tl-inn-building.x1 & m.x <= tl-inn-building.x2 & m.y >= tl-inn-building.y1 & m.y < tl-door-y - 1
+  tl-tavern-region : BbShop =BbShop { title = "Tavern", premises = "The Blue Boar", x1 = 1487, y1 = 1687, x2 = 1491, y2 = 1690 }
   tl-clothes : Integer, List TlCloth -> List TlCloth
   tl-clothes (i) (xs) = if i == 3 then xs else tl-clothes (i + 1) (list-push xs (TlCloth { serial = 0, quality = 0, wear = 0, basis = 0 }))
   tl-residents : Integer, Integer, List TlResident -> List TlResident
@@ -36,8 +54,8 @@ Chapter: TownLiveState
       control = TlControl { action = 0, goal = 0, place = 0, vendor = 0, expires = 0, target = BbSpot { x = 0, y = 0, z = 0 } } }))
   tl-viewers : Integer, List TlViewer -> List TlViewer
   tl-viewers (i) (xs) = if i == tl-viewer-limit then xs else tl-viewers (i + 1) (list-push xs (TlViewer { serial = 0, connection = -1, inside = 0 }))
- GameLinks serves at most eight links.
-  tl-viewer-limit : Integer = 8
+ GameLinks serves at most 32 game links.
+  tl-viewer-limit : Integer = 32
   tl-viewer-at : List TlViewer, Integer, Integer, Integer -> Integer
   tl-viewer-at (views) (connection) (i) (best) = if i == list-length views then best
     else if (list-at views i).connection == connection then i
@@ -46,8 +64,8 @@ Chapter: TownLiveState
   tl-bind (v) (items) (map) (now) (home-capacity) (people) (mind) = TownLive { vendors = v, items = items,
     people = people, mind = mind, residents = tl-residents 0 now (__list-with-capacity 3),
     viewers = tl-viewers 0 (__list-with-capacity tl-viewer-limit), count = 0, home-capacity = home-capacity,
-    entrance = BbSpot { x = 1495, y = 1618, z = 0 }, nav = tl-path-new map, now = now, cursor = 0,
-    lines = nl-library 0, feel = [0,0,0,0,0,0,0,0,0] }
+    entrance = BbSpot { x = tl-door-x, y = tl-door-y, z = 0 }, nav = tl-path-new map, now = now, cursor = 0,
+    lines = nl-library 0, feel = [0,0,0,0,0,0,0,0,0], warn-hook = tl-warn-none, seeded-hook = tl-seeded-any }
   tl-new : GvWorld, GsiState, WalkMap, Integer, Integer -> TownLive
   tl-new (v) (items) (map) (now) (home-capacity) = tl-bind v items map now home-capacity (tf-new 0) (tm-new 0)
   tl-copy-spot : BbSpot, BbSpot -> Integer
@@ -92,6 +110,25 @@ Chapter: TownLiveState
           in tl-outfit t r p mobile (i + 1)
   tl-shop-of : Integer -> Integer
   tl-shop-of (i) = if i == 0 then 3 else if i == 1 then 1 else 2
+ An NPC greets only at its own shop: the NPC and the player both stand inside it or within two tiles, the doorway
+ (Damian, 2026-10-08, NpcSpeech.md); never on the road or at home.
+  tl-at-work : Integer, WorldObject, WorldObject -> Boolean
+  tl-at-work (shop) (npc) (viewer) = shop >= 0 & shop < bb-shop-count
+    & tl-by-shop (list-at bb-shops shop) npc & tl-by-shop (list-at bb-shops shop) viewer
+  tl-by-shop : BbShop, WorldObject -> Boolean
+  tl-by-shop (r) (m) = m.x >= r.x1 - 2 & m.x <= r.x2 + 2 & m.y >= r.y1 - 2 & m.y <= r.y2 + 2
+ The greeting's opening for the game hour and the shop's state: 0 keeps no shop hours (the bank), 1 open, 2 closed.
+ Shops trade from 8 to 20 (BritainShopHours).
+  tl-salute : Integer, Integer -> Text
+  tl-salute (seconds) (state) = let hour = int-mod (seconds / 3600) 24
+    in let part = if hour >= 5 & hour < 12 then "Good morning" else if hour >= 12 & hour < 18 then "Good afternoon" else "Good evening"
+    in if state == 2 then part & ". The shop is closed; we open at eight in the morning."
+    else if state == 1 & hour == 19 then part & ". We close at eight, so do not tarry."
+    else part & "."
+ The state an NPC announces (world-announce): its greeting's opening, which changes with the part of the day and the
+ shop's state (0 no shop hours, 1 open, 2 closed).
+  tl-state-key : Integer, Integer -> Integer
+  tl-state-key (seconds) (state) = hamt-djb2-hash (tl-salute seconds state)
   tl-spot-of : TlResident, Integer -> BbSpot
   tl-spot-of (r) (kind) = if kind == 0 then r.home else if kind == 1 then r.work else r.tavern
   tl-region-of : Integer, Integer -> BbShop
@@ -111,7 +148,7 @@ Chapter: TownLiveState
   tl-resettle-spot (t) (map) (i) (kind) = if kind == 3 then Ok 0
     else let r = list-at t.residents i
     in let spot = tl-spot-of r kind
-    in if tl-stands map spot & (kind /= 1 | wks-at-trade i spot) then tl-resettle-spot t map i (kind + 1)
+    in if tl-stands map spot & (kind /= 1 | wks-at-trade i spot) & (kind /= 0 | spot.y <= tl-home-region.y2 | spot.x < tl-home-region.x1 | spot.x > tl-home-region.x2) then tl-resettle-spot t map i (kind + 1)
     else when (if kind == 1 then wks-trade-spot t.vendors.game.world map i else tl-free-spot t map (tl-region-of i kind) kind 0)
       is Err (e) -> Err e
       is Ok (free) -> let moved = tl-copy-spot spot free
@@ -220,7 +257,7 @@ Chapter: TownLiveState
   tl-populate : GvWorld, GsiState, WalkMap, Maybe WdState, Integer, Integer -> Result TownLive Text
   tl-populate (v) (items) (map) (doors) (now) (home-capacity) =
     if now < 0 | now > tl-max-seconds - 86400 | home-capacity < 3 | home-capacity > 128
-      | not (world-indexed v.game.world) | v.game.world.capacity - world-count v.game.world < 3 * (1 + cst-most-rows)
+      | not (world-indexed v.game.world) | world-room v.game.world < 3 * (1 + cst-most-rows)
       | items.world.buffer /= v.game.world.buffer then Err "Townsfolk population binding or budget"
     else let t = tl-new v items map now home-capacity
     in let town = tf-add-town t.people "Britain" 100 101 1001

@@ -1,0 +1,44 @@
+Chapter: BvtHerbReach
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-260 (trial 44387): Jhelom's herb farmer was founded where its herbalist's sale tile does not route from the town
+ entrance, made 1 and was blocked 1632 times. A herb farmer is founded only when its buyer's sale tile routes from the
+ town entrance both ways (cw-sale-reach). On BvtNpcMove's fixture, Britain's herbalist (shop 12): open ground routes;
+ a ring of colliders 3 tiles round the keeper walls its sale tile off. Each arm takes a fixture of its own, so the
+ route cache of one cannot answer for the other.
+  bhr-wall : WalkMap, Integer, Integer, Integer -> Integer
+  bhr-wall (map) (x) (y) (i) = if i >= 49 then 0
+    else let dx = int-mod i 7 - 3
+    in let dy = i / 7 - 3
+    in let edge = dx == 0 - 3 | dx == 3 | dy == 0 - 3 | dy == 3
+    in let put = if edge then (when walk-add-solid map (x + dx) (y + dy) 0 20 64 is Err (_) -> 0 is Ok (_) -> 1) else 0
+    in put + bhr-wall map x y (i + 1)
+  bhr-open : Integer -> Integer
+  bhr-open (unused) = when bnm-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.town
+      is None -> -2
+      is Just (t) -> when owner.town-map
+        is None -> -3
+        is Just (map) -> if is-ok (cw-sale-reach cw-britain t map bb-herbalist) then 1 else 0
+  bhr-walled : Integer -> Integer
+  bhr-walled (unused) = when bnm-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.town
+      is None -> -2
+      is Just (t) -> when owner.town-map
+        is None -> -3
+        is Just (map) -> when world-get t.vendors.game.world (list-at t.vendors.vendors bb-herbalist).serial
+          is Err (_) -> -4
+          is Ok (keeper) -> let built = bhr-wall map keeper.x keeper.y 0
+            in if built < 24 then -5 else if is-ok (cw-sale-reach cw-britain t map bb-herbalist) then 0 else 2
+  bvt-herb-reach : Integer -> [Console] Integer
+  bvt-herb-reach (unused) = act
+    n <- bhr-open 0
+    m <- bhr-walled 0
+    a <- bvt-check ("a herb farmer's buyer whose sale tile routes from the town entrance admits it, and one walled off refuses it (cw-sale-reach, codes " & show n & " " & show m & ")") (n == 1 & m == 2)
+    a
+  end

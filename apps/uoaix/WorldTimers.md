@@ -32,6 +32,7 @@ on its `ECONOMY ROWS` line.
 | 10 | `CompositeGameRules` hunger (`cg-hunger-arm`, `cg-hunger-fire`) | character serial | ServUO FoodDecay: hunger (`GameHunger`, slot byte 150) falls by 1 every 5 minutes in the world. World entry (`cg-return`) arms the entry, a fire lowers hunger and re-adds it, a departure (`cg-depart`) clears it. `proofs/CompositeFoodProof` grades the fire. |
 | 4 | `CompositeFighter` errand | 0 | one errand step (`cgf-step`), re-added 400 ms out on an errand and one game hour out at home (`cgf-delay`); re-added by the first world tick after boot (`cg-errand-arm`) |
 | 5 | `CompositeBritishErrand` Lord British's errand | 0 | one errand step (`cbe-step`), re-added 400 ms out while walking, 3 s out while mining and 1 s out at home or while his own session drives him (`cbe-delay`); not re-added once the errand ends; re-added by the first world tick after boot (`cg-british-arm`) |
+| 11 | `CompositeGameRules` shopkeeper rise (`cg-vendor-fall`, `cg-rise`) | shopkeeper serial | a killed shopkeeper waits hidden on its shop's first tile and rises 5 minutes later; not saved, so a boot unhides any still waiting (`cg-rise-all`) |
 
 The wheel is not persisted. A door open at a restart stays open until used.
 
@@ -47,7 +48,7 @@ instead of storing a `due` that a pulse scans, and the families below move onto
 the wheel (UOAIX-29). A family that persists its timers saves remaining time and
 re-adds wheel entries at boot.
 
-## Timed state not on the wheel (surveyed 2026-10-05)
+## Timed state not on the wheel
 
 | family | where the time lives | clock |
 |---|---|---|
@@ -57,6 +58,14 @@ re-adds wheel entries at boot.
 | vendor quotes | `GameVendor` player `expires`, checked when a cart arrives; expiry, fires nothing | PIT |
 | greeting cooldowns | `GameNpcSpeech` row `last`, checked when a player approaches; expiry, fires nothing (persisted in NSC1). The approach scan over the speech rows runs only when the viewer's place or life changes (`ns-place`); `NpcSpeechReplay` grades an unmoved pulse doing no scan | town game seconds |
 | world spawns | `GameWorldSpawn` `deadlines` buffer and slot `due`; a viewer's pulse (`gws-view`) visits the slots that viewer has drawn, the slots filed in the 64-tile sectors its view touches, and the slots at war; the spawn pass (once a second) sweeps every other slot once (`gws-sweep`), so an idle spawn far from every viewer acts at most once a second (UOAIX-42) | combat tick (PIT) |
+
+The gatherer, the farmer and the station walkers step once per 1 s world tick
+(`cs-tick`, `cg-gather`), never in a pulse, and stay off the wheel (root,
+2026-10-07: "a move with no measured need is work for nothing"); reopen only if
+the 1 s `cs-tick` is measured costing real time at full population. The miners
+step on wheel kind 8. The 256-entry pool needs no growth: `timers-peak` read 18
+on the live shard and 29 under a 6-bot soak with the full NPC population
+(2026-10-07).
 
 Not world events: TCP retransmit and close timers (`codex/os/net/NetIdle.codex`,
 transport state; its 100 ms HPET wake drives the pulse) and the `ShardServer`

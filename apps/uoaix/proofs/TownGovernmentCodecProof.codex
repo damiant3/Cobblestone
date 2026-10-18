@@ -39,6 +39,11 @@ Chapter: TownGovernmentCodecProof
     in let original = poke-qword buf at old
     in let rehash = poke-qword buf 48 (ws-hash buf tgc-bytes 0 2166136261)
     in refused
+ Version 2 moves every section after the civic rows by tgc-tail; the tgc-*-at constants are the version 1 places.
+  tgcp-at : Integer -> Integer
+  tgcp-at (v1) = v1 + tgc-tail tg-event-limit
+  tgcp-paid : TgWorld, Integer -> Integer
+  tgcp-paid (g) (i) = if i >= g.event-count then 0 else if (list-at g.events i).money-action > 0 then i else tgcp-paid g (i + 1)
   tgcp-recovered : GovernmentCheckpoint, GovernmentCheckpoint, Integer, Integer -> [Console] Nothing
   tgcp-recovered (source) (s) (buf) (copy) = act
     g <- s.government
@@ -51,7 +56,7 @@ Chapter: TownGovernmentCodecProof
     facts <- TdReportFacts { verified = True, account = "PlayerNine", happened = "Duplicate", location = "Britain", wall-time = "fixture", evidence = "log 501" }
     tgcp-check "recovered escalation and dues stamps prevent duplicate effects" (td-escalate d 1 3 facts == -1 & d.admin.report-count == queue-before & tg-collect g 1 1 4 True == -1)
     changed <- __record-set (tg-office g 1) "mayor" 2
-    tgcp-check "decoded civic mutation neither aliases source nor bypasses appointment audit" ((tg-office source.government 1).mayor == 1 & is-err (tgc-encode s copy tgc-bytes))
+    tgcp-check "decoded civic mutation neither aliases source nor bypasses appointment audit" ((tg-office source.government 1).mayor == 1 & not (tgv-valid s.government s.works s.disputes))
   end
   tgcp-legacy : TfWorld, TrRegistry, EuCurrency -> [Console] Nothing
   tgcp-legacy (people) (registry) (currency) = act
@@ -113,7 +118,7 @@ Chapter: TownGovernmentCodecProof
     decoded <- tgc-decode-record buf tgc-bytes 500 30 bindings
     after <- __heap-save
     print-line-uni ("GOVERNMENT-DECODE-BYTES " & show (after - mark))
-    tgcp-check "civic decode retains below 512 KiB beyond shared bindings" (is-ok decoded & after - mark < 524288)
+    tgcp-check "civic decode retains below 512 KiB per 2048 event rows beyond shared bindings" (is-ok decoded & after - mark < 524288 * tg-event-limit / 2048)
     when decoded
       is Err (e) -> print-line-uni ("FAIL civic decode " & e)
       is Ok (s) -> tgcp-recovered source s buf copy
@@ -121,11 +126,11 @@ Chapter: TownGovernmentCodecProof
     tgcp-check "rehashed dimensions reserved bytes and binding mode refuse" (tgcp-corrupt buf bindings 64 5 & tgcp-corrupt buf bindings 152 1 & tgcp-corrupt buf bindings 24 1 & tgcp-corrupt buf bindings 104 2)
     tgcp-check "rehashed mayor wage and unpaid total refuse" (tgcp-corrupt buf bindings (tgc-offices-at + 16) 2 & tgcp-corrupt buf bindings (tgc-guards-at + 24) 2 & tgcp-corrupt buf bindings (tgc-offices-at + 48) 1)
     tgcp-check "rehashed funding request retirement and day cursor refuse" (tgcp-corrupt buf bindings (tgc-offices-at + 56) 4 & tgcp-corrupt buf bindings (tgc-guards-at + 40) 0 & tgcp-corrupt buf bindings 96 1)
-    tgcp-check "rehashed collection stamp and money receipt refuse" (tgcp-corrupt buf bindings (tgc-stamps-at + 3 * 8) 0 & tgcp-corrupt buf bindings (tgc-events-at + 2 * 64 + 56) 0)
-    tgcp-check "rehashed militia site and order progress refuse" (tgcp-corrupt buf bindings tgc-militia-at 0 & tgcp-corrupt buf bindings (tgc-sites-at + 16) 4 & tgcp-corrupt buf bindings (tgc-orders-at + 72) 4)
-    tgcp-check "paid bounty must retain its actual civic payment reference" (tgcp-corrupt buf bindings (tgc-bounties-at + 56) 1)
-    tgcp-check "rehashed dispute status subject and history refuse" (tgcp-corrupt buf bindings (tgc-cases-at + 9 * 8) 2 & tgcp-corrupt buf bindings (tgc-cases-at + 5 * 8) 6 & tgcp-corrupt buf bindings tgc-disputes-at 2)
-    tgcp-check "nonzero unused record refuses" (tgcp-corrupt buf bindings (tgc-cases-at + 127 * 128) 1)
+    tgcp-check "rehashed collection stamp and money receipt refuse" (tgcp-corrupt buf bindings (tgcp-at tgc-stamps-at + 3 * 8) 0 & tgcp-paid g 0 > 0 & tgcp-corrupt buf bindings (tgc-events-at + tgcp-paid g 0 * 64 + 56) 0)
+    tgcp-check "rehashed militia site and order progress refuse" (tgcp-corrupt buf bindings (tgcp-at tgc-militia-at) 0 & tgcp-corrupt buf bindings (tgcp-at tgc-sites-at + 16) 4 & tgcp-corrupt buf bindings (tgcp-at tgc-orders-at + 72) 4)
+    tgcp-check "paid bounty must retain its actual civic payment reference" (tgcp-corrupt buf bindings (tgcp-at tgc-bounties-at + 56) 1)
+    tgcp-check "rehashed dispute status subject and history refuse" (tgcp-corrupt buf bindings (tgcp-at tgc-cases-at + 9 * 8) 2 & tgcp-corrupt buf bindings (tgcp-at tgc-cases-at + 5 * 8) 6 & tgcp-corrupt buf bindings (tgcp-at tgc-disputes-at) 2)
+    tgcp-check "nonzero unused record refuses" (tgcp-corrupt buf bindings (tgcp-at tgc-cases-at + 127 * 128) 1)
     tgcp-check "metadata mismatch and truncation refuse" (is-err (tgc-decode-record buf tgc-bytes 501 30 bindings) & is-err (tgc-decode buf (tgc-bytes - 1) bindings))
     tgcp-check "source bindings remain ready after validation and refusal" (eu-ready x & admin.report-count == 1 & registry.busy == 0 & (list-at x.world.stations 1).enabled == 0)
     tgcp-legacy g.people registry x

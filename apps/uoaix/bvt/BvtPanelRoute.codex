@@ -1,0 +1,37 @@
+Chapter: BvtPanelRoute
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter BvtCheck
+
+  bpx-plays : JsonValue -> Text
+  bpx-plays (v) = "{\"ok\":true,\"plays\":[],\"stories\":[],\"script\":\"\"}"
+  bpx-appoint : Integer -> Text
+  bpx-appoint (unused) = "{\"ok\":true,\"mayor\":\"Hamon\"}"
+  bpx-panel : Integer -> AdminPanel
+  bpx-panel (unused) = let p = panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+    in let login = panel-open p get-ticks
+    in let staged = panel-bind-plays p bpx-plays
+    in let appointed = panel-bind-appoint p bpx-appoint in p
+  bpx-owner : Integer -> Integer
+  bpx-owner (unused) = let p = bpx-panel 0
+    in let plays = panel-dispatch p 4 "{\"command\":\"plays\",\"op\":\"list\",\"slot\":1,\"session\":1}"
+    in let mayor = panel-dispatch p 4 "{\"command\":\"mayor-replace\",\"session\":1}"
+    in (if text-starts-with plays "{\"ok\":true,\"plays\":" then 1 else 0) + (if text-contains mayor "Hamon" then 2 else 0)
+  bpx-keeper : Integer -> Integer
+  bpx-keeper (unused) = let p = bpx-panel 0
+    in let plays = panel-dispatch p 3 "{\"command\":\"plays\",\"op\":\"list\",\"slot\":1,\"session\":1}"
+    in let stale = panel-dispatch p 4 "{\"command\":\"plays\",\"op\":\"list\",\"slot\":1,\"session\":99}"
+    in let mayor = panel-dispatch p 3 "{\"command\":\"mayor-replace\",\"session\":1}"
+    in (if text-contains plays "role" then 1 else 0) + (if text-contains stale "session" then 2 else 0) + (if text-contains mayor "role" & not (text-contains mayor "Hamon") then 4 else 0)
+  bvt-panel-route-owner : Integer -> [Console] Integer
+  bvt-panel-route-owner (unused) = act
+    n <- bpx-owner 0
+    bvt-check ("the owner's plays list and mayor-replace reach the bound handlers through panel-dispatch, not unsupported-command (UOAIX-263, code " & show n & ")") (n == 3)
+  end
+  bvt-panel-route-refused : Integer -> [Console] Integer
+  bvt-panel-route-refused (unused) = act
+    n <- bpx-keeper 0
+    bvt-check ("a keeper role is refused plays and mayor-replace, and a stale owner session is refused plays (UOAIX-263, code " & show n & ")") (n == 7)
+  end

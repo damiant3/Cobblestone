@@ -1,0 +1,59 @@
+Chapter: BvtFighterLoot
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CompositeFighter
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ The first lot the provisioner (vendor 0) holds whose item some shop bids on, or -1.
+  bfl-sellable : CompositeGame, TownLive, Integer -> Integer
+  bfl-sellable (owner) (t) (serial) = if serial == 0 then -1
+    else let goods = owner.vendor.currency.world.goods
+    in if ep-lot-amount goods serial >= 1 & cgf-buyer-of t (ep-lot-item goods serial) 0 -1 0 >= 0 then serial
+    else bfl-sellable owner t (ep-lot-next goods serial)
+ On the founded Britain, a corpse one tile east of the fighter holds a sellable provisioner lot. With leg and took set,
+ answers a code: 1 the lot passed to the fighter's actor, 2 it left the corpse, 4 the fighter carried no wares before and
+ does after; a negative step when the scenario could not be built.
+  bfl-loot : Integer, Integer -> Integer
+  bfl-loot (leg) (took) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.fighter
+      is None -> -2
+      is Just (c) -> when owner.town
+        is None -> -3
+        is Just (t) -> let w = owner.vendor.currency.world
+          in let at = bfl-sellable owner t (ep-lot-first w.goods (list-at owner.vendor.vendors 0).actor)
+          in if at < 0 then -4
+          else let lot = ep-lot w.goods at
+          in when world-get owner.checkpoint.game.world c.serial
+            is Err (_) -> -5
+            is Ok (m) -> when world-create owner.items.world (WorldObject { serial = 0, kind = 2, x = m.x + 1, y = m.y, z = m.z, graphic = #2006, hue = 0, container = 0, amount = 1, health = 0 })
+              is Err (_) -> -6
+              is Ok (corpse) -> when world-get owner.items.world lot.serial
+                is Err (_) -> -7
+                is Ok (o) -> when world-update owner.items.world (__record-set (__record-set (__record-set o "container" corpse) "x" 60) "y" 80)
+                  is Err (_) -> -8
+                  is Ok (_) -> let before = cgf-loot c t
+                    in let a = __record-set c "leg" leg
+                    in let b = __record-set c "took" took
+                    in let looted = cg-fighter-loot owner c owner.checkpoint.game
+                    in let mine = (ep-lot w.goods at).actor == c.fighter.producer.actor
+                    in let left = when world-get owner.items.world lot.serial is Err (_) -> False is Ok (after) -> after.container /= corpse
+                    in (if mine then 1 else 0) + (if left then 2 else 0) + (if before == 0 & cgf-loot c t == 1 then 4 else 0)
+ The vendor bidding most for an item: fish (9) is the fishmonger's alone (UOAIX-167), and nothing bids on an item no
+ shop buys (the spell scroll, 116, which only the scribe makes).
+  bfl-buyers : Integer -> Integer
+  bfl-buyers (unused) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.town
+      is None -> -2
+      is Just (t) -> (if cgf-buyer-of t 9 0 -1 0 == bb-fishmonger then 1 else 0) + (if cgf-buyer-of t 116 0 -1 0 < 0 then 2 else 0)
+  bvt-fighter-loot : Integer -> [Console] Integer
+  bvt-fighter-loot (unused) = act
+    k <- bfl-loot 4 1
+    a <- bvt-check ("after a kill (leg 4, the kill taken) the fighter loots a corpse beside it: the lot passes to its actor and leaves the corpse, and it now carries wares to sell (UOAIX-140 e, code " & show k & ")") (k == 7)
+    h <- bfl-loot 2 0
+    b <- bvt-check ("a fighter still hunting (leg 2, no kill) loots nothing: the lot stays in the corpse with its owner (code " & show h & ")") (h == 0)
+    n <- bfl-buyers 0
+    c <- bvt-check ("the fighter sells each ware to the shop bidding most: fish to the fishmonger, and no shop for an item none buys (code " & show n & ")") (n == 3)
+    a + b + c
+  end

@@ -1,0 +1,47 @@
+Chapter: BvtArmor1998
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ 1998 armor (Armor1998): the classes, the rating by wear and band, the absorption range, and the composite's armor-hook
+ on a mobile in exceptional platemail against one in plain platemail.
+  ba98-smith-agrees : Integer -> Boolean
+  ba98-smith-agrees (k) = if k >= sm98-n then True
+    else (sm98-at sm98-ac k == 0 | sm98-at sm98-layers k == 2 | a98-ac (sm98-at sm98-arts k) == sm98-at sm98-ac k) & ba98-smith-agrees (k + 1)
+  ba98-mobile : WorldTable -> Integer
+  ba98-mobile (world) = when world-create world (WorldObject { serial = 0, kind = 1, x = 10, y = 10, z = 0, graphic = #0190,
+    hue = 0, container = 0, amount = 1, health = 50 })
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  ba98-maker : CompositeGame, Integer, Integer -> Integer
+  ba98-maker (owner) (item) (quality) = let x = owner.vendor.currency
+    in let actor = ep-admit x.world (eu-open x 2 (9500 + world-count owner.items.world)) 100
+    in if actor < 0 then actor
+    else let p = ep-actor x.world actor
+    in let s = ep-add p.stock item 1 in let q = ep-add p.quality item quality in let w = ep-add p.wear item 32 in actor
+  ba98-wear : CompositeGame, Integer, Integer, Integer, Integer -> Integer
+  ba98-wear (owner) (holder) (graphic) (layer) (quality) = when world-create owner.items.world (gs-item holder graphic 0)
+    is Err (_) -> 0
+    is Ok (serial) -> let worn = gsi-register owner.items serial layer 0 True False
+      in let lot = if quality == 0 then 0 else gv-add-lot owner.vendor serial (ba98-maker owner 41 quality) 41 quality 32 0
+      in if worn < 0 then -1 else if lot < 0 then -2 else serial
+  bvt-armor-1998 : Integer -> [Console] Integer
+  bvt-armor-1998 (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("armor 1998 fixture: " & e) False
+    is Ok (owner) -> act
+      a <- bvt-check "rundir armor classes by art: platemail 30, ringmail tunic 20, chainmail tunic 23, leather tunic 13, bascinet 18, robe 15, a necklace 0; every smith armor row's AC agrees" (a98-ac #1415 == 30 & a98-ac #13EC == 20 & a98-ac #13BF == 23 & a98-ac #13CC == 13 & a98-ac #140C == 18 & a98-ac #1F03 == 15 & a98-ac #1085 == 0 & ba98-smith-agrees 0)
+      b <- bvt-check "the rating is floor((hits / max + 1.5) / 2 * AC) after the band: AC 30 whole 37, half 30, broken 22, exceptional whole 45, poor whole 30, no hits kept 37" (a98-rating 30 100 100 1000 == 37 & a98-rating 30 50 100 1000 == 30 & a98-rating 30 0 100 1000 == 22 & a98-rating 30 100 100 1200 == 45 & a98-rating 30 100 100 800 == 30 & a98-rating 30 0 0 1000 == 37 & a98-rating 0 10 10 1000 == 0)
+      c <- bvt-check "a piece absorbs rating / 4 to (rating + 1) / 2, never more than the blow" (a98-absorb 37 0 == 9 & a98-absorb 37 10 == 19 & a98-absorb 37 11 == 9 & a98-absorb 0 5 == 0 & a98-reduce 20 9 == 11 & a98-reduce 5 9 == 0)
+      world <- owner.items.world
+      fine <- ba98-mobile world
+      plain <- ba98-mobile world
+      fine-plate <- ba98-wear owner fine #1415 13 sm98-exceptional
+      plain-plate <- ba98-wear owner plain #1415 13 0
+      chest <- owner.combat.armor-hook fine 40 3
+      top <- owner.combat.armor-hook fine 40 (3 + 14 * 12)
+      plain-chest <- owner.combat.armor-hook plain 40 3
+      head <- owner.combat.armor-hook fine 40 0
+      print-line-uni ("ARMOR 1998 fine=" & show fine-plate & " plain=" & show plain-plate & " chest=" & show chest & " top=" & show top & " plain-chest=" & show plain-chest & " head=" & show head)
+      d <- bvt-check "the composite's armor-hook: a chest blow of 40 on exceptional platemail (rating 45) keeps 40 - 11 to 40 - 23, on plain platemail (rating 37) 40 - 9" (fine-plate > 0 & plain-plate > 0 & chest == 29 & top == 17 & plain-chest == 31)
+      e <- bvt-check "a blow to a group with nothing worn (the head, group 0) keeps all 40" (head == 40)
+      a + b + c + d + e
+    end

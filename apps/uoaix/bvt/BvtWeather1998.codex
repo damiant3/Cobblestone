@@ -1,0 +1,59 @@
+Chapter: BvtWeather1998
+  cites Uoaix chapter Weather1998
+  cites Uoaix chapter BvtCheck
+
+ Runs row r of a state from tick k while it stays clear, then n ticks, and answers its shown intensity.
+  bwx-start : Integer, Integer, Integer -> Integer
+  bwx-start (b) (r) (k) = if k > 4000 then -1 else let t = wx-tick-region b r k in if wx-get b r 1 /= 0 then k else bwx-start b r (k + 1)
+  bwx-ticks : Integer, Integer, Integer, Integer -> Integer
+  bwx-ticks (b) (r) (k) (n) = if n <= 0 then wx-get b r 3 else let t = wx-tick-region b r k in bwx-ticks b r (k + 1) (n - 1)
+  bwx-span : Integer, Integer, Integer, Integer -> Integer
+  bwx-span (b) (r) (k) (n) = if wx-get b r 1 == 0 | n > 100 then n else let t = wx-tick-region b r k in bwx-span b r (k + 1) (n + 1)
+ Ticks cell c for n ticks of season s and counts the ticks it rained.
+  bwx-wet : Integer, Integer, Integer, Integer, Integer -> Integer
+  bwx-wet (b) (c) (k) (n) (s) = if n <= 0 then 0 else let t = wx-tick-cell b c k s in (if wx-get b (wx-n + c) 1 /= 0 then 1 else 0) + bwx-wet b c (k + 1) (n - 1) s
+ Starts cell c (as a storm or not) and lets it climb 15 ticks, to its peak.
+  bwx-rain : Integer, Integer, Integer -> Integer
+  bwx-rain (b) (c) (storm) = let s = wx-start b (wx-n + c) storm in bwx-climb b (wx-n + c) 15
+  bwx-climb : Integer, Integer, Integer -> Integer
+  bwx-climb (b) (r) (n) = if n <= 0 then 0 else let t = wx-ramp b r in bwx-climb b r (n - 1)
+  bvt-weather1998 : Integer -> [Console] Integer
+  bvt-weather1998 (unused) = let b = wx-new 0
+    in let k = bwx-start b 1 0
+    in let at1 = wx-get b 1 0
+    in let peak = bwx-ticks b 1 (k + 1) 14
+    in let c = wx-new 0
+    in let k2 = bwx-start c 1 0
+    in let span = bwx-span c 1 (k2 + 1) 1
+    in let arctic = wx-new 0
+    in let a1 = bwx-start arctic 0 0
+    in let snow = wx-code arctic 4121 508 0 wx-plain
+    in let edge = wx-code arctic (4121 + 249) 508 0 wx-plain
+    in let past = wx-code arctic (4121 + 250) 508 0 wx-plain
+    in let clear = wx-code arctic 1496 1620 0 wx-plain
+    in let d = wx-new 0
+    in let run = wx-advance d (384 * 10 + 5)
+    in let again = wx-advance d (384 * 10 + 300)
+    in let later = wx-advance d (384 * 12)
+    in let p = wx-packet (2 * 256 + 35) (0 - 5)
+    in let spring = bwx-wet (wx-new 0) 100 0 2000 1
+    in let summer = bwx-wet (wx-new 0) 100 0 2000 2
+    in let britain = 1496 / 256 + 1620 / 256 * 20
+    in let r = wx-new 0
+    in let rained = bwx-rain r britain 0
+    in let stormy = wx-new 0
+    in let stormed = bwx-rain stormy britain 1
+    in let summer-day = 86400 * 28 * 2
+    in act
+      a <- bvt-check ("UOAIX-244: a 1998 region starts precipitating on a roll below its chance and its intensity climbs 5 a tick to 70: start " & show k & " first " & show at1 & " after 14 more " & show peak) (k >= 0 & at1 == 5 & peak == 70)
+      b <- bvt-check ("then it falls 5 a tick and stops: 30 ticks, 1 starting, 14 climbing past 70, 15 falling below 1: " & show span) (span == 30 & wx-get c 1 1 == 0)
+      c1 <- bvt-check "the arctic island snows once started (type 2) within 249 tiles of its centre; at 250, and in Britain with no cell raining, nothing (0)" (a1 >= 0 & snow / 256 == 2 & edge / 256 == 2 & past == 0 & clear == 0)
+      d1 <- bvt-check "the packets: 0x65 type, count, temperature as a byte; at login 0xFE with the season" (list-at p 0 == #65 & list-at p 1 == 2 & list-at p 2 == 35 & list-at p 3 == 251 & list-at (wx-login 0 1496 1620) 1 == #FE & list-at (wx-login 0 1496 1620) 2 == 0 & list-at (wx-login (86400 * 28) 1496 1620) 2 == 1)
+      e <- bvt-check "the 1998 temperature: winter -30, latitude +30 south of y 96, a region in range adds its average; spring +5" (wx-temperature 0 1496 1620 == 0 & wx-temperature 0 4121 508 == (0 + 10 + 0 + 0) / 2 & wx-temperature (86400 * 28) 1496 1620 == 35)
+      f <- bvt-check ("a weather tick every 384 game seconds: a first advance at tick 10 runs ticks 0 to 10, the same tick none, two ticks later two: " & show run & " " & show again & " " & show later) (run == 11 & again == 0 & later == 2)
+      g <- bvt-check ("a land cell rains more in spring than in summer, in spells: wet ticks of 2000, spring " & show spring & ", summer " & show summer) (spring > summer & summer > 0 & spring < 2000)
+      h <- bvt-check ("a raining cell shows rain (type 1) of at most 40 drops, a storm of up to 70, to every player in its 256 tiles: " & show (wx-code r 1496 1620 summer-day wx-plain) & " " & show (wx-code stormy 1496 1620 summer-day wx-plain)) (wx-code r 1496 1620 summer-day wx-plain == 256 + 40 & wx-code r (1496 / 256 * 256) (1620 / 256 * 256) summer-day wx-plain == 256 + 40 & wx-code stormy 1496 1620 summer-day wx-plain == 256 + 70 & wx-code r (1496 + 256) 1620 summer-day wx-plain == 0)
+      i <- bvt-check "no weather on sand, in a cave, or in the dungeons (x 5120 on); high ground snows in winter and rains in summer" (wx-code r 1496 1620 summer-day wx-sand == 0 & wx-code r 1496 1620 summer-day wx-cave == 0 & wx-code r 1496 1620 0 wx-high / 256 == 2 & wx-code r 1496 1620 summer-day wx-high / 256 == 1 & wx-code r 5300 100 summer-day wx-plain == 0)
+      j <- bvt-check "a change of kind clears first (type 0), a stop is one clear, a change of count is one packet" (list-length (wx-change (256 + 20) (512 + 20) 0) == 2 & list-at (list-at (wx-change (256 + 20) (512 + 20) 0) 0) 1 == 0 & list-length (wx-change (256 + 20) 0 0) == 1 & list-at (list-at (wx-change (256 + 20) 0 0) 0) 1 == 0 & list-length (wx-change (256 + 20) (256 + 30) 0) == 1)
+      a + b + c1 + d1 + e + f + g + h + i + j
+    end

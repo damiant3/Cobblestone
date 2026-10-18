@@ -7,7 +7,7 @@ Every public planner/decoder returns `Result value Text`; propagate `Err`.
 Never substitute a zero height or empty block for a failed read.
 
 Start the adapter with `pwsh -File apps/uoaix/serve-mul.ps1 -ClientRoot
-C:/Users/Damian/uo1998-client`. The default endpoint is loopback port 2595.
+D:/Games/UO1998com-Client1`. The default endpoint is loopback port 2595.
 The adapter reads the original files in place, opens no writable handle,
 and writes no client data to the repository, disk images, logs or fixtures.
 Run only one adapter per port; a held port fails at startup.

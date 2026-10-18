@@ -95,7 +95,7 @@ $script:CceToUnicode = @(
 # (unicode-base, size) pairs. Tier 1 CCE ranges are implied by the sizes and are
 # recomputed by Get-CceTier1Block rather than stored, exactly as CCE.codex does.
 $script:CceTier1Bases = @(128,256, 1024,128, 880,128, 1536,128, 1424,128, 2304,128, 3584,128, 4352,128, 19968,512, 12352,256, 8704,128)
-$script:CceTier2Table = @(12288,64, 12352,96, 12448,96, 19968,20992, 13312,6592, 44032,11172, 3584,256, 8192,512, 127744,1024, 9728,256)
+$script:CceTier2Table = @(12288,64, 12352,96, 12448,96, 19968,20992, 13312,6592, 44032,11172, 3584,256, 8192,512, 127744,1024, 9728,256, 9984,192)
 $script:CceTier2Base = 2176
 
 $script:UnicodeToCce = [byte[]]::new(256)
@@ -148,7 +148,7 @@ function Convert-CceToUnicode([int]$cp) {
         return [int]$script:CceTier1Bases[$b * 2] + (Get-CceTier1Offset $cp)
     }
     if ($cp -lt 67712) {
-        for ($b = 0; $b -lt 10; $b++) {
+        for ($b = 0; $b -lt 11; $b++) {
             $bb = Get-CceTier2CceBase $b
             $bs = [int]$script:CceTier2Table[$b * 2 + 1]
             if ($cp -ge $bb -and $cp -lt ($bb + $bs)) { return [int]$script:CceTier2Table[$b * 2] + ($cp - $bb) }
@@ -174,7 +174,7 @@ function Convert-UnicodeToCce([int]$u) {
             return $start + ($u - $base)
         }
     }
-    for ($b = 0; $b -lt 10; $b++) {
+    for ($b = 0; $b -lt 11; $b++) {
         $base = [int]$script:CceTier2Table[$b * 2]
         $size = [int]$script:CceTier2Table[$b * 2 + 1]
         if ($u -ge $base -and $u -lt ($base + $size)) { return (Get-CceTier2CceBase $b) + ($u - $base) }

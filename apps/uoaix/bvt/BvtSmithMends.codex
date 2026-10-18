@@ -1,0 +1,52 @@
+Chapter: BvtSmithMends
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-242 D6 on BvtWorkerDay's town, through cg-smith-service: answers a bit per check. 1 a day's service on unworn gear
+ mends and tries nothing; 2 the first foot guard's longsword is durable and its shirt (layer 5) is not (cg-durable, what
+ gear-worn counts); 4 the longsword worn by 5 is tried by the next service and its hits come back; 8 the fighter wears
+ the 1998 Warrior's ringmail tunic and chainmail coif with both hands empty, so it still buys the smith's longsword;
+ 16 its tunic worn by 5 is tried by the next service; 31 is all, negative when not buildable.
+  bmd-dur : CompositeGame, Integer -> Integer
+  bmd-dur (owner) (item) = when world-get owner.items.world item is Err (_) -> 0 is Ok (o) -> id-read owner.durability owner.items.world item o.graphic
+  bmd-art : CompositeGame, Integer -> Integer
+  bmd-art (owner) (item) = if item == 0 then 0 else when world-get owner.items.world item is Err (_) -> 0 is Ok (o) -> o.graphic
+  bmd-tried : CompositeGame -> Integer
+  bmd-tried (owner) = peek-qword owner.powder-tally 0 + peek-qword owner.powder-tally 8
+  bmd-checks : Integer -> Integer
+  bmd-checks (unused) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.civic
+      is None -> -2
+      is Just (c) -> if list-length c.guards == 0 then -2
+        else let g = (list-at c.guards 0).serial
+        in let sword = gmb-layer owner.items g 1 0
+        in let shirt = gmb-layer owner.items g 5 0
+        in if sword == 0 | shirt == 0 then -3
+        else let t0 = bmd-tried owner
+        in let idle = cg-smith-service owner 1
+        in let quiet = if bmd-tried owner == t0 then 1 else 0
+        in let durable = if cg-durable owner sword & not (cg-durable owner shirt) then 2 else 0
+        in let graphic = when world-get owner.items.world sword is Err (_) -> 0 is Ok (o) -> o.graphic
+        in let worn = id-wear owner.durability owner.items.world sword graphic 5
+        in let low = bmd-dur owner sword
+        in let t1 = bmd-tried owner
+        in let m1 = peek-qword owner.powder-tally 0
+        in let ran = cg-smith-service owner 2
+        in let high = bmd-dur owner sword
+        in let mended = if low / 65536 < int-mod low 65536 & bmd-tried owner == t1 + 1 & (high / 65536 > low / 65536 | peek-qword owner.powder-tally 0 == m1) then 4 else 0
+        in let fs = when owner.fighter is None -> 0 is Just (f) -> f.serial
+        in let tunic = if fs == 0 then 0 else gmb-layer owner.items fs 13 0
+        in let kitted = if tunic /= 0 & bmd-art owner tunic == #13EC & bmd-art owner (gmb-layer owner.items fs 6 0) == #13BB
+          & gmb-layer owner.items fs 1 0 == 0 & gmb-layer owner.items fs 2 0 == 0 then 8 else 0
+        in let chafed = if tunic == 0 then 0 else id-wear owner.durability owner.items.world tunic #13EC 5
+        in let t2 = bmd-tried owner
+        in let served = cg-smith-service owner 3
+        in let fighter = if tunic /= 0 & bmd-tried owner == t2 + 1 then 16 else 0
+        in quiet + durable + mended + kitted + fighter
+  bvt-smith-mends : Integer -> [Console] Integer
+  bvt-smith-mends (unused) = act
+    n <- bmd-checks 0
+    bvt-check ("the town smith's day service tries a foot guard's worn longsword and the fighter's worn ringmail, and leaves unworn gear alone; gear-worn counts only durable pieces; the fighter wears the 1998 Warrior's armour with empty hands (UOAIX-242 D6, code " & show n & ")") (n == 31)
+  end

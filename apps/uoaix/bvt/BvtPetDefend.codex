@@ -1,0 +1,51 @@
+Chapter: BvtPetDefend
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-195: a pet struck by anyone but its owner takes the striker as its foe (gws-pet-foe) under follow and stay; its
+ owner striking it makes no foe. Answers a bit per check: 1 a follower takes its striker, 2 a pet told to stay does
+ too, 4 its owner's blow makes no foe; 7 is all, -1 when the scenario cannot be built.
+  bpd-mobile : GameShard, Integer, Integer -> Integer
+  bpd-mobile (game) (x) (body) = when world-create game.world (__record-set (gs-mobile 0 x 1700 0 body 0) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bpd-checks : Integer -> Integer
+  bpd-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let master = bpd-mobile game 1420 400
+        in let striker = bpd-mobile game 1422 400
+        in let profile = gws-claim-profile g "horse" 0
+        in if master == 0 | striker == 0 | profile < 0 then -2
+        else let bm = cb-profile g.combat game master "Master" 20 1 2 0
+        in let bs = cb-profile g.combat game striker "Striker" 20 1 2 0
+        in when gws-summon g game profile 1421 1700 0 master (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (pet) -> let slot = list-at g.slots (gws-slot-of g pet 0)
+            in when world-get game.world master
+              is Err (_) -> -4
+              is Ok (m) -> when cb-ensure g.combat game pet
+                is Err (_) -> -5
+                is Ok (p) -> when cb-ensure g.combat game striker
+                  is Err (_) -> -6
+                  is Ok (s) -> when cb-ensure g.combat game master
+                    is Err (_) -> -7
+                    is Ok (o) -> let struck = cb-select g.combat game s p
+                      in let follows = gws-pet-foe g game slot p m == striker
+                      in let staying = __record-set slot "order" gws-order-stay
+                      in let stays = gws-pet-foe g game slot p m == striker
+                      in let calmed = cb-stop g.combat s
+                      in let peace = __record-set s "war" False
+                      in let followed = __record-set slot "order" gws-order-follow
+                      in let own = cb-select g.combat game o p
+                      in let spared = gws-pet-foe g game slot p m == 0
+                      in if not struck then -8
+                      else (if follows then 1 else 0) + (if stays then 2 else 0) + (if own & spared then 4 else 0)
+  bvt-pet-defend : Integer -> [Console] Integer
+  bvt-pet-defend (unused) = act
+    n <- bpd-checks 0
+    bvt-check ("a pet fights back whoever strikes it, its owner excepted (UOAIX-195, code " & show n & ")") (n == 7)
+  end

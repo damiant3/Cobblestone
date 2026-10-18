@@ -1,0 +1,146 @@
+Chapter: CastleGate
+  cites Uoaix chapter WorldDecoration
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameAccounts
+  cites Uoaix chapter GameCombatPackets
+  cites Uoaix chapter GameSession
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+ Castle Britain's east gate in the 1.25 client's map: the bridge (wooden boards 0x04AA, z 28) crosses the moat from
+ x 1409 to the castle gatehouse's outer arch at x 1399 (stone arches 0x0087 and 0x008B on y 1623 and 1628, walls on
+ y 1622 and 1629), so the portcullis stands in that arch on the bridge's z 28. Its pieces run along y, and 0x06F6 is
+ the portcullis art drawn along the y axis (0x06F5 is drawn along x), height 20, lifted 20 when open, with sounds 0xF0
+ opening and 0xEF closing (ServUO Portcullis.cs, BaseDoor). The client's statics carry the gate's own winch, 0x1EAC
+ "winch", on the gatehouse deck at 1398,1628,52; a static answers no double-click, so the working winch is the same art
+ as an item on that spot (the client draws an item over a static of its tile and z).
+ Worlds saved before a move hold 0x06F5 pieces at x 1414 and a lever 0x108C at 1415,1622 or 1398,1622 (inside the wall,
+ 18 below the deck, past the client view's 16); cgt-retire deletes them.
+
+  cgt-x : Integer = 1399
+  cgt-y : Integer = 1623
+  cgt-count : Integer = 6
+  cgt-z : Integer = 28
+  cgt-lift : Integer = 20
+  cgt-art : Integer = #06F6
+  cgt-winch-art : Integer = #1EAC
+  cgt-winch-x : Integer = 1398
+  cgt-winch-y : Integer = 1628
+  cgt-winch-z : Integer = 52
+  cgt-impassable : Integer = #40
+ Damian worked the winch from 1397,1627 and 1398,1627 on the deck (live 41755).
+  cgt-reach : Integer = 3
+  cgt-old-x : Integer = 1414
+  cgt-old-art : Integer = #06F5
+  cgt-old-winch-art : Integer = #108C
+  cgt-old-winch-x : Integer = 1415
+  cgt-old-winch-y : Integer = 1622
+  cgt-wall-winch-x : Integer = 1398
+  cgt-wall-winch-y : Integer = 1622
+
+  cgt-find : WorldTable, Integer, Integer -> Integer
+  cgt-find (world) (graphic) (serial) = if serial == 0 then 0
+    else when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.kind == 2 & o.container == 0 & o.graphic == graphic then serial else cgt-find world graphic (world-tile-next world serial)
+  cgt-at : WorldTable, Integer, Integer, Integer -> Integer
+  cgt-at (world) (x) (y) (graphic) = cgt-find world graphic (world-tile-first world x y)
+  cgt-piece : WorldTable, Integer -> Integer
+  cgt-piece (world) (i) = cgt-at world cgt-x (cgt-y + i) cgt-art
+  cgt-winch : WorldTable -> Integer
+  cgt-winch (world) = cgt-at world cgt-winch-x cgt-winch-y cgt-winch-art
+  cgt-retire-one : WorldTable, Integer -> Result Integer Text
+  cgt-retire-one (world) (serial) = if serial == 0 then Ok 0
+    else when world-delete world serial
+      is Err (e) -> Err e
+      is Ok (_) -> Ok 1
+  cgt-retire : WorldTable, Integer -> Result Integer Text
+  cgt-retire (world) (i) = if i == cgt-count then
+      (when cgt-retire-one world (cgt-at world cgt-old-winch-x cgt-old-winch-y cgt-old-winch-art)
+        is Err (e) -> Err e
+        is Ok (n) -> when cgt-retire-one world (cgt-at world cgt-wall-winch-x cgt-wall-winch-y cgt-old-winch-art)
+          is Err (e) -> Err e
+          is Ok (m) -> Ok (n + m))
+    else when cgt-retire-one world (cgt-at world cgt-old-x (cgt-y + i) cgt-old-art)
+      is Err (e) -> Err e
+      is Ok (n) -> when cgt-retire world (i + 1)
+        is Err (e) -> Err e
+        is Ok (m) -> Ok (n + m)
+
+  cgt-place : GsiState, Integer, Integer, Integer, Integer -> Result Integer Text
+  cgt-place (items) (x) (y) (z) (graphic) =
+    let fresh = gs-item 0 graphic 0
+    in let a = __record-set fresh "x" x
+    in let b = __record-set fresh "y" y
+    in let c = __record-set fresh "z" z
+    in when world-create items.world fresh
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register items serial 0 0 False False < 0 then Err "castle gate item registration" else Ok serial
+  cgt-open : WorldTable -> Boolean
+  cgt-open (world) = let serial = cgt-piece world 0
+    in if serial == 0 then False else when world-get world serial is Err (_) -> False is Ok (o) -> o.z == cgt-z + cgt-lift
+  cgt-add-all : List WdState, Integer, Integer, Boolean, Integer -> Result Integer Text
+  cgt-add-all (decos) (x) (y) (on) (i) = if i == list-length decos then Ok 0
+    else when wd-extra-add (list-at decos i) x y cgt-z cgt-lift cgt-impassable on
+      is Err (e) -> Err e
+      is Ok (_) -> cgt-add-all decos x y on (i + 1)
+  cgt-set-all : List WdState, Integer, Integer, Boolean, Integer -> Result Integer Text
+  cgt-set-all (decos) (x) (y) (on) (i) = if i == list-length decos then Ok 0
+    else when wd-extra-set (list-at decos i) x y on
+      is Err (e) -> Err e
+      is Ok (_) -> cgt-set-all decos x y on (i + 1)
+  cgt-ensure-pieces : GsiState, List WdState, Boolean, Integer, Integer -> Result Integer Text
+  cgt-ensure-pieces (items) (decos) (open) (i) (placed) = if i == cgt-count then Ok placed
+    else let made = if cgt-piece items.world i /= 0 then Ok 0 else cgt-place items cgt-x (cgt-y + i) (if open then cgt-z + cgt-lift else cgt-z) cgt-art
+    in when made
+      is Err (e) -> Err e
+      is Ok (serial) -> when cgt-add-all decos cgt-x (cgt-y + i) (not open) 0
+        is Err (e) -> Err e
+        is Ok (_) -> cgt-ensure-pieces items decos open (i + 1) (if serial > 0 then placed + 1 else placed)
+ A world founds the portcullis raised, so the castle's kitchen staff come and go; Lord British closes it with the winch
+ (root, 2026-10-09, UOAIX-157).
+  cgt-founded-open : Boolean = True
+  cgt-ensure : GsiState, List WdState -> Result Integer Text
+  cgt-ensure (items) (decos) = let open = if cgt-piece items.world 0 == 0 then cgt-founded-open else cgt-open items.world
+    in when cgt-ensure-pieces items decos open 0 0
+      is Err (e) -> Err e
+      is Ok (placed) -> if cgt-winch items.world /= 0 then Ok placed
+        else when cgt-place items cgt-winch-x cgt-winch-y cgt-winch-z cgt-winch-art
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (placed + 1)
+
+  cgt-blocked : WorldTable, Integer -> Boolean
+  cgt-blocked (world) (i) = if i == cgt-count then False
+    else wd-occupied world cgt-x (cgt-y + i) cgt-z 0 | cgt-blocked world (i + 1)
+  cgt-move : WorldTable, List WdState, Boolean, Integer -> Result Integer Text
+  cgt-move (world) (decos) (opening) (i) = if i == cgt-count then Ok 0
+    else when world-get world (cgt-piece world i)
+      is Err (e) -> Err e
+      is Ok (o) -> let raised = __record-set o "z" (if opening then cgt-z + cgt-lift else cgt-z)
+        in when world-update world raised
+          is Err (e) -> Err e
+          is Ok (_) -> when cgt-set-all decos cgt-x (cgt-y + i) (not opening) 0
+            is Err (e) -> Err e
+            is Ok (_) -> cgt-move world decos opening (i + 1)
+  cgt-toggle : WorldTable, List WdState -> Result GameReply Text
+  cgt-toggle (world) (decos) = let opening = not (cgt-open world)
+    in if not opening & cgt-blocked world 0 then Ok (gsi-denied "The gateway is blocked.")
+    else when cgt-move world decos opening 0
+      is Err (e) -> Err e
+      is Ok (_) -> when world-get world (cgt-piece world 0)
+        is Err (e) -> Err e
+        is Ok (first) -> Ok (gs-reply [cbp-sound (if opening then #F0 else #EF) first] (if opening then "castle-gate:open" else "castle-gate:close"))
+
+  cgt-handler : List WdState, GsiState, GameShard, GameInput, List Integer -> Result (Maybe GameReply) Text
+  cgt-handler (decos) (items) (game) (input) (packet) =
+    if list-length packet /= 5 | list-at packet 0 /= 6 then Ok None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let winch = cgt-winch items.world
+    in if winch == 0 | serial /= winch then Ok None
+    else if not (ga-is-british game.accounts) then Ok (Just (gsi-denied "Only Lord British may work the winch."))
+    else when world-get game.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (me) -> if walk-abs (me.x - cgt-winch-x) > cgt-reach | walk-abs (me.y - cgt-winch-y) > cgt-reach then Ok (Just (gsi-denied "That is out of reach."))
+        else when cgt-toggle items.world decos
+          is Err (e) -> Err e
+          is Ok (reply) -> Ok (Just reply)

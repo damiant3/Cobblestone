@@ -1,0 +1,38 @@
+Chapter: BvtBan
+  cites Uoaix chapter CompositePaging
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvt-ban-pad : List Integer, Integer, List Integer -> List Integer
+  bvt-ban-pad (bytes) (i) (out) = if i == 30 then out
+    else bvt-ban-pad bytes (i + 1) (list-push out (if i < list-length bytes then list-at bytes i else 0))
+ 0x80 account login: name at bytes 1-30, password at 31-60.
+  bvt-ban-login : List Integer, List Integer -> List Integer
+  bvt-ban-login (name) (password) = [128] & bvt-ban-pad name 0 [] & bvt-ban-pad password 0 [] & [0]
+  bvt-ban-refused : Result Integer Text -> Text
+  bvt-ban-refused (r) = when r
+    is Err (e) -> e
+    is Ok (_) -> ""
+  bvt-ban-bob : List Integer -> Boolean
+  bvt-ban-bob (name) = if list-length name /= 3 then False else list-at name 0 == 98 & list-at name 1 == 111 & list-at name 2 == 98
+  bvt-ban : Integer -> [Console] Integer
+  bvt-ban (unused) = let table = ga-new ga-dev
+    in let made = ga-create table [98, 111, 98] [112, 119]
+    in let slot = poke-qword (ga-slots table 1) (2 * 160) 4242
+    in act
+      a <- bvt-check "a character's serial names the account that owns it, and an unknown serial none" (is-ok made & ga-owner table 4242 0 == 1 & ga-owner table 4243 0 < 0)
+      banned <- ga-set-ban table 1 True
+      refused <- bvt-ban-refused (ga-admit table (bvt-ban-login [98, 111, 98] [112, 119]) 1 31)
+      wrong <- bvt-ban-refused (ga-admit table (bvt-ban-login [98, 111, 98] [112, 120]) 1 31)
+      b <- bvt-check "a banned account's login is refused as banned (0x82 reason 2), a wrong password still as a bad password" (ga-banned table 1 & refused == ga-banned-text & wrong == "account password refused" & ga-find table [66, 79, 66] 0 == 1)
+      buf <- alloc-bytes ga-bytes
+      encoded <- ga-encode table buf
+      kept <- ga-decode-valid buf & ga-banned (ga-decode buf) 1 & not (ga-banned (ga-decode buf) 0)
+      bad <- poke-byte (ga-at buf 1) ga-ban-at 2
+      c <- bvt-check "the ban survives a save and restore, and a corrupt flag refuses the restore" (kept & not (ga-decode-valid buf))
+      lifted <- ga-set-ban table 1 False
+      d <- bvt-check "an unbanned account logs in again" (bvt-ban-refused (ga-admit table (bvt-ban-login [98, 111, 98] [112, 119]) 1 31) == "" & not (ga-banned table 1))
+      said <- [3, 0, 20, 0, 0, 0, 0, 0] & [91, 117, 110, 98, 97, 110, 32, 98, 111, 98, 0]
+      e <- bvt-check "[unban bob names the account; a name with a space or [unban alone names none" (bvt-ban-bob (cp-unban-name said) & list-length (cp-unban-name ([3, 0, 20, 0, 0, 0, 0, 0] & [91, 117, 110, 98, 97, 110, 32, 98, 32, 98, 0])) == 0 & list-length (cp-unban-name ([3, 0, 15, 0, 0, 0, 0, 0] & [91, 117, 110, 98, 97, 110, 0])) == 0)
+      a + b + c + d + e
+    end

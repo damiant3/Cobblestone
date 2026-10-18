@@ -1,6 +1,6 @@
 # Instrument skills and profession kits
 
-`Skills` implements the native stage K rules. `sk-new capacity` allocates
+`Skills` implements the instrument and kit rules. `sk-new capacity` allocates
 one retained state for up to 4096 characters and 128 placed NPC trainers.
 The owner maps immutable character identities to returned local indices.
 Allocate the component below request scratch and serialize access.
@@ -17,11 +17,11 @@ This component owns instrument proficiency and the equipped instrument set,
 not the world's full inventory, purse or item serial table. It permits one
 carried instrument of each kind. `held`, `blessed` and `wear` must be bound
 to the corresponding server-owned inventory objects. Ordinary duplicates
-remain in external inventory until selected. The current GameSession login,
-economy aggregate stock, combat and checkpoint codecs do not yet call these
-rules. No live-client or crash-recovery claim follows from the native proof.
-An image owner must persist skill state and inventory changes together before
-enabling these actions. No old checkpoint is silently reinterpreted.
+remain in external inventory until selected. No live server chapter calls
+these rules yet: an image owner must persist skill state and inventory
+changes together before enabling them. The live composite's one piece of this
+is `StarterKit`: a new character's blessed starter tool and meal. No old checkpoint is silently
+reinterpreted.
 
 ## Catalog and tiers
 
@@ -105,10 +105,7 @@ Storage is fixed per configured character plus a fixed trainer table.
 Identity admission scans used characters; action lookup, practice, training
 and use perform constant work. Death scans 32 instrument slots. No action
 grows a history or retains request pointers. The owner reclaims transient
-request wrappers at its scratch boundary. Compiler heap/time is unchanged.
-On 2026-10-04, the normal and poison proofs each measured 57,568 retained
-bytes for capacity 32 and zero additional retained bytes across 2,000 uses
-with the caller's per-operation scratch boundary.
+request wrappers at its scratch boundary.
 
 `proofs/SkillsProof.codex` grades every starting kit, duplicate refusal,
 common/big ore, normal wear, repeated blessed use, death/revival, carpentry

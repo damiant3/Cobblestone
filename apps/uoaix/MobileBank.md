@@ -41,6 +41,16 @@ near the vendor, and requires both stale checkout and fresh quote refusal.
 
 Say `bank` or `banker bank` within two tiles and sixteen height units of a
 registered banker. The range and speech bindings are this shard's policy.
+Every bank building keeps its own box per character (D-17): the banks are
+ServUO `Data/Common.map`'s bank rows on maps 0 and 1 (`gmb-banks-x`/`-y`,
+the First Bank of Britain first), a box's health is its bank's index, and a
+banker opens, and `deposit`/`withdraw` move through, the box at the bank
+nearest that banker (`gmb-local-box`). A craft within `gmb-link` tiles of a
+bank takes what the backpack lacks from the crafter's box at the nearest
+bank, never another bank's (`gmb-linked`, `gcr-select`). A purchase the
+purse and the pack's coin leave short takes the rest from the buyer's box at
+the bank nearest the shopkeeper, copper first, then silver, then gold, only
+as many coins as it needs, as a D-10 currency deposit (`gv-bank-coin`).
 The port lazily creates/reuses an immovable layer29 box, emits 2E before
 24/3C, and records the opening position. Every direct or nested item-family bank access
 checks owner, connection and that position before general item handling.

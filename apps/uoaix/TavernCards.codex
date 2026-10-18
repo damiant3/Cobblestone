@@ -1,0 +1,536 @@
+Chapter: TavernCards
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameVendorState
+  cites Games chapter CrazyEights
+  cites Games chapter GoFish
+  cites Games chapter Poker
+  cites Games chapter Blackjack
+
+ Card games at the tavern tables (UOAIX-189, Damian 2026-10-09: "it would also be cool to get some card games working
+ too ... we might need gumps to play the game"; two players and spectators as backgammon). A table is a deck of playing
+ cards (TILEDATA 0x0FA2, 0x0FA3) lying where ServUO's britain.cfg decoration lays one; boot installs a fixed deck where
+ none lies. The first player to double-click a deck sits and chooses the game from a gump: Crazy Eights, Go Fish or
+ five-card draw Poker for two (the next player to double-click sits opposite and deals), or Blackjack against the house
+ for one. Others watch. A table frees after a game ends and is left, or five minutes with no play.
+  tcd-art : Integer = #0FA2
+  tcd-tables : List (List Integer) = [[1492, 1688, 26], [1497, 1681, 23], [1497, 1696, 24], [1435, 1715, 23], [1548, 1749, 39],
+    [1555, 1772, 12], [1554, 1769, 14]]
+ A table's 512 bytes: qwords deck, seat 0, seat 1, phase (0 free, 1 seated and choosing or waiting, 2 playing), last
+ play, then the game's own (tcd-kind at qword 10); the games' cards from byte 96; up to eight watchers' serials in
+ qwords 56 to 63 (byte 448, past every game's bytes).
+  tcd-stride : Integer = 512
+  tcd-bytes : Integer = 3584
+  tcd-gump-id : Integer = #43415244
+  tcd-idle-ms : Integer = 300000
+  tcd-draw : Integer = 60
+  tcd-kind : Integer = 10
+  tcd-k-eights : Integer = 1
+  tcd-k-fish : Integer = 2
+  tcd-k-poker : Integer = 3
+  tcd-k-jack : Integer = 4
+  tcd-watch-at : Integer = 56
+  tcd-watch-slots : Integer = 8
+  TcdOut = record { reply : GameReply, other : Integer, told : List (List Integer), watchers : List Integer, table : Integer }
+  tcd-at : Integer, Integer, Integer -> Integer
+  tcd-at (buf) (t) (field) = peek-qword buf (t * tcd-stride + field * 8)
+  tcd-put : Integer, Integer, Integer, Integer -> Integer
+  tcd-put (buf) (t) (field) (value) = poke-qword buf (t * tcd-stride + field * 8) value
+  tcd-base : Integer, Integer -> Integer
+  tcd-base (buf) (t) = buf + t * tcd-stride
+
+Section: Tables
+
+  tcd-deck-art : Integer -> Boolean
+  tcd-deck-art (art) = art == #0FA2 | art == #0FA3
+  tcd-deck-at : WorldTable, Integer, Integer -> Integer
+  tcd-deck-at (world) (serial) (left) = if serial == 0 | left == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.container == 0 & tcd-deck-art o.graphic) then serial
+    else tcd-deck-at world (world-tile-next world serial) (left - 1)
+  tcd-install : GsiState, Integer -> Integer
+  tcd-install (items) (buf) = tcd-install-from items buf 0
+  tcd-install-from : GsiState, Integer, Integer -> Integer
+  tcd-install-from (items) (buf) (t) = if t >= list-length tcd-tables then 0
+    else let spot = list-at tcd-tables t
+    in let found = tcd-deck-at items.world (world-tile-first items.world (list-at spot 0) (list-at spot 1)) 64
+    in let deck = if found /= 0 then found else tcd-make items spot
+    in let kept = tcd-put buf t 0 deck
+    in tcd-install-from items buf (t + 1)
+  tcd-make : GsiState, List Integer -> Integer
+  tcd-make (items) (spot) = if world-room items.world <= 0 then 0
+    else when world-create items.world (WorldObject { serial = 0, kind = 2, x = list-at spot 0, y = list-at spot 1, z = list-at spot 2, graphic = tcd-art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (deck) -> if gsi-register items deck 0 0 False False /= 0 then 0 else let touched = world-touch items.world in deck
+  tcd-table-of : Integer, Integer, Integer -> Integer
+  tcd-table-of (buf) (deck) (t) = if t >= list-length tcd-tables then -1 else if deck /= 0 & tcd-at buf t 0 == deck then t else tcd-table-of buf deck (t + 1)
+  tcd-sitting-at : Integer, Integer, Integer -> Integer
+  tcd-sitting-at (buf) (serial) (t) = if t >= list-length tcd-tables then -1
+    else if tcd-at buf t 3 >= 1 & (tcd-at buf t 1 == serial | tcd-at buf t 2 == serial) then t else tcd-sitting-at buf serial (t + 1)
+  tcd-seated-at : Integer, Integer, Integer -> Integer
+  tcd-seated-at (buf) (serial) (t) = let found = tcd-sitting-at buf serial t
+    in if found < 0 then -1 else if tcd-at buf found 3 == 2 then found else tcd-seated-at buf serial (found + 1)
+  tcd-reset : Integer, Integer -> Integer
+  tcd-reset (buf) (t) = let a = tcd-put buf t 1 0 in let b = tcd-put buf t 2 0 in let c = tcd-put buf t tcd-kind 0 in let d = tcd-watch-clear buf t 0 in tcd-put buf t 3 0
+ Watchers (Damian's games: two players, everyone else spectates): a double-click on a game in play adds one, closing the
+ view drops it, and a freed table forgets them all.
+  tcd-watch-clear : Integer, Integer, Integer -> Integer
+  tcd-watch-clear (buf) (t) (k) = if k >= tcd-watch-slots then 0 else let a = tcd-put buf t (tcd-watch-at + k) 0 in tcd-watch-clear buf t (k + 1)
+  tcd-watching : Integer, Integer, Integer, List Integer -> List Integer
+  tcd-watching (buf) (t) (k) (out) = if k >= tcd-watch-slots then out
+    else let w = tcd-at buf t (tcd-watch-at + k) in tcd-watching buf t (k + 1) (if w == 0 then out else out & [w])
+  tcd-watch-slot : Integer, Integer, Integer, Integer -> Integer
+  tcd-watch-slot (buf) (t) (serial) (k) = if k >= tcd-watch-slots then -1 else if tcd-at buf t (tcd-watch-at + k) == serial then k else tcd-watch-slot buf t serial (k + 1)
+ A full table replaces the slot its serial picks.
+  tcd-watch-add : Integer, Integer, Integer -> Integer
+  tcd-watch-add (buf) (t) (me) = if tcd-watch-slot buf t me 0 >= 0 then 0
+    else let free = tcd-watch-slot buf t 0 0
+    in tcd-put buf t (tcd-watch-at + (if free >= 0 then free else int-mod me tcd-watch-slots)) me
+  tcd-watch-drop : Integer, Integer, Integer -> Integer
+  tcd-watch-drop (buf) (me) (t) = if t >= list-length tcd-tables then 0
+    else let k = tcd-watch-slot buf t me 0
+    in let a = if k >= 0 then tcd-put buf t (tcd-watch-at + k) 0 else 0
+    in tcd-watch-drop buf me (t + 1)
+
+Section: Bytes
+
+ Each game's state is rebuilt from the table's bytes for one action and written back, so nothing a play allocates is
+ kept past the heap compaction (L-BELOWMARK).
+  tcd-bytes-list : Integer, Integer, Integer, List Integer -> List Integer
+  tcd-bytes-list (at) (n) (i) (out) = if i >= n then out else tcd-bytes-list at n (i + 1) (list-push out (peek-byte at i))
+  tcd-held : Integer, Integer, Integer -> Integer
+  tcd-held (at) (i) (acc) = if i >= 52 then acc else tcd-held at (i + 1) (acc + peek-byte at i)
+  tcd-write-bytes : Integer, List Integer, Integer -> Integer
+  tcd-write-bytes (at) (xs) (i) = if i >= list-length xs then 0 else let a = poke-byte at i (list-at xs i) in tcd-write-bytes at xs (i + 1)
+  tcd-q : Integer, Integer, Integer -> Integer
+  tcd-q (buf) (t) (at) = peek-qword (tcd-base buf t) at
+  tcd-qset : Integer, Integer, Integer, Integer -> Integer
+  tcd-qset (buf) (t) (at) (value) = poke-qword (tcd-base buf t) at value
+
+Section: Words
+
+  tcd-ranks : List Text = ["Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Jack", "Queen", "King", "Ace"]
+  tcd-plural : List Text = ["Twos", "Threes", "Fours", "Fives", "Sixes", "Sevens", "Eights", "Nines", "Tens", "Jacks", "Queens", "Kings", "Aces"]
+  tcd-suits : List Text = ["Clubs", "Diamonds", "Hearts", "Spades"]
+  tcd-card : Integer -> Text
+  tcd-card (c) = list-at tcd-ranks (int-mod c 13) & " of " & list-at tcd-suits (c / 13)
+  tcd-cards-text : List Integer, Integer, Integer, Text -> Text
+  tcd-cards-text (cs) (i) (n) (acc) = if i >= n then acc else tcd-cards-text cs (i + 1) n (if i == 0 then tcd-card (list-at cs i) else acc & ", " & tcd-card (list-at cs i))
+
+Section: Gump
+
+  tcd-ucs2 : List Integer, Text, Integer -> List Integer
+  tcd-ucs2 (bytes) (text) (i) = if i >= text-length text then bytes
+    else tcd-ucs2 (gp-put16 bytes (to-unicode (char-code (char-at text i)))) text (i + 1)
+ Gump 2600's pieces in the 1998 GUMPIDX: corners 47 by 44 (2600, 2602) and 44 by 40 (2606, 2608) with concave cutouts,
+ left edge 34 wide (2603), right edge 45 (2605). Text starts at x 52, y 52, inside the corners; the 460-wide panel
+ leaves about 355 pixels, 46 characters of the client's font, and 34 from the value column at x 150.
+  tcd-width : Integer = 460
+  tcd-left : Integer = 52
+  tcd-top : Integer = 52
+  tcd-column : Integer = 150
+  tcd-wide : Integer = 46
+  tcd-narrow : Integer = 34
+  tcd-row : Integer = 20
+  tcd-gap : Integer = 10
+ Button 247 is 63 by 23, so a label starts 12 pixels past its right edge.
+  tcd-label-x : Integer = 127
+  TcdLayout = record { layout : Text, texts : List Text, y : Integer }
+  tcd-space : Text, Integer -> Integer
+  tcd-space (t) (i) = if i <= 0 then 0 else if to-unicode (char-code (char-at t i)) == 32 then i else tcd-space t (i - 1)
+  tcd-bar : Text, Integer -> Integer
+  tcd-bar (t) (i) = if i >= text-length t then -1 else if to-unicode (char-code (char-at t i)) == 124 then i else tcd-bar t (i + 1)
+ Pieces of at most width characters, broken at the last space that fits.
+  tcd-wrap : Text, Integer -> List Text
+  tcd-wrap (t) (width) = if text-length t <= width then [t]
+    else let cut = tcd-space t width
+    in let at = if cut <= 0 then width else cut
+    in let rest = if cut <= 0 then at else at + 1
+    in [substring t 0 at] & tcd-wrap (substring t rest (text-length t - rest)) width
+  tcd-lay : TcdLayout, Integer, Integer, Text -> TcdLayout
+  tcd-lay (a) (x) (y) (t) = TcdLayout { layout = a.layout & "{ text " & show x & " " & show y & " 0 " & show (list-length a.texts) & " }", texts = a.texts & [t], y = a.y }
+  tcd-lay-rows : TcdLayout, Integer, List Text, Integer -> TcdLayout
+  tcd-lay-rows (a) (x) (pieces) (i) = if i >= list-length pieces then a
+    else tcd-lay-rows (tcd-lay a x (a.y + i * tcd-row) (list-at pieces i)) x pieces (i + 1)
+  tcd-block : TcdLayout, Integer, List Text -> TcdLayout
+  tcd-block (a) (x) (pieces) = let b = tcd-lay-rows a x pieces 0 in TcdLayout { layout = b.layout, texts = b.texts, y = a.y + list-length pieces * tcd-row }
+ A line "" is a gap between groups; "Label|value" puts the label at the margin and the value, wrapped, in the column.
+  tcd-line : TcdLayout, Text -> TcdLayout
+  tcd-line (a) (line) = if line == "" then TcdLayout { layout = a.layout, texts = a.texts, y = a.y + tcd-gap }
+    else let bar = tcd-bar line 0
+    in if bar < 0 then tcd-block a tcd-left (tcd-wrap line tcd-wide)
+    else tcd-block (tcd-lay a tcd-left a.y (substring line 0 bar)) tcd-column (tcd-wrap (substring line (bar + 1) (text-length line - bar - 1)) tcd-narrow)
+  tcd-lines : TcdLayout, List Text, Integer -> TcdLayout
+  tcd-lines (a) (lines) (i) = if i >= list-length lines then a else tcd-lines (tcd-line a (list-at lines i)) lines (i + 1)
+  tcd-buttons : TcdLayout, List Integer, List Text, Integer -> TcdLayout
+  tcd-buttons (a) (ids) (labels) (i) = if i >= list-length ids then a
+    else let b = TcdLayout { layout = a.layout & "{ button " & show tcd-left & " " & show a.y & " 247 248 1 0 " & show (list-at ids i) & " }", texts = a.texts, y = a.y }
+    in let c = tcd-lay b tcd-label-x (a.y + 2) (list-at labels i)
+    in tcd-buttons (TcdLayout { layout = c.layout, texts = c.texts, y = a.y + 26 }) ids labels (i + 1)
+ The panel's layout and texts: its lines, then under "Your move:" a button per id with its label.
+  tcd-arrange : List Text, List Integer, List Text -> TcdLayout
+  tcd-arrange (lines) (ids) (labels) = let body = tcd-lines (TcdLayout { layout = "", texts = [], y = tcd-top }) lines 0
+    in if list-length ids == 0 then body else tcd-buttons (tcd-line (tcd-line body "") "Your move:") ids labels 0
+  tcd-texts : List Integer, List Text, Integer -> List Integer
+  tcd-texts (bytes) (lines) (i) = if i >= list-length lines then bytes
+    else let t = list-at lines i in tcd-texts (tcd-ucs2 (gp-put16 bytes (text-length t)) t 0) lines (i + 1)
+ A card table's 0xB0 (gump art 2600 the back, 247/248 a button); a button answers its id (0xB1).
+  tcd-panel : Integer, List Text, List Integer, List Text -> List Integer
+  tcd-panel (serial) (lines) (ids) (labels) = let a = tcd-arrange lines ids labels
+    in let layout = "{ page 0 }{ resizepic 0 0 2600 " & show tcd-width & " " & show (a.y + 50) & " }" & a.layout
+    in let head = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) tcd-gump-id) 60) 60) (text-length layout + 1)
+    in let counted = gp-put16 (gp-ascii head layout 0 (text-length layout + 1)) (list-length a.texts)
+    in sip-length (tcd-texts counted a.texts 0)
+  tcd-choices : List Integer = [101, 102, 103, 104]
+  tcd-chooser : Integer -> List Integer
+  tcd-chooser (serial) = tcd-panel serial ["Card table", "Choose a game for this table."] tcd-choices ["Crazy Eights, two players", "Go Fish, two players", "Draw Poker, two players", "Blackjack, against the house"]
+  tcd-name : Integer -> Text
+  tcd-name (kind) = list-at ["cards", "Crazy Eights", "Go Fish", "Poker", "Blackjack"] (max 0 (min 4 kind))
+
+Section: Crazy Eights
+
+ Qwords 5 to 9: player on turn, top rank, top suit, suit in force, stock size; each seat's 52 held flags from byte 96,
+ the stock from byte 200.
+  tcd-state : Integer, Integer -> CrazyEightsState
+  tcd-state (buf) (t) = let base = tcd-base buf t
+    in CrazyEightsState { hands = tcd-bytes-list (base + 96) 104 0 [], hand-sizes = [tcd-held (base + 96) 0 0, tcd-held (base + 148) 0 0],
+      draw-pile = tcd-bytes-list (base + 200) 52 0 [], pile-size = tcd-at buf t 9, discard-rank = tcd-at buf t 6, discard-suit = tcd-at buf t 7,
+      current-player = tcd-at buf t 5, num-players = 2, direction = 1, game-over = False, winner = 0, declared-suit = tcd-at buf t 8 }
+  tcd-store : Integer, Integer, CrazyEightsState -> Integer
+  tcd-store (buf) (t) (s) = let base = tcd-base buf t
+    in let a = tcd-write-bytes (base + 96) s.hands 0
+    in let b = tcd-write-bytes (base + 200) s.draw-pile 0
+    in let c = tcd-put buf t 5 s.current-player
+    in let d = tcd-put buf t 6 s.discard-rank
+    in let e = tcd-put buf t 7 s.discard-suit
+    in let f = tcd-put buf t 8 s.declared-suit
+    in tcd-put buf t 9 s.pile-size
+  tcd-hand : CrazyEightsState, Integer, Integer, List Integer -> List Integer
+  tcd-hand (s) (seat) (c) (out) = if c >= 52 then out else tcd-hand s seat (c + 1) (if ce-hand-has s seat c then list-push out c else out)
+  tcd-card-ids : List Integer, Integer, List Integer -> List Integer
+  tcd-card-ids (cards) (i) (out) = if i >= list-length cards then out else tcd-card-ids cards (i + 1) (list-push out (list-at cards i + 1))
+  tcd-card-names : List Integer, Integer, List Text -> List Text
+  tcd-card-names (cards) (i) (out) = if i >= list-length cards then out else tcd-card-names cards (i + 1) (out & [tcd-card (list-at cards i)])
+  tcd-gump : Integer, Integer, Integer -> List Integer
+  tcd-gump (buf) (t) (seat) = let s = tcd-state buf t
+    in let cards = tcd-hand s seat 0 []
+    in let mine = s.current-player == seat
+    in let lines = ["Crazy Eights", (if mine then "Your turn: play a card or draw." else "Your opponent's turn."), "",
+      "Pile|" & tcd-card (ce-top s), "Follow|" & list-at tcd-suits s.declared-suit & " or any eight",
+      "Opponent|" & show (list-at s.hand-sizes (1 - seat)) & " cards", "Stock|" & show s.pile-size & " cards"]
+    in if mine then tcd-panel (tcd-at buf t (1 + seat)) lines (tcd-card-ids cards 0 [] & [tcd-draw]) (tcd-card-names cards 0 [] & ["Draw a card"])
+    else tcd-panel (tcd-at buf t (1 + seat)) (lines & ["", "Your hand|" & tcd-cards-text cards 0 (list-length cards) ""]) [] []
+  tcd-eights-deal : Integer, Integer, Integer -> Integer
+  tcd-eights-deal (buf) (t) (seed) = tcd-store buf t (ce-init seed 2)
+  tcd-eights : Integer, Integer, Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-eights (buf) (t) (seat) (other) (button) (now) = let s = tcd-state buf t
+    in if s.current-player /= seat then tcd-out (gs-reply [gs-system "It is not your turn.", tcd-gump buf t seat] "cards:wait") 0 []
+    else if button == tcd-draw then tcd-after buf t seat other (ce-advance (ce-draw-one s seat)) "You draw a card." "Your opponent draws a card." now
+    else if button < 1 | button > 52 then tcd-out (gs-reply [] "cards:button") 0 []
+    else if not (ce-can-play s seat (button - 1)) then
+      tcd-out (gs-reply [gs-system ("The " & tcd-card (button - 1) & " does not follow the pile."), tcd-gump buf t seat] "cards:refused") 0 []
+    else let played = ce-play-card s seat (button - 1)
+    in let named = if int-mod (button - 1) 13 == 6 then " and name " & list-at tcd-suits played.declared-suit else ""
+    in let theirs = "Your opponent plays the " & tcd-card (button - 1) & (if int-mod (button - 1) 13 == 6 then " and names " & list-at tcd-suits played.declared-suit else "") & "."
+    in tcd-after buf t seat other played ("You play the " & tcd-card (button - 1) & named & ".") theirs now
+  tcd-after : Integer, Integer, Integer, Integer, CrazyEightsState, Text, Text, Integer -> Maybe TcdOut
+  tcd-after (buf) (t) (seat) (other) (s) (mine) (theirs) (now) = let stored = tcd-store buf t s
+    in let stamped = tcd-put buf t 4 now
+    in if s.game-over then
+      (let result = if s.winner == seat then "You win the game of Crazy Eights." else if s.winner < 0 then "The game of Crazy Eights is drawn." else "Your opponent wins the game of Crazy Eights."
+      in let their = if s.winner == 1 - seat then "You win the game of Crazy Eights." else if s.winner < 0 then "The game of Crazy Eights is drawn." else "Your opponent wins the game of Crazy Eights."
+      in let freed = tcd-reset buf t
+      in tcd-out (gs-reply [gs-system mine, gs-system result] "cards:over") other [gs-system theirs, gs-system their])
+    else tcd-out (gs-reply [gs-system mine, tcd-gump buf t seat] "cards:play") other [gs-system theirs, tcd-gump buf t (1 - seat)]
+
+Section: Go Fish
+
+ The hands and stock lie as Crazy Eights'; qword 5 the asker on turn, 9 the stock size, 6 and 7 the books, 8 the
+ books in all, 11 the end (all below byte 96, where the hands begin). A seat asks the other seat for a rank it holds
+  tcd-fish-state : Integer, Integer -> GoFishState
+  tcd-fish-state (buf) (t) = let base = tcd-base buf t
+    in GoFishState { hands = tcd-bytes-list (base + 96) 104 0 [], hand-sizes = [tcd-held (base + 96) 0 0, tcd-held (base + 148) 0 0],
+      draw-pile = tcd-bytes-list (base + 200) 52 0 [], pile-size = tcd-at buf t 9, books = [tcd-at buf t 6, tcd-at buf t 7],
+      current-player = tcd-at buf t 5, num-players = 2, game-over = tcd-at buf t 11 == 1, total-books = tcd-at buf t 8 }
+  tcd-fish-store : Integer, Integer, GoFishState -> Integer
+  tcd-fish-store (buf) (t) (s) = let base = tcd-base buf t
+    in let a = tcd-write-bytes (base + 96) s.hands 0
+    in let b = tcd-write-bytes (base + 200) s.draw-pile 0
+    in let c = tcd-put buf t 5 s.current-player
+    in let d = tcd-put buf t 9 s.pile-size
+    in let e = tcd-put buf t 6 (list-at s.books 0)
+    in let f = tcd-put buf t 7 (list-at s.books 1)
+    in let g = tcd-put buf t 8 s.total-books
+    in tcd-put buf t 11 (if s.game-over then 1 else 0)
+  tcd-fish-hand : GoFishState, Integer, Integer, List Integer -> List Integer
+  tcd-fish-hand (s) (seat) (c) (out) = if c >= 52 then out else tcd-fish-hand s seat (c + 1) (if gf-hand-has s seat c then list-push out c else out)
+  tcd-fish-ranks : GoFishState, Integer, Integer, List Integer -> List Integer
+  tcd-fish-ranks (s) (seat) (r) (out) = if r >= 13 then out else tcd-fish-ranks s seat (r + 1) (if gf-count-rank-in-hand s seat r > 0 then list-push out (200 + r) else out)
+  tcd-fish-labels : GoFishState, Integer, List Integer, Integer, List Text -> List Text
+  tcd-fish-labels (s) (seat) (ids) (i) (out) = if i >= list-length ids then out
+    else let r = list-at ids i - 200 in tcd-fish-labels s seat ids (i + 1) (out & ["Ask for " & list-at tcd-plural r & " (you hold " & show (gf-count-rank-in-hand s seat r) & ")"])
+  tcd-fish-gump : Integer, Integer, Integer -> List Integer
+  tcd-fish-gump (buf) (t) (seat) = let s = tcd-fish-state buf t
+    in let cards = tcd-fish-hand s seat 0 []
+    in let mine = s.current-player == seat
+    in let lines = ["Go Fish", (if mine then "Your turn: ask for a rank you hold." else "Your opponent's turn."), "",
+      "Your books|" & show (list-at s.books seat), "Their books|" & show (list-at s.books (1 - seat)),
+      "Opponent|" & show (list-at s.hand-sizes (1 - seat)) & " cards", "Stock|" & show s.pile-size & " cards", "",
+      "Your hand|" & tcd-cards-text cards 0 (list-length cards) ""]
+    in let ids = if mine then tcd-fish-ranks s seat 0 [] else []
+    in tcd-panel (tcd-at buf t (1 + seat)) lines ids (tcd-fish-labels s seat ids 0 [])
+  tcd-fish-deal : Integer, Integer, Integer -> Integer
+  tcd-fish-deal (buf) (t) (seed) = tcd-fish-store buf t (gf-check-books (gf-check-books (gf-init seed 2) 0) 1)
+  tcd-fish : Integer, Integer, Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-fish (buf) (t) (seat) (other) (button) (now) = let s = tcd-fish-state buf t
+    in if s.current-player /= seat then tcd-out (gs-reply [gs-system "It is not your turn.", tcd-fish-gump buf t seat] "cards:wait") 0 []
+    else if button < 200 | button > 212 then tcd-out (gs-reply [] "cards:button") 0 []
+    else if gf-count-rank-in-hand s seat (button - 200) == 0 then tcd-out (gs-reply [gs-system "You may ask only for a rank you hold.", tcd-fish-gump buf t seat] "cards:refused") 0 []
+    else let r = button - 200
+    in let given = gf-count-rank-in-hand s (1 - seat) r
+    in let top = if s.pile-size > 0 then list-at s.draw-pile 0 else -1
+    in let s2 = gf-resolve-ask s seat (1 - seat) r
+    in let asked = "for " & list-at tcd-plural r
+    in let mine = if given > 0 then "You ask " & asked & " and your opponent hands over " & show given & "." else if top < 0 then "You ask " & asked & ": go fish, but the stock is empty." else "You ask " & asked & ": go fish. You draw the " & tcd-card top & "."
+    in let theirs = if given > 0 then "Your opponent asks " & asked & " and you hand over " & show given & "." else "Your opponent asks " & asked & ": go fish."
+    in let stored = tcd-fish-store buf t s2
+    in let stamped = tcd-put buf t 4 now
+    in if s2.game-over then
+      (let b0 = list-at s2.books seat
+      in let b1 = list-at s2.books (1 - seat)
+      in let result = if b0 > b1 then "You win the game of Go Fish, " & show b0 & " books to " & show b1 & "." else if b0 < b1 then "Your opponent wins the game of Go Fish, " & show b1 & " books to " & show b0 & "." else "The game of Go Fish is drawn at " & show b0 & " books each."
+      in let their = if b1 > b0 then "You win the game of Go Fish, " & show b1 & " books to " & show b0 & "." else if b1 < b0 then "Your opponent wins the game of Go Fish, " & show b0 & " books to " & show b1 & "." else "The game of Go Fish is drawn at " & show b0 & " books each."
+      in let freed = tcd-reset buf t
+      in tcd-out (gs-reply [gs-system mine, gs-system result] "cards:over") other [gs-system theirs, gs-system their])
+    else tcd-out (gs-reply [gs-system mine, tcd-fish-gump buf t seat] "cards:ask") other [gs-system theirs, tcd-fish-gump buf t (1 - seat)]
+
+Section: Poker
+
+ The deck from byte 96, hands from bytes 148 and 153; qwords from byte 160: position, chips, bets, pot, stage, turn,
+ acts, folded, opener, winner, last act, done; each seat's discard marks at 272 and 280. Buttons: 301 fold, 302 call or
+ check, 303 bet or raise, 310 + i mark card i, 320 draw, 330 the next hand, 331 leave.
+  tcd-pk-state : Integer, Integer -> PokerTable
+  tcd-pk-state (buf) (t) = let base = tcd-base buf t
+    in PokerTable { deck = tcd-bytes-list (base + 96) 52 0 [], pos = tcd-q buf t 160, h0 = tcd-bytes-list (base + 148) 5 0 [], h1 = tcd-bytes-list (base + 153) 5 0 [],
+      chips0 = tcd-q buf t 168, chips1 = tcd-q buf t 176, bet0 = tcd-q buf t 184, bet1 = tcd-q buf t 192, pot = tcd-q buf t 200, stage = tcd-q buf t 208,
+      turn = tcd-q buf t 216, acted = tcd-q buf t 224, marked = 0, folded = tcd-q buf t 232, opener = tcd-q buf t 240, winner = tcd-q buf t 248,
+      last = tcd-q buf t 256, done = tcd-q buf t 264 == 1 }
+  tcd-pk-store : Integer, Integer, PokerTable -> Integer
+  tcd-pk-store (buf) (t) (p) = let base = tcd-base buf t
+    in let a = tcd-write-bytes (base + 96) p.deck 0
+    in let b = tcd-write-bytes (base + 148) p.h0 0
+    in let c = tcd-write-bytes (base + 153) p.h1 0
+    in let d = tcd-qset buf t 160 p.pos + tcd-qset buf t 168 p.chips0 + tcd-qset buf t 176 p.chips1 + tcd-qset buf t 184 p.bet0 + tcd-qset buf t 192 p.bet1
+    in let e = tcd-qset buf t 200 p.pot + tcd-qset buf t 208 p.stage + tcd-qset buf t 216 p.turn + tcd-qset buf t 224 p.acted + tcd-qset buf t 232 p.folded
+    in tcd-qset buf t 240 p.opener + tcd-qset buf t 248 p.winner + tcd-qset buf t 256 p.last + tcd-qset buf t 264 (if p.done then 1 else 0)
+  tcd-pk-deal : Integer, Integer, Integer, Integer, Integer -> Integer
+  tcd-pk-deal (buf) (t) (seed) (chips0) (chips1) = let fresh = pk-table-new seed
+    in let a = tcd-qset buf t 272 0 + tcd-qset buf t 280 0
+    in tcd-pk-store buf t (PokerTable { deck = fresh.deck, pos = fresh.pos, h0 = fresh.h0, h1 = fresh.h1, chips0 = chips0 - pk-ante, chips1 = chips1 - pk-ante,
+      bet0 = 0, bet1 = 0, pot = fresh.pot, stage = 0, turn = 0, acted = 0, marked = 0, folded = 0 - 1, opener = 0 - 1, winner = 0 - 1, last = 0 - 1, done = False })
+  tcd-pk-marks : Integer, Integer, Integer -> Integer
+  tcd-pk-marks (buf) (t) (seat) = tcd-q buf t (272 + seat * 8)
+  tcd-pk-hand-lines : List Integer, Integer, Integer, Boolean, List Integer, List Text -> List Text
+  tcd-pk-hand-lines (cards) (marks) (i) (drawing) (ids) (out) = if i >= 5 then out
+    else tcd-pk-hand-lines cards marks (i + 1) drawing ids (out & [(if pk-bit marks i == 1 then "Discard: " else "Keep: ") & tcd-card (list-at cards i)])
+  tcd-pk-ids : Integer, List Integer -> List Integer
+  tcd-pk-ids (i) (out) = if i >= 5 then out else tcd-pk-ids (i + 1) (list-push out (310 + i))
+  tcd-pk-gump : Integer, Integer, Integer -> List Integer
+  tcd-pk-gump (buf) (t) (seat) = let p = tcd-pk-state buf t
+    in let cards = pk-hand-of p seat
+    in let marks = tcd-pk-marks buf t seat
+    in let mine = p.turn == seat & not p.done
+    in let owed = pk-to-call p seat
+    in let stage = if p.done then "hand over" else if p.stage == 1 then "the draw" else if p.stage == 0 then "first betting round" else "second betting round"
+    in let lines = ["Poker: " & stage, (if p.done then "Deal again or leave." else if mine & p.stage == 1 then "Your turn: press a card to discard it (up to 3), then draw." else if mine then "Your turn." else "Your opponent's turn."), "",
+      "Pot|" & show p.pot, "Your chips|" & show (pk-chips-of p seat), "Their chips|" & show (pk-chips-of p (1 - seat)), "To call|" & show owed, "",
+      "Your hand|" & tcd-cards-text cards 0 5 "", "Rank|" & tcd-pk-rank (cards)]
+    in if p.done then tcd-panel (tcd-at buf t (1 + seat)) lines [330, 331] ["Deal the next hand.", "Leave the table."]
+    else if not mine then tcd-panel (tcd-at buf t (1 + seat)) lines [] []
+    else if p.stage == 1 then tcd-panel (tcd-at buf t (1 + seat)) lines (tcd-pk-ids 0 [] & [320]) (tcd-pk-hand-lines cards marks 0 True [] [] & ["Draw " & show (pk-count-bits marks 0 0) & " new cards"])
+    else let ids = [301, 302] & (if pk-can-raise p seat then [303] else [])
+    in tcd-panel (tcd-at buf t (1 + seat)) lines ids (["Fold.", (if owed == 0 then "Check." else "Call " & show owed & ".")] & (if pk-can-raise p seat then [(if owed == 0 & p.bet0 == p.bet1 then "Bet " else "Raise ") & show (pk-round-bet p) & "."] else []))
+  tcd-pk-said : PokerTable, Integer -> Text
+  tcd-pk-said (p) (button) = if button == 301 then "folds" else if button == 302 then "calls" else if button == 303 then "raises" else "draws"
+  tcd-poker : Integer, Integer, Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-poker (buf) (t) (seat) (other) (button) (now) = let p = tcd-pk-state buf t
+    in if button == 331 then (let freed = tcd-reset buf t in tcd-out (gs-reply [gs-system "You leave the poker table."] "cards:left") other [gs-system "Your opponent leaves the poker table."])
+    else if button == 330 & p.done then
+      (if pk-chips-of p 0 < pk-ante + pk-bet-size | pk-chips-of p 1 < pk-ante + pk-bet-size then
+        (let freed = tcd-reset buf t in tcd-out (gs-reply [gs-system "A player cannot cover the ante and a bet; the game is over."] "cards:over") other [gs-system "A player cannot cover the ante and a bet; the game is over."])
+      else let dealt = tcd-pk-deal buf t (bit-and (mix-bits now (seat + other)) #7FFFFFFF) (pk-chips-of p 0) (pk-chips-of p 1)
+      in let stamped = tcd-put buf t 4 now
+      in tcd-out (gs-reply [gs-system "A new hand is dealt.", tcd-pk-gump buf t seat] "cards:deal") other [gs-system "A new hand is dealt.", tcd-pk-gump buf t (1 - seat)])
+    else if p.done | p.turn /= seat then tcd-out (gs-reply [gs-system "It is not your turn.", tcd-pk-gump buf t seat] "cards:wait") 0 []
+    else if button >= 310 & button <= 314 & p.stage == 1 then
+      (let marks = tcd-pk-marks buf t seat
+      in let i = button - 310
+      in let next = if pk-bit marks i == 0 & pk-count-bits marks 0 0 >= 3 then marks else pk-toggle-bit marks i
+      in let kept = tcd-qset buf t (272 + seat * 8) next
+      in tcd-out (gs-reply [tcd-pk-gump buf t seat] "cards:mark") 0 [])
+    else let q = if button == 320 & p.stage == 1 then pk-after-draw (pk-draw-for p seat (tcd-pk-marks buf t seat))
+      else if button == 301 then pk-fold p seat else if button == 302 then pk-call p seat else if button == 303 then pk-raise p seat else p
+    in if (button == 320 & p.stage /= 1) | (button /= 320 & q.turn == p.turn & q.acted == p.acted & not q.done) then tcd-out (gs-reply [gs-system "That move is not open now.", tcd-pk-gump buf t seat] "cards:refused") 0 []
+    else let stored = tcd-pk-store buf t q
+    in let cleared = if button == 320 then tcd-qset buf t (272 + seat * 8) 0 else 0
+    in let stamped = tcd-put buf t 4 now
+    in let shown = if q.done & q.folded < 0 then " Showdown: you hold " & tcd-pk-rank (pk-hand-of q seat) & ", your opponent " & tcd-pk-rank (pk-hand-of q (1 - seat)) & "." else ""
+    in let their-shown = if q.done & q.folded < 0 then " Showdown: you hold " & tcd-pk-rank (pk-hand-of q (1 - seat)) & ", your opponent " & tcd-pk-rank (pk-hand-of q seat) & "." else ""
+    in let result = if not q.done then "" else if q.winner == seat then " You win the pot." else if q.winner < 0 then " The pot is split." else " Your opponent wins the pot."
+    in let their-result = if not q.done then "" else if q.winner == 1 - seat then " You win the pot." else if q.winner < 0 then " The pot is split." else " Your opponent wins the pot."
+    in let told = [gs-system ("Your opponent " & tcd-pk-said q button & "." & their-shown & their-result), tcd-pk-gump buf t (1 - seat)]
+    in tcd-out (gs-reply [gs-system ("You " & tcd-pk-word button & "." & shown & result), tcd-pk-gump buf t seat] "cards:bet") other told
+  tcd-pk-rank : List Integer -> Text
+  tcd-pk-rank (cards) = let r = evaluate-hand (PokerHand { cards = cards }) in rank-name r.rank
+  tcd-pk-word : Integer -> Text
+  tcd-pk-word (button) = if button == 301 then "fold" else if button == 302 then "call" else if button == 303 then "raise" else "draw"
+
+Section: Blackjack
+
+ One seat against the house. The deck from byte 96, the dealer's cards from 148, the hands' cards from 160 (12 a hand),
+ counts, bets, states and split aces from 208, 212, 216, 220; qwords from 224: deck length, deck position, dealer count,
+ hands, hand on turn, insurance, phase. Buttons 400 + action (Blackjack.codex's 0 hit to 5 decline), 410 deal again,
+ 411 leave.
+  tcd-bj-state : Integer, Integer -> BjTable
+  tcd-bj-state (buf) (t) = let base = tcd-base buf t
+    in let deck = tcd-bytes-list (base + 96) 52 0 []
+    in let dealer = tcd-bytes-list (base + 148) 12 0 []
+    in let cards = tcd-bytes-list (base + 160) 48 0 []
+    in let counts = tcd-bytes-list (base + 208) 4 0 []
+    in let bets = tcd-bytes-list (base + 212) 4 0 []
+    in let states = tcd-bytes-list (base + 216) 4 0 []
+    in let aces = tcd-bytes-list (base + 220) 4 0 []
+    in bt-make deck (tcd-q buf t 224) (tcd-q buf t 232) dealer (tcd-q buf t 240) cards counts bets states aces (tcd-q buf t 248) (tcd-q buf t 256) (tcd-q buf t 264) (tcd-q buf t 272)
+  tcd-bj-store : Integer, Integer, BjTable -> Integer
+  tcd-bj-store (buf) (t) (b) = let base = tcd-base buf t
+    in let a = tcd-write-bytes (base + 96) b.deck 0 + tcd-write-bytes (base + 148) b.dealer 0 + tcd-write-bytes (base + 160) b.cards 0
+    in let c = tcd-write-bytes (base + 208) b.counts 0 + tcd-write-bytes (base + 212) b.bets 0 + tcd-write-bytes (base + 216) b.states 0 + tcd-write-bytes (base + 220) b.split-ace 0
+    in tcd-qset buf t 224 b.deck-len + tcd-qset buf t 232 b.deck-pos + tcd-qset buf t 240 b.dcount + tcd-qset buf t 248 b.nhands + tcd-qset buf t 256 b.cur
+      + tcd-qset buf t 264 b.insurance + tcd-qset buf t 272 b.phase
+  tcd-bj-hands : BjTable, Integer, List Text -> List Text
+  tcd-bj-hands (b) (k) (out) = if k >= b.nhands then out
+    else let cs = bj-copy-list b.cards (k * bt-slot) (k * bt-slot + bt-count b k) []
+    in tcd-bj-hands b (k + 1) (out & ["Hand " & show (k + 1) & "|" & show (bt-value b k) & (if list-at b.states k == 2 then ", bust" else "") & (if k == b.cur & b.phase == 1 then ", to play" else "") & ": " & tcd-cards-text cs 0 (list-length cs) ""])
+  tcd-bj-actions : List Text = ["Hit.", "Stand.", "Double down.", "Split.", "Insure (1 unit).", "Decline insurance."]
+  tcd-bj-open : BjTable, Integer, List Integer -> List Integer
+  tcd-bj-open (b) (a) (out) = if a > 5 then out else tcd-bj-open b (a + 1) (if bt-can b a then list-push out (400 + a) else out)
+  tcd-bj-labels : List Integer, Integer, List Text -> List Text
+  tcd-bj-labels (ids) (i) (out) = if i >= list-length ids then out else tcd-bj-labels ids (i + 1) (out & [list-at tcd-bj-actions (list-at ids i - 400)])
+  tcd-bj-gump : Integer, Integer -> List Integer
+  tcd-bj-gump (buf) (t) = let b = tcd-bj-state buf t
+    in let dealer = if b.phase == 2 then "Dealer|" & show (bt-dvalue b) & ": " & tcd-cards-text b.dealer 0 b.dcount "" else "Dealer|shows " & tcd-card (list-at b.dealer 0)
+    in let net = bt-net b
+    in let lines = ["Blackjack", (if b.phase == 2 then (if net > 0 then "You win " & show net & " units." else if net < 0 then "You lose " & show (0 - net) & " units." else "A push.") else if b.phase == 0 then "The dealer shows an ace: insure or decline." else "Hit, stand, double or split."), "", dealer] & tcd-bj-hands b 0 []
+    in if b.phase == 2 then tcd-panel (tcd-at buf t 1) lines [410, 411] ["Deal again.", "Leave the table."]
+    else let ids = tcd-bj-open b 0 [] in tcd-panel (tcd-at buf t 1) lines ids (tcd-bj-labels ids 0 [])
+  tcd-bj-deal : Integer, Integer, Integer -> Integer
+  tcd-bj-deal (buf) (t) (seed) = tcd-bj-store buf t (bt-new seed)
+  tcd-jack : Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-jack (buf) (t) (button) (now) = let b = tcd-bj-state buf t
+    in if button == 411 then (let freed = tcd-reset buf t in tcd-out (gs-reply [gs-system "You leave the blackjack table."] "cards:left") 0 [])
+    else if button == 410 then (let dealt = tcd-bj-deal buf t (bit-and (mix-bits now t) #7FFFFFFF) in let stamped = tcd-put buf t 4 now in tcd-out (gs-reply [tcd-bj-gump buf t] "cards:deal") 0 [])
+    else if button < 400 | button > 405 | not (bt-can b (button - 400)) then tcd-out (gs-reply [gs-system "That move is not open now.", tcd-bj-gump buf t] "cards:refused") 0 []
+    else let stored = tcd-bj-store buf t (bt-act b (button - 400))
+    in let stamped = tcd-put buf t 4 now
+    in tcd-out (gs-reply [tcd-bj-gump buf t] "cards:jack") 0 []
+
+Section: Play
+
+  tcd-near : WorldTable, Integer, Integer -> Boolean
+  tcd-near (world) (a) (b) = when world-get world a
+    is Err (_) -> False
+    is Ok (m) -> when world-get world b
+      is Err (_) -> False
+      is Ok (o) -> m.x - o.x <= 2 & o.x - m.x <= 2 & m.y - o.y <= 2 & o.y - m.y <= 2
+  tcd-say : Text, Text -> GameReply
+  tcd-say (text) (note) = gs-reply [gs-system text] note
+  tcd-out : GameReply, Integer, List (List Integer) -> Maybe TcdOut
+  tcd-out (reply) (other) (told) = Just (TcdOut { reply = reply, other = other, told = told, watchers = [], table = -1 })
+  tcd-turn : Integer -> Text
+  tcd-turn (seat) = if seat == 0 then "First seat to play." else "Second seat to play."
+ What a watcher sees: the table's open state, never a seat's hand (Blackjack's hands lie face up), and no buttons.
+  tcd-watch-lines : Integer, Integer -> List Text
+  tcd-watch-lines (buf) (t) = let kind = tcd-at buf t tcd-kind
+    in if kind == tcd-k-fish then (let s = tcd-fish-state buf t in ["Go Fish (watching)", tcd-turn s.current-player, "",
+      "First seat|" & show (list-at s.hand-sizes 0) & " cards, " & show (list-at s.books 0) & " books",
+      "Second seat|" & show (list-at s.hand-sizes 1) & " cards, " & show (list-at s.books 1) & " books", "Stock|" & show s.pile-size & " cards"])
+    else if kind == tcd-k-poker then (let p = tcd-pk-state buf t in ["Poker (watching)", (if p.done then "The hand is over." else tcd-turn p.turn), "",
+      "Pot|" & show p.pot, "First seat|" & show p.chips0 & " chips", "Second seat|" & show p.chips1 & " chips"])
+    else if kind == tcd-k-jack then (let b = tcd-bj-state buf t in ["Blackjack (watching)", (if b.phase == 2 then "The hand is over." else "The player's turn."), "",
+      (if b.phase == 2 then "Dealer|" & show (bt-dvalue b) & ": " & tcd-cards-text b.dealer 0 b.dcount "" else "Dealer|shows " & tcd-card (list-at b.dealer 0))] & tcd-bj-hands b 0 [])
+    else (let s = tcd-state buf t in ["Crazy Eights (watching)", tcd-turn s.current-player, "",
+      "Pile|" & tcd-card (ce-top s), "Follow|" & list-at tcd-suits s.declared-suit & " or any eight",
+      "First seat|" & show (list-at s.hand-sizes 0) & " cards", "Second seat|" & show (list-at s.hand-sizes 1) & " cards", "Stock|" & show s.pile-size & " cards"])
+  tcd-watch-gump : Integer, Integer, Integer -> List Integer
+  tcd-watch-gump (buf) (t) (serial) = tcd-panel serial (tcd-watch-lines buf t) [] []
+ The table an action touched, and its watchers: a seat's action shows them the new state, or the end once the table frees.
+  tcd-watch-out : Integer, Integer, Integer, Maybe TcdOut -> Maybe TcdOut
+  tcd-watch-out (buf) (t) (me) (result) = when result
+    is None -> None
+    is Just (o) -> if t < 0 then result
+      else let ws = tcd-watching buf t 0 []
+      in let cleared = if tcd-at buf t 3 == 2 then 0 else tcd-watch-clear buf t 0
+      in Just (TcdOut { reply = o.reply, other = o.other, told = o.told, watchers = ws, table = t })
+  tcd-watch-packets : Integer, Integer, Integer -> List (List Integer)
+  tcd-watch-packets (buf) (t) (watcher) = if t < 0 then []
+    else if tcd-at buf t 3 == 2 then [tcd-watch-gump buf t watcher] else [gs-system "The card game you were watching is over."]
+  tcd-view : Integer, Integer, Integer -> List Integer
+  tcd-view (buf) (t) (seat) = let kind = tcd-at buf t tcd-kind
+    in if kind == tcd-k-fish then tcd-fish-gump buf t seat else if kind == tcd-k-poker then tcd-pk-gump buf t seat else if kind == tcd-k-jack then tcd-bj-gump buf t else tcd-gump buf t seat
+ The double-click (0x06) and the gump answer (0xB1: serial at 3, gump id at 7, button at 11) of a card table; None for
+ any other packet.
+  tcd-handler : Integer, GsiState, GameInput, List Integer, Integer -> Maybe TcdOut
+  tcd-handler (buf) (items) (input) (packet) (now) =
+    if input.mode /= 2 | input.session.phase /= 2 then None
+    else if list-length packet == 5 & list-at packet 0 == 6 then tcd-use buf items input.session.serial (bit-and (gp-u32 packet 1) #7FFFFFFF) now
+    else if list-length packet >= 15 & list-at packet 0 == #B1 & gp-u32 packet 7 == tcd-gump-id then
+      (let me = input.session.serial
+      in let t = tcd-sitting-at buf me 0
+      in tcd-watch-out buf t me (tcd-answer buf me (gp-u32 packet 11) now))
+    else None
+  tcd-use : Integer, GsiState, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-use (buf) (items) (me) (deck) (now) = let t = tcd-table-of buf deck 0
+    in if t < 0 then None
+    else if not (tcd-near items.world me deck) then tcd-out (tcd-say "You are too far away to play cards." "cards:far") 0 []
+    else let idle = tcd-at buf t 3 > 0 & now - tcd-at buf t 4 >= tcd-idle-ms
+    in let freed = if idle then tcd-reset buf t else 0
+    in let phase = tcd-at buf t 3
+    in let kind = tcd-at buf t tcd-kind
+    in let elsewhere = tcd-sitting-at buf me 0
+    in if phase < 2 & elsewhere >= 0 & elsewhere /= t then tcd-out (tcd-say "You are already playing cards at another table." "cards:busy") 0 []
+    else if phase == 0 then (let a = tcd-put buf t 1 me in let b = tcd-put buf t 3 1 in let c = tcd-put buf t 4 now in let d = tcd-put buf t tcd-kind 0
+      in tcd-out (gs-reply [gs-system "You sit down at the card table.", tcd-chooser me] "cards:sit") 0 [])
+    else if phase == 1 & tcd-at buf t 1 == me then tcd-out (if kind == 0 then gs-reply [tcd-chooser me] "cards:choose" else tcd-say ("You wait for a second player for " & tcd-name kind & ".") "cards:wait") 0 []
+    else if phase == 1 & kind == 0 then tcd-out (tcd-say "The player seated here is choosing a game." "cards:choosing") 0 []
+    else if phase == 1 then tcd-deal buf t me now
+    else if tcd-at buf t 1 == me then tcd-out (gs-reply [tcd-view buf t 0] "cards:hand") 0 []
+    else if tcd-at buf t 2 == me & kind /= tcd-k-jack then tcd-out (gs-reply [tcd-view buf t 1] "cards:hand") 0 []
+    else let watching = tcd-watch-add buf t me
+    in tcd-out (gs-reply [gs-system ("A game of " & tcd-name kind & " is in play here. You watch."), tcd-watch-gump buf t me] "cards:watch") 0 []
+  tcd-deal : Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-deal (buf) (t) (me) (now) = let first = tcd-at buf t 1
+    in let kind = tcd-at buf t tcd-kind
+    in let seed = bit-and (mix-bits now (first + me)) #7FFFFFFF
+    in let a = tcd-put buf t 2 me
+    in let b = tcd-put buf t 3 2
+    in let c = tcd-put buf t 4 now
+    in let dealt = if kind == tcd-k-fish then tcd-fish-deal buf t seed else if kind == tcd-k-poker then tcd-pk-deal buf t seed pk-start-chips pk-start-chips else tcd-eights-deal buf t seed
+    in let told = [gs-system ("A second player sits and the cards are dealt for " & tcd-name kind & ". You lead."), tcd-view buf t 0]
+    in tcd-out (gs-reply [gs-system ("You sit opposite and the cards are dealt for " & tcd-name kind & ". Your opponent leads."), tcd-view buf t 1] "cards:deal") first told
+  tcd-answer : Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-answer (buf) (me) (button) (now) = let t = tcd-sitting-at buf me 0
+    in if t < 0 then (let left = tcd-watch-drop buf me 0 in tcd-out (gs-reply [] "cards:gone") 0 [])
+    else if button == 0 then tcd-out (gs-reply [] "cards:closed") 0 []
+    else let kind = tcd-at buf t tcd-kind
+    in if tcd-at buf t 3 == 1 then tcd-choose buf t me button now
+    else let seat = if tcd-at buf t 1 == me then 0 else 1
+    in let other = tcd-at buf t (2 - seat)
+    in if kind == tcd-k-fish then tcd-fish buf t seat other button now
+    else if kind == tcd-k-poker then tcd-poker buf t seat other button now
+    else if kind == tcd-k-jack then tcd-jack buf t button now
+    else tcd-eights buf t seat other button now
+  tcd-choose : Integer, Integer, Integer, Integer, Integer -> Maybe TcdOut
+  tcd-choose (buf) (t) (me) (button) (now) = if tcd-at buf t 1 /= me | tcd-at buf t tcd-kind /= 0 | button < 101 | button > 104 then tcd-out (gs-reply [] "cards:button") 0 []
+    else let kind = button - 100
+    in let a = tcd-put buf t tcd-kind kind
+    in let b = tcd-put buf t 4 now
+    in if kind == tcd-k-jack then (let c = tcd-put buf t 3 2 in let dealt = tcd-bj-deal buf t (bit-and (mix-bits now me) #7FFFFFFF) in tcd-out (gs-reply [gs-system "The house deals you a hand of Blackjack.", tcd-bj-gump buf t] "cards:deal") 0 [])
+    else tcd-out (tcd-say ("You set out the cards for " & tcd-name kind & ". The next player to double-click the cards sits opposite and deals.") "cards:chosen") 0 []

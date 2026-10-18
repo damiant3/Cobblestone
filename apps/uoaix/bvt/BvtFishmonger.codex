@@ -1,0 +1,58 @@
+Chapter: BvtFishmonger
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BritainWindow
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+  bvfm-makes : Integer, Integer -> Boolean
+  bvfm-makes (fish) (item) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (_) -> False
+    is Ok (w) -> let actor = ep-admit w (em-open w.money 2 1017) 100
+      in if actor < 1 then False else let held = ep-set (ep-actor w actor).stock 9 fish in bb-from-bought w actor item
+  bvfm-recipe : Integer -> Boolean
+  bvfm-recipe (unused) = let c = bb-catalog 0 in let k = bb-recipe-from c 127 9 0
+    in k > 0 & (list-at c.recipes (k - 1)).quantity == 4 & (list-at c.recipes (k - 1)).one-count == 1 & (list-at c.recipes (k - 1)).station == 6 & (list-at c.recipes (k - 1)).tool == 0
+  bvfm-bids : Integer -> Boolean
+  bvfm-bids (unused) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (_) -> False
+    is Ok (w) -> gvb-bid w (gvb-role bb-fishmonger) 127 >= 1 & gvb-bid w (gvb-role bb-fishmonger) 34 == 0
+  bvfm-has : List Integer, Integer, Integer -> Boolean
+  bvfm-has (xs) (x) (i) = if i >= list-length xs then False else if list-at xs i == x then True else bvfm-has xs x (i + 1)
+  bvfm-cutter : Integer -> Boolean
+  bvfm-cutter (unused) = let t = cgg-trade-of cgg-cutter-place
+    in let h = cgg-house-of (BbSpot { x = 1475, y = 1739, z = 0 }) 0
+    in t.raw == 9 & t.product == 127 & t.buyer == bb-fishmonger & t.tool == 0 & t.art == #097A
+      & t.station.x == wks-fish-table.x & t.station.y == wks-fish-table.y
+      & cgg-kitchen-place cgg-cutter-place & cgg-raw-seller cgg-cutter-place == bb-fishmonger & bvfm-has cg-founders cgg-cutter-place 0
+      & h >= list-length cgg-houses & (list-at cgg-lodges h).door.x == 1479 & (list-at cgg-lodges h).door.y == 1747
+      & cgg-in-box cgg-fish-hall wks-fish-table.x wks-fish-table.y
+ The BVT's flat town has no water, so its fisherman, and every founder after it, is never founded there; the cutter is
+ founded directly on that town, as cg-found-kitchen founds it.
+  bvfm-founded : Integer -> Text
+  bvfm-founded (unused) = when bwd-founded 0
+    is Err (e) -> "fixture: " & e
+    is Ok (owner) -> when owner.town
+      is None -> "no town"
+      is Just (town) -> when owner.town-map
+        is None -> "no town map"
+        is Just (britain) -> when cgg-new-kitchen town britain cgg-cutter-place (tf-add-person town.people (cg-kitchen-name cgg-cutter-place) 1 1001 100 0 9000)
+          is Err (e) -> "refused: " & e
+          is Ok (c) -> if c.serial == 0 then "no mobile" else if not (cgg-in-box cgg-fish-hall c.home.x c.home.y) then "bed outside the hall at " & show c.home.x & "," & show c.home.y
+            else if c.trade.product /= 127 | c.gatherer.place /= cgg-cutter-place then "wrong trade" else ""
+  bvt-fishmonger : Integer -> [Console] Integer
+  bvt-fishmonger (unused) = let s = list-at bb-shops bb-fishmonger in act
+    a <- bvt-check "the fishmonger is shop 18, in the eastern Oaken Oar at the docks, selling fish (9, 0x09CC) and raw fish steaks (127, 0x097A) (UOAIX-167)" (bb-shop-count >= 18 & bb-fishmonger == 17 & s.title == "Fishmonger" & s.premises == "The Oaken Oar" & s.x1 >= 1472 & s.x2 <= 1478 & s.y1 >= 1743 & s.y2 <= 1750 & list-length (bb-goods bb-fishmonger) == 2 & (list-at (bb-goods bb-fishmonger) 0).item == 9 & (list-at (bb-goods bb-fishmonger) 1).item == 127 & (list-at (bb-goods bb-fishmonger) 1).graphic == #097A & (list-at (bb-catalog 0).items 126).name == "raw fish steak")
+    b <- bvt-check "1 fish cuts into 4 raw fish steaks at the cooking station, toolless" (bvfm-recipe 0)
+    c <- bvt-check "the shop makes neither fish nor steaks, with fish in stock or without: both come to it from others" (not (bvfm-makes 1 127) & not (bvfm-makes 0 127) & not (bvfm-makes 5 9))
+    d <- bvt-check "vendor 17 opens the fishmonger's menu, buys fish and steaks, sells both, and the steak art is item 127" (list-at gvb-role-words 17 == "fishmonger" & list-length gvb-role-words == bb-shop-count & gvb-material 17 9 & gvb-material 17 127 & gvb-goods 17 9 & gvb-goods 17 127 & gvb-item-of #097A == 127)
+    e <- bvt-check "the cutter (worker place 423) buys fish from the fishmonger, cuts steaks at the market's table and sells them back; it lodges in the north hall and leaves by the pier door" (bvfm-cutter 0)
+    f <- bvt-check "the Britain walk window reaches the docks, so the fish market, its hall and the cutting table are placed and walked" (s.x1 > bwn-x1 & s.x2 < bwn-x2 & s.y1 > bwn-y1 & s.y2 < bwn-y2 & cgg-fish-hall.y1 > bwn-y1 & wks-fish-table.y < bwn-y2)
+    g <- bvt-check "fish is sold at the docks: the fisherman and the castle cook trade fish with the fishmonger, and the inn buys no fish from players" ((cgg-trade-of cgg-fish-place).buyer == bb-fishmonger & cgg-raw-seller cgg-cook-place == bb-fishmonger & not (gvb-material 5 9) & not (cgg-kitchen-place cgg-fish-place))
+    founded <- bvfm-founded 0
+    h <- bvt-check ("the cutter founds on a built Britain, alive, bedded in the fish market's north hall, cutting steaks " & founded) (founded == "")
+    i <- bvt-check "the fishmonger bids at least 1 for a raw fish steak, worth a quarter of a fish, so the cutter can sell it; it bids nothing for bread, which it does not buy (trial 41986)" (bvfm-bids 0)
+    a + b + c + d + e + f + g + h + i
+  end

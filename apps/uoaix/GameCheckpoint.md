@@ -34,7 +34,7 @@ padding. Slot byte 145 is stamina spent, at most the dexterity at byte 80
 a swing 2, and an overloaded step 5 (carried weight over strength x 3.5 + 40 stones,
 `cp-overload`; about 97 transient heap bytes per carried item per step, reclaimed by
 `sl-compact`); at 0 a step is refused (1382, or 1783 when overloaded). Slot byte 144 is the testing-supplies grant flag (0 or 1, set by
-`CompositeTestStock`); byte 146 counts running steps (under 15), bytes 152..159 hold the stamina tick, and bytes 147..151 must be zero. The existing stage-1
+`CompositeTestStock`); byte 146 counts running steps (under 15), bytes 147..149 the [attr stats and 150 the hunger + 1, byte 151 the facing + 1 (0 to 8), and bytes 152..159 hold the stamina tick. The existing stage-1
 single-account contract remains unchanged.
 
 ## UGC1 layout

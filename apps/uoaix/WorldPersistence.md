@@ -3,10 +3,7 @@
 The codecs supply bounded binary snapshots and in-memory replay.
 [WorldDisk.md](WorldDisk.md) owns the append-only guest-disk store and
 separate VM restart proof. [TownStateCodec.md](TownStateCodec.md) supplies
-combined world/townsfolk/mind snapshot serialization. Daily scheduling,
-coordinated snapshot commit and ordered simulation-input replay remain
-integration work.
-Codec tests alone do not establish durable-save or crash-recovery behavior.
+combined world/townsfolk/mind snapshot serialization.
 
 `cites Uoaix chapter WorldSnapshot` provides `WorldCheckpoint { world,
 tick, sequence }`. Tick is nonnegative game time; sequence is the last
@@ -77,8 +74,6 @@ Use `build/compile.ps1 -Src <proof.codex> -Out <proof.cdx> -Log <compile.log>
 telemetry and normalizes the final newline. Compare `.actual` with
 `[IO.File]::ReadAllText(<absolute expected path>) -replace "\r", ''` using
 case-sensitive exact equality; a zero runner exit alone is insufficient.
-On 2026-10-04, kernel `9752080A0276505E` passed the 15-line snapshot oracle
-and 13-line journal oracle, including the 8192-object/event cases.
 
 The WorldDisk adapter commits payload before commit metadata. Server
 integration must acknowledge mutations only after logging. A restart must restore
@@ -88,7 +83,8 @@ pending events and mind audit state beside UWS1. Its record-aware decoder
 compares the embedded tick/sequence with WorldDisk metadata. Lifecycle
 notifications alone are not sufficient replay inputs.
 [TownInput.md](TownInput.md) defines the ordered simulation inputs and proves
-combined checkpoint plus suffix recovery across separate IDE VMs. Live server
-commit admission, log rotation and combined virtio recovery remain unfinished.
+combined checkpoint plus suffix recovery across separate IDE VMs; the live
+server commits through `CompositeStore` (WorldDisk.md). Combined virtio
+recovery is not graded.
 The [database migration](Database.md) retains the existing path until equivalent
 restart acceptance passes.

@@ -1,6 +1,6 @@
 # Atomic world actions
 
-`WorldAction.codex` is the stage 2 consumer boundary for an ordered set of
+`WorldAction.codex` is the consumer boundary for an ordered set of
 WorldRecords mutations. A `WorldAction` carries one sequence, tick, actor,
 action kind, target and 1..64 `WorldEvent` values. All nested events carry
 the outer sequence and tick. Create events carry the allocator's expected
@@ -44,8 +44,7 @@ to character data, economy, coin ledger and trade log in one durable input
 record before acknowledging the action. UWA1 is a component of that record,
 not a separate database or an independently committed economy journal.
 The existing WorldDisk path stays until the Codex DB restart proof passes,
-as required by [Database.md](Database.md). This unit does not integrate the
-live GameSession, TownInput, character checkpoint or economy transaction.
+as required by [Database.md](Database.md).
 
 Undo storage is 16 bytes plus 88 bytes per attempted mutation, with a
 40-byte wrapper. Repeated writes to one slot retain successive before
@@ -53,10 +52,9 @@ images and restore in reverse order. Codec and rollback work are linear
 in the event count. WorldRecords retains its existing parent-depth and
 capacity scans; no whole-world copy is added per action. Result, decoded
 event and list allocations are request scratch. Counts are bounded before
-traversal. No compiler heap or time behavior changes.
+traversal.
 
 `proofs/WorldActionProof.codex` checks a late failure after earlier writes,
 repeated slot reuse, allocator restoration, complete-frame admission,
 duplicate sequence refusal and the maximum batch on small and maximum
-capacity worlds. The proof does not establish a disk commit, physical
-power-loss recovery or client acceptance.
+capacity worlds.

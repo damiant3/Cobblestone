@@ -57,8 +57,10 @@ Chapter: CivicLiveReplay
           in let phase = __record-set input.session "phase" 2
           in let serial = __record-set input.session "serial" caller
           in let reply = cv-handler s game input map 2593 (cvr-say "Mayor, hello")
+          in let click = cv-handler s game input map 2593 (gp-put32 [9] (list-at s.guards 0).serial)
           in act
             cvr-check "mayor is named and answers nearby citizens" (cvr-note reply "civic NPC reply")
+            cvr-check "a click on a guard is left to its name label, not answered with speech (UOAIX-56)" (when click is Ok (None) -> True is otherwise -> False)
             cvr-crime s map input offender
           end
   cvr-run : TownLive, WalkMap -> [Console] Nothing
@@ -77,6 +79,7 @@ Chapter: CivicLiveReplay
   cvr-populate : GameShard, WalkMap, EuCurrency -> [Console] Nothing
   cvr-populate (game) (map) (currency) = let v = gv-new game currency
     in let items = gsi-new game.world
+    in let growing = bb-fixture-grow v items
     in when bb-populate v items map
       is Err (e) -> print-line-uni ("FAIL shops " & e)
       is Ok (_) -> when tl-populate v items map None 0 3
@@ -86,9 +89,9 @@ Chapter: CivicLiveReplay
     is Err (e) -> print-line-uni ("FAIL economy " & e)
     is Ok (currency) -> when world-new 256
       is Err (e) -> print-line-uni ("FAIL world " & e)
-      is Ok (world) -> let chars = alloc-bytes 800
-        in let zero = gs-zero chars 0
-        in let game = GameShard { world = world, characters = chars, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
-        in when walk-map-new 1408 1536 128 192
+      is Ok (world) -> let shard-accounts = ga-new ga-dev
+        in let chars = ga-working shard-accounts
+        in let game = GameShard { world = world, characters = chars, accounts = shard-accounts, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+        in when walk-map-new 1408 1536 128 224
           is Err (e) -> print-line-uni ("FAIL map " & e)
           is Ok (map) -> let filled = cvr-fill map 0 in if filled then cvr-populate game map currency else print-line-uni "FAIL terrain"

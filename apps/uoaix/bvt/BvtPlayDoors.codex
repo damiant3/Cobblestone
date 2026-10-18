@@ -1,0 +1,32 @@
+Chapter: BvtPlayDoors
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ D-7a: a play actor's walk opens a door through the town doors as any walker does, and the walk's packets reach the
+ door sync, so the door closes itself. On BvtNpcMove's fixture door 0 is opened as a walker opens it. Answers a bit per
+ check: 1 the door opened, 2 no autoclose timer from the open alone, 4 none after the no-play default hook, 8 one after
+ the composite's plays hook; -1 to -3 a fixture that failed.
+  pdx-armed : CompositeGame -> Boolean
+  pdx-armed (owner) = wtm-find owner.timers wd-door-timer 0 >= 0
+  pdx-run : CompositeGame -> Integer
+  pdx-run (owner) = when owner.town-doors
+    is None -> -1
+    is Just (doors) -> if wd-locked doors 0 | bit-and (peek-byte doors.opened 0) 1 /= 0 then -2
+      else when wd-toggle doors owner.checkpoint.game 0
+        is Err (_) -> -3
+        is Ok (reply) -> let opened = if bit-and (peek-byte doors.opened 0) 1 /= 0 then 1 else 0
+          in let unarmed = if pdx-armed owner then 0 else 2
+          in let none = plr-doors-none reply.packets
+          in let still = if pdx-armed owner then 0 else 4
+          in let synced = owner.plays.doors reply.packets
+          in let armed = if pdx-armed owner then 8 else 0
+          in opened + unarmed + still + armed
+  bvt-play-doors : Integer -> [Console] Integer
+  bvt-play-doors (unused) = when bnm-founded 0
+    is Err (e) -> bvt-check ("play doors fixture: " & e) False
+    is Ok (owner) -> act
+      n <- pdx-run owner
+      a <- bvt-check ("D-7a: a door a play actor's walk opens arms its autoclose through the plays hook (code " & show n & ")") (n == 15)
+      a
+    end

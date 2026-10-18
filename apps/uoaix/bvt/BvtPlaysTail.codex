@@ -1,0 +1,27 @@
+Chapter: BvtPlaysTail
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter CompositeCodec
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-258: the plays section read back from a whole composite image, as a restore reads it: its slot is padded past
+ PLY1's length and its place is an offset into the image. On BvtNpcMove's fixture a marker in the story registry is
+ saved, cleared and read back. Answers a bit per check: 1 the image encoded, 2 the plays section read without a
+ refusal, 4 the marker restored; -1 a fixture that failed.
+  pyt-run : CompositeGame -> Integer
+  pyt-run (owner) = let room = cs-room (cs-state-size owner)
+    in let buf = alloc-bytes room
+    in let marked = poke-qword owner.plays.stories.stories 0 8675309
+    in when cc-encode owner 1 1 buf room
+      is Err (_) -> -1
+      is Ok (_) -> let cleared = poke-qword owner.plays.stories.stories 0 0
+        in let read = when cc-read-plays owner buf is Err (_) -> 0 is Ok (_) -> 2
+        in 1 + read + (if peek-qword owner.plays.stories.stories 0 == 8675309 then 4 else 0)
+  bvt-plays-tail : Integer -> [Console] Integer
+  bvt-plays-tail (unused) = when bnm-founded 0
+    is Err (e) -> bvt-check ("plays tail fixture: " & e) False
+    is Ok (owner) -> act
+      n <- pyt-run owner
+      a <- bvt-check ("UOAIX-258: the plays section of an encoded composite image reads back with its story registry (code " & show n & ")") (n == 7)
+      a
+    end

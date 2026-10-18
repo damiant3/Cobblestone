@@ -71,7 +71,7 @@ callback-before-output order, framing lifetime through compaction, and
 once-only disconnect across reuse. The shared socket witness is:
 
 ```powershell
-pwsh -File apps/uoaix/proofs/test-game-dispatch.ps1 -Shared -ClientRoot C:/Users/Damian/uo1998-client -CompressionSource <Compression.cs> -Kernel seed/Codex.cdx -OutDir <new directory>
+pwsh -File apps/uoaix/proofs/test-game-dispatch.ps1 -Shared -ClientRoot D:/Games/UO1998com-Client1 -CompressionSource <Compression.cs> -Kernel seed/Codex.cdx -OutDir <new directory>
 ```
 
 It launches only owned processes and private loopback ports. The game replay

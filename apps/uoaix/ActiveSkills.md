@@ -15,7 +15,7 @@ passively.
 | ActiveSkillsHiding | Hiding, Detect Hidden, reveal on admitted actions (`as-after`) |
 | ActiveSkillsHealing | bandage Healing, and Veterinary on an animal: cure, heal, resurrect |
 | ActiveSkillsTown | Snooping, Peacemaking, Provocation (two cursors; a spawned creature's TOPROV from `ProvokeData`, through `AsServices.provoke`), Enticement (two cursors; `AsServices.lure` sets a spawn slot's `follow`, which `GameWorldSpawn` walks) |
-| ActiveSkillsPoisoning | Poisoning: a poison potion (`GameAlchemy` nightshade, 0x0F0A) coats a sword or fencing weapon (item health strength * 256 + charges); `GameCombat` spends the charges on landed blows through `AsServices.envenom` |
+| ActiveSkillsPoisoning | Poisoning: a poison potion (`GameAlchemy` nightshade, 0x0F0A) coats a sword or fencing weapon (item health strength * 256 + charges); `GameCombat` spends the charges on landed blows through `AsServices.envenom`; on food it keeps the strength with no charges and whoever eats it is poisoned at the strength less one (`cg-eat`, `gh-venom`) |
 | ActiveSkillsStealing | Stealing from an NPC's backpack, random or targeted (weight against skill, worn armor; no thieves' guild or witnesses); a stolen economy lot passes to the thief by the theft transfer (`EconomyProduction.md`), and a stolen coin pile moves purse to purse (`eu-steal`, `EconomyCurrency.md`). Britain's residents carry backpacks of their trade's goods (`tl-pack`); shopkeepers and bankers are immune |
 | ActiveSkillsForensics | Forensic Evaluation: a corpse's killer and death tick (`GameCombat.slain`), its last looter (`GsiState.looted`), a container's last picker (`ActiveSkills.picks`, written by `GameLocks`); Spirit Speak: a window (`ActiveSkills.spirit`) in which `CompositeEvents` delivers ghost speech clear |
 | ActiveSkillsTracking | Tracking menus (`0x7C`/`0x7D`, menu ids `#9000..#9FFF`) and the quest arrow (`0xBA`) |
@@ -43,12 +43,9 @@ minus skill/5). Animal Lore on a player refuses with "People are capable of
 more than animal behavior. Usually." Arms Lore admits catalog items 40, 41,
 44, 48, 69, 70 and 71.
 
-Gain: 1000 per skill and 7000 in total (blu, 2026-10-06). The chance per use
-follows Source-X Skill_Experience: 10, 200 and 800 uses per 0.1 at 0, 50.0
-and 100.0 skill, interpolated, and no gain when the difficulty plus 200 is
-below the level. At the 7000 total a gain lowers a random other skill above
-0 by 0.1, as the 1998 shard did (root, 2026-10-06): the client has no lock
-arrows.
+Gain: 1000 per skill and no total cap or decay (Damian, 2026-10-12, D7). Every
+player check gains by the 1998 SkillGain (`Skill1998.codex`,
+`docs/Designs/Active/Apps/Uoaix1998Skills.md`, UOAIX-242).
 
 Gain curve (Damian, 2026-10-06): "skill gains need to be logarithmic. big
 gains early, slow gains late. also early, you gain on both success and fail,
@@ -60,12 +57,11 @@ log of uses, so the uses per 0.1 are 10 * 80^(level/1000), 10 at 0.0 and 800 at
 tenth of one, and a success gains fully on a difficulty within 10.0 below the
 level or above it, falling to nothing 20.0 below. The chance depends only on the
 character's level, the difficulty and the outcome, never on a shard-wide count.
-Scope: every character, player and NPC, on every practice path: ClassicSkills'
-active skills, the fighter's swings (the hit is the success) and the economy's
-`ep-practice` (harvest and craft, the level as the difficulty).
+Scope since UOAIX-242 stage 1: NPC economy actors only (`ep-practice-in` with no
+character row); every player path gains by the 1998 rules.
 `proofs/SkillCurveProof` is the per-level arm.
 
-Success bonus (Damian, 2026-10-06): "we should give big bumps for success here. catching a fish should be like 10x a normal skill gain, tapering off after 50 is achieved. 0-50 should be doable in a 8 hour gaming session starting from 0 and doing all the work at the water". Root's reading: below 50.0 a successful use gains ten times a normal gain, the bonus tapers to 1x between 50.0 and 100.0, and the curve is tuned so that one player using one gathering skill continuously, at the pace the server allows, goes from 0.0 to 50.0 within 4 hours of play (Damian, same day: "actually lets make it 4 hours. after work, first session, you should be able to catch fish pretty good. bigger hauls (kracken) will be for the GMs"); the same rule covers every skill (one bar for every character). Built as `skc-bonus` in `SkillCurve.codex`, applied in `skc-gain-at` on every practice path: a success gains 10x a normal gain below 50.0, tapering linearly to 1x at 100.0 (5.5x at 75.0). `proofs/SkillCurveProof` replays 4,800 casts through `ep-practice` (4 hours at the harvest adapter's 3 s cooldown) and asserts the fisher reaches 50.0; it does at cast 4,215 (2026-10-06), and at 1x the same casts reach 25.7. The biggest catches (sea serpents, the kraken) are reserved for grandmaster fishers.
+Success bonus (Damian, 2026-10-06): "we should give big bumps for success here. catching a fish should be like 10x a normal skill gain, tapering off after 50 is achieved. 0-50 should be doable in a 8 hour gaming session starting from 0 and doing all the work at the water". Root's reading: below 50.0 a successful use gains ten times a normal gain, the bonus tapers to 1x between 50.0 and 100.0, and the curve is tuned so that one player using one gathering skill continuously, at the pace the server allows, goes from 0.0 to 50.0 within 4 hours of play (Damian, same day: "actually lets make it 4 hours. after work, first session, you should be able to catch fish pretty good. bigger hauls (kracken) will be for the GMs"); the same rule covers every skill (one bar for every character). Built as `skc-bonus` in `SkillCurve.codex`, applied in `skc-gain-at` on the NPC economy path: a success gains 10x a normal gain below 50.0, tapering linearly to 1x at 100.0 (5.5x at 75.0). `proofs/SkillCurveProof` replays 4,800 casts through `ep-practice` (4 hours at the harvest adapter's 3 s cooldown) and asserts the fisher reaches 50.0. The biggest catches (sea serpents, the kraken) are reserved for grandmaster fishers.
 
 Farming replaces Begging (Damian, 2026-10-06: "yeah lets just replace begging skill. that isn't the actions our players need to get good at. make it farming."). Client skill 6 is Farming: the client's SKILLS.MUL entry is renamed in the shard's client install, sowing, tending and reaping crops roll and gain skill 6 in the one skill store, and the begging action is removed.
 
@@ -103,10 +99,11 @@ choice removed.
 
 Kindling is made with a blade (UOAIX-70; ServUO `BladedItemTarget.cs`, `GameCarve.codex`): a knife or dagger's
 cursor on a tree within 2 tiles (a tree static on the map or a tree in the world) puts one kindling in the backpack,
-joining a kindling stack that has no economy lot; on the carver's own fallen branches, logs or boards it spends one
+joining a kindling stack that has no economy lot; on the carver's own logs or boards it spends one
 unit through the lot and gives one kindling. Anything else answers "You can't use a bladed item on that!". ServUO
 spends 5 wood from the tree's harvest bank; a tree here is not spent, and each cut paces the blade 1 s.
-`proofs/GameCarveReplay` grades the tree, the stack, reach, a rock and a log.
+`proofs/GameCarveReplay` grades the tree, the stack, reach, a rock and a log. Kindling is also catalog item 119: the carpenter cuts
+four from one board it bought and sells them (0x0DE1).
 
 ServUO `Kindling.cs` and `Campfire.cs` (`Campfires.codex`). Double-clicking kindling (0x0DE1) lying on the ground
 within 2 tiles rolls Camping (10) at an even chance per skill point; success spends one (through its economy lot when it
@@ -130,19 +127,20 @@ live in Magery's item definitions (`mgs-chart`: x, y, and the reach in z), saved
 Magery attached, as the server attaches it at boot. The skills window's Cartography button (skill 12) draws with the
 first blank map in the backpack as a double-click on it would, and without a blank map and a pen answers "You need a
 blank map and a mapmaker's pen in your backpack to draw a map." (UOAIX-71). `proofs/CompositeCartographyProof` grades
-it (two boots), red across a restart with the flag unsaved.
+it (two boots), red across a restart with the flag unsaved. Blank maps are catalog item 117, milled by the paper miller
+from pulp; the mapmaker's pen is item 118, forged by the tinker from an ingot; each is sold in its maker's shop.
 
 ## Taste Identification
 
 ServUO `TasteID.cs` (`ActiveSkillsTaste.codex`). Skill 36 asks "What would you like to taste?" and targets within 2
 tiles (or the taster's own pack). Food, an item whose economy lot is a food (`ep-food`), rolls 36 at an even chance per
-skill point: success finds nothing unusual, because no food here carries poison, and failure discerns nothing. A potion
+skill point: success says "It appears to have poison smeared on it." of food Poisoning coated, else that it finds nothing unusual, and failure discerns nothing. A potion
 (bottle art 0x0F06 to 0x0F0E) is already known and named (`item-name`) with no roll. A mobile is inappropriate; anything
 else cannot be tasted. `proofs/ActiveSkillsReplay` grades it, red on the food arm with food recognition removed.
 
 ## Herding
 
-UOX3 `herding.js` (`ActiveSkillsHerding.codex`; the crook is fester's slice A). Double-clicking a shepherd's crook
+UOX3 `herding.js` (`ActiveSkillsHerding.codex`). Double-clicking a shepherd's crook
 (0x0E81, 0x0E82) or crook (0x13F4, 0x13F5) in the pack asks for an untamed creature with a TOTAME within 7 tiles,
 then a place or the herder. Herding (20) below the creature's TOTAME cannot persuade it; otherwise a roll of 20
 against TOTAME sends it walking to the place at chase pace, 20 steps at most (`gws-herd`, the slot's goal), or
@@ -163,7 +161,7 @@ the walk (a herded deer reaches its place; red with the goal branch removed).
   `#0EB2`, `#0EB3`, `#0EB4`, `#0E9C`, `#0E9D` or `#0E9E`. The catalog holds no
   instrument item.
 
-## Composite binding (fester)
+## Composite binding
 
 All eight steps are bound in `CompositeGameRules` (`cg-as-services`,
 `cg-admit`) and graded by `proofs/CompositeActiveSkills.codex`. `resurrect`
@@ -179,7 +177,7 @@ single-player composite has no client to notify.
    - `0x6C` contexts `#4153xxxx`
    - `0x7D` menu ids `#9000..#9FFF`
 
-   Every other packet answers `Ok None`. Merge `as-specs 0` into `cg-specs`: `0x7D` has no frame in the composite's spec lists today.
+   Every other packet answers `Ok None`. `as-specs 0` (the `0x7D` frame) is merged into the composite's specs.
 3. Call `as-pulse` from `cg-pulse`. It finishes bandage timers and moves the
    tracking arrow.
 4. Pass every routed reply through `as-after`. A hidden player is revealed
@@ -241,13 +239,6 @@ naming their serial is dropped (`gcv-masked`, `gcv-named-offsets`), and a 0x54
 sound at their tile is dropped (`gcv-sound-hidden` for the concealed,
 `gcv-sound-unseen` over the tile index for a ghost). `proofs/ActiveSkillsReplay`
 grades each with a revealed control.
-
-## Open
-
-- Blu has no active-gain seam in Magery: `mgr-cast-skill` checks success only.
-  Bind `skc-use` there together with blu.
-- Red's `GameLiveActions*`/`TownNetworkLive*` live-stage review is assigned to
-  val. `TownLive.md` and `GameVendor.md` own those contracts.
 
 ## References
 

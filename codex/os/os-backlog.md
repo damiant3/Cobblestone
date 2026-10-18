@@ -21,7 +21,6 @@ list is the source's own form, so the address path would only add a copy, and
 a `BinaryStore` of buffers is a refactor nothing asks for (root, 2026-09-24,
 L-LESS). Both paths stay.
 
-`HttpClient` (`codex/os/net/HttpClient.codex`) puts the status CODE token in
-`HttpClientResponse.status-text`, not the reason phrase, and keeps no headers.
-Nothing reads `status-text` at head: `apps/browser/PageFetcher` reads its own
-header block from the raw bytes (2026-09-29).
+`HttpClient` (`codex/os/net/HttpClient.codex`) keeps no response headers. Nothing
+needs them at head: `apps/browser/PageFetcher` reads its own header block from the
+raw bytes (2026-09-29).

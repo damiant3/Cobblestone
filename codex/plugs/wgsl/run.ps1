@@ -90,6 +90,14 @@ if ($markers.Count -gt 0) {
     exit 6
 }
 
+. (Join-Path $PSScriptRoot 'wgsl-callees.ps1')
+$undefined = @(Get-WgslUndefinedCallees $wgsl)
+if ($undefined.Count -gt 0) {
+    [Console]::Error.WriteLine("FAIL: the WGSL calls a function it does not declare: $($undefined -join ', '). WebGPU refuses the module whole. Nothing was written to $Out.")
+    Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue
+    exit 6
+}
+
 [System.IO.File]::WriteAllText($Out, $wgsl, [System.Text.UTF8Encoding]::new($false))
 Write-Host "[wgsl-plug] OK: $Out ($($wgsl.Length) chars)"
 Remove-Item $inputFile,$outFile,$errFile -Force -ErrorAction SilentlyContinue

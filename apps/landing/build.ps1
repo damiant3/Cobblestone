@@ -38,7 +38,8 @@ if ((Get-FileHash -Algorithm SHA256 $Kernel).Hash -ne (Get-FileHash -Algorithm S
 
 $uoaixArt = Join-Path $Web 'uoaix-art'
 New-Item -ItemType Directory -Force -Path $uoaixArt | Out-Null
-foreach ($name in 'uoaix-hero-castle-town.jpg', 'uoaix-forge.jpg', 'uoaix-keeper.jpg', 'uoaix-isometric-village.jpg') {
+foreach ($name in 'uoaix-hero-castle-town.jpg', 'uoaix-forge.jpg', 'uoaix-keeper.jpg', 'uoaix-isometric-village.jpg', 'uoaix-felled-tree.jpg', 'uoaix-admin.jpg',
+              'uoaix-desk-overview.jpg', 'uoaix-desk-treasury.jpg', 'uoaix-desk-actions.jpg', 'uoaix-desk-world.jpg', 'uoaix-desk-plays.jpg', 'uoaix-desk-activity.jpg') {
     Copy-Item -LiteralPath (Join-Path $Repo ('apps/uoaix/art/' + $name)) -Destination (Join-Path $uoaixArt $name) -Force
 }
 
@@ -52,6 +53,11 @@ Write-Host "[landing] generating uoaix.html ..."
     -Src (Join-Path $AppDir 'UoaixPage.codex') `
     -Out (Join-Path $Web 'uoaix.html')
 if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: UOAIX page generation'; exit 3 }
+Write-Host "[landing] generating uoaix-desk.html ..."
+& pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\html\run.ps1') `
+    -Src (Join-Path $AppDir 'UoaixDeskPage.codex') `
+    -Out (Join-Path $Web 'uoaix-desk.html')
+if ($LASTEXITCODE -ne 0) { Write-Host '[landing] FAIL: UOAIX desk page generation'; exit 3 }
 Write-Host "[landing] generating imagegen.html ..."
 & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\html\run.ps1') `
     -Src (Join-Path $AppDir 'ImageGenPage.codex') `

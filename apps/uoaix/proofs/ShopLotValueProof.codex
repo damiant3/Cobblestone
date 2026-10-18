@@ -11,11 +11,7 @@ Chapter: ShopLotValueProof
   slv-fault : GvWorld -> Text
   slv-fault (v) = gvsc-lot-fault v 0
   slv-shop : GvWorld -> Integer
-  slv-shop (v) = (list-at v.lots 0).actor
-  slv-sync : GvWorld -> Text
-  slv-sync (v) = when bb-wear-lots v (slv-shop v) 31
-    is Err (e) -> "sync " & e
-    is Ok (_) -> gvsc-lot-fault v 0
+  slv-shop (v) = (ep-lot v.currency.world.goods (ep-lot-nth v.currency.world.goods 0)).actor
   slv-lot : GvWorld -> Integer
   slv-lot (v) = when world-create v.game.world (__record-set (gs-item 0 #1BF2 0) "amount" 2)
     is Err (_) -> -1
@@ -31,15 +27,16 @@ Chapter: ShopLotValueProof
     lot <- slv-lot v
     cheap <- slv-cheap v.currency.world (slv-shop v)
     a <- slv-check "two ingots at quality 1000 list as one lot beside four unlisted at 100" (found >= 0 & lot >= 0 & slv-fault v == "none")
-    used <- ep-remove (ep-actor v.currency.world (slv-shop v)) 31 3
-    before <- slv-fault v
-    print-line-uni ("census after the shop uses three ingots: " & before)
-    b <- slv-check "using unlisted ingots at the average quality leaves the lot claiming more than is held" (text-contains before "quality total")
-    after <- slv-sync v
-    print-line-uni ("census after the lots are synced: " & after)
-    c <- slv-check "syncing the shop's lots brings the census back to none" (after == "none")
-    d <- slv-check "the lot still lists both ingots" (gv-represented v (slv-shop v) 31 0 0 == 2)
-    a + b + c + d
+    p <- ep-actor v.currency.world (slv-shop v)
+    stock <- ep-at p.stock 31
+    quality <- ep-at p.quality 31
+    unlisted <- quality - 2000
+    used <- ep-consume v.currency.world (slv-shop v) 31 3
+    after <- slv-fault v
+    print-line-uni ("census after the shop uses three ingots: " & after)
+    b <- slv-check "using three ingots takes the listed lot first at its own grade, then one unlisted at their average" (used >= 0 & gv-represented v (slv-shop v) 31 0 == 0 & ep-at p.stock 31 == stock - 3 & ep-at p.quality 31 == unlisted - unlisted / (stock - 2))
+    c <- slv-check "no lot claims more than the shop holds" (after == "none" & gv-represented v (slv-shop v) 31 1 <= ep-at p.quality 31 & gv-represented v (slv-shop v) 31 3 <= ep-at p.cost 31)
+    a + b + c
   end
   opening : [Console] Integer = when gs-new 0
     is Err (e) -> slv-check ("shard " & e) False

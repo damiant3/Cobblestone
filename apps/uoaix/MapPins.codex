@@ -1,0 +1,112 @@
+Chapter: MapPins
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter GamePackets
+
+ ServUO Scripts/Items/Maps/MapItem.cs, GPL-2.0; ports/ServUO-LICENSE.txt. A drawn map keeps a course of at most 50
+ pins (MaxUserPins), numbered in plotting order, in the map display's own coordinates. MapCommand 0x56 is 11 bytes
+ both ways: serial, command, pin number (the editable flag in a reply), x and y. The client sends 1 add, 2 insert, 3
+ change, 4 remove, 5 clear and 6 toggle editable; the server sends 5 clear, 1 add per pin and 7 the editable flag.
+ A row numbered -1 marks a map its owner has set editable.
+  MpnState = record { rows : Integer, room : Integer, count : Integer }
+  mpn-row-bytes : Integer = 32
+  mpn-block : Integer = 64
+  mpn-ceiling : Integer = 1048576
+  mpn-most : Integer = 50
+  mpn-new : Integer -> MpnState
+  mpn-new (unused) = MpnState { rows = alloc-bytes (mpn-block * mpn-row-bytes), room = mpn-block, count = 0 }
+  mpn-at : MpnState, Integer, Integer -> Integer
+  mpn-at (s) (i) (field) = peek-qword s.rows (i * mpn-row-bytes + field * 8)
+  mpn-find : MpnState, Integer, Integer, Integer -> Integer
+  mpn-find (s) (serial) (number) (i) = if i >= s.count then -1
+    else if mpn-at s i 0 == serial & mpn-at s i 1 == number then i else mpn-find s serial number (i + 1)
+  mpn-pins : MpnState, Integer, Integer, Integer -> Integer
+  mpn-pins (s) (serial) (i) (n) = if i >= s.count then n
+    else mpn-pins s serial (i + 1) (if mpn-at s i 0 == serial & mpn-at s i 1 >= 0 then n + 1 else n)
+  mpn-due : MpnState -> Boolean
+  mpn-due (s) = s.room - s.count < s.room / 4 & s.room < mpn-ceiling
+  mpn-grow-to : MpnState, Integer -> Integer
+  mpn-grow-to (s) (room) = if room <= s.room then 0
+    else let fresh = alloc-bytes (room * mpn-row-bytes)
+    in let copied = ws-copy s.rows fresh (s.count * mpn-row-bytes) 0
+    in let a = __record-set s "rows" fresh
+    in let b = __record-set s "room" room in 0
+  mpn-grow : MpnState -> Integer
+  mpn-grow (s) = mpn-grow-to s (min mpn-ceiling (s.room * 2))
+  mpn-put : MpnState, Integer, Integer, Integer, Integer -> Integer
+  mpn-put (s) (serial) (number) (x) (y) = if s.count >= s.room then -1
+    else let at = s.rows + s.count * mpn-row-bytes
+    in let a = poke-qword at 0 serial
+    in let b = poke-qword at 8 number
+    in let c = poke-qword at 16 x
+    in let d = poke-qword at 24 y
+    in let e = __record-set s "count" (s.count + 1) in 0
+  mpn-drop-row : MpnState, Integer -> Integer
+  mpn-drop-row (s) (i) = if i < 0 | i >= s.count then -1
+    else let last = s.count - 1
+    in let moved = if i == last then 0 else ws-copy (s.rows + last * mpn-row-bytes) (s.rows + i * mpn-row-bytes) mpn-row-bytes 0
+    in let a = __record-set s "count" last in 0
+  mpn-shift : MpnState, Integer, Integer, Integer, Integer -> Integer
+  mpn-shift (s) (serial) (from) (delta) (i) = if i >= s.count then 0
+    else let moved = if mpn-at s i 0 == serial & mpn-at s i 1 >= from then poke-qword s.rows (i * mpn-row-bytes + 8) (mpn-at s i 1 + delta) else 0
+    in mpn-shift s serial from delta (i + 1)
+  mpn-clear : MpnState, Integer, Integer -> Integer
+  mpn-clear (s) (serial) (i) = if i >= s.count then 0
+    else if mpn-at s i 0 == serial & mpn-at s i 1 >= 0 then let dropped = mpn-drop-row s i in mpn-clear s serial i
+    else mpn-clear s serial (i + 1)
+  mpn-editable : MpnState, Integer -> Boolean
+  mpn-editable (s) (serial) = mpn-find s serial (0 - 1) 0 >= 0
+  mpn-set-editable : MpnState, Integer, Boolean -> Integer
+  mpn-set-editable (s) (serial) (on) = let i = mpn-find s serial (0 - 1) 0
+    in if on then (if i >= 0 then 0 else mpn-put s serial (0 - 1) 0 0)
+    else mpn-drop-row s i
+ One client command on a map's course: 0 when the course changed, -1 when the command is refused (a pin number
+ outside the course, a full course, a full table until the next growth point, or an unknown command).
+  mpn-command : MpnState, Integer, Integer, Integer, Integer, Integer -> Integer
+  mpn-command (s) (serial) (command) (number) (x) (y) =
+    let pins = mpn-pins s serial 0 0
+    in if command == 5 then mpn-clear s serial 0
+    else if command == 4 then (if number < 0 | number >= pins then -1
+      else let dropped = mpn-drop-row s (mpn-find s serial number 0) in mpn-shift s serial (number + 1) (0 - 1) 0)
+    else if x < 0 | x > 65535 | y < 0 | y > 65535 then -1
+    else if command == 3 then (if number < 0 | number >= pins then -1
+      else let i = mpn-find s serial number 0
+      in let a = poke-qword s.rows (i * mpn-row-bytes + 16) x
+      in let b = poke-qword s.rows (i * mpn-row-bytes + 24) y in 0)
+    else if command /= 1 & command /= 2 then -1
+    else if pins >= mpn-most | s.count >= s.room then -1
+    else if command == 1 then mpn-put s serial pins x y
+    else if number < 0 | number > pins then -1
+    else let shifted = mpn-shift s serial number 1 0 in mpn-put s serial number x y
+  mpn-packet : Integer, Integer, Integer, Integer, Integer -> List Integer
+  mpn-packet (serial) (command) (number) (x) (y) = gp-put16 (gp-put16 (gp-put32 [#56] serial & [command, number]) x) y
+ What a map shows when it opens after MapDetails: a clear, every pin in course order, then whether it is editable.
+  mpn-course : MpnState, Integer, Boolean -> List (List Integer)
+  mpn-course (s) (serial) (editable) = let pins = mpn-course-from s serial 0 (mpn-pins s serial 0 0) [mpn-packet serial 5 0 0 0]
+    in list-push pins (mpn-packet serial 7 (if editable then 1 else 0) 0 0)
+  mpn-course-from : MpnState, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  mpn-course-from (s) (serial) (n) (pins) (out) = if n >= pins then out
+    else let i = mpn-find s serial n 0
+    in mpn-course-from s serial (n + 1) pins (if i < 0 then out else list-push out (mpn-packet serial 1 0 (mpn-at s i 2) (mpn-at s i 3)))
+ Rows whose map no longer stands are dropped before a save, so a serial the world reuses starts with no course.
+  mpn-prune : MpnState, (Integer -> Boolean), Integer -> Integer
+  mpn-prune (s) (stands) (i) = if i >= s.count then 0
+    else if stands (mpn-at s i 0) then mpn-prune s stands (i + 1)
+    else let dropped = mpn-drop-row s i in mpn-prune s stands i
+
+  mpn-tail-size : MpnState -> Integer
+  mpn-tail-size (s) = 8 + s.count * mpn-row-bytes
+  mpn-write-tail : MpnState, Integer -> Integer
+  mpn-write-tail (s) (at) = let a = poke-qword at 0 s.count
+    in let b = ws-copy s.rows (at + 8) (s.count * mpn-row-bytes) 0 in at + mpn-tail-size s
+  mpn-tail-length : Integer, Integer -> Integer
+  mpn-tail-length (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > (room - 8) / mpn-row-bytes | peek-qword at 0 > mpn-ceiling then -1
+    else 8 + peek-qword at 0 * mpn-row-bytes
+  mpn-read-tail : MpnState, Integer, Integer -> Integer
+  mpn-read-tail (s) (at) (size) = if size == 0 then 0
+    else if mpn-tail-length at size /= size then -1
+    else let n = peek-qword at 0
+    in let grown = mpn-grow-to s (max s.room (n + n / 2 + mpn-block))
+    in let a = ws-copy (at + 8) s.rows (n * mpn-row-bytes) 0
+    in let b = __record-set s "count" n in 0
+
+Page 1

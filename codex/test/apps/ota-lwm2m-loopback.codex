@@ -33,8 +33,16 @@ Section: Fixtures
 
   stage-capacity : Integer = 65536
 
-  firmware-image : List Integer
-  firmware-image =
+  foreign-sk : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  trusted-key : Text = bytes-to-hex-range (ed25519-public-key test-sk) 0 32
+
+  firmware-image : List Integer = signed-image test-sk
+
+  foreign-image : List Integer = signed-image foreign-sk
+
+  signed-image : List Integer -> List Integer
+  signed-image (sk) =
    let caps = [CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }]
    in let parts = CdxBinaryParts {
     flags = cdx-flag-bare-metal,
@@ -47,16 +55,15 @@ Section: Fixtures
     heap-size = 65536,
     trust-threshold = 5000
    }
-   in cdx-encode-signed parts test-sk
+   in cdx-encode-signed parts sk
 
-  firmware-hash : List Integer
-  firmware-hash = hkdf-words-to-bytes (sha256 firmware-image)
+  manifest : OtaManifest = manifest-for firmware-image
 
-  manifest : OtaManifest
-  manifest = OtaManifest {
+  manifest-for : List Integer -> OtaManifest
+  manifest-for (image) = OtaManifest {
    firmware-uri = "/fw/image.cdx",
-   firmware-size = list-length firmware-image,
-   firmware-hash = firmware-hash,
+   firmware-size = list-length image,
+   firmware-hash = hkdf-words-to-bytes (sha256 image),
    version = ota-version-new 7 1000,
    min-battery = 0,
    requires-reboot = True
@@ -105,12 +112,14 @@ Section: The Download Loop
 
 Section: Gate B -- the real verifier
 
+ The lattice holds the device's pinned key and nothing else: the key the
+ staged image names is never trusted for being named.
+
   gate-b-verdict : Lwm2mFw -> GateBResult
   gate-b-verdict (c) =
-   let author = read-author-key (cdx-at-read stage-addr 0 cdx-header-fixed-size [])
-   in let lat = lattice-add-direct lattice-empty author 8000
+   let lat = lattice-add-direct lattice-empty trusted-key 8000
    in let policy = policy-add-rule (policy-empty "ota") (rule-allow "allow-all" AlwaysTrue)
-   in let decision = evaluate-load-at stage-addr (list-length firmware-image) lat policy 0 fact-store-empty 100
+   in let decision = evaluate-load-at stage-addr (c.fw-written) lat policy 0 fact-store-empty 100
    in if load-approved decision then GateBPass
       else GateBFailAuthor (load-reason decision)
 
@@ -120,6 +129,21 @@ Section: The Runs
   clean-run (x) = act
    brd0 <- board-open 0 0
    r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr stage-capacity) manifest) firmware-image 0
+   when r
+    is (brd1, c1) -> act
+      bc <- board-close brd1
+      let c2 = fw-execute-update c1 (gate-b-verdict c1)
+      in fw-activate c2
+    end
+  end
+
+ A validly signed image under a key the device does not hold: Gate A
+ passes (its manifest digest is honest), so only Gate B can refuse it.
+
+  foreign-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
+  foreign-run (x) = act
+   brd0 <- board-open 0 0
+   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr stage-capacity) (manifest-for foreign-image)) foreign-image 0
    when r
     is (brd1, c1) -> act
       bc <- board-close brd1
@@ -212,6 +236,10 @@ Section: Body
    print-line-uni ("tampered state: " & show (fw-state-resource bad))
    print-line-uni ("tampered result: " & show (fw-result-resource bad))
    print-line-uni ("tampered boots: " & show-slot ((fw-boot-config bad).active-slot))
+   alien <- foreign-run 0
+   print-line-uni ("foreign staged: " & show (alien.fw-written))
+   print-line-uni ("foreign result: " & show (fw-result-resource alien))
+   print-line-uni ("foreign boots: " & show-slot ((fw-boot-config alien).active-slot))
    fits <- bound-arm stage-capacity 254
    print-line-uni ("size2 honest wrote: " & show (fits.fw-written) & " result: " & show (fits.fw-result))
    over <- bound-arm small-capacity 0

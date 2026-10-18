@@ -1,0 +1,82 @@
+Chapter: CityForestRouteProof
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter Cities
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter WorldRecords
+
+ UOAIX-234 part 4: a city's lumberjack walks its city's window, with no doors, from the city's entrance to its forest box
+ and back (CityWorkers, CompositeGameRules cg-city-workers). For each city and candidate box this loads the window the
+ server would (Cities ct-load with that forest) from the installed map cache and plans both legs. Trial 43802: the Yew
+ and Moonglow lumberjacks reached their boxes, Trinsic's (1808,2624) and Minoc's (2416,680) planned no route; those two are
+ the negative control. Run: build/test-run.ps1 -DiskFile <a disk install-map-cache.ps1 wrote>.
+  cfr-say : Text, Integer -> [Console] Integer
+  cfr-say (line) (code) = act
+    said <- print-line-uni line
+    code
+  end
+  cfr-plan : TlPath, WorldTable, WalkMap, BbSpot, BbSpot -> Integer
+  cfr-plan (nav) (world) (map) (a) (b) = rte-plan nav world map None (WorldObject { serial = 0, kind = 1, x = a.x, y = a.y, z = a.z,
+    graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) b.x b.y b.z
+  cfr-try : MapCacheState, MapInstallData, WorldTable, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
+  cfr-try (cache) (installed) (world) (i) (x1) (y1) (x2) (y2) = act
+    base <- list-at (ct-table 0) i
+    c <- CtCity { name = base.name, x1 = base.x1, y1 = base.y1, x2 = base.x2, y2 = base.y2, forest = ct-forest x1 y1 x2 y2 }
+    counted <- wmc-window-colliders cache (ct-x c) (ct-y c) (ct-width c) (ct-height c) installed
+    when counted
+      is Err (e) -> cfr-say ("FOREST " & c.name & " " & show x1 & "," & show y1 & " window: " & e) 0
+      is Ok (colliders) -> when walk-map-sized (ct-x c) (ct-y c) (ct-width c) (ct-height c) (max 1 colliders)
+        is Err (e) -> cfr-say ("FOREST " & c.name & " " & show x1 & "," & show y1 & " map: " & e) 0
+        is Ok (map) -> act
+          filled <- wmc-fill cache map 0
+          when filled
+            is Err (e) -> cfr-say ("FOREST " & c.name & " fill: " & e) 0
+            is Ok (_) -> act
+              door <- BbSpot { x = 0, y = 0, z = 0 }
+              stood <- cgg-door-stand map (cw-door i) door
+              nav <- tl-path-new map
+              when bb-placement world map c.forest 0
+                is Err (e) -> cfr-say ("FOREST " & c.name & " " & show x1 & "," & show y1 & " no clear tile: " & e) 0
+                is Ok (spot) -> act
+                  there <- cfr-plan nav world map door spot
+                  back <- if there < 0 then 0 - 1 else cfr-plan nav world map spot door
+                  print-line-uni ("FOREST " & c.name & " box " & show x1 & "," & show y1 & " tile " & show spot.x & "," & show spot.y & "," & show spot.z
+                    & " from " & show door.x & "," & show door.y & "," & show door.z & " there=" & show there & " back=" & show back
+                    & (if there >= 0 & back >= 0 then " ROUTED" else " NO ROUTE"))
+                  if there >= 0 & back >= 0 then 1 else 0
+                end
+            end
+        end
+    end
+  end
+  cfr-forest : MapCacheState, MapInstallData, WorldTable, Integer -> [Console, Device.Block] Integer
+  cfr-forest (cache) (installed) (world) (i) = let f = (list-at (ct-table 0) i).forest in cfr-try cache installed world i f.x1 f.y1 f.x2 f.y2
+  opening : [Console, Device.Block] Integer = act
+    opened <- wmc-open UoIde
+    when opened
+      is Err (e) -> cfr-say ("FAIL map cache: " & e) 1
+      is Ok (cache) -> act
+        data <- wmc-decoration cache
+        when data
+          is Err (e) -> cfr-say ("FAIL decoration: " & e) 1
+          is Ok (installed) -> when world-new 64
+            is Err (e) -> cfr-say ("FAIL world: " & e) 1
+            is Ok (world) -> act
+              f1 <- cfr-forest cache installed world 1
+              f2 <- cfr-forest cache installed world 2
+              f3 <- cfr-forest cache installed world 3
+              f5 <- cfr-forest cache installed world 5
+              f12 <- cfr-forest cache installed world 12
+              f13 <- cfr-forest cache installed world 13
+              old-trinsic <- cfr-try cache installed world 1 1808 2624 1823 2639
+              old-minoc <- cfr-try cache installed world 13 2416 680 2431 695
+              print-line-uni (if f1 + f2 + f3 + f5 + f12 + f13 == 6 then "PASS every city forest (Trinsic, Moonglow, Yew, Skara Brae, Vesper, Minoc) routes from its entrance and back" else "FAIL a city forest has no route from its entrance (" & show (f1 + f2 + f3 + f5 + f12 + f13) & " of 6)")
+              print-line-uni (if old-trinsic + old-minoc == 0 then "PASS control: the retired Trinsic and Minoc boxes (trial 43802: no route) still plan none" else "FAIL control: a retired box routes, so the instrument does not see what the trial saw")
+              0
+            end
+        end
+      end
+  end

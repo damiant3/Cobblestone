@@ -4,23 +4,26 @@ Chapter: GameCooking
  UOX3 js/skill/cooking/cooking.js, heatsources.js, dough.js RangeCheck and dictionary.ENG 393, 6022, 6063,
  6093, 6094, 6095, 6097: raw fish steaks (0x097A) in the cook's backpack, used on an oven, fireplace or fire
  within 3 tiles and 10 z, roll Cooking (skill 9) and become one cooked fish steak (0x097B) or burn; UOX3 cooks
- after a 5 s timer, which a 5 s cooldown stands in for. The steaks are fish (item 9) and the cooked steak is
- cooked food (item 50), so the census moves one fish into one crafted cooked food.
+ after a 5 s timer, which a 5 s cooldown stands in for. The steaks are raw fish steaks (item 127, the fish cutter's,
+ UOAIX-167) or fish (item 9) in a lot made before them, and the cooked steak is cooked food (item 50), so the census
+ moves one of the lot's own item into one crafted cooked food.
+  gco-raw-item : Integer -> Boolean
+  gco-raw-item (item) = item == 127 | item == 9
   gco-heat-art : Integer -> Boolean
   gco-heat-art (g) = (g >= #0461 & g <= #0480) | (g >= #092B & g <= #0933) | (g >= #0937 & g <= #0942)
     | (g >= #0945 & g <= #0950) | (g >= #0953 & g <= #095E) | (g >= #0961 & g <= #096C) | (g >= #0DE3 & g <= #0DE8) | g == #0FAC
   gco-raw : GameHarvest, GvPlayer, Integer -> Integer
   gco-raw (state) (player) (serial) = let at = if serial == 0 then -1 else gv-lot state.vendor serial 0
     in if at < 0 then -1
-    else let lot = list-at state.vendor.lots at
-    in if lot.actor /= player.actor | lot.item /= 9 then -1
+    else let lot = ep-lot state.vendor.currency.world.goods at
+    in if lot.actor /= player.actor | not (gco-raw-item lot.item) then -1
     else when world-get state.items.world serial
       is Err (_) -> -1
       is Ok (food) -> if food.kind /= 2 | food.graphic /= #097A then -1 else at
   gco-pan : GameHarvest, GvPlayer, Integer -> Integer
   gco-pan (state) (player) (serial) = let at = if serial == 0 then -1 else gv-lot state.vendor serial 0
     in if at < 0 then -1
-    else let lot = list-at state.vendor.lots at
+    else let lot = ep-lot state.vendor.currency.world.goods at
     in if lot.actor /= player.actor | lot.item /= 42 then -1
     else when world-get state.items.world serial
       is Err (_) -> -1
@@ -51,40 +54,26 @@ Chapter: GameCooking
     in let selected = __record-set request "tool" serial
     in let expires = __record-set request "expires" (now + gh-ticks 10000)
     in Ok (Just (gs-reply [sip-target target, sip-message #FFFFFFFF #FFFF 6 "What do you want to cook this on?"] "cooking target"))
-  gco-take : GameHarvest, Integer -> Result Integer Text
-  gco-take (state) (at) = let lot = list-at state.vendor.lots at
-    in if lot.quantity > 1 then when world-get state.items.world lot.serial
-      is Err (e) -> Err e
-      is Ok (food) -> when world-update state.items.world (__record-set food "amount" (lot.quantity - 1))
-        is Err (e) -> Err e
-        is Ok (_) -> let counted = __record-set lot "quantity" (lot.quantity - 1) in Ok lot.serial
-    else when world-delete state.items.world lot.serial
-      is Err (e) -> Err e
-      is Ok (_) -> let removed = gh-retire-lot state.vendor at in Ok 0
   gco-cook : GameHarvest, GvPlayer, Integer, WorldObject, Integer -> Result (Maybe GameReply) Text
   gco-cook (state) (player) (at) (me) (now) =
     let v = state.vendor
     in let w = v.currency.world
     in let p = ep-actor w player.actor
-    in let lot = list-at v.lots at
+    in let lot = ep-lot v.currency.world.goods at
     in let serial = lot.serial
-    in if ep-at p.stock 9 < 1 | ep-at p.quality 9 < lot.quality | ep-at p.wear 9 < lot.wear then gh-denied "Cooking inventory binding refused."
-    else if not (ep-room p 50 1) | ep-at w.crafted 50 > ep-limit - 1 | v.lot-count == gv-lot-limit
-      | world-count state.items.world >= state.items.world.capacity then gh-denied "You cannot hold the cooked food."
+    in let raw = lot.item
+    in if ep-at p.stock raw < 1 | ep-at p.quality raw < lot.quality | ep-at p.wear raw < lot.wear then gh-denied "Cooking inventory binding refused."
+    else if not (ep-room p 50 1) | ep-at w.crafted 50 > ep-limit - 1 | not (ep-lot-room v.currency.world.goods 1)
+      | world-room state.items.world <= 0 then gh-denied "You cannot hold the cooked food."
     else let bound = gh-row v player
     in let level = ep-level p 9 (ep-classic 9 0 0)
-    in let cost = lot.basis / lot.quantity
+    in let cost = lot.basis / max 1 (ep-amount v.currency.world.goods lot.serial)
     in let cooked = ep-practice p 9
-    in let s1 = ep-add p.stock 9 (0 - 1)
-    in let q1 = ep-add p.quality 9 (0 - lot.quality)
-    in let w1 = ep-add p.wear 9 (0 - lot.wear)
-    in let c1 = ep-add p.cost 9 (0 - cost)
-    in let used = ep-add w.consumed 9 1
-    in let based = __record-set lot "basis" (lot.basis - cost)
-    in let invalidated = gh-invalidate-quotes v 0
-    in when gco-take state at
+    in when ep-take w lot.actor raw 1 serial
       is Err (e) -> Err e
-      is Ok (left) -> let rest = if left == 0 then [sip-remove serial] else when world-get state.items.world left is Err (_) -> [] is Ok (o) -> [sip-item o]
+      is Ok (_) -> let used = ep-add w.consumed raw 1
+        in let invalidated = gh-invalidate-quotes v 0
+        in let rest = when world-get state.items.world serial is Err (_) -> [sip-remove serial] is Ok (o) -> [sip-item o]
         in if not cooked then Ok (Just (gs-reply (rest & [sip-message #FFFFFFFF #FFFF 6 "You burn the raw fish steak to a crisp! It's ruined."]) "cooking burnt"))
         else let quality = 100 + level * 9 / 10
         in let a = ep-add p.stock 50 1

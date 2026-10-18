@@ -1264,7 +1264,7 @@ Measure-Phase 'plug-smoke' {
         $spNewest = ($smokeDeps + @(Get-ChildItem (Join-Path $Repo "codex\plugs\$sp") -Filter *.codex) | ForEach-Object { $_.LastWriteTimeUtc } | Sort-Object -Descending | Select-Object -First 1)
         if (-not (Test-Path $spCdx) -or (Get-Item $spCdx).LastWriteTimeUtc -lt $spNewest) { & pwsh -NoProfile -File $spBuild *> $spLog }
         foreach ($si in $smokeSrcs) {
-            $smokeSrc = Join-Path $Repo "codex\plugs\test-input\$si.codex"
+            $smokeSrc = if ($sp -eq 'ptx') { Join-Path $Repo "codex\plugs\ptx\test\$(@{ hello = 'div-probe'; record = 'f64-probe' }[$si]).codex" } else { Join-Path $Repo "codex\plugs\test-input\$si.codex" }
             $spOut = Join-Path $smokeDir "$sp-$si.out"
             $ok = $false
             foreach ($attempt in 1..2) {
@@ -1310,7 +1310,7 @@ Measure-Phase 'plug-smoke' {
                 $spLog = Join-Path $smokeDir "$sp-smoke-qemu.log"
                 $qKernel = $spKernelOf[$sp]
                 foreach ($si in $smokeSrcs) {
-                    $smokeSrc = Join-Path $Repo "codex\plugs\test-input\$si.codex"
+                    $smokeSrc = if ($sp -eq 'ptx') { Join-Path $Repo "codex\plugs\ptx\test\$(@{ hello = 'div-probe'; record = 'f64-probe' }[$si]).codex" } else { Join-Path $Repo "codex\plugs\test-input\$si.codex" }
                     $qOut = Join-Path $smokeDir "$sp-$si.qemu.out"
                     $cOut = Join-Path $smokeDir "$sp-$si.out"
                     Remove-Item -Force $qOut -ErrorAction SilentlyContinue

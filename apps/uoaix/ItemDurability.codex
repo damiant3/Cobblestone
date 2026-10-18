@@ -1,0 +1,102 @@
+Chapter: ItemDurability
+  cites Uoaix chapter DurabilityData
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldSnapshot
+
+ A row per world slot: the item's serial, then its hits * 65536 + max hits.
+  IdState = record { rows : Integer, room : Integer }
+  id-row-bytes : Integer = 16
+  id-zero : Integer, Integer, Integer -> Integer
+  id-zero (buf) (i) (n) = if i >= n then 0 else let z = poke-qword buf (i * 8) 0 in id-zero buf (i + 1) n
+  id-new : Integer -> IdState
+  id-new (capacity) = let rows = alloc-bytes (capacity * id-row-bytes) in let cleared = id-zero rows 0 (capacity * 2) in IdState { rows = rows, room = capacity }
+ The table follows the world's capacity at the growth point (L-GROWINDEX).
+  id-due : IdState, Integer -> Boolean
+  id-due (s) (capacity) = s.room < capacity
+  id-grow : IdState, Integer -> Integer
+  id-grow (s) (capacity) = if capacity <= s.room then 0
+    else let fresh = alloc-bytes (capacity * id-row-bytes)
+    in let cleared = id-zero fresh 0 (capacity * 2)
+    in let copied = ws-copy s.rows fresh (s.room * id-row-bytes) 0
+    in let a = __record-set s "rows" fresh
+    in let b = __record-set s "room" capacity in 0
+ ServUO rolls a new item's max hits in its InitMinHits..InitMaxHits range; the roll here is a hash of the serial, so an
+ item never worn reads the same max every time and needs no row.
+  id-max : Integer, Integer -> Integer
+  id-max (serial) (graphic) = let r = dur-range graphic
+    in if r == 0 then 0 else let lo = r / 65536 in let hi = int-mod r 65536 in lo + int-mod (bit-and (serial * 2654435761) #7FFFFFFF / 4096) (hi - lo + 1)
+ hits * 65536 + max for the item, full at its rolled max when it has no row; 0 for an item with no durability.
+  id-read : IdState, WorldTable, Integer, Integer -> Integer
+  id-read (s) (world) (serial) (graphic) = let slot = world-slot world serial
+    in if slot >= 0 & slot < s.room & peek-qword s.rows (slot * id-row-bytes) == serial then peek-qword s.rows (slot * id-row-bytes + 8)
+    else let m = id-max serial graphic in m * 65536 + m
+  id-set : IdState, WorldTable, Integer, Integer, Integer -> Integer
+  id-set (s) (world) (serial) (hits) (max) = let slot = world-slot world serial
+    in if slot < 0 | slot >= s.room | max < 1 | max > 65535 | hits < 0 | hits > max then -1
+    else let a = poke-qword s.rows (slot * id-row-bytes) serial in let b = poke-qword s.rows (slot * id-row-bytes + 8) (hits * 65536 + max) in 0
+
+ Wear of n: hits fall first, then the max (ServUO BaseWeapon and BaseArmor OnHit, "Your equipment is severely damaged");
+ the max stops at 1, so a worn-out item stays for a powder of restoration to mend. Answers 1 when the max fell.
+  id-wear : IdState, WorldTable, Integer, Integer, Integer -> Integer
+  id-wear (s) (world) (serial) (graphic) (n) = let v = id-read s world serial graphic
+    in let hits = v / 65536 in let max = int-mod v 65536
+    in if max == 0 | n < 1 then 0
+    else if hits >= n then (let a = id-set s world serial (hits - n) max in 0)
+    else let fallen = if max - (n - hits) < 1 then 1 else max - (n - hits) in let b = id-set s world serial 0 fallen in if fallen < max then 1 else 0
+
+ A smith's repair (Uoaix1998Skills.md D5): every attempt lowers the max by id-max-loss, success or failure; a success
+ mends the hits to the new max. The check is 1998 blacksmith.m's, testAndLearnSkill(Blacksmithy, difficulty, 50) with
+ difficulty (max - hits) * 1250 / max - 250 from the item before the loss: it succeeds when chance - roll > 0, roll
+ 0..999. Answers 0 already full, 1 mended, 2 failed, 3 the max is 1 and a repair would break it, -1 no durability.
+  id-max-loss : Integer -> Integer
+  id-max-loss (top) = if top <= 0 then 0 else max 1 ((top + 25) / 50)
+  id-repair-difficulty : IdState, WorldTable, Integer, Integer -> Integer
+  id-repair-difficulty (s) (world) (serial) (graphic) = let v = id-read s world serial graphic
+    in let hits = v / 65536 in let max = int-mod v 65536
+    in if max == 0 then 0 else (max - hits) * 1250 / max - 250
+  id-repair : IdState, WorldTable, Integer, Integer, Integer, Integer -> Integer
+  id-repair (s) (world) (serial) (graphic) (chance) (roll) = let v = id-read s world serial graphic
+    in let hits = v / 65536 in let max = int-mod v 65536
+    in if max == 0 then -1 else if hits == max then 0 else if max <= 1 then 3
+    else let m = max - id-max-loss max
+    in let mended = chance - roll > 0
+    in let set = id-set s world serial (if mended then m else min hits m) m
+    in if mended then 1 else 2
+ A powder of restoration: the max becomes the highest of its kind (InitMaxHits) and the hits stay. Answers the new max, or
+ -1 for an item with no durability.
+  id-restore : IdState, WorldTable, Integer, Integer -> Integer
+  id-restore (s) (world) (serial) (graphic) = id-restore-banded s world serial graphic 1000
+ The highest of a smith-made piece's kind is scaled by its band, per mille (Smith1998: x1.2 exceptional, x0.8 poor).
+  id-top-banded : Integer, Integer -> Integer
+  id-top-banded (graphic) (band) = let r = dur-range graphic in if r == 0 then 0 else min 65535 (max 1 (int-mod r 65536 * band / 1000))
+  id-restore-banded : IdState, WorldTable, Integer, Integer, Integer -> Integer
+  id-restore-banded (s) (world) (serial) (graphic) (band) = let r = dur-range graphic
+    in if r == 0 then -1
+    else let hits = id-read s world serial graphic / 65536 in let top = id-top-banded graphic band
+    in let set = id-set s world serial (min hits top) top in if set < 0 then -1 else top
+
+Section: Codec
+
+ The persisted rows (codec tail 22): the count, then serial and hits * 65536 + max for each row whose item still stands.
+  id-live : IdState, WorldTable, Integer -> Boolean
+  id-live (s) (world) (i) = let serial = peek-qword s.rows (i * id-row-bytes) in serial /= 0 & world-slot world serial == i
+  id-count : IdState, WorldTable, Integer, Integer -> Integer
+  id-count (s) (world) (i) (n) = if i >= s.room then n else id-count s world (i + 1) (if id-live s world i then n + 1 else n)
+  id-tail-size : IdState, WorldTable -> Integer
+  id-tail-size (s) (world) = 8 + id-count s world 0 0 * id-row-bytes
+  id-write-rows : IdState, WorldTable, Integer, Integer, Integer -> Integer
+  id-write-rows (s) (world) (at) (i) (n) = if i >= s.room then n
+    else if not (id-live s world i) then id-write-rows s world at (i + 1) n
+    else let a = ws-copy (s.rows + i * id-row-bytes) (at + 8 + n * id-row-bytes) id-row-bytes 0 in id-write-rows s world at (i + 1) (n + 1)
+  id-write-tail : IdState, WorldTable, Integer -> Integer
+  id-write-tail (s) (world) (at) = let n = id-write-rows s world at 0 0 in let a = poke-qword at 0 n in at + 8 + n * id-row-bytes
+ A row whose serial the restored world does not hold, or whose hits exceed its max, is skipped.
+  id-read-tail : IdState, WorldTable, Integer, Integer -> Integer
+  id-read-tail (s) (world) (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > (room - 8) / id-row-bytes then -1
+    else let grown = id-grow s world.capacity in id-read-rows s world at 0 (peek-qword at 0) 0
+  id-read-rows : IdState, WorldTable, Integer, Integer, Integer, Integer -> Integer
+  id-read-rows (s) (world) (at) (i) (n) (kept) = if i >= n then kept
+    else let row = at + 8 + i * id-row-bytes
+    in let v = peek-qword row 8
+    in let set = id-set s world (peek-qword row 0) (v / 65536) (int-mod v 65536)
+    in id-read-rows s world at (i + 1) n (if set == 0 then kept + 1 else kept)

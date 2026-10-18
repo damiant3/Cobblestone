@@ -1,0 +1,80 @@
+Chapter: TownGovernmentBundleProof
+  cites Uoaix chapter TownGovernmentBundle
+  cites Uoaix chapter TownGovernmentInput
+  cites Uoaix chapter TownGovernmentInputFixtures
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter WorldDisk
+  cites Uoaix chapter WorldSnapshot
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  tgbp-check : Text, Boolean -> [Console] Nothing
+  tgbp-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
+  tgbp-equal : Integer, Integer, Integer, Integer -> Boolean
+  tgbp-equal (a) (b) (size) (i) = if i == size then True
+    else if peek-qword a i /= peek-qword b i then False else tgbp-equal a b size (i + 8)
+  tgbp-corrupt : Integer, GovernmentAnchors, Integer, Integer -> Boolean
+  tgbp-corrupt (buf) (anchors) (at) (value) =
+    let old = peek-qword buf at
+    in let changed = poke-qword buf at value
+    in let hash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
+    in let mark = __heap-save
+    in let refused = is-err (tgb-decode buf (peek-qword buf 16) anchors)
+    in let restored = __heap-restore mark
+    in let original = poke-qword buf at old
+    in let rehash = poke-qword buf 48 (ws-hash buf (peek-qword buf 16) 0 2166136261)
+    in refused
+  tgbp-recovered : GovernmentCheckpoint, GovernmentCheckpoint, Integer, Integer -> [Console] Nothing
+  tgbp-recovered (source) (s) (buf) (copy) = act
+    encoded <- tgb-encode s copy us-max-payload
+    tgbp-check "bundled money queue and civic state roundtrip canonically" (tgif-valid s & is-ok encoded & tgbp-equal buf copy (peek-qword buf 16) 0)
+    changed <- __record-set (list-at s.government.offices 0) "mayor" 2
+    queue <- __record-set s.disputes.admin "report-count" 0
+    tgbp-check "bundle decoder owns separate civic and queue records" ((list-at source.government.offices 0).mayor == 1 & source.disputes.admin.report-count == 1)
+  end
+  tgbp-legacy : GovernmentAnchors -> [Console] Nothing
+  tgbp-legacy (anchors) = act
+    when ep-new (eg-standard 0) (em-new 0)
+      is Err (e) -> print-line-uni ("FAIL legacy source " & e)
+      is Ok (world) -> act
+        g <- tg-new anchors.people world
+        a <- admin-world-new anchors.people anchors.mind
+        s <- GovernmentCheckpoint { government = g, works = tw-new g, disputes = td-new g anchors.registry a None, tick = 0, sequence = 0 }
+        old <- GovernmentAnchors { people = anchors.people, mind = anchors.mind, registry = anchors.registry, royal-actor = 0 }
+        buf <- alloc-bytes us-max-payload
+        encoded <- tgb-encode s buf us-max-payload
+        when encoded
+          is Err (e) -> print-line-uni ("FAIL legacy bundle " & e)
+          is Ok (size) -> tgbp-check "legacy bundle and replay clone retain gold-only mode" (size == tgb-money-at + es-size s.government.economy & is-ok (tgb-decode buf size old) & is-ok (tgi-replay s buf 0) & is-err (tgb-decode buf size anchors))
+      end
+  end
+  tgbp-run : TgiScenario -> [Console] Nothing
+  tgbp-run (scenario) = act
+    s <- scenario.state
+    anchors <- GovernmentAnchors { people = s.government.people, mind = s.disputes.admin.mind, registry = s.disputes.registry, royal-actor = 1 }
+    buf <- alloc-bytes us-max-payload
+    copy <- alloc-bytes us-max-payload
+    encoded <- tgb-encode s buf us-max-payload
+    print-line-uni ("CIVIC-BUNDLE-BYTES " & show (peek-qword buf 16))
+    tgbp-check "complete civic mutation bundle fits existing disk record budget" (scenario.failed == 0 & is-ok encoded & (peek-qword buf 16) <= us-max-payload)
+    before <- __heap-save
+    decoded <- tgb-decode-record buf (peek-qword buf 16) s.tick s.sequence anchors
+    after <- __heap-save
+    print-line-uni ("CIVIC-BUNDLE-DECODE-BYTES " & show (after - before))
+    tgbp-check "bundle decode retains below 6 MiB beyond readonly anchors" (is-ok decoded & after - before < 6291456)
+    when decoded
+      is Err (e) -> print-line-uni ("FAIL bundle decode " & e)
+      is Ok (result) -> tgbp-recovered s result buf copy
+    cleaned <- __heap-restore before
+    tgbp-check "rehashed bundle dimensions and nested metadata refuse" (tgbp-corrupt buf anchors 24 1 & tgbp-corrupt buf anchors 32 (s.tick + 1) & tgbp-corrupt buf anchors (tgb-civic-at + 32) 0 & tgbp-corrupt buf anchors (tgb-queue-at + 40) 0)
+    tgbp-check "truncation and outer record mismatch refuse" (is-err (tgb-decode buf ((peek-qword buf 16) - 1) anchors) & is-err (tgb-decode-record buf (peek-qword buf 16) s.tick (s.sequence + 1) anchors))
+    tgbp-legacy anchors
+  end
+  opening : [Console] Nothing = act
+    when tgif-source 0
+      is Err (e) -> print-line-uni ("FAIL civic source " & e)
+      is Ok (s) -> tgbp-run (tgif-build s)
+  end

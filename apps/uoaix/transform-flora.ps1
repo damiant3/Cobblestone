@@ -59,10 +59,12 @@ public static class UoaixFlora {
   }
   return new byte[][]{outIdx,outSt.ToArray()};
  }
- public static long[] Strip(byte[] idx,byte[] st,bool[] flora,bool[] tree,bool[] vine,out byte[] outIdx,out byte[] outSt,out byte[] table) {
+ // premises: x1,y1,x2,y2,zmin,zmax per Strip area (premises.cfg); structure: art flagged wall or roof, never stripped.
+ static bool Premises(int[] premises,bool[] structure,int g,int x,int y,int z){if(structure[g])return false;for(int i=0;i+5<premises.Length;i+=6)if(x>=premises[i]&&y>=premises[i+1]&&x<=premises[i+2]&&y<=premises[i+3]&&z>=premises[i+4]&&z<=premises[i+5])return true;return false;}
+ public static long[] Strip(byte[] idx,byte[] st,bool[] flora,bool[] tree,bool[] vine,int[] premises,bool[] structure,out byte[] outIdx,out byte[] outSt,out byte[] table) {
   if(idx.Length!=Blocks*12)throw new Exception("Legacy STAIDX0 extent required");
   outIdx=new byte[idx.Length];var kept=new MemoryStream();var rows=new MemoryStream();byte[] directory=new byte[(Blocks+1)*4];
-  long trees=0,plants=0,keptRecords=0;bool[] cellTree=new bool[64];
+  long trees=0,plants=0,furnishings=0,keptRecords=0;bool[] cellTree=new bool[64];
   for(int id=0;id<Blocks;id++) {
    W32(directory,id*4,(uint)(rows.Length/Row));
    uint off=U32(idx,id*12),len=U32(idx,id*12+4);W32(outIdx,id*12+8,U32(idx,id*12+8));
@@ -73,9 +75,10 @@ public static class UoaixFlora {
    for(int n=0;n<len/7;n++) {
     long at=off+n*7L;int g=BitConverter.ToUInt16(st,(int)at),dx=st[at+2],dy=st[at+3];
     bool isVine=!flora[g]&&vine[g]&&cellTree[dy*8+dx];
-    if(!flora[g]&&!isVine){kept.Write(st,(int)at,7);keptRecords++;continue;}
-    byte[] r=new byte[Row];W16(r,0,x0+dx);W16(r,2,y0+dy);W16(r,4,g);r[6]=st[at+5];r[7]=st[at+6];r[8]=st[at+4];r[9]=(byte)(tree[g]?0:isVine?1:2);W16(r,10,n);
-    rows.Write(r,0,Row);if(tree[g])trees++;else plants++;
+    bool isPremises=!flora[g]&&!isVine&&Premises(premises,structure,g,x0+dx,y0+dy,(sbyte)st[at+4]);
+    if(!flora[g]&&!isVine&&!isPremises){kept.Write(st,(int)at,7);keptRecords++;continue;}
+    byte[] r=new byte[Row];W16(r,0,x0+dx);W16(r,2,y0+dy);W16(r,4,g);r[6]=st[at+5];r[7]=st[at+6];r[8]=st[at+4];r[9]=(byte)(tree[g]?0:isVine?1:isPremises?3:2);W16(r,10,n);
+    rows.Write(r,0,Row);if(tree[g])trees++;else if(isPremises)furnishings++;else plants++;
    }
    long kbytes=kept.Length-start;
    if(kbytes==0){W32(outIdx,id*12,0xFFFFFFFF);W32(outIdx,id*12+4,0xFFFFFFFF);}
@@ -86,7 +89,7 @@ public static class UoaixFlora {
   table=new byte[Header+directory.Length+rowBytes.Length];
   W64(table,0,0x31524C46);W64(table,8,1);W64(table,16,rowCount);W64(table,24,Blocks);W64(table,32,Header);W64(table,40,Header+directory.Length);W64(table,48,Row);
   Buffer.BlockCopy(directory,0,table,Header,directory.Length);Buffer.BlockCopy(rowBytes,0,table,Header+directory.Length,rowBytes.Length);
-  return new long[]{trees,plants,keptRecords,rowCount,st.Length/7};
+  return new long[]{trees,plants,keptRecords,rowCount,st.Length/7,furnishings};
  }
 }
 '@
@@ -108,7 +111,12 @@ if(-not $WriteReference){foreach($n in $names){if($ref.original.$n -ne $sources[
 $idx=[IO.File]::ReadAllBytes((Join-Path $root 'STAIDX0.MUL'));$st=[IO.File]::ReadAllBytes((Join-Path $root 'STATICS0.MUL'))
 $outIdx=$null;$outSt=$null;$table=$null
 $watch=[Diagnostics.Stopwatch]::StartNew()
-$result=[UoaixFlora]::Strip($idx,$st,$flora,$tree,$vine,[ref]$outIdx,[ref]$outSt,[ref]$table)
+$premises=[Collections.Generic.List[int]]::new()
+foreach($line in [IO.File]::ReadLines((Join-Path $PSScriptRoot 'premises.cfg'))){if($line -match '^Strip\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s*$'){for($i=1;$i -le 6;$i++){$premises.Add([int]$Matches[$i])}}}
+# TILEDATA item flags: 0x10 wall, 0x10000000 roof.
+$tiles=[IO.File]::ReadAllBytes((Join-Path $root 'TILEDATA.MUL'));$structure=[bool[]]::new(16384)
+for($g=0;$g -lt 16384;$g++){$flags=[BitConverter]::ToUInt32($tiles,428032+[math]::Floor($g/32)*1188+4+($g%32)*37);$structure[$g]=($flags -band 0x10000010) -ne 0}
+$result=[UoaixFlora]::Strip($idx,$st,$flora,$tree,$vine,$premises.ToArray(),$structure,[ref]$outIdx,[ref]$outSt,[ref]$table)
 $back=[UoaixFlora]::Merge($outIdx,$outSt,$table)
 $check=[Security.Cryptography.SHA256]::Create();if([Convert]::ToHexString($check.ComputeHash($back[0])) -ne $sources['STAIDX0.MUL'] -or [Convert]::ToHexString($check.ComputeHash($back[1])) -ne $sources['STATICS0.MUL']){throw 'Restoring the stripped files does not give the original bytes; nothing written'}
 $watch.Stop()
@@ -123,6 +131,6 @@ if($WriteReference){
 [IO.File]::WriteAllBytes((Join-Path $OutDir 'STATICS0.MUL'),$outSt)
 [IO.File]::WriteAllBytes((Join-Path $OutDir 'STAIDX0.MUL'),$outIdx)
 foreach($k in $outputs.Keys){if((Get-Sha (Join-Path $OutDir $k)) -ne $outputs[$k]){throw "$k readback differs"}}
-$receipt=[ordered]@{clientRoot=$root;outDir=$OutDir;originalSha256=$sources;strippedSha256=$outputs;treeStatics=$result[0];otherFlora=$result[1];keptStatics=$result[2];rows=$result[3];sourceRecords=$result[4];elapsedSeconds=$watch.Elapsed.TotalSeconds;localOnly=$true}
+$receipt=[ordered]@{clientRoot=$root;outDir=$OutDir;originalSha256=$sources;strippedSha256=$outputs;treeStatics=$result[0];otherFlora=$result[1];furnishings=$result[5];keptStatics=$result[2];rows=$result[3];sourceRecords=$result[4];elapsedSeconds=$watch.Elapsed.TotalSeconds;localOnly=$true}
 $receipt|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $OutDir 'flora.json')
-Write-Output "STRIPPED rows=$($result[3]) trees=$($result[0]) other-flora=$($result[1]) kept=$($result[2]) $OutDir"
+Write-Output "STRIPPED rows=$($result[3]) trees=$($result[0]) other-flora=$($result[1]) furnishings=$($result[5]) kept=$($result[2]) $OutDir"

@@ -1,0 +1,39 @@
+Chapter: BvtWorkplaces
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-117 essential workplaces: a mill (kind 2) owned by a shop actor with skill 5 and a bound live adult operator, and
+ a resident baker with a purse of their own. The answer packs one closed day: requests opened, plus 10 when the mill is
+ admitted as a Britain site, 100 when a bakery is present after the day, and 1000 per staffing request still open; -9 is
+ a fixture that did not build. Skill 9 is what tw-skill asks of a bakery (kind 6).
+  bvwp-run : Boolean, Integer -> Integer
+  bvwp-run (shop-owned) (baking) = when bb-economy 0
+    is Err (_) -> -9
+    is Ok (x) -> let w = x.world
+      in let people = tf-new 0
+      in let town = tf-add-town people "Britain" 100 101 102
+      in let mayor = tf-add-person people "Britain Mayor" 1 1001 100 0 9000
+      in let keeper = tf-add-person people "Britain Miller" 1 1001 100 0 9000
+      in let baker = tf-add-person people "Britain Baker" 1 1001 100 0 9000
+      in let actor = ep-admit w (eu-open x 2 1001) 100
+      in let mill = if actor < 1 then -1 else ep-station w actor 2 100
+      in let cook = if baker < 1 then -1 else ep-admit w (eu-open x 2 baker) 100
+      in when tg-new-currency people x 1
+      is Err (_) -> -9
+      is Ok (g) -> let registered = tg-register g True 1 mayor (eu-open x 4 1)
+      in if town /= 1 | mayor < 1 | keeper < 1 | baker < 1 | actor < 1 | mill < 1 | cook < 1 | registered < 0 then -9
+      else let skilled = ep-add (ep-actor w actor).skills 5 100
+      in let trained = if baking > 0 then ep-add (ep-actor w cook).skills 9 baking else 0
+      in let t = tw-new g
+      in let fitted = tw-fit t
+      in let bound = __record-set t "operator" (\a -> if a == actor then keeper else if a == cook then baker else 0)
+      in let opened = cg-workplaces-day t (\a -> shop-owned & a == actor) mayor
+      in opened + (if tw-site-valid t 1 mill then 10 else 0) + (if tw-present t 1 6 0 then 100 else 0) + 1000 * cg-staffing-open t 0 0
+  bvt-workplaces : Integer -> [Console] Integer
+  bvt-workplaces (unused) = act
+    r <- bvwp-run True 100
+    s <- bvwp-run False 0
+    a <- bvt-check ("a shop's mill is admitted and a resident baker staffs the bakery, so only the forge request stays open: " & show r) (r == 1112)
+    b <- bvt-check ("with no shop mill and no skilled baker, all three requests open and stay open: " & show s) (s == 3003)
+    a + b
+  end

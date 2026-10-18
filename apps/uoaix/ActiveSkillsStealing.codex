@@ -11,8 +11,8 @@ Chapter: ActiveSkillsStealing
  guild, which the shard has not, and an immune NPC (banker, vendor) refuses. Weight is in hundredths of a stone (a
  weightless pile item weighs 0.1): an item heavier than Stealing in tenths is too heavy, and from a pile the thief takes
  half to all of Stealing / weight. Success is 100 - weight * amount * 20 / (100 + Stealing) in 100, cut by up to 97.5 per
- cent for worn armor ((AR - 1) / 40), against 0 to 100; practice checks from the total weight to 10.0 above it. No
- witness system exists, so a theft is never caught, and a failure only says 881. A theft spends 10 s of skill delay.
+ cent for worn armor ((AR - 1) / 40), against 0 to 100; practice checks from the total weight to 10.0 above it. Every
+ attempt that reaches the roll is a theft (theft-hook, the composite's law). A theft spends 10 s of skill delay.
   as-steal-owner : WorldTable, Integer, Integer -> Integer
   as-steal-owner (world) (serial) (left) = if left == 0 | serial == 0 then 0 else when world-get world serial
     is Err (_) -> 0
@@ -35,11 +35,23 @@ Chapter: ActiveSkillsStealing
       in if count == 0 then gsi-denied "You reach into the backpack... but find it's empty."
       else when world-get s.items.world (as-steal-nth s.items.world first (skc-random a.skills count))
         is Err (_) -> gsi-denied "You cannot steal that."
-        is Ok (item) -> as-steal-item s a game player obj.serial item now)
+        is Ok (item) -> as-steal-item s a game player obj.serial 0 item now)
     else if obj.kind /= 2 then gsi-denied "You cannot steal that."
-    else as-steal-item s a game player (as-steal-owner s.items.world obj.container 64) obj now
-  as-steal-item : ActiveSkills, AsActor, GameShard, WorldObject, Integer, WorldObject, Integer -> GameReply
-  as-steal-item (s) (a) (game) (player) (owner) (item) (now) =
+    else let owner = as-steal-owner s.items.world obj.container 64
+    in if owner /= 0 then as-steal-item s a game player owner 0 obj now
+    else let box = as-steal-root s.items.world obj.container 64
+    in as-steal-item s a game player (as-steal-keeper s box) box obj now
+  as-steal-root : WorldTable, Integer, Integer -> Integer
+  as-steal-root (world) (serial) (left) = if left == 0 | serial == 0 then 0 else when world-get world serial
+    is Err (_) -> 0
+    is Ok (o) -> if o.container == 0 then o.serial else as-steal-root world o.container (left - 1)
+  as-steal-keeper : ActiveSkills, Integer -> Integer
+  as-steal-keeper (s) (box) = if box == 0 then 0 else when world-get s.items.world box
+    is Err (_) -> 0
+    is Ok (o) -> let i = o.health - gv-shop-tag 0
+      in if o.kind /= 2 | not (gv-shop-art o.graphic) | i < 0 | i >= s.vendor.vendor-count then 0 else (list-at s.vendor.vendors i).serial
+  as-steal-item : ActiveSkills, AsActor, GameShard, WorldObject, Integer, Integer, WorldObject, Integer -> GameReply
+  as-steal-item (s) (a) (game) (player) (owner) (box) (item) (now) =
     if owner == 0 then gsi-denied "You cannot steal that."
     else if owner == player.serial then gsi-denied "You catch yourself red handed."
     else if item.container == owner then gsi-denied "You cannot steal items which are equipped."
@@ -47,10 +59,11 @@ Chapter: ActiveSkillsStealing
       is Err (_) -> gsi-denied "You cannot steal that."
       is Ok (victim) -> when world-get s.items.world owner
         is Err (_) -> gsi-denied "You cannot steal that."
-        is Ok (mark) -> if not victim.npc then gsi-denied "You must be in the thieves guild to steal from other players."
+        is Ok (mark) -> let spot = if box == 0 then mark else (when world-get s.items.world box is Err (_) -> mark is Ok (o) -> o)
+          in if not victim.npc then gsi-denied "You must be in the thieves guild to steal from other players."
           else if victim.immune then gsi-denied "You can't steal from this."
-          else if not (as-near player mark 1) then gsi-denied "You are too far away to steal that item."
-          else if not (as-visible s player.serial owner) then gsi-denied "You cannot see that"
+          else if not (as-near player spot 1) then gsi-denied "You are too far away to steal that item."
+          else if box == 0 & not (as-visible s player.serial owner) then gsi-denied "You cannot see that"
           else let level = as-level a 33
           in let weight = as-steal-weight s item.graphic
           in let pile = gsi-known s.items item.serial & (gsi-meta s.items item.serial).stackable & item.amount > 1
@@ -64,7 +77,8 @@ Chapter: ActiveSkillsStealing
           in let impact = min 975 (max 0 ((armor - 1) * 1000 / 40))
           in let chance = (100 - total * 20 / (100 + level)) * (1000 - impact) / 1000
           in let paced = __record-set a "next" (now + gh-ticks 10000)
-          in let reach = as-say ("You reach into " & as-mobile-name s game owner & "'s pack and try to take something...")
+          in let reach = as-say (if box == 0 then "You reach into " & as-mobile-name s game owner & "'s pack and try to take something..." else "You reach into the container and try to take something...")
+          in let attempted = s.theft-hook player.serial owner
           in if chance < skc-random a.skills 101 then gs-reply [reach, as-say "You failed to steal that item."] "skills:steal-failed"
           else let pack = gsi-pack-find s.items.world player.serial 0
           in let thief = as-steal-thief s player.serial
@@ -91,31 +105,16 @@ Chapter: ActiveSkillsStealing
   as-steal-ready : ActiveSkills, Integer, Integer, Integer -> Boolean
   as-steal-ready (s) (thief) (serial) (take) = let at = gv-lot s.vendor serial 0
     in if at < 0 then True
-    else let lot = list-at s.vendor.lots at
+    else let lot = ep-lot s.vendor.currency.world.goods at
     in let w = s.vendor.currency.world
-    in thief > 0 & thief /= lot.actor & take >= 1 & take <= lot.quantity & ep-at (ep-actor w lot.actor).stock lot.item >= take
+    in thief > 0 & thief /= lot.actor & take >= 1 & take <= ep-amount w.goods lot.serial & ep-at (ep-actor w lot.actor).stock lot.item >= take
       & ep-room (ep-actor w thief) lot.item take
   as-steal-lot : ActiveSkills, Integer, Integer, Integer, Integer -> Text
   as-steal-lot (s) (thief) (serial) (made) (take) = let at = gv-lot s.vendor serial 0
     in if at < 0 then ""
-    else let lot = list-at s.vendor.lots at
-    in let w = s.vendor.currency.world
-    in let victim = ep-actor w lot.actor
-    in let gain = ep-actor w thief
-    in let share = lot.basis * take / lot.quantity
-    in let a = ep-add victim.stock lot.item (0 - take)
-    in let b = ep-add victim.quality lot.item (0 - take * lot.quality)
-    in let c = ep-add victim.wear lot.item (0 - take * lot.wear)
-    in let d = ep-add victim.cost lot.item (0 - share)
-    in let e = ep-add gain.stock lot.item take
-    in let f = ep-add gain.quality lot.item (take * lot.quality)
-    in let g = ep-add gain.wear lot.item (take * lot.wear)
-    in let h = ep-add gain.cost lot.item share
+    else let lot = ep-lot s.vendor.currency.world.goods at
     in let robbed = lot.actor
-    in let moved = if made == 0 then (let owned = __record-set lot "actor" thief in 0)
-      else (let left = __record-set lot "quantity" (lot.quantity - take)
-      in let kept = __record-set lot "basis" (lot.basis - share)
-      in gv-add-lot s.vendor made thief lot.item lot.quality lot.wear share)
+    in let moved = ep-hand s.vendor.currency.world at thief take (if made == 0 then lot.serial else made) (0 - 1)
     in let invalidated = gh-invalidate-quotes s.vendor 0
     in "; theft item=" & show lot.item & " quantity=" & show take & " from-actor=" & show robbed & " to-actor=" & show thief
  A coin pile in an economy actor's pack (tl-coins) is a share of that actor's purse: the coins move purse to purse as a
@@ -126,7 +125,7 @@ Chapter: ActiveSkillsStealing
   as-steal-purse (s) (pack) = let at = gv-lot s.vendor pack 0
     in if at < 0 then 0
     else let w = s.vendor.currency.world
-    in let actor = (list-at s.vendor.lots at).actor
+    in let actor = (ep-lot s.vendor.currency.world.goods at).actor
     in if not (ep-valid-actor w actor) then 0 else (ep-actor w actor).purse
   as-steal-coin : ActiveSkills, List Integer, WorldObject, Integer, Integer -> GameReply
   as-steal-coin (s) (reach) (item) (thief) (take) = let x = s.vendor.currency

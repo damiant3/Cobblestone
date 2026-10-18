@@ -1345,6 +1345,7 @@ Section: Math Intrinsic Emission
     else if name == "to-real-approx" then True
     else if name == "from-real-approx" then True
     else if name == "real-to-int" then True
+    else if name == "int-mod" then True
     else False
 
   ptx-emit-math-intrinsic : PtxCtx, Text, List IRExpr, Integer -> PtxResult
@@ -1369,6 +1370,7 @@ Section: Math Intrinsic Emission
     else if name == "to-real-approx" then ptx-emit-to-width ctx 32 args depth
     else if name == "from-real-approx" then ptx-emit-to-width ctx 64 args depth
     else if name == "real-to-int" then ptx-emit-cvt-to-int ctx args depth
+    else if name == "int-mod" then ptx-emit-int-mod ctx args depth
     else PtxResult { code = "", result-reg = "%rd0", ctx = ctx }
 
   ptx-emit-approx-const : PtxCtx, Text, List IRExpr, Integer -> PtxResult
@@ -1455,6 +1457,26 @@ Section: Math Intrinsic Emission
      code = a0.code & a1.code & c.indent & instr & " " & r & ", " & a0.result-reg & ", " & a1.result-reg & ";\n",
      result-reg = r,
      ctx = c
+    }
+
+  ptx-emit-int-mod : PtxCtx, List IRExpr, Integer -> PtxResult
+  ptx-emit-int-mod (ctx) (args) (depth) =
+    let a0 = ptx-emit-expr-at ctx (list-at args 0) (depth + 1)
+    in let a1 = ptx-emit-expr-at (a0.ctx) (list-at args 1) (depth + 1)
+    in let r = ptx-fresh-reg (a1.ctx)
+    in let c1 = ptx-bump-reg (a1.ctx)
+    in let m = ptx-fresh-reg c1
+    in let c2 = ptx-bump-reg c1
+    in let s = ptx-fresh-reg c2
+    in let c3 = ptx-bump-reg c2
+    in PtxResult {
+     code = a0.code & a1.code & c3.indent & "rem.s64 " & r & ", " & a0.result-reg & ", " & a1.result-reg & ";\n"
+       & c3.indent & "abs.s64 " & m & ", " & a1.result-reg & ";\n"
+       & c3.indent & "shr.s64 " & s & ", " & r & ", 63;\n"
+       & c3.indent & "and.b64 " & m & ", " & m & ", " & s & ";\n"
+       & c3.indent & "add.s64 " & r & ", " & r & ", " & m & ";\n",
+     result-reg = r,
+     ctx = c3
     }
 
   ptx-emit-math-tan : PtxCtx, List IRExpr, Integer -> PtxResult

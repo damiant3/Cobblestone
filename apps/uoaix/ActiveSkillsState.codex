@@ -3,6 +3,7 @@ Chapter: ActiveSkillsState
   cites Uoaix chapter GameHarvestState
   cites Uoaix chapter GameMobileBank
   cites Uoaix chapter GameCombat
+  cites Uoaix chapter Skill1998
 
   AsServices = record { light : Integer -> Boolean, animal : Integer -> Boolean, item-name : Integer -> Text,
     intelligence : Integer -> Integer, poison : Integer -> Integer,
@@ -10,28 +11,36 @@ Chapter: ActiveSkillsState
     snoop : Integer, Integer, Integer, Boolean -> Boolean, provoke : Integer -> Integer, lure : Integer, Integer -> Boolean,
     taming : Integer -> Integer, master : Integer -> Integer, tame : Integer, Integer -> Boolean, pet-name : Integer -> Text,
     herd : Integer, Integer, Integer, Integer -> Boolean,
-    envenom : Integer, Integer, Integer -> Boolean }
+    envenom : Integer, Integer, Integer -> Boolean, durability : Integer -> Integer }
   AsActor = record { serial : Integer, connection : Integer, skills : SkClassic,
     hidden : Boolean,
     next : Integer, cursor : Integer, skill : Integer, expires : Integer, bandage : Integer,
     patient : Integer, due : Integer, tracking : Integer, track-next : Integer, track-until : Integer,
     menu : Integer, category : Integer, choices : List Integer, choice-count : Integer, provoked : Integer,
-    tame : Integer, tame-step : Integer, tame-due : Integer, herd : Integer }
+    tame : Integer, tame-step : Integer, tame-due : Integer, herd : Integer, lore-next : Integer }
   ActiveSkills = record { vendor : GvWorld, items : GsiState, banks : GmbState, combat : GameCombat,
-    actors : List AsActor, next-target : Integer, concealed : Integer, calm : Integer, picks : Integer, spirit : Integer, manifest : Integer }
+    actors : List AsActor, next-target : Integer, concealed : Integer, calm : Integer, picks : Integer, spirit : Integer, manifest : Integer, theft-hook : (Integer, Integer -> Integer) }
   as-actors : Integer, List AsActor -> List AsActor
   as-actors (i) (xs) = if i == 5 then xs else as-actors (i + 1) (list-push xs
     (AsActor { serial = 0, connection = -1, skills = skc-new (42 + i) 100,
       hidden = False,
       next = 0, cursor = 0, skill = -1, expires = 0, bandage = 0, patient = 0, due = 0,
       tracking = 0, track-next = 0, track-until = 0, menu = 0, category = 0,
-      choices = gp-zeros (__list-with-capacity 32) 32, choice-count = 0, provoked = 0, tame = 0, tame-step = 0, tame-due = 0, herd = 0 }))
+      choices = gp-zeros (__list-with-capacity 32) 32, choice-count = 0, provoked = 0, tame = 0, tame-step = 0, tame-due = 0, herd = 0, lore-next = 0 }))
+  as-theft-none : Integer, Integer -> Integer
+  as-theft-none (thief) (victim) = 0
+  as-grow : ActiveSkills, Integer -> Integer
+  as-grow (s) (capacity) = let a = sa-grow s.concealed capacity
+    in let b = sa-grow s.calm capacity
+    in let c = sa-grow s.picks capacity
+    in let d = sa-grow s.spirit capacity
+    in sa-grow s.manifest capacity
   as-new : GvWorld, GmbState, GameCombat -> Result ActiveSkills Text
   as-new (vendor) (banks) (combat) = if vendor.game.world.buffer /= banks.items.world.buffer
     | list-length combat.actors /= banks.items.world.capacity then Err "active skill shared bindings"
     else Ok (ActiveSkills { vendor = vendor, items = banks.items, banks = banks, combat = combat,
-      actors = as-actors 0 (__list-with-capacity 5), next-target = 1, concealed = sk-buffer ((banks.items.world.capacity + 7) / 8), calm = sk-buffer banks.items.world.capacity,
-      picks = sk-buffer (banks.items.world.capacity * 2), spirit = sk-buffer banks.items.world.capacity, manifest = sk-buffer banks.items.world.capacity })
+      actors = as-actors 0 (__list-with-capacity 5), next-target = 1, concealed = sa-new 1 banks.items.world.capacity, calm = sa-new 8 banks.items.world.capacity,
+      picks = sa-new 16 banks.items.world.capacity, spirit = sa-new 8 banks.items.world.capacity, manifest = sa-new 8 banks.items.world.capacity, theft-hook = as-theft-none })
  A session's ClassicSkills levels are the character's row in the shard's skill table, so every use and gain lands there.
   as-session : ActiveSkills, GameShard, GameInput, WorldObject, Integer -> AsActor
   as-session (s) (game) (input) (mobile) (slot) = let a = list-at s.actors slot
@@ -61,15 +70,64 @@ Chapter: ActiveSkillsState
  world slot: serial * 2048 + level, then the item's serial.
   as-picked : ActiveSkills, Integer, Integer, Integer -> Integer
   as-picked (s) (item) (picker) (level) = let slot = world-slot s.items.world item
-    in if slot < 0 then 0 else let who = poke-qword s.picks (slot * 16) (picker * 2048 + level) in poke-qword s.picks (slot * 16 + 8) item
+    in if slot < 0 then 0 else let who = poke-qword (sa-at s.picks slot) 0 (picker * 2048 + level) in poke-qword (sa-at s.picks slot) 8 item
  UOX3 spiritspeak.js SOCK_SPIRITSPEAK: the tick until which a character understands ghosts, by its world slot.
   as-spirit-hears : ActiveSkills, Integer, Integer -> Boolean
-  as-spirit-hears (s) (serial) (now) = let slot = world-slot s.items.world serial in slot >= 0 & peek-qword s.spirit (slot * 8) > now
+  as-spirit-hears (s) (serial) (now) = let slot = world-slot s.items.world serial in slot >= 0 & peek-qword (sa-at s.spirit slot) 0 > now
   as-level : AsActor, Integer -> Integer
   as-level (a) (skill) = sk-at a.skills.levels skill
   as-roll : ActiveSkills, AsActor, Integer, Integer -> Boolean
-  as-roll (s) (a) (skill) (difficulty) = let result = skc-use a.skills skill difficulty True
+  as-roll (s) (a) (skill) (difficulty) = let before = if skill < 0 | skill >= 46 then 1000 else as-level a skill
+    in let result = if as-direct skill then as-direct-use s a skill else if as-learn-range skill > 0 then as-learn-check s a skill difficulty else skc-use a.skills skill difficulty True
+    in let ranged = as-learn-range skill > 0
+    in let gained = result == 1 | (ranged & before < 500)
+    in let shared = if as-direct skill | not gained | a.hidden then 0
+      else gs-skill-share s.vendor.game a.serial skill difficulty (if ranged then as-learn-range skill else 50) 100 (skc-random a.skills 1000000000) s.combat.present-hook
+    in let stat = if before >= 1000 | as-level a skill <= before then -1 else skc-stat-gain (gs-card s.vendor.game a.serial) skill a.skills.seed
     in let touched = world-touch s.items.world in result == 1
+ OUO skill.c DirectUse (0x004D5F09), the 1998 scripts' testSkill and testSkillReal: anatomy.m 1, animlore.m 2,
+ armslore.m 4, begging.m 6, calm.m 9 and 29, detcthid.m 14, entice.m 15, evaluate.m 16, hidesk.m 21, poisonsk.m 30,
+ taste.m 36, tracking.m 38, and Spirit Speak 32 (OUO's own example). Five scripts spell the call skillTest, which no
+ builtin answers to; it is read as testSkill. Lockpicking's pick_lock.m is a testSkill too, but UOAIX keeps the lock's
+ difficulty. A check succeeds on value - random(1000) > 0, whatever difficulty the caller passes.
+  as-direct : Integer -> Boolean
+  as-direct (skill) = skill == 1 | skill == 2 | skill == 4 | skill == 6 | skill == 9 | skill == 14 | skill == 15 | skill == 16
+    | skill == 21 | skill == 29 | skill == 30 | skill == 32 | skill == 36 | skill == 38
+ The 1998 scripts' testAndLearnSkill ranges: forensic.m 19 at 100; inscribe.m 23, stealing.m 33 and tame.m 35 at 50.
+  as-learn-range : Integer -> Integer
+  as-learn-range (skill) = if skill == 19 then 100 else if skill == 23 | skill == 33 | skill == 35 then 50 else 0
+  as-learn-check : ActiveSkills, AsActor, Integer, Integer -> Integer
+  as-learn-check (s) (a) (skill) (difficulty) = let base = as-level a skill
+    in let chance = s98-chance (as-value s a skill) difficulty (as-learn-range skill)
+    in let count = __record-set a.skills "attempts" (a.skills.attempts + 1)
+    in let passed = chance - skc-random a.skills 1000 > 0
+    in let learned = if not (s98-learns base passed False) then 0
+      else skc-use-raise a.skills skill (s98-tenths (s98-gain skill base chance a.skills.gain-rate) (skc-random a.skills 1000))
+    in if passed then 1 else 0
+  as-value : ActiveSkills, AsActor, Integer -> Integer
+  as-value (s) (a) (skill) = let card = gs-card s.vendor.game a.serial
+    in if card == 0 then as-level a skill else s98-value skill (as-level a skill) (skc-stat card 0) (skc-stat card 1) (skc-stat card 2)
+  as-direct-use : ActiveSkills, AsActor, Integer -> Integer
+  as-direct-use (s) (a) (skill) = let value = as-value s a skill
+    in let count = __record-set a.skills "attempts" (a.skills.attempts + 1)
+    in let result = value - skc-random a.skills 1000
+    in let passed = result > 0
+    in let learned = as-test-skill s a skill (if result >= 0 then 100 else 50) True
+    in if passed then 1 else 0
+ TestSkillInternal (0x004D567D): the anti-macro counter rises by 1 a use and empties after 900 ms idle, and a use gains
+ only while the counter is at most random(100). Every active skill here is paced 1000 ms or more (ActiveSkillsHandler),
+ so the counter stands at 1 at the gate: a use is refused its gain exactly when random(100) is 0. The gain is
+ SkillGain on (1000 - base) * factor / 100; a use past the gate then teaches its watchers (gs-skill-watch). A hidden
+ user is seen by no watcher (CEntity_CanSee) and shares no check.
+  as-test-skill : ActiveSkills, AsActor, Integer, Integer, Boolean -> Integer
+  as-test-skill (s) (a) (skill) (factor) (using) = let base = as-level a skill
+    in let gated = skc-random a.skills 100 < 1
+    in let raised = if gated | base >= 1000 then 0
+      else skc-use-raise a.skills skill (s98-tenths (as-test-gain skill base factor a.skills.gain-rate) (skc-random a.skills 1000))
+    in if not using | gated | a.hidden then raised
+      else let watched = gs-skill-watch s.vendor.game a.serial skill (as-value s a skill) factor (skc-random a.skills 1000000000) s.combat.present-hook in raised
+  as-test-gain : Integer, Integer, Integer, Integer -> Integer
+  as-test-gain (skill) (base) (factor) (percent) = s98-gain skill base (1000 - (1000 - base) * factor / 100) percent
   as-skill-rows : AsActor, Integer, List Integer -> List Integer
   as-skill-rows (a) (i) (out) = if i == 46 then gp-put16 out 0
     else as-skill-rows a (i + 1) (gp-put16 (gp-put16 out (i + 1)) (as-level a i))
@@ -81,7 +139,7 @@ Chapter: ActiveSkillsState
   as-near (a) (b) (distance) = as-distance a b <= distance & walk-abs (a.z - b.z) <= 16
   as-fighting : ActiveSkills, Integer, Integer -> Boolean
   as-fighting (s) (serial) (i) = if i == s.combat.count then False
-    else let actor = list-at s.combat.actors (peek-qword s.combat.active (i * 8))
+    else let actor = list-at s.combat.actors (peek-qword (sa-at s.combat.active i) 0)
     in actor.serial == serial | actor.target == serial | as-fighting s serial (i + 1)
   as-light : ActiveSkills, AsServices, Integer, Integer -> Boolean
   as-light (s) (services) (serial) (layer) = if layer == 26 then False
@@ -95,7 +153,7 @@ Chapter: ActiveSkillsState
     in let shown = as-conceal s a.serial 0
     in world-touch s.items.world
   as-conceal : ActiveSkills, Integer, Integer -> Integer
-  as-conceal (s) (serial) (flag) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-byte s.concealed slot flag
+  as-conceal (s) (serial) (flag) = let slot = world-slot s.items.world serial in if slot < 0 then 0 else poke-byte (sa-at s.concealed slot) 0 flag
   as-target : ActiveSkills, AsActor, Integer, Integer -> GameReply
   as-target (s) (a) (skill) (now) = if s.next-target > 65535 then gsi-denied "Skill target contexts exhausted."
     else let cursor = #41530000 + s.next-target

@@ -19,9 +19,11 @@ Chapter: BritishFirstMineProof
   bfm-vendor (v) (actor) (i) = if i == v.vendor-count then 0
     else if (list-at v.vendors i).actor == actor then (list-at v.vendors i).serial else bfm-vendor v actor (i + 1)
   bfm-lot : GvWorld, Integer -> Integer
-  bfm-lot (v) (i) = if i == v.lot-count then -1
-    else let lot = list-at v.lots i
-    in if lot.item == 25 & lot.quantity > 0 & bfm-vendor v lot.actor 0 > 0 then i else bfm-lot v (i + 1)
+  bfm-lot (v) (unused) = bfm-lot-from v (ep-lots-first v.currency.world.goods)
+  bfm-lot-from : GvWorld, Integer -> Integer
+  bfm-lot-from (v) (serial) = if serial == 0 then -1
+    else let lot = ep-lot v.currency.world.goods serial
+    in if lot.item == 25 & (ep-amount v.currency.world.goods lot.serial) > 0 & bfm-vendor v lot.actor 0 > 0 then serial else bfm-lot-from v (ep-lot-after v.currency.world.goods serial)
   bfm-claim : CprState -> Integer
   bfm-claim (s) = let at = gh-site-find s.harvest 5 cpr-mine-x cpr-mine-y cpr-mine-z 0
     in if at < 0 then 0 else (list-at s.harvest.sites at).node
@@ -63,14 +65,14 @@ Chapter: BritishFirstMineProof
       & node > 0 & (list-at owner.vendor.currency.world.nodes (node - 1)).owner == 0 & (list-at owner.vendor.currency.world.nodes (node - 1)).resource == 6
       & actor == owner.vendor.currency.world.mint-owner & (list-at owner.vendor.currency.world.nodes (node - 1)).place == (ep-actor owner.vendor.currency.world actor).place)
     lot <- bfm-lot owner.vendor 0
-    vendor <- (if lot < 0 then 0 else bfm-vendor owner.vendor (list-at owner.vendor.lots lot).actor 0)
+    vendor <- (if lot < 0 then 0 else bfm-vendor owner.vendor (ep-lot owner.vendor.currency.world.goods lot).actor 0)
     shop <- (when world-get owner.checkpoint.game.world vendor is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
     reached <- csp-walk-to p (list-at shop 0) (list-at shop 1) 1 200
     sales <- owner.vendor.sale-count
     menu <- csp-send p (csp-use vendor)
-    bought <- csp-send p (csp-buy vendor (if lot < 0 then 0 else (list-at owner.vendor.lots lot).serial) 1)
+    bought <- csp-send p (csp-buy vendor (if lot < 0 then 0 else (ep-lot owner.vendor.currency.world.goods lot).serial) 1)
     tool <- (if owner.vendor.sale-count == sales then 0 else (list-at owner.vendor.sales sales).delivered)
-    b <- bfm-check "he buys a pickaxe from the lineup smith through vendor packets" (lot >= 0 & is-ok reached & is-ok menu & is-ok bought & tool > 0)
+    b <- bfm-check "he buys a pickaxe from a Britain shop through vendor packets" (lot >= 0 & is-ok reached & is-ok menu & is-ok bought & tool > 0)
     rock <- walk-set-land map cpr-mine-x cpr-mine-y cpr-mine-z (mt-mark 565 64)
     walked <- csp-walk-to p (cpr-mine-x + 1) (cpr-mine-y + 1) 0 400
     print-line-uni ("WALK to the mine " & (when walked is Err (e) -> e is Ok (n) -> "arrived, budget left " & show n))
@@ -99,7 +101,7 @@ Chapter: BritishFirstMineProof
     is Err (e) -> bfm-check ("registry " & e) False
     is Ok (specs) -> when walk-map-new 1408 1520 96 224
       is Err (e) -> bfm-check e False
-      is Ok (map) -> when walk-map-new 1408 1536 96 160
+      is Ok (map) -> when walk-map-new 1408 1520 96 240
        is Err (e) -> bfm-check e False
        is Ok (britain) -> let filled = bfm-fill map 0 in let town-filled = bfm-fill britain 0 in act
         opened <- us-open 0 131072

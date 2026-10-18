@@ -1,0 +1,347 @@
+Chapter: TavernChess
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter TavernBoard
+  cites Games chapter Chess
+  cites Games chapter Checkers
+
+ Chess and checkers on the game board 0x0FA6 (UOAIX-188, Damian 2026-10-09: "lets make chess and checkers work"). The
+ 1.25 client draws the board's container as gump 0x91A, and draws an item 0x3584..0x35A1 inside a container as gump
+ 0x91B plus its offset (CLIENT.EXE file offset 0x52B49 subtracts 0x2C69), so ART.MUL's "USED" art there is never shown.
+ Offset 0 is the checker, 1 bishop, 2 rook, 3 king, 4 knight, 5 pawn, 6 queen; 0x3584 starts White and 0x358B Black.
+  tch-board-art : Integer = #0FA6
+  tch-gump : Integer = #091A
+  tch-kinds : List Integer = [0, 3, 4, 6, 2, 1, 5]
+  tch-piece : Integer -> Boolean
+  tch-piece (art) = art >= #3584 & art <= #3591
+  tch-checker : Integer -> Boolean
+  tch-checker (art) = art == #3584 | art == #358B
+  tch-colour : Integer -> Integer
+  tch-colour (art) = (art - #3584) / 7
+  tch-kind : Integer -> Integer
+  tch-kind (art) = list-at tch-kinds (int-mod (art - #3584) 7)
+  tch-offset : Integer, Integer -> Integer
+  tch-offset (kind) (i) = if i >= 6 | list-at tch-kinds i == kind then i else tch-offset kind (i + 1)
+  tch-art : Integer, Integer -> Integer
+  tch-art (kind) (colour) = #3584 + 7 * colour + tch-offset kind 0
+ Every chess and checker board the decoration (ServUO Decoration, Britannia) set on a table is a live table, the
+ boards at their decoration x, y and z; premises.cfg clears each scenery set. Papua's board lies outside the 1998 map.
+  TchSet = record { x : Integer, y : Integer, z : Integer, chess : Boolean }
+  tch-set : Integer, Integer, Integer, Boolean -> TchSet
+  tch-set (x) (y) (z) (chess) = TchSet { x = x, y = y, z = z, chess = chess }
+  tch-sets : List TchSet = [tch-set 1497 1693 24 True, tch-set 1533 1429 59 True, tch-set 1622 1588 4 True, tch-set 1300 1567 34 True,
+    tch-set 1544 1749 39 True, tch-set 1548 1771 13 True, tch-set 1460 3780 4 True, tch-set 2516 652 5 True, tch-set 2467 408 19 True,
+    tch-set 2492 398 19 True, tch-set 3762 1227 4 True, tch-set 3058 3343 20 True, tch-set 554 2181 4 True, tch-set 1814 2810 24 True,
+    tch-set 1831 2671 4 True, tch-set 1931 2795 2 True, tch-set 1985 2908 4 True, tch-set 2043 2773 4 True, tch-set 2894 903 4 True,
+    tch-set 1562 1762 14 False, tch-set 1618 1587 4 False, tch-set 1435 1720 23 False, tch-set 2674 2233 6 False,
+    tch-set 1445 3776 6 False, tch-set 562 2169 4 False, tch-set 1863 2648 4 False, tch-set 2896 908 2 False]
+  tch-board : WorldTable, TchSet -> Integer
+  tch-board (world) (s) = tch-find world (world-tile-first world s.x s.y)
+  tch-find : WorldTable, Integer -> Integer
+  tch-find (world) (serial) = if serial == 0 then 0
+    else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == tch-board-art & o.container == 0) then serial
+    else tch-find world (world-tile-next world serial)
+  tch-board-set : WorldTable, Integer, Integer -> Integer
+  tch-board-set (world) (board) (i) = tch-board-in tch-sets world board i
+ A list constant is built again at every mention (about 1 KB for tch-sets), so the walk names it once.
+  tch-board-in : List TchSet, WorldTable, Integer, Integer -> Integer
+  tch-board-in (sets) (world) (board) (i) = if i >= list-length sets then -1
+    else if tch-board world (list-at sets i) == board then i else tch-board-in sets world board (i + 1)
+ The set whose board holds a piece, or -1.
+  tch-home : WorldTable, WorldObject -> Integer
+  tch-home (world) (c) = if c.kind /= 2 | c.container == 0 | not (tch-piece c.graphic) then -1 else tch-board-set world c.container 0
+ ServUO's layouts (Chessboard.cs, CheckerBoard.cs), 25 px a square: a chess piece at x 42 + 25 u, y 5 + 25 v (a pawn,
+ 31 px tall against the others' 40 to 43, 12 lower), Black's back rank at u 0 and White's at u 7, the a-file at v 7; a
+ checker at x 45 + 25 u, y 25 + 25 v, White on rows v 0 to 2. Chess.codex's square is rank row * 8 + file and
+ Checkers.codex's is row * 8 + column with the dark squares odd, so a chess square is u * 8 + 7 - v and a checker's is
+ v * 8 + 7 - u. A crowned checker is a second checker 5 px above the first.
+  tch-x0 : TchSet -> Integer
+  tch-x0 (s) = if s.chess then 42 else 45
+  tch-y0 : TchSet, Integer -> Integer
+  tch-y0 (s) (art) = if s.chess then 5 + (if tch-kind art == 1 then 12 else 0) else 25
+  tch-square : TchSet, Integer, Integer, Integer -> Integer
+  tch-square (s) (art) (x) (y) = if x + 12 < tch-x0 s | y + 12 < tch-y0 s art then -1
+    else let u = (x + 12 - tch-x0 s) / 25
+    in let v = (y + 12 - tch-y0 s art) / 25
+    in if u > 7 | v > 7 then -1 else if s.chess then u * 8 + 7 - v else v * 8 + 7 - u
+  tch-at-x : TchSet, Integer -> Integer
+  tch-at-x (s) (sq) = tch-x0 s + 25 * (if s.chess then sq / 8 else 7 - int-mod sq 8)
+  tch-at-y : TchSet, Integer, Integer -> Integer
+  tch-at-y (s) (art) (sq) = tch-y0 s art + 25 * (if s.chess then 7 - int-mod sq 8 else sq / 8)
+ A position read off the board's pieces (skip is a piece left out): a chess cell is its code; a checker cell is a man
+ (White 3, Black 1), a king when two of a side's checkers share the square.
+  tch-code : TchSet, Integer, Integer -> Integer
+  tch-code (s) (art) (old) = if s.chess then (if tch-checker art then old else tch-kind art + 6 * tch-colour art)
+    else if not (tch-checker art) then old
+    else let man = if tch-colour art == 0 then 3 else 1
+    in if old == man | old == man + 1 then man + 1 else man
+  tch-cells : WorldTable, TchSet, Integer, Integer, List Integer -> List Integer
+  tch-cells (world) (s) (serial) (skip) (cells) = if serial == 0 then cells
+    else let next = world-next-sibling world serial
+    in let sq = when world-get world serial is Err (_) -> -1 is Ok (c) -> if c.serial == skip | not (tch-piece c.graphic) then -1 else tch-square s c.graphic c.x c.y
+    in if sq < 0 then tch-cells world s next skip cells
+    else let art = when world-get world serial is Err (_) -> 0 is Ok (c) -> c.graphic
+    in tch-cells world s next skip (list-set-at cells sq (tch-code s art (list-at cells sq)))
+  tch-count : WorldTable, Integer, Integer -> Integer
+  tch-count (world) (serial) (n) = if serial == 0 then n
+    else let here = when world-get world serial is Err (_) -> 0 is Ok (c) -> if tch-piece c.graphic then 1 else 0
+    in tch-count world (world-next-sibling world serial) (n + here)
+ Each table keeps eight qwords in the owner's tavern buffer after the backgammon tables', zero being a new game: White's
+ seat, Black's seat (0 empty), the tick of the last move, the engine's side to move, the castling rights lost (chess:
+ 1 White short, 2 White long, 4 Black short, 8 Black long) or the square that must jump again plus one (checkers), the
+ en passant square plus one, the halfmove (chess) or quiet (checkers) clock, and 1 once the game is over. A restart
+ frees every table and sets every board out again.
+  tch-tavern-bytes : Integer = 64 * 27
+  tch-get : Integer, Integer, Integer -> Integer
+  tch-get (t) (i) (q) = peek-qword t (tbd-tavern-bytes + i * 64 + q * 8)
+  tch-put : Integer, Integer, Integer, Integer -> Integer
+  tch-put (t) (i) (q) (v) = poke-qword t (tbd-tavern-bytes + i * 64 + q * 8) v
+  tch-zero : Integer, Integer, Integer -> Integer
+  tch-zero (t) (i) (q) = if q >= 8 then 0 else let cleared = tch-put t i q 0 in tch-zero t i (q + 1)
+  tch-chess : Integer, Integer, List Integer -> ChessBoard
+  tch-chess (t) (i) (cells) = let lost = tch-get t i 4
+    in cs-board cells (tch-get t i 3) (tch-get t i 5 - 1) (bit-and lost 1 == 0) (bit-and lost 2 == 0) (bit-and lost 4 == 0) (bit-and lost 8 == 0) (tch-get t i 6)
+  tch-checkers : Integer, Integer, List Integer -> CheckerBoard
+  tch-checkers (t) (i) (cells) = CheckerBoard { cells = cells, turn = tch-get t i 3, over = False, winner = -1, quiet = tch-get t i 6, chain = tch-get t i 4 - 1 }
+ The colour to move: White first in chess, Black (Checkers.codex's South, turn 0) first in checkers.
+  tch-to-move : TchSet, Integer, Integer -> Integer
+  tch-to-move (s) (t) (i) = if s.chess then tch-get t i 3 else 1 - tch-get t i 3
+  tch-colour-name : Integer -> Text
+  tch-colour-name (colour) = if colour == 0 then "White" else "Black"
+  tch-ck-find : List CheckerMove, Integer, Integer, Integer -> Integer
+  tch-ck-find (moves) (from) (to) (i) = if i >= list-length moves then -1
+    else if (list-at moves i).from-sq == from & (list-at moves i).to-sq == to then i
+    else tch-ck-find moves from to (i + 1)
+ A drop of a piece onto its own board lands on the square's place.
+  tch-snap : GsiState, List Integer -> List Integer
+  tch-snap (items) (packet) = if list-length packet /= 14 | list-at packet 0 /= 8 then packet
+    else when world-get items.world (gp-u32 packet 1)
+      is Err (_) -> packet
+      is Ok (c) -> let home = tch-home items.world c
+        in if home < 0 | gp-u32 packet 10 /= c.container then packet
+        else let s = list-at tch-sets home
+        in let to = tch-square s c.graphic (gp-u16 packet 5) (gp-u16 packet 7)
+        in if to < 0 then packet
+        else tbd-put16 (tbd-put16 packet 5 (tch-at-x s to)) 7 (tch-at-y s c.graphic to)
+ Two players (UOAIX-188, as backgammon): the first to move a colour's piece on its turn takes that colour, the second
+ player the other, and the table then locks until a game ends or tbd-idle-ticks pass with no move. A drop answers 0 when
+ it is no move of ours, minus (from * 64 + to + 1) for a legal move, and otherwise a refusal: 1 an illegal move, 3 a
+ watcher, 4 the side not on turn, 5 the opponent's piece, 7 a game piece taken off its board (backgammon's too), 8 a
+ finished or idle table, set out again, 9 one player taking both colours, 10 a colour taken by another player, 11 a
+ checker that must jump again, 12 a slide when a jump is open.
+  tch-referee : GsiState, Integer, List Integer, Integer, Integer -> Integer
+  tch-referee (items) (t) (packet) (player) (now) = if list-length packet /= 14 | list-at packet 0 /= 8 then 0
+    else let world = items.world
+    in when world-get world (gp-u32 packet 1)
+      is Err (_) -> 0
+      is Ok (c) -> let home = tch-home world c
+        in if home < 0 then (if tch-loose world c (gp-u32 packet 10) then 7 else 0)
+        else if gp-u32 packet 10 /= c.container then 7
+        else tch-judge world t (list-at tch-sets home) home c packet player now
+  tch-loose : WorldTable, WorldObject, Integer -> Boolean
+  tch-loose (world) (c) (target) = c.kind == 2 & c.container /= 0 & target /= c.container & c.graphic >= #3584 & c.graphic <= #35A1
+    & (when world-get world c.container is Err (_) -> False is Ok (b) -> b.kind == 2 & (b.graphic == tbd-art | b.graphic == tch-board-art))
+  tch-judge : WorldTable, Integer, TchSet, Integer, WorldObject, List Integer, Integer, Integer -> Integer
+  tch-judge (world) (t) (s) (i) (c) (packet) (player) (now) =
+    let from = tch-square s c.graphic c.x c.y
+    in let to = tch-square s c.graphic (gp-u16 packet 5) (gp-u16 packet 7)
+    in if from >= 0 & from == to then 0
+    else if tch-get t i 7 == 1 | ((tch-get t i 0 /= 0 | tch-get t i 1 /= 0) & now - tch-get t i 2 >= tbd-idle-ticks) then 8
+    else let colour = tch-colour c.graphic
+    in let mine = tch-get t i colour
+    in let theirs = tch-get t i (1 - colour)
+    in if mine /= 0 & mine /= player then (if theirs == player then 5 else if theirs == 0 then 10 else 3)
+    else if mine == 0 & theirs == player then 9
+    else if tch-to-move s t i /= colour then 4
+    else if from < 0 | to < 0 then 1
+    else let cells = tch-cells world s (world-first-child world c.container) 0 (tbd-zeros 64 [])
+    in if s.chess then (if chess-find (chess-legal (tch-chess t i cells)) from to >= 0 then 0 - (from * 64 + to + 1) else 1)
+    else let moves = generate-moves (tch-checkers t i cells)
+    in if tch-ck-find moves from to 0 >= 0 then 0 - (from * 64 + to + 1)
+    else if tch-get t i 4 > 0 then 11
+    else if list-length moves > 0 & (list-at moves 0).captured >= 0 then 12
+    else 1
+  tch-refusal : Integer -> Text
+  tch-refusal (code) = if code == 3 then "This game is in play; you are watching."
+    else if code == 4 then "It is the other side's turn."
+    else if code == 5 then "Those are your opponent's pieces."
+    else if code == 7 then "The pieces stay on the board."
+    else if code == 9 then "The other side waits for a second player."
+    else if code == 10 then "That side is taken; play the other colour."
+    else if code == 11 then "Jump again with the same checker."
+    else if code == 12 then "A jump is open; you must take it."
+    else "That move is not legal."
+ Once the item layer has set a legal move's piece on its square: the captured piece goes, a castling rook and a
+ crowned checker's crown follow, a pawn on the last rank becomes a queen, a man on the far row is crowned, the mover
+ takes the seat if it was empty, and the game's end is named over the board.
+  tch-after : GsiState, Integer, List Integer, Integer, Integer, Integer -> List (List Integer)
+  tch-after (items) (t) (packet) (verdict) (player) (now) = if verdict >= 0 then []
+    else let from = (0 - verdict - 1) / 64
+    in let to = int-mod (0 - verdict - 1) 64
+    in let world = items.world
+    in when world-get world (gp-u32 packet 1)
+      is Err (_) -> []
+      is Ok (c) -> let home = tch-home world c
+        in if home < 0 then []
+        else let s = list-at tch-sets home
+        in if tch-square s c.graphic c.x c.y /= to then []
+        else let cells = tch-cells world s (world-first-child world c.container) c.serial (tbd-zeros 64 [])
+        in let before = list-set-at cells from (tch-code s c.graphic (list-at cells from))
+        in let colour = tch-colour c.graphic
+        in let seated = tch-get t home colour == 0
+        in let sat = if seated then tch-put t home colour player else 0
+        in let stamped = tch-put t home 2 now
+        in let locked = if seated & tch-get t home (1 - colour) /= 0 then [sip-message c.container tch-board-art 6 "Both sides are seated. The table is locked; everyone else watches."] else []
+        in (if s.chess then tch-chess-after items t home s c before from to else tch-checkers-after items t home s c before from to) & locked
+  tch-chess-after : GsiState, Integer, Integer, TchSet, WorldObject, List Integer, Integer, Integer -> List (List Integer)
+  tch-chess-after (items) (t) (i) (s) (c) (before) (from) (to) = let world = items.world
+    in let board = c.container
+    in let b = tch-chess t i before
+    in let moves = chess-legal b
+    in let k = chess-find moves from to
+    in if k < 0 then []
+    else let m = list-at moves k
+    in let taken = if m.special == 2 then tch-take world s (world-first-child world board) (cs-square (cs-row from) (cs-col to)) 0 []
+      else if m.captured /= 0 then tch-take world s (world-first-child world board) to c.serial [] else []
+    in let rook = if m.special /= 3 then []
+      else if to == 62 then tch-shift world s (world-first-child world board) 63 61 0
+      else if to == 58 then tch-shift world s (world-first-child world board) 56 59 0
+      else if to == 6 then tch-shift world s (world-first-child world board) 7 5 0
+      else tch-shift world s (world-first-child world board) 0 3 0
+    in let queen = tch-art (cs-kind m.promote) (tch-colour c.graphic)
+    in let promoted = if m.promote == 0 then [] else tch-place world (__record-set c "graphic" queen) (tch-at-x s to) (tch-at-y s queen to)
+    in let after = chess-apply b m
+    in let lost = (if after.wk-castle then 0 else 1) + (if after.wq-castle then 0 else 2) + (if after.bk-castle then 0 else 4) + (if after.bq-castle then 0 else 8)
+    in let a = tch-put t i 3 after.turn
+    in let d = tch-put t i 4 lost
+    in let e = tch-put t i 5 (after.ep-sq + 1)
+    in let f = tch-put t i 6 after.halfmove
+    in let mover = tch-colour-name (tch-colour c.graphic)
+    in let ending = if chess-checkmate after then "Checkmate. " & mover & " wins."
+      else if chess-stalemate after then "Stalemate. The game is drawn."
+      else if chess-fifty after then "Fifty moves without a capture or a pawn move. The game is drawn."
+      else if chess-dead after then "Neither side can mate. The game is drawn."
+      else ""
+    in let over = if ending == "" then 0 else tch-over t i
+    in let said = if ending /= "" then ending else if chess-in-check after after.turn then "Check." else ""
+    in taken & rook & promoted & (if said == "" then [] else [sip-message board tch-board-art 6 said])
+  tch-checkers-after : GsiState, Integer, Integer, TchSet, WorldObject, List Integer, Integer, Integer -> List (List Integer)
+  tch-checkers-after (items) (t) (i) (s) (c) (before) (from) (to) = let world = items.world
+    in let board = c.container
+    in let king = list-at before from == 2 | list-at before from == 4
+    in let b = tch-checkers t i before
+    in let moves = generate-moves b
+    in let k = tch-ck-find moves from to 0
+    in if k < 0 then []
+    else let m = list-at moves k
+    in let taken = if m.captured < 0 then [] else tch-take world s (world-first-child world board) m.captured 0 []
+    in let crown = if king then tch-follow world s (world-first-child world board) from to c.serial []
+      else if (to / 8 == 0 & list-at before from == 1) | (to / 8 == 7 & list-at before from == 3) then tch-crown items s board c.graphic to
+      else []
+    in let after = apply-move b m
+    in let a = tch-put t i 3 after.turn
+    in let d = tch-put t i 4 (after.chain + 1)
+    in let f = tch-put t i 6 after.quiet
+    in let ending = if not after.over then ""
+      else if after.winner < 0 then "Forty moves each without a jump or a crowning. The game is drawn."
+      else tch-colour-name (1 - after.winner) & " wins."
+    in let over = if ending == "" then 0 else tch-over t i
+    in let said = if ending /= "" then ending else if after.chain >= 0 then "Jump again." else ""
+    in taken & crown & (if said == "" then [] else [sip-message board tch-board-art 6 said])
+ A finished game frees both seats and keeps its last position until the next drop sets the board out again.
+  tch-over : Integer, Integer -> Integer
+  tch-over (t) (i) = let a = tch-put t i 0 0 in let b = tch-put t i 1 0 in tch-put t i 7 1
+  tch-place : WorldTable, WorldObject, Integer, Integer -> List (List Integer)
+  tch-place (world) (o) (x) (y) = when world-update world (__record-set (__record-set o "x" x) "y" y)
+    is Err (_) -> []
+    is Ok (_) -> when world-get world o.serial is Err (_) -> [] is Ok (p) -> [sip-item p]
+ A captured piece goes to the trough at its captor's edge of gump 0x91A (282 by 210, squares from x 42 to 242; Damian
+ 2026-10-09, UOAIX-230: "in chess the captured pieces are not shown in the left right trough edges of the gump"): White's
+ to the left at x 10, Black's to the right at x 252, 10 px apart from y 5, so fifteen fit. Both x lie off every square.
+  tch-trough-x : Integer -> Integer
+  tch-trough-x (colour) = if colour == 0 then 10 else 252
+  tch-trough-count : WorldTable, Integer, Integer, Integer -> Integer
+  tch-trough-count (world) (serial) (x) (n) = if serial == 0 then n
+    else let here = when world-get world serial is Err (_) -> 0 is Ok (c) -> if tch-piece c.graphic & c.x == x then 1 else 0
+    in tch-trough-count world (world-next-sibling world serial) x (n + here)
+  tch-take : WorldTable, TchSet, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  tch-take (world) (s) (serial) (sq) (keep) (out) = if serial == 0 then out
+    else let next = world-next-sibling world serial
+    in let gone = when world-get world serial
+      is Err (_) -> out
+      is Ok (o) -> if o.serial == keep | not (tch-piece o.graphic) | tch-square s o.graphic o.x o.y /= sq then out
+        else let x = tch-trough-x (tch-colour o.graphic)
+        in let n = tch-trough-count world (world-first-child world o.container) x 0
+        in out & tch-place world o x (5 + 10 * min n 15)
+    in tch-take world s next sq keep gone
+  tch-shift : WorldTable, TchSet, Integer, Integer, Integer, Integer -> List (List Integer)
+  tch-shift (world) (s) (serial) (from) (to) (keep) = if serial == 0 then []
+    else let next = world-next-sibling world serial
+    in when world-get world serial
+      is Err (_) -> tch-shift world s next from to keep
+      is Ok (o) -> if o.serial == keep | not (tch-piece o.graphic) | tch-square s o.graphic o.x o.y /= from then tch-shift world s next from to keep
+        else tch-place world o (tch-at-x s to) (tch-at-y s o.graphic to)
+  tch-follow : WorldTable, TchSet, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  tch-follow (world) (s) (serial) (from) (to) (keep) (out) = if serial == 0 then out
+    else let next = world-next-sibling world serial
+    in let moved = when world-get world serial
+      is Err (_) -> out
+      is Ok (o) -> if o.serial == keep | not (tch-checker o.graphic) | tch-square s o.graphic o.x o.y /= from then out
+        else out & tch-place world o (tch-at-x s to) (tch-at-y s o.graphic to - 5)
+    in tch-follow world s next from to keep moved
+  tch-crown : GsiState, TchSet, Integer, Integer, Integer -> List (List Integer)
+  tch-crown (items) (s) (board) (art) (sq) = when tch-new items board art (tch-at-x s sq) (tch-at-y s art sq - 5)
+    is Err (_) -> []
+    is Ok (o) -> [sip-item o]
+  tch-new : GsiState, Integer, Integer, Integer, Integer -> Result WorldObject Text
+  tch-new (items) (board) (art) (x) (y) =
+    when world-create items.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = art, hue = 0, container = board, amount = 1, health = 0 })
+      is Err (e) -> Err e
+      is Ok (serial) -> if gsi-register items serial 0 0 True False /= 0 then Err "game piece metadata refused" else world-get items.world serial
+ Sets a board out for a new game and frees its table.
+  tch-reset : GsiState, Integer, Integer -> List (List Integer)
+  tch-reset (items) (t) (i) = let s = list-at tch-sets i
+    in let board = tch-board items.world s
+    in if board == 0 then []
+    else let cleared = tch-clear items.world (world-first-child items.world board) []
+    in let laid = tch-lay items s board 0 []
+    in let freed = tch-zero t i 0
+    in let touched = world-touch items.world
+    in cleared & laid & [sip-message board tch-board-art 6 "The pieces are set out for a new game."]
+  tch-clear : WorldTable, Integer, List (List Integer) -> List (List Integer)
+  tch-clear (world) (serial) (out) = if serial == 0 then out
+    else let next = world-next-sibling world serial
+    in let gone = when world-get world serial
+      is Err (_) -> out
+      is Ok (o) -> if not (tch-piece o.graphic) then out else when world-delete world serial is Err (_) -> out is Ok (_) -> list-push out (sip-remove serial)
+    in tch-clear world next gone
+  tch-lay : GsiState, TchSet, Integer, Integer, List (List Integer) -> List (List Integer)
+  tch-lay (items) (s) (board) (sq) (out) = if sq >= 64 then out
+    else let code = if s.chess then cs-initial-cell sq else initial-cell sq
+    in let art = if code == 0 then 0 else if s.chess then tch-art (cs-kind code) (if code > 6 then 1 else 0) else (if code == 3 then #3584 else #358B)
+    in let placed = if art == 0 then out else when tch-new items board art (tch-at-x s sq) (tch-at-y s art sq)
+      is Err (_) -> out
+      is Ok (o) -> list-push out (sip-item o)
+    in tch-lay items s board (sq + 1) placed
+ At boot each board stands, opens as gump 0x91A, and holds its opening position, because a restart's tavern buffer is a
+ new game; a board left mid-game is set out again.
+  tch-install : GsiState -> Integer
+  tch-install (items) = tch-install-from items 0
+  tch-install-from : GsiState, Integer -> Integer
+  tch-install-from (items) (i) = if i >= list-length tch-sets then 0 else tch-install-set items (list-at tch-sets i) + tch-install-from items (i + 1)
+  tch-install-set : GsiState, TchSet -> Integer
+  tch-install-set (items) (s) = let found = tch-board items.world s
+    in let board = if found /= 0 then found
+      else when world-create items.world (WorldObject { serial = 0, kind = 2, x = s.x, y = s.y, z = s.z, graphic = tch-board-art, hue = 0, container = 0, amount = 1, health = 0 })
+        is Err (_) -> 0
+        is Ok (serial) -> serial
+    in if board == 0 | gsi-register items board 0 tch-gump False False /= 0 then 0
+    else if tch-opening items.world s board then 1
+    else let cleared = tch-clear items.world (world-first-child items.world board) []
+    in let laid = tch-lay items s board 0 []
+    in let touched = world-touch items.world in 1 + list-length laid
+  tch-opening : WorldTable, TchSet, Integer -> Boolean
+  tch-opening (world) (s) (board) = let first = world-first-child world board
+    in tch-count world first 0 == (if s.chess then 32 else 24)
+      & tch-same (tch-cells world s first 0 (tbd-zeros 64 [])) (if s.chess then (chess-new).cells else (checkers-new 0).cells) 0
+  tch-same : List Integer, List Integer, Integer -> Boolean
+  tch-same (a) (b) (i) = if i >= 64 then True else if list-at a i /= list-at b i then False else tch-same a b (i + 1)

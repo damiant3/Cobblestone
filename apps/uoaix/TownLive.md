@@ -14,6 +14,16 @@ of 3 through 128; this bounded installation adds exactly three residents.
 The initializer refuses insufficient capacity. Construction and expansion
 of the resident set are outside this adapter.
 
+Home is the whole building (Damian, 2026-10-07: "lets make the whole building
+"home" for them, they can be happy in any room."): the Sweet Dreams Inn's
+footprint on every floor, `tl-inn-building` (ServUO `Data/Regions.xml`, 1492,1602
+8x19). An NPC bound home there has arrived anywhere inside it (`tl-in-lodging`)
+and is reported resting there; the sleeping tile is only where the walk aims.
+Only the innkeeper lives there (UOAIX-239, Damian 2026-10-10): at every boot
+`cg-lodge-all` gives the workers, then every townsperson homed in the lodging,
+then every other keeper the first free floor tile of the least-loaded reachable
+house in `cgg-houses`, and the `INN LODGERS` line counts whoever is left there.
+
 ## Composite entry
 
 The composite populates on a fresh world only (`cg-britain`, CompositeGame.md)
@@ -71,10 +81,9 @@ The composite calls `tls-show` after `tl-pulse` (`cg-town-show`) and appends
 `tls-status` to a resident's 09 reply (`cg-town-status`). For a viewer within
 18 tiles that the resident can see (`tl-sight`):
 
-- a resident is labelled by trade ("the baker", "the blacksmith", "the tailor", from its job) on a click, the
-  0x11 status, the paperdoll and the name field of every line it says, until the character asks its name
-  ("name" in earshot); it then answers "I am Nell the baker." and is labelled with its name from then on
-  (UOAIX-56, `cg-trade-label`). The bank lineup's resident copy is the same person and shares the knowledge;
+- a resident is labelled "Nell the baker" (name and trade, from its job) to every character on a click, the
+  0x11 status, the paperdoll and the name field of every line it says; "name" in earshot answers
+  "I am Nell the baker." (UOAIX-56, `cg-trade-label`). The bank lineup's resident copy is the same person;
 - a click answers the resident's goal: busy at or on the way to work, at or
   off to the Blue Boar, resting at or heading home to the Sweet Dreams Inn;
 - a resident standing on its work tile during work shows it once per 60 game

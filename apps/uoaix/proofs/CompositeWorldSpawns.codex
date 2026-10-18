@@ -49,15 +49,8 @@ Chapter: CompositeWorldSpawns
       is Ok (m) -> let close = gm-near m.x m.y viewer.x viewer.y 18
         in if close /= cws-drawn pulsed serial then -1
         else cws-view g game viewer pulsed (i + 1) (if close then near + 1 else near)
-  cws-gold-ok : WsCatalog, Integer -> Boolean
-  cws-gold-ok (c) (i) = if i == list-length c.profiles then True
-    else let p = list-at c.profiles i in p.gold-low >= 0 & p.gold-high >= p.gold-low & cws-gold-ok c (i + 1)
   cws-zombie : WsCatalog, Integer -> Integer
   cws-zombie (c) (i) = if i == list-length c.profiles then -1 else if (list-at c.profiles i).key == "zombie" then i else cws-zombie c (i + 1)
-  cws-gold : WsCatalog -> [Console] Integer
-  cws-gold (c) = let z = cws-zombie c 0
-    in cws-check "the catalog carries UOX3 gold loot ranges (zombie GOLD=4 16), every range ordered" (z >= 0 & cws-gold-ok c 0
-      & (if z < 0 then False else (list-at c.profiles z).gold-low == 4 & (list-at c.profiles z).gold-high == 16))
   cws-terrain : WsCatalog, Integer -> [Console] Integer
   cws-terrain (c) (region) = when walk-map-new 100 100 8 8
     is Err (e) -> cws-check e False
@@ -234,8 +227,8 @@ Chapter: CompositeWorldSpawns
               in let unbound = __record-set owner.combat "death-hook" cb-death-none
               in act
                 print-line-uni ("LOOT kills=" & show c.kills & " gold=" & show c.gold & " kept=" & show f.looted & " taxed=" & show f.taxed & " held=" & show held)
-                cws-check "a spawn killed by the fighter loots its UOX3 gold as gold ore, taxed; a kill by anyone else loots nothing" (control & killed
-                  & after-control == 0 & c.kills == 1 & c.gold > 0 & c.gold == f.looted + f.taxed & held == f.looted
+                cws-check "a spawn killed by the fighter counts its kill and makes no ore from nothing (UOAIX-140); a kill by anyone else counts nothing" (control & killed
+                  & after-control == 0 & c.kills == 1 & c.gold == 0 & f.looted == 0 & f.taxed == 0 & held == 0
                   & cws-health game first == 0 & euv-valid x & ep-census x.world 1)
               end
   cws-first : CompositeOwner, List GameOpcodeSpec -> [Console, Device.Block] Integer
@@ -270,7 +263,6 @@ Chapter: CompositeWorldSpawns
               & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.kind == 1 & m.health > 0)
               & (when world-get game.world input.session.serial is Err (_) -> False is Ok (viewer) -> cws-view spawns game viewer pulsed 0 0 > 0))
             d <- cws-terrain spawns.catalog region
-            j <- cws-gold spawns.catalog
             f <- cws-headless owner game spawns (cws-region spawns.catalog (region + 1))
             committed <- cs-commit store True
             e <- cws-check "spawn state commits" (is-ok committed)
@@ -279,7 +271,7 @@ Chapter: CompositeWorldSpawns
             i <- cws-kill store game input spawns
             k <- cws-loot owner game input spawns
             l <- cws-summons owner game input.session.serial spawns cx cy
-            a + b + c + d + f + e + g + h + i + j + k + l
+            a + b + c + d + f + e + g + h + i + k + l
           end
       end
   end

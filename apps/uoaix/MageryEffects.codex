@@ -125,34 +125,47 @@ Chapter: MageryEffects
     else max 100 ((attack - defence) * 1000 / attack)
   mge-resisted : Magery, GameShard, Integer, Integer -> Boolean
   mge-resisted (magic) (shard) (caster) (target) = let attack = mge-attack shard caster
-    in let resisted = mgs-random magic 1000 < mge-resist-chance attack (mge-defence shard target)
-    in let skill = mgs-skill shard target 26
-    in let practised = if skill >= 1000 | mgs-random magic 1000 >= skc-gain-at 100 skill attack resisted then 0
-      else gs-skill-set shard target 26 (skill + 1)
+    in let chance = mge-resist-chance attack (mge-defence shard target)
+    in let resisted = mgs-random magic 1000 < chance
+    in let practised = gs-skill-learn shard target 26 chance resisted 100 (mgs-random magic 1000000000)
     in resisted
   mge-share : GameShard, Integer, Integer -> Integer
   mge-share (shard) (caster) (target) = mge-landed (mge-attack shard caster) (mge-defence shard target)
- ServUO pre-AOS damage: Lightning 12-20, Energy Bolt 24-41, Explosion 23-44, Flame Strike 27-48 (Utility.Random(a, b) is a
- plus 0 to b - 1); Mind Blast is half the gap between the caster's highest and lowest stat, at most 45.
+ Damage spell bases (UOAIX-201, Damian 2026-10-09: "make sure they payoff the mana cost and casting delay appropriately.
+ an 8th level spell is hard to cast, costs 50 mana, and should basically kill orcs and ratmen in 1 shot"): low and span
+ (low plus 0 to span - 1) chosen so mean damage per mana and per second of cast delay rise strictly with circle at the
+ ServUO mana and delay (bvt/BvtSpellDamage): Magic Arrow 4-7, Harm 3-15, Fireball 11-17, Lightning 14-22, Mind Blast
+ capped at 25, Energy Bolt 30-44, Explosion 29-46, Flame Strike and the Chain Lightning and Meteor Swarm pools 66-95,
+ Earthquake 90-119. Mind Blast is half the gap between the caster's highest and lowest stat, at most mge-mind-cap.
+  mge-base-low : Integer -> Integer
+  mge-base-low (spell) = if spell == 5 then 4 else if spell == 12 then 3 else if spell == 30 then 14 else if spell == 42 then 30
+    else if spell == 43 then 29 else if spell == 51 | spell == 49 | spell == 55 then 66 else if spell == 57 then 90 else 11
+  mge-base-span : Integer -> Integer
+  mge-base-span (spell) = if spell == 5 then 4 else if spell == 12 then 13 else if spell == 30 then 9 else if spell == 42 then 15
+    else if spell == 43 then 18 else if spell == 51 | spell == 49 | spell == 55 | spell == 57 then 30 else 7
+  mge-base-roll : Magery, Integer -> Integer
+  mge-base-roll (magic) (spell) = mge-base-low spell + mgs-random magic (mge-base-span spell)
+  mge-mind-cap : Integer = 25
   mge-mind-blast : Magery, GameShard, Integer -> Integer
   mge-mind-blast (magic) (shard) (caster) = when mgs-ensure magic shard caster
     is Err (_) -> 0
     is Ok (a) -> let s = mgs-stat a 0 in let d = mgs-stat a 1 in let i = mgs-stat a 2
-      in min 45 ((max s (max d i) - min s (min d i)) / 2)
+      in min mge-mind-cap ((max s (max d i) - min s (min d i)) / 2)
   mge-spell-damage : Magery, GameShard, WorldObject, WorldObject, Integer -> Integer
   mge-spell-damage (magic) (shard) (source) (target) (spell) =
-    let base = if spell == 5 then 4 + mgs-random magic 4 else if spell == 12 then 1 + mgs-random magic 15
-      else if spell == 30 then 12 + mgs-random magic 9 else if spell == 42 then 24 + mgs-random magic 18
-      else if spell == 43 then 23 + mgs-random magic 22 else if spell == 51 then 27 + mgs-random magic 22
-      else if spell == 37 then mge-mind-blast magic shard source.serial else 10 + mgs-random magic 7
+    let base = if spell == 37 then mge-mind-blast magic shard source.serial else mge-base-roll magic spell
     in let range = max (walk-abs (source.x - target.x)) (walk-abs (source.y - target.y))
     in let distance = if spell /= 12 | range <= 1 then 1000 else if range == 2 then 500 else 250
     in mge-scaled shard source target base distance
+  mge-scalar-of : Integer, Integer -> Integer
+  mge-scalar-of (eval) (magery) = 1000 + eval / 5 + (magery - 1000) / 4
+  mge-scaled-of : Integer, Integer, Integer, Integer, Integer -> Integer
+  mge-scaled-of (base) (share) (scalar) (creature) (distance) = max 1 (base * share * max 0 scalar * creature * distance / 1000000000)
   mge-scaled : GameShard, WorldObject, WorldObject, Integer, Integer -> Integer
   mge-scaled (shard) (source) (target) (base) (distance) =
-    let scalar = 1000 + mgs-skill shard source.serial 16 / 5 + (mgs-skill shard source.serial 25 - 1000) / 4
+    let scalar = mge-scalar-of (mgs-skill shard source.serial 16) (mgs-skill shard source.serial 25)
     in let creature = if cb-slot shard target.serial 0 < 0 & target.graphic /= 400 & target.graphic /= 401 then 2 else 1
-    in max 1 (base * mge-share shard source.serial target.serial * max 0 scalar * creature * distance / 1000000000)
+    in mge-scaled-of base (mge-share shard source.serial target.serial) scalar creature distance
   mge-mod : Magery, MgActor, Integer, Integer, Integer -> Integer
   mge-mod (magic) (actor) (stat) (value) (until) = let at = stat * 32 + (if value >= 0 then 0 else 16)
     in let old = peek-qword actor.mods at

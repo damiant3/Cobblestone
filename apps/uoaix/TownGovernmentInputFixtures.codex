@@ -1,0 +1,119 @@
+Chapter: TownGovernmentInputFixtures
+  cites Uoaix chapter TownGovernmentInput
+  cites Uoaix chapter TownGovernmentCodec
+  cites Uoaix chapter TownGovernmentBundle
+  cites Uoaix chapter TownGovernment
+  cites Uoaix chapter TownWorks
+  cites Uoaix chapter TownDisputes
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter TitleRegistry
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter EconomyCurrency
+  cites Uoaix chapter EconomyCurrencyFixtures
+  cites Foreword chapter Result
+  cites Foreword chapter Maybe
+
+  TgiScenario = record { state : GovernmentCheckpoint, entries : List GovernmentInput, failed : Integer }
+  tgif-people : TfWorld, Integer -> Integer
+  tgif-people (w) (i) = if i == 8 then 0
+    else let p = tf-add-person w ("Citizen " & show i) 1 (1000 + i) 100 0 10000
+    in if p /= i then -1 else tgif-people w (i + 1)
+  tgif-anchors : Integer -> Result GovernmentAnchors Text
+  tgif-anchors (unused) = let people = tf-new 0
+    in let town = tf-add-town people "Britain" 100 101 102
+    in let citizens = tgif-people people 1
+    in if town /= 1 | citizens /= 0 then Err "civic anchor fixture failed"
+    else when tr-new 2
+      is Err (e) -> Err e
+      is Ok (r) -> Ok (GovernmentAnchors { people = people, mind = tm-new 0, registry = r, royal-actor = 1 })
+  tgif-bind : EuCurrency, TfWorld, TrRegistry -> Result GovernmentCheckpoint Text
+  tgif-bind (x) (people) (registry) = when tg-new-currency people x 1
+    is Err (e) -> Err e
+    is Ok (g) -> let admin = admin-world-new people (tm-new 0)
+      in Ok (GovernmentCheckpoint { government = g, works = tw-new g,
+        disputes = td-new g registry admin (Just x), tick = 0, sequence = 0 })
+  tgif-source : Integer -> Result GovernmentCheckpoint Text
+  tgif-source (unused) = when efi-source 0
+    is Err (e) -> Err e
+    is Ok (state) -> let scenario = efi-build state
+      in if scenario.failed /= 0 | not (efi-valid state) then Err "civic fixture economy failed"
+      else let people = tf-new 0
+      in let town = tf-add-town people "Britain" 100 101 102
+      in let citizens = tgif-people people 1
+      in let purse = eu-open state.currency 4 1
+      in if town /= 1 | citizens /= 0 | purse /= 5 then Err "civic fixture identities failed"
+      else when tr-new 2
+        is Err (e) -> Err e
+        is Ok (registry) -> tgif-bind state.currency people registry
+  tgif-args : GovernmentInput, List Integer, Integer -> Integer
+  tgif-args (entry) (args) (i) = if i == list-length args then 0
+    else let copied = list-set-at entry.args i (list-at args i) in tgif-args entry args (i + 1)
+  tgif-save : TgiScenario, GovernmentInput -> Integer
+  tgif-save (s) (entry) = if list-length s.entries == 128 | not (tgi-shape entry) then
+      let failed = __record-set s "failed" 1 in -999
+    else let result = tgi-execute s.state entry
+    in let outcome = __record-set entry "expected" result
+    in let sequence = __record-set s.state "sequence" entry.sequence
+    in let tick = __record-set s.state "tick" entry.tick
+    in let saved = __record-set s "entries" (list-push s.entries entry)
+    in result
+  tgif-send : TgiScenario, Integer, List Integer -> Integer
+  tgif-send (s) (op) (args) =
+    let seq = s.state.sequence + 1
+    in let entry = tgi-new seq (seq * 10) op
+    in let copied = tgif-args entry args 0
+    in tgif-save s entry
+  tgif-report : TgiScenario, Integer -> Integer
+  tgif-report (s) (id) =
+    let seq = s.state.sequence + 1
+    in let entry = tgi-new seq (seq * 10) 30
+    in let copied = tgif-args entry [1,id,1] 0
+    in let a = __record-set entry "account" "PlayerNine"
+    in let b = __record-set entry "happened" "Unsettled player misconduct"
+    in let c = __record-set entry "location" "Britain market"
+    in let d = __record-set entry "wall-time" "fixture-2026-10-04"
+    in let e = __record-set entry "evidence" "world log 501: quoted player line"
+    in tgif-save s entry
+  tgif-hours : TgiScenario, Integer -> Integer
+  tgif-hours (s) (n) = if n == 0 then 0
+    else if tgif-send s 31 [] /= 0 then let failed = __record-set s "failed" 1 in -1
+    else tgif-hours s (n - 1)
+  tgif-build : GovernmentCheckpoint -> TgiScenario
+  tgif-build (state) =
+    let s = TgiScenario { state = state, entries = [], failed = 0 }
+    in let registered = tgif-send s 1 [1,1,1,5]
+    in let request = tgif-send s 7 [1,1,1,10]
+    in let refused = tgif-send s 9 [0,1,5]
+    in let grant = tgif-send s 9 [1,1,5]
+    in let loan = tgif-send s 10 [1,1,2,0,120]
+    in let dues = tgif-send s 3 [1,1,1]
+    in let hire = tgif-send s 5 [1,1,7,3,1]
+    in let advanced = tgif-hours s 24
+    in let collect = tgif-send s 4 [1,1,4,1]
+    in let payroll = tgif-send s 11 []
+    in let site = tgif-send s 12 [1,1,2,1]
+    in let raid = tgif-send s 14 [1,1,1]
+    in let repair = tgif-send s 16 [1,1,1,2,2,1,3,2]
+    in let essential = tgif-send s 21 [1,1,6]
+    in let bounty = tgif-send s 23 [1,1,55,1,1,1]
+    in let claimed = tgif-send s 24 [1,1,55,1,9001,4]
+    in let paid = tgif-send s 25 [1,1]
+    in let debt = tgif-send s 26 [1,1,1,1,5,0,2,7,1,3,1001]
+    in let debt-refused = tgif-send s 27 [1,debt]
+    in let land = tgif-send s 26 [1,1,1,2,2,2,4,1,77,0,1002]
+    in let settled = tgif-send s 29 [1,land,1,8001]
+    in let conduct = tgif-send s 26 [1,1,1,4,2,2,1,9,501,0,1003]
+    in let reported = tgif-report s conduct
+    in let duplicate = tgif-report s conduct
+    in s
+  tgif-valid : GovernmentCheckpoint -> Boolean
+  tgif-valid (s) = let g = s.government
+    in let t = s.works
+    in let d = s.disputes
+    in tgv-valid g t d & g.day == 2 & g.guard-count == 1 & (tg-office g 1).request == 3
+      & (tg-office g 1).paid == 1 & (em-purse g.economy.money 3).coin == 1
+      & t.order-count == 2 & t.bounty-count == 1 & (list-at t.bounties 0).status == 3
+      & (list-at g.economy.stations 1).enabled == 0 & d.used == 3
+      & (list-at d.cases 0).status == 1 & (list-at d.cases 1).status == 2 & (list-at d.cases 2).status == 3
+      & d.admin.report-count == 1 & text-contains (admin-report-peek d.admin) "quoted player line"

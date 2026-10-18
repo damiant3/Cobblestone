@@ -14,8 +14,14 @@ Chapter: TownNetworkHillModelProof
   tnhm-error (s) (d) (row) (i) (sum) = if i == 14 then sum
     else let diff = list-at s.outputs i - list-at d.outcomes (row * 14 + i)
     in tnhm-error s d row (i + 1) (sum + diff * diff / 16)
-  tnhm-rows : TnModel, TnoData, TnState, TnhmSummary, Integer -> Integer
-  tnhm-rows (m) (d) (s) (summary) (row) = if row == d.count then 0
+  tnhm-sale : TnoData, Integer, Integer, Integer -> Integer
+  tnhm-sale (d) (opinions) (row) (mine) = let variant = row / tno-base-rows
+    in if variant /= 7 & variant /= 8 then 0
+    else let prev = row - (if variant == 7 then 5 * tno-base-rows else tno-base-rows)
+    in let theirs = peek-qword opinions (prev * 8)
+    in if list-at d.outcomes (row * 14 + 12) > list-at d.outcomes (prev * 14 + 12) & mine < theirs then (theirs - mine) * 1000 else 0
+  tnhm-rows : TnModel, TnoData, TnState, TnhmSummary, Integer, Integer -> Integer
+  tnhm-rows (m) (d) (s) (summary) (opinions) (row) = if row == d.count then 0
     else let copied = tnhm-inputs s d row 0
     in let h = list-set-at s.outputs 10 (list-at d.inputs (row * 32 + 30))
     in let a = list-set-at s.outputs 11 (list-at d.inputs (row * 32 + 31))
@@ -23,14 +29,16 @@ Chapter: TownNetworkHillModelProof
     in let selected = tn-pop s
     in let utility = if selected == 0 then 0 else list-at d.outcomes (row * 14 + selected - 1)
     in let error = tnhm-error s d row 0 0
-    in let total = __record-set summary "score" (summary.score + utility * 1000 - error)
+    in let kept = poke-qword opinions (row * 8) (list-at s.outputs 12)
+    in let sale = tnhm-sale d opinions row (list-at s.outputs 12)
+    in let total = __record-set summary "score" (summary.score + utility * 1000 - error - sale)
     in let gained = __record-set summary "utility" (summary.utility + utility)
     in let bad = if utility < 0 then __record-set summary "negative" (summary.negative + 1) else summary
-    in tnhm-rows m d s summary (row + 1)
+    in tnhm-rows m d s summary opinions (row + 1)
   tnhm-summary : TnModel, TnoData -> TnhmSummary
   tnhm-summary (m) (d) =
     let summary = TnhmSummary { score = 0, utility = 0, negative = 0 }
-    in let run = tnhm-rows m d (tn-new 0) summary 0
+    in let run = tnhm-rows m d (tn-new 0) summary (alloc-bytes (d.count * 8)) 0
     in summary
   tnhm-check : Text, Boolean -> [Console] Nothing
   tnhm-check (name) (ok) = print-line-uni ((if ok then "PASS " else "FAIL ") & name)
@@ -43,8 +51,8 @@ Chapter: TownNetworkHillModelProof
         is Ok (trained) -> act
           before <- tnhm-summary initial d
           after <- tnhm-summary trained d
-          tnhm-check "CPU reproduces initial GPU score" (before.score == -26209708)
-          tnhm-check "CPU reproduces retained GPU score" (after.score == 9594886)
+          tnhm-check "CPU reproduces initial GPU score" (before.score == -265480626)
+          tnhm-check "CPU reproduces retained GPU score" (after.score == 37916382)
           tnhm-check "hill model improves measured simulation utility" (after.utility > before.utility & after.negative < before.negative)
           print-line-uni ("UTILITY " & show before.utility & " " & show after.utility)
           print-line-uni ("NEGATIVE-CHOICES " & show before.negative & " " & show after.negative)

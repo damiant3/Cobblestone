@@ -307,6 +307,8 @@ tree, its data helpers, and its click/input handlers.
 - **DOM** -- `dom-get`, `dom-create`, `dom-set-text`, `dom-set-html`,
   `dom-set-attr`, `dom-get-value`, `dom-set-value`, `dom-append`,
   `dom-prepend`, `dom-add-class`, `dom-remove-class`, `dom-set-style`
+  `dom-append parent child` answers the parent, not the child: `let card = dom-append app section` binds `app`, and every element then added to `card` lands flat in `app` (the UOAIX admin pages built that way, and a login form `hidden` through its empty section never hid). Bind the child first, then append it.
+  The runtime defines no `max` or `min`: a call compiles and throws `ReferenceError` when it runs. Write the `if`.
 - **Widget mount** -- `mount-widget`, `mount-widget-themed theme tree`
   (styles from the `Theme`, appends into `#app`), `mount-widget-into id tree`
   (re-mounts a subtree in place -- this is how a designer rebuilds one row).
@@ -368,6 +370,14 @@ tree, its data helpers, and its click/input handlers.
 - **AJAX** -- `fetch-json`, `fetch-then`, `fetch-get-then url cb`,
   `json-parse-obj`, `json-parse-rows` (a JSON array of arrays of text),
   `json-obj-field`, `json-stringify`, `url-encode`
+- **Crypto** -- the W3C Web Cryptography API over hex: `crypto-ready 0` (1 in a secure context),
+  `crypto-random-hex n`, `crypto-hmac-then key text cb` (HMAC-SHA256), `crypto-hmac-verify-then key tag text
+  cb` (`1` or `0`), `crypto-seal-then key nonce aad text cb` (AES-GCM, answering cipher hex, LF, tag hex) and
+  `crypto-open-then key nonce aad cipher tag cb`; a refusal answers `!` and the reason. Emitted only into a page
+  that calls one; `codex/plugs/html/arms/crypto.mjs` grades them (plugs-backlog HTML-CRYPTO)
+- **Framed page** -- `frame-mount id html` (an iframe sandboxed to scripts: an opaque origin), `frame-serve
+  handler` (answers the frame's requests: request text and a reply callback) and, in the framed page,
+  `host-request-then text cb`; plugs-backlog HTML-FRAME, `codex/plugs/html/arms/frame.mjs`
 - **Dialogs** -- `show-alert`, `show-confirm`, `show-prompt`,
   `close-dialog` (real `<dialog>` elements, `showModal()`)
 - **A11y** -- `dom-set-aria`, `dom-set-role`; `dom-apply-a11y id info`

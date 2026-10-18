@@ -2619,38 +2619,76 @@ Section: Leaf Inlining
     else if list-at params i == n then i
     else leaf-param-index params n (i + 1)
 
-  leaf-body-ok : IRExpr, List Text, Integer -> Integer
-  leaf-body-ok (e) (params) (fuel) =
+  is-leaf-bit-op : Text -> Boolean
+  is-leaf-bit-op (n) =
+    if n == "bit-and" then True
+    else if n == "bit-or" then True
+    else if n == "bit-xor" then True
+    else if n == "bit-shl" then True
+    else if n == "bit-shr" then True
+    else n == "bit-shru"
+
+  leaf-bit-op-bound : List Text, Integer -> Boolean
+  leaf-bit-op-bound (bound) (i) =
+    if i == list-length bound then False
+    else if is-leaf-bit-op (list-at bound i) then True
+    else leaf-bit-op-bound bound (i + 1)
+
+  leaf-body-ok : IRExpr, List Text, List InlineLeaf, Integer -> Integer
+  leaf-body-ok (e) (params) (consts) (fuel) =
     if fuel <= 0 then 0 - 1
     else when e
      is IrIntLit (v) (sp) -> fuel - 1
-     is IrName (n) (ty) (sp) -> if leaf-param-index params n 0 >= 0 then fuel - 1 else 0 - 1
+     is IrName (n) (ty) (sp) ->
+      if leaf-param-index params n 0 >= 0 then fuel - 1
+      else if find-leaf-def consts n 0 >= 0 then fuel - 1
+      else 0 - 1
      is IrBinary (op) (l) (r) (ty) (sp) ->
       if is-inline-int-op op then
-        let lf = leaf-body-ok l params (fuel - 1)
-        in if lf < 0 then 0 - 1 else leaf-body-ok r params lf
+        let lf = leaf-body-ok l params consts (fuel - 1)
+        in if lf < 0 then 0 - 1 else leaf-body-ok r params consts lf
       else 0 - 1
+     is IrApply (f) (a) (ty) (sp) ->
+      let args = inline-apply-args e []
+      in if is-leaf-bit-op (inline-apply-root e) == False then 0 - 1
+      else if list-length args /= 2 then 0 - 1
+      else let lf = leaf-body-ok (list-at args 0) params consts (fuel - 1)
+      in if lf < 0 then 0 - 1 else leaf-body-ok (list-at args 1) params consts lf
      is otherwise -> 0 - 1
 
-  collect-leaf-defs : List IRDef, Integer, List InlineLeaf -> List InlineLeaf
-  collect-leaf-defs (defs) (i) (acc) =
+  collect-const-defs : List IRDef, Integer, List InlineLeaf -> List InlineLeaf
+  collect-const-defs (defs) (i) (acc) =
+    if i == list-length defs then acc
+    else let d = list-at defs i
+    in if list-length (d.params) == 0 & ir-is-int-lit (d.body) & is-plain-int (d.type-val) then
+      collect-const-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf {
+        il-name = d.name,
+        il-params = [],
+        il-ptys = [],
+        il-rty = d.type-val,
+        il-body = d.body
+      })))
+    else collect-const-defs defs (i + 1) acc
+
+  collect-leaf-defs : List IRDef, Integer, List InlineLeaf, List InlineLeaf -> List InlineLeaf
+  collect-leaf-defs (defs) (i) (consts) (acc) =
     if i == list-length defs then acc
     else let d = list-at defs i
     in let pnames = for p in (d.params) -> p.name
     in let np = list-length pnames
     in let ok = if d.name == "deck-record" then 0 - 1
     else if has-bounded-boundary d then 0 - 1
-    else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames 12
+    else if np >= 1 & np <= 3 then leaf-body-ok (d.body) pnames consts 12
     else 0 - 1
     in if ok >= 0 then
-      collect-leaf-defs defs (i + 1) (list-push acc (deck-record (InlineLeaf {
+      collect-leaf-defs defs (i + 1) consts (list-push acc (deck-record (InlineLeaf {
         il-name = d.name,
         il-params = pnames,
         il-ptys = for p in (d.params) -> p.type-val,
         il-rty = peel-applied-return (d.type-val) (list-length (d.params)),
-        il-body = d.body
+        il-body = inline-expr (d.body) consts pnames
       })))
-    else collect-leaf-defs defs (i + 1) acc
+    else collect-leaf-defs defs (i + 1) consts acc
 
  A function with a bounded parameter or return is enforced by
  runtime guards at its callee entry and epilogue (bounded
@@ -2671,6 +2709,15 @@ Section: Leaf Inlining
     else if is-bounded-int ((list-at ps i).type-val) then True
     else any-bounded-param ps (i + 1)
 
+  is-plain-int : CodexType -> Boolean
+  is-plain-int (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> when int-ty-default is IntegerTy (dlo) (dhi) (dm) -> lo == dlo & hi == dhi is otherwise -> False
+       is otherwise -> False
+     is otherwise -> False
+
   is-bounded-int : CodexType -> Boolean
   is-bounded-int (ty) =
     when ty
@@ -2689,11 +2736,27 @@ Section: Leaf Inlining
      is ForAllEff (id) (b) -> return-bound-in b n
      is otherwise -> ty
 
+ The candidate lists are sorted by name, because every name reference in
+ the program is looked up: a linear scan made the self-compile 6 per cent
+ slower once the integer constants joined the list (profiled 2026-10-16).
+
+  compare-leaf-names : InlineLeaf, InlineLeaf -> Integer
+  compare-leaf-names (a) (b) = text-compare (a.il-name) (b.il-name)
+
+  bsearch-leaf-pos : List InlineLeaf, Text, Integer, Integer -> Integer
+  bsearch-leaf-pos (cands) (name) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = lo + (hi - lo) / 2
+    in if text-compare name ((list-at cands mid).il-name) <= 0 then bsearch-leaf-pos cands name lo mid
+    else bsearch-leaf-pos cands name (mid + 1) hi
+
   find-leaf-def : List InlineLeaf, Text, Integer -> Integer
   find-leaf-def (cands) (n) (i) =
-    if i == list-length cands then 0 - 1
-    else if (list-at cands i).il-name == n then i
-    else find-leaf-def cands n (i + 1)
+    let len = list-length cands
+    in let pos = bsearch-leaf-pos cands n 0 len
+    in if pos >= len then 0 - 1
+    else if (list-at cands pos).il-name == n then pos
+    else 0 - 1
 
   inline-apply-root : IRExpr -> Text
   inline-apply-root (e) =
@@ -2733,7 +2796,31 @@ Section: Leaf Inlining
       let idx = leaf-param-index params n 0
       in if idx >= 0 then list-at args idx else e
      is IrBinary (op) (l) (r) (ty) (sp) -> deck-record (IrBinary op (subst-leaf l params args) (subst-leaf r params args) ty sp)
+     is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-leaf f params args) (subst-leaf a params args) ty sp)
      is otherwise -> e
+
+ An argument that is not a name or a literal is bound once, ahead of the
+ body, rather than copied into each use. The bound name cannot capture: a
+ leaf body has no free names but its parameters, and builtins.
+
+  leaf-let-name : Text -> Text
+  leaf-let-name (p) = "__leaf-" & p
+
+  leaf-site-args : List IRExpr, List Text, List CodexType, Integer, List IRExpr -> List IRExpr
+  leaf-site-args (args) (params) (ptys) (i) (acc) =
+    if i == list-length args then acc
+    else let a = list-at args i
+    in let name = leaf-let-name (list-at params i)
+    in let use = if leaf-arg-simple a then a else deck-record (IrName name (ir-expr-type a) synthetic-span)
+    in leaf-site-args args params ptys (i + 1) (acc & [use])
+
+  leaf-wrap-lets : IRExpr, List IRExpr, List Text, List CodexType, Integer -> IRExpr
+  leaf-wrap-lets (body) (args) (params) (ptys) (i) =
+    if i < 0 then body
+    else let a = list-at args i
+    in let wrapped = if leaf-arg-simple a then body
+      else deck-record (IrLet (leaf-let-name (list-at params i)) (ir-expr-type a) a body synthetic-span)
+    in leaf-wrap-lets wrapped args params ptys (i - 1)
 
   inline-apply-site : IRExpr, List InlineLeaf, List Text -> IRExpr
   inline-apply-site (e) (cands) (bound) =
@@ -2745,8 +2832,11 @@ Section: Leaf Inlining
     else let cand = list-at cands ci
     in let args = inline-apply-args e []
     in if list-length args /= list-length (cand.il-params) then e
-    else if leaf-args-simple args 0 == False then e
-    else fold-rem-expr (subst-leaf (cand.il-body) (cand.il-params) args)
+    else if leaf-bit-op-bound bound 0 then e
+    else if leaf-args-simple args 0 then fold-rem-expr (subst-leaf (cand.il-body) (cand.il-params) args)
+    else let uses = leaf-site-args args (cand.il-params) (cand.il-ptys) 0 []
+    in let body = fold-rem-expr (subst-leaf (cand.il-body) (cand.il-params) uses)
+    in leaf-wrap-lets body args (cand.il-params) (cand.il-ptys) (list-length args - 1)
 
  Remainder recognition over substituted bodies. The truncated-mod
  idiom X - (X / Y) * Y computes with three operations what idiv
@@ -2860,6 +2950,7 @@ Section: Leaf Inlining
   has-leaf-call : IRExpr, List InlineLeaf -> Boolean
   has-leaf-call (e) (cands) =
     when e
+     is IrName (n) (ty) (sp) -> find-leaf-def cands n 0 >= 0
      is IrApply (f) (a) (ty) (sp) ->
       if find-leaf-def cands (inline-apply-root e) 0 >= 0 then True
       else if has-leaf-call f cands then True
@@ -2925,9 +3016,18 @@ Section: Leaf Inlining
       let inlined = deck-record (IrDoExec (inline-expr ev cands bound) esp)
       in inline-act-stmts ss cands bound (i + 1) (list-push acc inlined)
 
+  inline-const-ref : IRExpr, Text, List InlineLeaf, List Text -> IRExpr
+  inline-const-ref (e) (n) (cands) (bound) =
+    if leaf-param-index bound n 0 >= 0 then e
+    else let ci = find-leaf-def cands n 0
+    in if ci < 0 then e
+    else let cand = list-at cands ci
+    in if list-length (cand.il-params) == 0 then cand.il-body else e
+
   inline-expr : IRExpr, List InlineLeaf, List Text -> IRExpr
   inline-expr (e) (cands) (bound) =
     when e
+     is IrName (n) (ty) (sp) -> inline-const-ref e n cands bound
      is IrApply (f) (a) (ty) (sp) ->
       let nf = inline-expr f cands bound
       in let na = inline-expr a cands bound
@@ -2969,7 +3069,8 @@ Section: Leaf Inlining
 
   inline-leaf-calls-in-chapter : IRChapter -> IRChapter
   inline-leaf-calls-in-chapter (ch) =
-    let cands = collect-leaf-defs (ch.defs) 0 []
+    let consts = sort-by (collect-const-defs (ch.defs) 0 []) compare-leaf-names
+    in let cands = sort-by (collect-leaf-defs (ch.defs) 0 consts ([] & consts)) compare-leaf-names
     in if list-length cands == 0 then ch
     else
       __record-set ch "defs" (for d in (ch.defs) -> inline-leaf-def cands d)
@@ -3373,7 +3474,7 @@ Section: Single-Caller Inlining
 
   inline-single-caller-in-chapter : IRChapter -> IRChapter
   inline-single-caller-in-chapter (ch) =
-    let local = collect-once-defs (ch.defs) 0 []
+    let local = sort-by (collect-once-defs (ch.defs) 0 []) compare-leaf-names
     in if list-length local == 0 then ch
     else let counts = count-refs-chapter (ch.defs) local (zeros-for (list-length local) []) 0
     in let cands = keep-single-caller local counts 0 []

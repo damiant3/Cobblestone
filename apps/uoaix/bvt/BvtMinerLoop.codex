@@ -1,0 +1,42 @@
+Chapter: BvtMinerLoop
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ D-14 on BvtNpcMove's fixture: 1 Britain founds three miners, 2 a miner's song (say 6) is one of cgg-songs, 4 a strike
+ (leg 2) waits a whole swing and a walk step does not, 8 a miner leaving its rock with ore to smelt and no lot walks
+ straight to the forge (leg 6, not via its home door) while the smith is open, or home (leg 3) when it is shut; -1 to
+ -3 a fixture that failed.
+  bml-run : CompositeGame -> Integer
+  bml-run (owner) = if list-length owner.miners < cgm-limit then -1
+    else when owner.town
+      is None -> -2
+      is Just (t) -> when owner.town-map
+        is None -> -3
+        is Just (map) -> let c = list-at owner.miners 0
+          in let three = if cgg-vein-worker c & cgg-vein-worker (list-at owner.miners (cgm-limit - 1)) & (list-length owner.miners == cgm-limit | not (cgg-vein-worker (list-at owner.miners (min cgm-limit (list-length owner.miners - 1))))) then 1 else 0
+          in let sung = __record-set c "say" 6
+          in let song = if bml-index cgg-songs (cgg-say-text c) 0 >= 0 then 2 else 0
+          in let striking = __record-set c "leg" 2
+          in let strike = cg-strike-pace c 1
+          in let walking = __record-set c "leg" 1
+          in let walk = cg-strike-pace c 1
+          in let paced = if strike == cgw-swing-ticks & walk == 1 then 4 else 0
+          in let a = (ep-actor c.gatherer.producer.currency.world c.gatherer.producer.actor)
+          in let ore = ep-add a.stock cgg-ore 4
+          in let unlotted = __record-set c "lot" 0
+          in let back = __record-set c "leg" 2
+          in let shut = cgg-shut c t
+          in let left = cgg-mine-on c t map
+          in let looped = if (if shut then c.leg == 3 else c.leg == 6 & c.via == 0) then 8 else 0
+          in three + song + paced + looped
+  bml-index : List Text, Text, Integer -> Integer
+  bml-index (xs) (x) (i) = if i >= list-length xs then -1 else if list-at xs i == x then i else bml-index xs x (i + 1)
+  bvt-miner-loop : Integer -> [Console] Integer
+  bvt-miner-loop (unused) = when bnm-founded 0
+    is Err (e) -> bvt-check ("miner loop fixture: " & e) False
+    is Ok (owner) -> act
+      n <- bml-run owner
+      a <- bvt-check ("D-14: three miners, a song, a paced strike, and the rock-to-forge leg (code " & show n & ")") (n == 15)
+      a
+    end

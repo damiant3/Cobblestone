@@ -1,0 +1,42 @@
+Chapter: StarterKit
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameCombat
+
+ A new character starts with its trade's lowest-tier tool, blessed, and one piece of cured meat (UOAIX.md section 5,
+ skills; Skills.md, the profession kits). The 1.25 client sends three chosen skills and their values at bytes 74-79 of
+ the 0x00 creation packet; the trade is the highest. Tool art is TILEDATA's: shovel 0x0F39 (Mining 45), saw 0x1034
+ (Carpentry 11), smith's hammer 0x13E3 (Blacksmithy 7), sewing kit 0x0F9D (Tailoring 34), fishing pole 0x0DBF (Fishing
+ 18), hatchet 0x0F43 (Lumberjacking 44), butcher knife 0x13F6 (Cooking 13), longsword 0x0F61 (Swordsmanship 40), bow
+ 0x13B2 (Archery 31), mortar and pestle 0x0E9B (Alchemy 0), spellbook 0x0EFA (Magery 25). The client has no jerky;
+ its sausage 0x09C0 stands in.
+  pk-meat : Integer = #09C0
+  pk-art : Integer -> Integer
+  pk-art (skill) = if skill == 45 then #0F39 else if skill == 11 then #1034 else if skill == 7 then #13E3
+    else if skill == 34 then #0F9D else if skill == 18 then #0DBF else if skill == 44 then #0F43
+    else if skill == 13 then #13F6 else if skill == 40 then #0F61 else if skill == 31 then #13B2
+    else if skill == 0 then #0E9B else if skill == 25 then #0EFA else 0
+  pk-trade : List Integer -> Integer
+  pk-trade (packet) = if list-length packet < 80 then -1
+    else let a = list-at packet 75
+    in let b = list-at packet 77
+    in let c = list-at packet 79
+    in if a >= b & a >= c then list-at packet 74 else if b >= c then list-at packet 76 else list-at packet 78
+ The mark of a blessed item is its health 30001 (GameCombat cb-blessed), a value no key, door, deed, seed or potion
+ holds: chest keys stop at 16385 and door keys start at 32768.
+  pk-make : GsiState, Integer, Integer, Integer, Integer, Boolean -> Result (List Integer) Text
+  pk-make (items) (pack) (art) (health) (x) (stack) = when world-create items.world (__record-set (__record-set (__record-set (gs-item pack art 0) "x" x) "y" 80) "health" health)
+    is Err (e) -> Err e
+    is Ok (serial) -> if gsi-register items serial 0 0 True stack /= 0 then Err "starter kit registration refused"
+      else when world-get items.world serial
+        is Err (e) -> Err e
+        is Ok (made) -> Ok (sip-item made)
+  pk-grant : GsiState, Integer, List Integer -> Result (List (List Integer)) Text
+  pk-grant (items) (serial) (packet) = let pack = gsi-pack-find items.world serial 0
+    in let art = pk-art (pk-trade packet)
+    in if pack == 0 | world-room items.world < 2 then Ok []
+    else when pk-make items pack pk-meat 0 90 True
+      is Err (e) -> Err e
+      is Ok (meat) -> if art == 0 then Ok [meat]
+        else when pk-make items pack art cb-blessed 60 False
+          is Err (e) -> Err e
+          is Ok (tool) -> let touched = world-item-touch items.world in Ok [meat, tool]

@@ -1,0 +1,19 @@
+Chapter: BvtDecorBudget
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-187: the save budget (cs-state-size) grows with the decorator rows, so the checkpoint buffer widens before a
+ world's decorations outgrow it; a state with no decorations is the control and keeps its size.
+  bdb-fill : DcState, Integer -> Integer
+  bdb-fill (s) (left) = if left == 0 then 0 else let added = dc-add s (100000 + left) 0 in bdb-fill s (left - 1)
+  bvt-decor-budget : Integer -> [Console] Integer
+  bvt-decor-budget (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("decor budget fixture: " & e) False
+    is Ok (owner) -> let before = cs-state-size owner
+      in let same = cs-state-size owner
+      in let grown = dc-grow-to owner.decor 4096
+      in let filled = bdb-fill owner.decor 4000
+      in let after = cs-state-size owner in act
+        print-line-uni ("DECORBUDGET before=" & show before & " after=" & show after & " rows=" & show owner.decor.count)
+        bvt-check "the save budget counts every decoration row: 4000 rows add at least 96000 bytes, and an unchanged state keeps its size (UOAIX-187)" (owner.decor.count == 4000 & same == before & after - before >= 4000 * dc-row-bytes)
+      end

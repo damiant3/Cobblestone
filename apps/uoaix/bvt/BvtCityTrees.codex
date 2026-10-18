@@ -1,0 +1,34 @@
+Chapter: BvtCityTrees
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter Cities
+  cites Uoaix chapter LawStateCodec
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bct-made : Result Integer Text -> Integer
+  bct-made (r) = when r
+    is Ok (serial) -> serial
+    is Err (_) -> 0
+  bct-kind-back : Result LawWorld Text, Integer -> Integer
+  bct-kind-back (back) (id) = when back
+    is Ok (r) -> (lw-case r id).kind
+    is Err (_) -> 0
+  bvt-city-trees : Integer -> [Console] Integer
+  bvt-city-trees (unused) = let cities = ct-table 0
+    in when world-new 64
+    is Err (e) -> bvt-check ("city trees fixture world: " & e) False
+    is Ok (world) -> act
+      a <- bvt-check "a lumberjacking swing (resource 15) inside Britain's or Trinsic's bounds is a city tree (UOAIX-235, Damian: a misdemeanor to cut city trees)" (cg-tree-in-city cities 15 1450 1600 & cg-tree-in-city cities 15 1900 2750)
+      b <- bvt-check "a swing in the wilds, or a mining swing in a city, is not" (not (cg-tree-in-city cities 15 1000 1000) & not (cg-tree-in-city cities 5 1450 1600))
+      w <- lw-new world
+      cutter <- bct-made (world-create world (__record-set (gs-mobile 0 1450 1600 0 400 1002) "health" 50))
+      id <- lw-deed w True 1 cutter 5 1
+      buf <- alloc-bytes lsc-bytes
+      saved <- lsc-encode w buf lsc-bytes
+      back <- lsc-decode buf lsc-bytes world
+      c <- bvt-check "a city tree is its own case kind 5, serving kind 1's sentence, saved and restored, and testified as cutting a tree, not thieving" (id == 1 & (lw-case w id).kind == 5 & (lw-case w id).term == list-at w.sentences 0
+        & is-ok saved & bct-kind-back back id == 5 & cg-crime-word 5 == "cut down a city tree" & cg-crime-word 1 == "commit thieving")
+      d <- bvt-check "a deed is refused kind 4 (a GM's jail order) and any kind above 5" (lw-deed w True 2 cutter 4 1 < 0 & lw-deed w True 3 cutter 6 1 < 0 & w.count == 1)
+      a + b + c + d
+    end

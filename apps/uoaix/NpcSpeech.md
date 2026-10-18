@@ -96,6 +96,14 @@ speaks once until departure/re-entry, with a ten-game-minute cooldown per
 NPC/player slot. Reconnect preserves cooldowns. Time comes from TownLive's
 owner-supplied game seconds and follows the live day-length setting.
 
+**Ruling (Damian, 2026-10-08):** "make them say greetings only if you are in or near their shop with them, but not randomly on the road or at home. the convo should be appropriate for time of day, shop opening or closing state, etc." An approach greeting fires only when the player and the NPC are both inside or at the door of the NPC's own workplace; an NPC on the road or at home does not greet. The greeting row is chosen by time of day and by the shop's open or closed state.
+
+**Ruling (Damian, 2026-10-08):** "an npc should "announce" its state only once per player. i don't want to see the same guard saying repeating the same assignment over and over." An NPC announces a given state (an assignment, a duty, a shop state) once, whoever hears it, and again only after the state changes; no per-player record is kept (Damian, the same day: "it also can be once per npc.. that is we don't need to maintain a list of npcs->pcs who have announced and not. if the npc announces and one player sees it, that is enough.").
+
+
+**Ruling (Damian, 2026-10-08):** "npcs should comment on their economic activities occasionally. "oh nice pile of ore" or "that gorget is one of my best!" or "those ingots were expensive. i guess I'll have to raise prices at the smithy"". An NPC now and then says a canned line about the economic event it just took part in (a harvest, an item it made, a purchase and its price), naming the goods.
+
+
 ```text
 nsc-encode speechState buffer capacity -> Result Integer Text
 nsc-decode speechState buffer size -> Result Integer Text

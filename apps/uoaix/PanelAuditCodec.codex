@@ -13,6 +13,10 @@ Chapter: PanelAuditCodec
  Restore cancels the one queued action and clears all connection/session state.
 
   pac-size : Integer = 96 + 128 * 1040
+ The log rolls (AdminPanel panel-log-at): slot i holds the newest record whose id is i + 1 modulo 128, and is empty
+ while fewer than i + 1 records were ever written.
+  pac-slot-id : Integer, Integer -> Integer
+  pac-slot-id (count) (i) = count - int-mod (count - 1 - i) 128
 
   pac-json-row : Text, Integer, Integer -> Boolean
   pac-json-row (body) (id) (sessions) =
@@ -29,8 +33,8 @@ Chapter: PanelAuditCodec
     in let result = list-at p.log (at + 1022)
     in if length < 0 | length > 1020 | result < -2 | result > 1 then False
     else if i >= p.log-count then length == 0 & result == 0
-    else if result == 0 & (p.pending-state /= 1 | p.pending-log /= i + 1) then False
-    else ac-text-valid p.log at length 0 & pac-json-row (admin-load p.log at) (i + 1) p.sessions
+    else if result == 0 & (p.pending-state /= 1 | p.pending-log /= pac-slot-id p.log-count i) then False
+    else ac-text-valid p.log at length 0 & pac-json-row (admin-load p.log at) (pac-slot-id p.log-count i) p.sessions
 
   pac-rows-valid : AdminPanel, Integer -> Boolean
   pac-rows-valid (p) (i) = if i >= 128 then True
@@ -41,11 +45,11 @@ Chapter: PanelAuditCodec
 
   pac-state-valid : AdminPanel -> Boolean
   pac-state-valid (p) =
-    if list-length p.log /= 131072 | p.log-count < 0 | p.log-count > 128 then False
+    if list-length p.log /= 131072 | p.log-count < 0 | p.log-count > 999999999 then False
     else if p.sessions < 0 | p.sessions > 999999999 | p.active < 0 | p.active > 1 | p.touched < 0 then False
     else if p.pending-state < 0 | p.pending-state > 1 then False
-    else if p.pending-state == 1 & (p.active /= 1 | p.pending-session /= p.sessions | p.pending-session == 0 | p.pending /= p.pending-log | p.pending-log < 1 | p.pending-log > p.log-count) then False
-    else if p.pending-state == 1 & list-at p.log ((p.pending-log - 1) * 1024 + 1022) /= 0 then False
+    else if p.pending-state == 1 & (p.active /= 1 | p.pending-session /= p.sessions | p.pending-session == 0 | p.pending /= p.pending-log | p.pending-log < 1 | p.pending-log > p.log-count | p.pending-log <= p.log-count - 128) then False
+    else if p.pending-state == 1 & list-at p.log (int-mod (p.pending-log - 1) 128 * 1024 + 1022) /= 0 then False
     else pac-rows-valid p 0
 
   pac-write-text : Integer, List Integer, Integer, Integer, Integer -> Integer
@@ -91,8 +95,8 @@ Chapter: PanelAuditCodec
     in let result = peek-qword slot 1032
     in if length < 0 | length > 1020 | result < -2 | result > 1 then False
     else if i >= count & (length /= 0 | result /= 0) then False
-    else if i < count & result == 0 & pending /= i + 1 then False
-    else if pending == i + 1 & result /= 0 then False
+    else if i < count & result == 0 & pending /= pac-slot-id count i then False
+    else if i < count & pending == pac-slot-id count i & result /= 0 then False
     else pac-padding slot length & pac-wire-rows buf count pending (i + 1)
 
   pac-read-rows : Integer, AdminPanel, Integer -> Integer
@@ -114,8 +118,8 @@ Chapter: PanelAuditCodec
     in let count = peek-qword buf 72
     in let pending = peek-qword buf 80
     in let state = peek-qword buf 88
-    in if sessions < 0 | sessions > 999999999 | count < 0 | count > 128 | state < 0 | state > 1 then Err "panel checkpoint scalar bounds invalid"
-    else if (state == 0 & pending /= 0) | (state == 1 & (pending < 1 | pending > count | sessions == 0)) then Err "panel checkpoint pending reference invalid"
+    in if sessions < 0 | sessions > 999999999 | count < 0 | count > 999999999 | state < 0 | state > 1 then Err "panel checkpoint scalar bounds invalid"
+    else if (state == 0 & pending /= 0) | (state == 1 & (pending < 1 | pending > count | pending <= count - 128 | sessions == 0)) then Err "panel checkpoint pending reference invalid"
     else if not (pac-wire-rows buf count pending 0) then Err "panel checkpoint row bounds or outcomes invalid"
     else let p = panel-new-with-gms world actor gms
     in let bound = __record-set p "clock" clock

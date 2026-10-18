@@ -81,6 +81,13 @@ Source-X `CCharAct.cpp`'s `UpdateCanSee(PacketDeath, m_pClient)` exclusion.
 The owning player receives the corpse, 2C death menu and ghost update.
 GameResurrection registers corpses from either the observer AF or the 1A
 world-item packet, checking the authoritative item's corpse graphic.
+A corpse's health is flags: bit 1 carved (GameCarve), bit 2 a player's corpse.
+In the composite an NPC's corpse decays with its contents 7 minutes after the
+decay sweep first sees it (`cg-decay`). Damian: "a player's corpse doesn't
+decay unless it is empty. then those other rules are good." A player's corpse
+holding anything never decays; an empty one decays 14 minutes after it is
+seen empty at most. Boot re-times every corpse and marks a pre-existing
+human-body corpse with contents as a player's (`cg-mark-corpses`).
 Every damage to a player and every death records a row in `events` (32 rows; a
 row past them counts in `event-lost`): melee in `cb-apply-hit`, and spell, trap,
 reflect and poison through `mge-harm`'s cause argument. The composite prints a
@@ -93,7 +100,7 @@ A living mobile regenerates one hit point per 40 seconds up to its maximum
 (Source-X `m_iRegenRate[STAT_STR]`, `CChar::Stats_Regen`); `cb-pulse` applies
 `cb-regen` to the session player. Every death also calls `death-hook source victim`
 before the corpse is made (melee and `mge-harm`); `CompositeFighter`'s `cgf-bind`
-sets it to loot the victim spawn's UOX3 gold (`gws-loot`) through `ef-loot`.
+sets it to count the fighter's kill of a spawn; what the kill yields is the corpse's lots (`cg-fighter-loot`).
 Every melee swing, hit or miss, calls `swing-hook attacker defender` first; the
 composite binds it (`cg-swings`) to practise the fighter's skill (`cgf-swing`).
 
@@ -102,9 +109,8 @@ war/target/deadline, template body and connection identity. Packet lists, reply
 text and temporary world records remain request scratch. No packet-owned name
 or list is retained. Reconnection clears that player's old target and attackers'
 references. Corpse/health world records fit the existing world delta; combat
-metadata has the bounded [GameCombatCodec](GameCombatCodec.md) component.
-Complete action commit/recovery still needs the shared persistence owner.
-`GameTransaction`'s stage-1 footprint alone does not cover this family.
+metadata has the bounded [GameCombatCodec](GameCombatCodec.md) component,
+written in the composite checkpoint (`CompositeCodec`).
 
 Lookup is constant-time by world slot. Combat keeps a bounded active-attacker
 index; ordinary pulses visit O(active attackers), and packet batches flatten
@@ -124,7 +130,6 @@ gump 0x09. A corpse single-click in the composite reads "corpse of <name>". Each
 There is no per-pulse world clone. Persistent memory is one fixed metadata row
 and a 30-byte name buffer per world slot, plus two fixed qword index arrays;
 active snapshots and packet batches use bounded request scratch.
-Compiler heap/time and seed behavior are unchanged.
 
 ## Swings seen by every player in range
 
@@ -155,9 +160,8 @@ the connection arena with capacity matching the shard world; `cb-new shard seed`
 is the convenience constructor when the shard already exists. `cb-profile`
 configures retained NPC data, not client-granted capabilities.
 
-`proofs/GameCombatServer.codex` targets host/guest port2593. Root launches one
-lane image there at a time for the real client's existing LOGIN.CFG. Its
-fixture creates a weak sparring partner and a
+`proofs/GameCombatServer.codex` targets host/guest port2593 for the real
+client's existing LOGIN.CFG. Its fixture creates a weak sparring partner and a
 strong veteran on two reachable neighboring tiles after world entry. They are
 passive until attacked. The entry uses `GameCombatDress.cbd-server`: body400,
 skin hue1002, and registered shirt, trousers and shoes through
@@ -176,18 +180,6 @@ ordinary `cb-state` starts without it.
 
 `proofs/GameCombatReplay.codex` replays admission, mode changes, target/health
 bytes, timer enforcement, NPC death/corpse, player death and ghost response
-against a flat synthetic map. Reek reviews the handler seam. The real 1.25.32
-client run is driven by root. On 2026-10-04 root graded war mode, attack,
-partner death and the visible corpse PASS on server SHA256
-`99F5283F225B777BD5F6DECDBC21D9C311D144CE25DE0006B3B1BD4AD747095F`.
-Root's 2026-10-05 complete-client grade on image `0A4A8453` crashed at player
-death with `c0000005` at `CLIENT.EXE+0x44649`. Self-directed AF violated the
-reference recipient contract. MAIN35648 contains the reviewed correction and
-Fester's composite four-boot proof passed. The complete-client death retest
-remains pending; native replay alone does not establish that the crash is fixed.
-Root also observed a pre-world-entry 72 closing the connection;
-MAIN35439 supplies the dispatcher's log-and-ignore correction.
-Root's 2026-10-04 real-client grade accepted the dressed fixture image
-`AED09768B882E0CDA4F8C4C6F5C719186C81FC0F65CF04A81BB36A8C9BDE814C`:
-both NPCs display normal skin, green shirts, trousers and shoes.
-No poison or reader-subagent pass is part of this UOAIX packet-family grade.
+against a flat synthetic map. The 1.25.32 client crashes (`c0000005` at
+`CLIENT.EXE+0x44649`) when sent its own AF death packet, which is why AF goes
+only to observers.

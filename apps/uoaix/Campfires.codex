@@ -9,8 +9,9 @@ Chapter: Campfires
  and east on the 6144-wide map). Kindling in a container is refused (Damian, 2026-10-07). The fire smoulders (0x0DE9)
  at 60 s, goes out (0x0DEA) at 90 s and is removed at 100 s. A player within 7 tiles of a lit fire for 30 s has a
  secure camp and logs out at once. Fires are not saved: a restart removes them.
- The table holds 16 fires (serial) and 16 campers (player, fire, start tick, secure), then a purged flag.
-  cf-limit : Integer = 16
+ The table holds a fire (serial) and a camper (player, fire, start tick, secure) for each of the 32 game links, then a
+ purged flag: a fire burns out in 100 s and a camper is a connected player.
+  cf-limit : Integer = 32
   cf-kind : Integer = 9
   cf-kindling : Integer = #0DE1
   cf-burning : Integer = #0DE3
@@ -29,40 +30,33 @@ Chapter: Campfires
   cf-fire (o) = o.kind == 2 & o.container == 0 & (o.graphic == cf-burning | o.graphic == cf-smoulder | o.graphic == cf-out)
   cf-row : Integer, Integer, Integer -> Integer
   cf-row (camps) (serial) (i) = if i == cf-limit then -1 else if peek-qword camps (i * 8) == serial then i else cf-row camps serial (i + 1)
- One kindling is spent as a bandage is (ActiveSkillsHealing): an economy lot, when the stack has one, debits one unit's
- stock, quality, wear and basis and counts it consumed; kindling with no lot is just an item.
   cf-lot-ready : ActiveSkills, Integer, Integer -> Boolean
   cf-lot-ready (s) (owner) (serial) = let at = gv-lot s.vendor serial 0
     in if at < 0 then True
     else let player = gv-player s.vendor owner 0
-    in let row = list-at s.vendor.lots at
-    in player >= 0 & row.actor == (list-at s.vendor.players (max 0 player)).actor & row.quantity >= 1
+    in let row = ep-lot s.vendor.currency.world.goods at
+    in player >= 0 & row.actor == (list-at s.vendor.players (max 0 player)).actor & ep-amount s.vendor.currency.world.goods row.serial >= 1
       & ep-at (ep-actor s.vendor.currency.world row.actor).stock row.item >= 1
-  cf-debit : ActiveSkills, Integer -> Integer
-  cf-debit (s) (serial) = let at = gv-lot s.vendor serial 0
-    in if at < 0 then 0
-    else let lot = list-at s.vendor.lots at
-    in let actor = ep-actor s.vendor.currency.world lot.actor
-    in let basis = lot.basis / lot.quantity
-    in let remaining = lot.quantity - 1
-    in let a = ep-add actor.stock lot.item -1
-    in let b = ep-add actor.quality lot.item (0 - lot.quality)
-    in let c = ep-add actor.wear lot.item (0 - lot.wear)
-    in let d = ep-add actor.cost lot.item (0 - basis)
-    in let e = ep-add s.vendor.currency.world.consumed lot.item 1
-    in let f = __record-set lot "basis" (lot.basis - basis)
-    in let g = __record-set lot "quantity" remaining
-    in let retired = if remaining == 0 then gh-retire-lot s.vendor at else 0
-    in gh-invalidate-quotes s.vendor 0
   cf-take : ActiveSkills, Integer -> Result (List Integer) Text
-  cf-take (s) (serial) = when world-get s.items.world serial
-    is Err (e) -> Err e
-    is Ok (item) -> let debited = cf-debit s serial
-      in if item.amount == 1 then (when world-delete s.items.world serial is Err (e) -> Err e is Ok (_) -> Ok (sip-remove serial))
-      else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
-      in when world-update s.items.world reduced
+  cf-take (s) (serial) = let w = s.vendor.currency.world
+    in let at = gv-lot s.vendor serial 0
+    in if at >= 0 then
+      (let lot = ep-lot w.goods at
+      in let item = lot.item
+      in when ep-take w lot.actor item 1 serial
         is Err (e) -> Err e
-        is Ok (_) -> Ok (sip-item reduced)
+        is Ok (_) -> let used = ep-add w.consumed item 1
+          in let invalidated = gh-invalidate-quotes s.vendor 0
+          in when world-get s.items.world serial
+            is Err (_) -> Ok (sip-remove serial)
+            is Ok (left) -> Ok (sip-item left))
+    else when world-get s.items.world serial
+      is Err (e) -> Err e
+      is Ok (item) -> if item.amount == 1 then (when world-delete s.items.world serial is Err (e) -> Err e is Ok (_) -> Ok (sip-remove serial))
+        else let reduced = ia-copy item item.serial (item.amount - 1) item.container item.x item.y item.z
+        in when world-update s.items.world reduced
+          is Err (e) -> Err e
+          is Ok (_) -> Ok (if reduced.container == 0 then sip-ground reduced else sip-item reduced)
   cf-light : Integer, ActiveSkills, WorldTimers, GameShard, GameInput, WalkMap, WorldObject, Integer, Integer -> Result (Maybe GameReply) Text
   cf-light (camps) (s) (timers) (game) (input) (map) (mobile) (kindling) (tick) =
     let slot = gsi-slot game mobile.serial 0
@@ -87,7 +81,7 @@ Chapter: Campfires
                 else let row = poke-qword camps (free * 8) serial
                 in when world-get game.world serial
                   is Err (e) -> Err e
-                  is Ok (lit) -> Ok (Just (gs-reply [spent, sip-item lit, as-skills a] "camping:lit"))
+                  is Ok (lit) -> Ok (Just (gs-reply [spent, sip-ground lit, as-skills a] "camping:lit"))
   cf-forget : Integer, Integer, Integer -> Integer
   cf-forget (camps) (fire) (i) = if i == cf-limit then 0
     else let at = cf-entry camps i
@@ -110,7 +104,7 @@ Chapter: Campfires
         is Ok (_) -> if wtm-add timers (tick + gm-ticks later) cf-kind serial < 0 then Err "campfire timer pool full"
           else when world-get world serial
             is Err (e) -> Err e
-            is Ok (changed) -> Ok [sip-item changed]
+            is Ok (changed) -> Ok [sip-ground changed]
   cf-near : Integer, WorldTable, WorldObject, Integer -> Integer
   cf-near (camps) (world) (player) (i) = if i == cf-limit then 0
     else let serial = peek-qword camps (i * 8)

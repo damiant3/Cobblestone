@@ -99,6 +99,22 @@ a question routed to him through root: all of them. Messages between
 lanes and CL descriptions are not bound by this; they stay short. Root
 carries the same rule for everything root writes to him.
 
+## Step 4c -- The sub-init for the project you work in
+
+A project (an app or a quire) can carry a sub-init: `apps/<app>/<app>-init.md`
+or `codex/<quire>/<quire>-init.md`, beside its backlog. Read the sub-init of
+every project your CurrentPlan row or your dispatch names, in full, before the
+first edit there; a project you enter mid-session is read the moment you
+enter it. No sub-init means none: do not create one to satisfy this step.
+
+A sub-init is the developer's guide for agents in that project and nothing
+else: how to build, run and test the project, the rulings that bind only that
+project (with Damian's words), the docs mandatory before touching it, and the
+pitfalls that cost a session real time. It states what IS (R-HISTORY); open
+work stays in the backlog and CurrentPlan, and a fact the whole fleet needs
+stays in the reference doc that owns it. The lane that learns a project fact
+worth the next agent's time writes it into the sub-init in the same CL.
+
 ## Step 5 -- The on-demand reading contract
 
 Nothing below is read at init. Each row is MANDATORY before work that

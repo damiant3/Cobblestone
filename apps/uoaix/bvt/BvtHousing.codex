@@ -1,0 +1,41 @@
+Chapter: BvtHousing
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ Houses come from deeds (Damian, 2026-10-17): a deed house held by 9001 centered on 1500, 1600, written as a placed
+ deed writes its row. Mark inside it is its holder's alone; the admin view lists it; the housing tail keeps families,
+ keeper homes and bans, and a torn tail reads as empty rather than refusing.
+  bhs-name : Integer -> Text
+  bhs-name (serial) = "p" & show serial
+  bhs-house : CnState, Integer, Integer, Integer -> Integer
+  bhs-house (land) (x) (y) (holder) = let k = cn-free-site land 0
+    in let a = cn-site-set land k 0 1 in let b = cn-site-set land k 1 x in let c = cn-site-set land k 2 y
+    in let d = cn-site-set land k 4 holder in let e = poke-qword land.buf 8 (k + 1) in k
+  bvt-housing : Integer -> [Console] Integer
+  bvt-housing (unused) = act
+    s <- hs-new 0
+    moon <- hs-house-at-sign s 4688 1184 0
+    a <- bvt-check "the census still holds the scenery houses, Damian's Moonglow house among them (sign 4688,1184)" (hd-count > 100 & moon >= 0)
+    land <- cn-new 0
+    empty <- hs-json land bhs-name
+    k <- bhs-house land 1500 1600 9001
+    m <- bvt-check "Mark inside a deed house is its holder's alone, its walls included; open land and the steps are anyone's" (hs-may-mark land 9001 1500 1600 & hs-may-mark land 9001 1503 1597 & not (hs-may-mark land 9002 1500 1600) & not (hs-may-mark land 9002 1497 1603) & hs-may-mark land 9002 1500 1604 & hs-may-mark land 9002 1504 1600)
+    view <- hs-json land bhs-name
+    r <- bvt-check "the admin view lists every standing house with its design, place and holder, and none before one stands" (empty == "{\"ok\":true,\"houses\":[]}" & text-contains view "\"house\":1" & text-contains view "\"design\":\"small wooden house\"" & text-contains view "\"where\":\"1500, 1600\"" & text-contains view "\"owner\":\"p9001\"")
+    wed <- hs-fam-add s 9002 7001 1 5
+    kid <- hs-fam-add s 9002 7002 2 12
+    keep-set <- hs-keep-set s 3 1500 1540 25
+    banned <- hs-ban s k 9003
+    buf <- alloc-bytes (hs-tail-size s)
+    written <- hs-write-tail s buf
+    back <- hs-new 0
+    read <- hs-read-tail back buf (hs-tail-size s)
+    print-line-uni ("HOUSING tail families " & show back.fam-count & " keeper " & show (hs-keep back 3 0) & "," & show (hs-keep back 3 1) & "," & show (hs-keep back 3 2) & " bans " & show back.ban-count)
+    fam <- bvt-check "a holder's spouse and child are rows of its family, saved in the housing tail and read back (UOAIX-239)" (wed >= 0 & kid >= 0 & hs-fam-of s 9002 0 0 == 2 & hs-fam-of s 9002 1 0 == 1 & hs-fam-last s 9002 0 (0 - 1) == 12 & read == 2 & back.fam-count == 2 & hs-fam back 1 1 == 7002 & written == buf + hs-tail-size s)
+    kh <- bvt-check "a keeper's home is saved in the housing tail and read back (UOAIX-239)" (keep-set == 1 & hs-keep back 3 0 == 1500 & hs-keep back 3 1 == 1540 & hs-keep back 3 2 == 25)
+    bn <- bvt-check "a ban on a deed house is saved in the housing tail and read back (UOAIX-253)" (banned == 0 & back.ban-count == 1 & hs-banned back k 9003 0 & not (hs-banned back k 9002 0))
+    torn <- hs-new 0
+    torn-read <- hs-read-tail torn buf 16
+    t <- bvt-check "a torn housing tail reads as no families, no keeper homes and no bans, and is not refused" (torn-read == 0 & torn.fam-count == 0 & hs-keep torn 3 0 == 0 & torn.ban-count == 0)
+    a + m + r + fam + kh + bn + t
+  end

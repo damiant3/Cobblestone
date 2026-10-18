@@ -1,0 +1,51 @@
+Chapter: LoomDeed
+  cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter SkillsItemsPackets
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter Decorator
+
+ The loom deed (UOAIX-174, catalog item 147): ServUO LoomSouthAddon is 0x1061 at 0,0 and 0x1062 at 1,0. Double-clicking
+ a deed in the player's own pack places both pieces on the two tiles south of the player, as decorations of the
+ player's account, and spends the deed.
+  ld-item : Integer = 147
+  ld-art : List Integer = [#1061, #1062]
+  ld-denied : Text -> Result (Maybe GameReply) Text
+  ld-denied (message) = Ok (Just (gsi-denied message))
+  ld-open : WalkMap, WorldTable, Integer, Integer -> Boolean
+  ld-open (map) (world) (x) (y) = let cell = walk-cell map x y
+    in cell >= 0 & walk-ready map x y & peek-qword map.solids (cell * map.stride) == 0 & world-tile-first world x y == 0
+  ld-handler-at : GameHarvest, DcState, Integer, GameShard, GameInput, WalkMap, List Integer -> Result (Maybe GameReply) Text
+  ld-handler-at (h) (decor) (account) (shard) (input) (map) (packet) =
+    if list-length packet /= 5 | list-at packet 0 /= 6 then Ok None
+    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    in let v = h.vendor
+    in let at = gv-lot v serial 0
+    in if at < 0 then Ok None
+    else if (ep-lot v.currency.world.goods at).item /= ld-item then Ok None
+    else let player = gv-player v input.session.serial 0
+    in if player < 0 | (ep-lot v.currency.world.goods at).actor /= (list-at v.players player).actor then ld-denied "That deed is not yours."
+    else when world-get shard.world input.session.serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> let x = mobile.x
+        in let y = mobile.y + 1
+        in if not (ld-open map shard.world x y) | not (ld-open map shard.world (x + 1) y) | walk-z map x y /= walk-z map (x + 1) y then ld-denied "There is no room for the loom on the two tiles south of you."
+        else let z = walk-z map x y
+        in if decor.room - decor.count < 2 | world-room h.items.world < 2 then ld-denied "The world has no room for a loom until the next save."
+        else if ep-consume-serial v.currency.world (list-at v.players player).actor ld-item 1 serial < 0 then ld-denied "The deed is no longer yours."
+        else let quoted = gh-invalidate-quotes v 0
+        in let spent = when world-get h.items.world serial is Err (_) -> sip-remove serial is Ok (left) -> sip-item left
+        in when dc-create decor h.items (list-at ld-art 0) 0 x y z account
+          is Err (e) -> ld-denied ("The loom could not be placed: " & e)
+          is Ok (first) -> when dc-create decor h.items (list-at ld-art 1) 0 (x + 1) y z account
+            is Err (e) -> ld-denied ("The loom could not be placed: " & e)
+            is Ok (second) -> let shown = ld-shown h.items [first, second] 0 []
+              in let touched = world-touch shard.world
+              in Ok (Just (gs-reply ([spent] & shown & [sip-message #FFFFFFFF #FFFF 6 "You place the loom."]) "loom placed"))
+  ld-shown : GsiState, List Integer, Integer, List (List Integer) -> List (List Integer)
+  ld-shown (items) (serials) (i) (out) = if i >= list-length serials then out
+    else ld-shown items serials (i + 1) (when world-get items.world (list-at serials i) is Err (_) -> out is Ok (made) -> out & [gsi-placement items made])

@@ -1,0 +1,32 @@
+Chapter: SlotArray
+  cites Uoaix chapter WorldIndex
+
+ A per-slot byte array that grows with the world: a block of stride, capacity and a WorldIndex page directory, each page
+ holding 256 entries of stride bytes, zeroed. Growth adds pages and never copies, so an entry's address is stable;
+ the heap a growth allocates must be kept (L-BELOWMARK, UoaixDynamicTables.md).
+  sa-new : Integer, Integer -> Integer
+  sa-new (stride) (capacity) = let block = alloc-bytes (16 + wi-top-entries * 8)
+    in let cleared = wi-zero block (16 + wi-top-entries * 8) 0
+    in let s = poke-qword block 0 stride
+    in if sa-grow block capacity < 0 then 0 else block
+  sa-stride : Integer -> Integer
+  sa-stride (block) = peek-qword block 0
+  sa-capacity : Integer -> Integer
+  sa-capacity (block) = peek-qword block 8
+ The address of entry i; i must be below the capacity.
+  sa-at : Integer, Integer -> Integer
+  sa-at (block) (i) = wi-dir-at (block + 16) (bit-shr i 8) + bit-and i 255 * peek-qword block 0
+ Capacity becomes at least capacity, a page at a time; -1 past wi-pages * 256 entries.
+  sa-grow : Integer, Integer -> Integer
+  sa-grow (block) (capacity) = if capacity > wi-pages * 256 then -1
+    else let made = sa-pages block ((sa-capacity block + 255) / 256) ((capacity + 255) / 256)
+    in let set = poke-qword block 8 (max capacity (sa-capacity block)) in 0
+  sa-pages : Integer, Integer, Integer -> Integer
+  sa-pages (block) (page) (pages) = if page >= pages then 0
+    else let bytes = 256 * sa-stride block
+    in let at = alloc-bytes bytes
+    in let cleared = sa-zero at 0 bytes
+    in let set = wi-dir-set (block + 16) page at
+    in sa-pages block (page + 1) pages
+  sa-zero : Integer, Integer, Integer -> Integer
+  sa-zero (buffer) (i) (stop) = if i >= stop then 0 else let z = poke-byte buffer i 0 in sa-zero buffer (i + 1) stop

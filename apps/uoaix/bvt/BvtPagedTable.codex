@@ -1,0 +1,84 @@
+Chapter: BvtPagedTable
+  cites Uoaix chapter PagedTable
+  cites Uoaix chapter BvtCheck
+
+ 16-byte rows, 4 rows a page, 4 pages: row r holds r + 100 at byte 8.
+  bpt-filled : Integer -> Result PtTable Text
+  bpt-filled (rows) = when pt-new 16 2 4
+    is Err (e) -> Err e
+    is Ok (t) -> if bpt-fill t rows == rows then Ok t else Err "fill"
+  bpt-fill : PtTable, Integer -> Integer
+  bpt-fill (t) (left) = if left <= 0 then 0
+    else let row = pt-add t
+    in if row < 0 then 0 else let w = poke-qword (pt-row t row) 8 (row + 100) in 1 + bpt-fill t (left - 1)
+  bpt-reads : PtTable, Integer -> Boolean
+  bpt-reads (t) (row) = if row >= t.count then True else peek-qword (pt-row t row) 8 == row + 100 & bpt-reads t (row + 1)
+  bpt-refused : Integer, Integer, Integer -> Boolean
+  bpt-refused (row-bytes) (shift) (ceiling) = when pt-new row-bytes shift ceiling is Err (_) -> True is Ok (_) -> False
+  bpt-grows : Integer -> Boolean
+  bpt-grows (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> t.count == 6 & t.live == 6 & t.pages == 2 & pt-page t 0 == pt-page t 3 & pt-page t 3 /= pt-page t 4
+      & pt-page-bytes t == 72 & bpt-reads t 0 & pt-valid t
+  bpt-reuses : Integer -> Boolean
+  bpt-reuses (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> let r = pt-remove t 2
+      in if r /= 0 | pt-row t 2 /= -1 | t.live /= 5 | not (pt-valid t) then False
+      else let again = pt-add t
+      in again == 2 & t.count == 6 & t.pages == 2 & t.live == 6 & peek-qword (pt-row t 2) 8 == 0 & pt-valid t
+  bpt-lifo : Integer -> Boolean
+  bpt-lifo (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> let a = pt-remove t 1
+      in let b = pt-remove t 3
+      in let first = pt-add t
+      in let second = pt-add t
+      in let third = pt-add t
+      in a == 0 & b == 0 & first == 3 & second == 1 & third == 6 & t.count == 7 & t.pages == 2 & pt-valid t
+  bpt-refuses-rows : Integer -> Boolean
+  bpt-refuses-rows (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> let gone = pt-remove t 0
+      in pt-row t 6 == -1 & pt-row t (0 - 1) == -1 & pt-row t 15 == -1 & pt-remove t 6 == -1
+        & gone == 0 & pt-row t 0 == -1 & pt-remove t 0 == -1 & t.live == 5 & pt-valid t
+  bpt-ceiling : Integer -> Boolean
+  bpt-ceiling (unused) = when bpt-filled 16
+    is Err (_) -> False
+    is Ok (t) -> pt-capacity t == 16 & pt-add t == -1 & t.count == 16 & t.pages == 4 & bpt-reads t 0 & pt-valid t
+ Each sabotage starts from a table the validator accepts, so a refusal is the sabotage's.
+  bpt-catches-live : Integer -> Boolean
+  bpt-catches-live (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> if not (pt-valid t) then False else let bad = __record-set t "live" 5 in not (pt-valid t)
+  bpt-catches-page : Integer -> Boolean
+  bpt-catches-page (unused) = when bpt-filled 4
+    is Err (_) -> False
+    is Ok (t) -> if not (pt-valid t) | t.pages /= 1 then False else let stray = poke-qword t.directory 16 (pt-page t 0) in not (pt-valid t)
+  bpt-catches-cycle : Integer -> Boolean
+  bpt-catches-cycle (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> let a = pt-remove t 1
+      in let b = pt-remove t 3
+      in if not (pt-valid t) then False else let looped = poke-qword (pt-at t 1) 0 3 in not (pt-valid t)
+  bpt-catches-live-link : Integer -> Boolean
+  bpt-catches-live-link (unused) = when bpt-filled 6
+    is Err (_) -> False
+    is Ok (t) -> let a = pt-remove t 4
+      in let b = pt-remove t 5
+      in if not (pt-valid t) | pt-free-walk t t.free 2 /= 0 then False
+      else let linked = poke-qword (pt-at t 5) 0 0 in pt-free-walk t t.free 2 == -1 & not (pt-valid t)
+  bvt-paged-table : Integer -> [Console] Integer
+  bvt-paged-table (unused) = act
+    a <- bvt-check "a paged table refuses a row not a multiple of 8, a page past 2^16 rows and an empty directory" (bpt-refused 12 2 4 & bpt-refused 16 17 4 & bpt-refused 16 2 0 & not (bpt-refused 8 0 1))
+    b <- bvt-check "six rows grow a 4-row-page table to two pages and every row reads back" (bpt-grows 0)
+    c <- bvt-check "a freed row reads -1, and the next add reuses it zeroed without growing" (bpt-reuses 0)
+    d <- bvt-check "freed rows are reused last freed first, then the table grows past them" (bpt-lifo 0)
+    e <- bvt-check "a row past the count, below 0 or freed is refused, and freeing it again is refused" (bpt-refuses-rows 0)
+    f <- bvt-check "a table at its ceiling (4 pages of 4 rows) refuses the 17th row" (bpt-ceiling 0)
+    g <- bvt-check "the validator refuses a live count that disagrees with the flags" (bpt-catches-live 0)
+    h <- bvt-check "the validator refuses a directory entry past the last page" (bpt-catches-page 0)
+    i <- bvt-check "the validator refuses a free list that loops" (bpt-catches-cycle 0)
+    j <- bvt-check "the validator refuses a free list that reaches a live row" (bpt-catches-live-link 0)
+    a + b + c + d + e + f + g + h + i + j
+  end

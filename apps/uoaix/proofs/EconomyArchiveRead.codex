@@ -32,6 +32,8 @@ Chapter: EconomyArchiveRead
         ear-walk base next (at + count) (seen + 1) (peek-qword buf 48) buf
       end
     end
+  ear-purse-rows : Integer = 3 * 4096
+  ear-width-room : Integer = 4096
   ear-walk : Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
   ear-walk (base) (next) (at) (seen) (previous) (buf) = if at == next then act seen end
     else act
@@ -39,7 +41,8 @@ Chapter: EconomyArchiveRead
       when first
         is Err (e) -> ear-say ("FAIL archive read " & e) -1
         is Ok (head) -> let bytes = peek-qword head 16
-          in if peek-qword head 0 /= #31474553 | bytes < eu-seg-rows-at | bytes > eu-seg-max | at + (bytes + 511) / 512 > next then ear-say ("FAIL archive segment header at sector " & show at) -1
+          in if peek-qword head 0 /= #31474553 | peek-qword head 120 < 1 | peek-qword head 120 > ear-width-room | bytes < eu-seg-rows-from (peek-qword head 120) | peek-qword head 96 < 0 | peek-qword head 96 > ear-purse-rows | peek-qword head 104 < 0 | peek-qword head 104 > 5 * ear-purse-rows | peek-qword head 112 < 0 | peek-qword head 112 > ear-purse-rows
+            | bytes > eu-seg-max-from (peek-qword head 120) + peek-qword head 96 * 24 + peek-qword head 104 * 8 + peek-qword head 112 * 56 | at + (bytes + 511) / 512 > next then ear-say ("FAIL archive segment header at sector " & show at) -1
           else ear-check base next at seen previous buf bytes
     end
   ear-region : Integer, Integer -> [Console, Device.Block] Integer
@@ -53,9 +56,17 @@ Chapter: EconomyArchiveRead
         in let next = peek-qword h 24
         in act
           said <- ear-say ("ARCHIVE region=" & show region & " capacity=" & show capacity & " segments=" & show segments & " next=" & show next) 0
-          walked <- ear-walk (wmc-start + region) next 1 0 0 (alloc-bytes (eu-seg-max + 512))
-          if walked == segments & segments > 0 then ear-say ("PASS every archived segment reads back with its checksum and chain: " & show walked) 0
-          else ear-say ("FAIL archive walk found " & show walked & " of " & show segments) 1
+          if next == 1 then ear-say ("PASS the region is empty after an export (export-archive.ps1 -Clear) of " & show segments & " segments") 0
+          else act
+            first <- us-device-read UoIde (wmc-start + region + 1)
+            when first
+              is Err (e) -> ear-say ("FAIL archive read " & e) 1
+              is Ok (head) -> act
+                walked <- ear-walk (wmc-start + region) next 1 (peek-qword head 24 - 1) (peek-qword head 88) (alloc-bytes (eu-seg-max-from ear-width-room + 512 + ear-purse-rows * 120))
+                if walked == segments & segments > 0 then ear-say ("PASS every archived segment reads back with its checksum and chain: " & show walked) 0
+                else ear-say ("FAIL archive walk found " & show walked & " of " & show segments) 1
+              end
+          end
         end
   end
   opening : [Console, Device.Block] Integer = act

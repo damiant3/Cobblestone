@@ -1,0 +1,45 @@
+Chapter: BvtByteLoops
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter TownStateFields
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-196: ts-zero, ws-copy and ws-hash take eight bytes a step and must answer exactly what the byte loops did.
+  bbl-fill : Integer, Integer, Integer -> Integer
+  bbl-fill (buf) (n) (i) = if i >= n then 0 else let a = poke-byte buf i (int-mod (i * 37 + 11) 251) in bbl-fill buf n (i + 1)
+  bbl-hash : Integer, Integer, Integer, Integer -> Integer
+  bbl-hash (buf) (size) (i) (hash) = if i >= size then hash
+    else if i == 48 then bbl-hash buf size 56 hash
+    else bbl-hash buf size (i + 1) (bit-and ((bit-xor hash (peek-byte buf i)) * 16777619) 4294967295)
+  bbl-copy : Integer, Integer, Integer, Integer -> Integer
+  bbl-copy (src) (dst) (bytes) (i) = if i >= bytes then 0 else let c = poke-byte dst i (peek-byte src i) in bbl-copy src dst bytes (i + 1)
+  bbl-same : Integer, Integer, Integer, Integer -> Boolean
+  bbl-same (a) (b) (n) (i) = if i >= n then True else peek-byte a i == peek-byte b i & bbl-same a b n (i + 1)
+  bbl-hashes : Integer, Integer -> Boolean
+  bbl-hashes (buf) (size) = if size < 0 then True
+    else ws-hash buf size 0 2166136261 == bbl-hash buf size 0 2166136261 & ws-hash (buf + 3) size 0 2166136261 == bbl-hash (buf + 3) size 0 2166136261 & bbl-hashes buf (size - 7)
+ Zero 3..203 of a filled buffer: bytes 0..2 and 203.. keep their fill.
+  bbl-zero : Integer -> Boolean
+  bbl-zero (unused) = let a = alloc-bytes 256 in let b = alloc-bytes 256
+    in let fa = bbl-fill a 256 0 in let fb = bbl-fill b 256 0
+    in let z = ts-zero (a + 3) 200 0
+    in let zb = bbl-zero-ref (b + 3) 200 0
+    in bbl-same a b 256 0 & peek-byte a 2 /= 0 & peek-byte a 3 == 0 & peek-byte a 202 == 0 & peek-byte a 203 == peek-byte b 203
+  bbl-zero-ref : Integer, Integer, Integer -> Integer
+  bbl-zero-ref (buf) (n) (i) = if i >= n then 0 else let a = poke-byte buf i 0 in bbl-zero-ref buf n (i + 1)
+ Copy apart, then within one buffer to an earlier and to a later place 5 bytes away, against the byte loop.
+  bbl-copies : Integer -> Boolean
+  bbl-copies (unused) = let a = alloc-bytes 256 in let b = alloc-bytes 256
+    in let fa = bbl-fill a 256 0 in let fb = bbl-fill b 256 0
+    in let apart = alloc-bytes 256 in let ref = alloc-bytes 256
+    in let c1 = ws-copy (a + 1) apart 77 0 in let r1 = bbl-copy (a + 1) ref 77 0
+    in let left = ws-copy (a + 10) (a + 5) 100 0 in let refleft = bbl-copy (b + 10) (b + 5) 100 0
+    in let same-left = bbl-same a b 256 0
+    in let right = ws-copy (a + 5) (a + 10) 100 0 in let refright = bbl-copy (b + 5) (b + 10) 100 0
+    in bbl-same apart ref 77 0 & same-left & bbl-same a b 256 0
+  bvt-byte-loops : Integer -> [Console] Integer
+  bvt-byte-loops (unused) = let buf = alloc-bytes 320 in let filled = bbl-fill buf 320 0 in act
+    a <- bvt-check "ws-hash takes eight bytes a step and gives the byte loop's FNV digest at every length 0..300 by 7, aligned and at offset 3, skipping bytes 48-55 (UOAIX-196)" (bbl-hashes buf 300)
+    b <- bvt-check "ts-zero clears exactly its range at an unaligned start, the bytes beside it untouched" (bbl-zero 0)
+    c <- bvt-check "ws-copy matches the byte loop apart and within one buffer copying to an earlier and to a later place 5 bytes away" (bbl-copies 0)
+    a + b + c
+  end

@@ -227,7 +227,7 @@ Measured 2026-08-03, except where an item gives its own date.
     aimed at being the first platform where the compiler proves firmware
     meets Cyber Resilience Act requirements by construction.
 
-**75 applications, 1,861 modules** (2026-10-07), all written in Codex and compiled by
+**75 applications, 2,263 modules** (2026-10-18), all written in Codex and compiled by
 the seed; 33 carry a web front end through the HTML plug. Catalog:
 [docs/CuratorsCatalogue.md](docs/CuratorsCatalogue.md).
 
@@ -242,14 +242,14 @@ for 149 checks (2026-09-28).
 
 ## Distribution artifacts
 
-**`seed/Codex.cdx`** (3,883,795 bytes, 2026-10-07, COMPILER-124: every `when` branch body keeps the match's tail position) -- the canonical seed, and the root
+**`seed/Codex.cdx`** (3,828,773 bytes, 2026-10-18, the leaf inliner binds a non-simple argument at its own type) -- the canonical seed, and the root
 of trust. Ed25519-signed and self-verifying.
 
 | Algorithm | Digest |
 |---|---|
-| Content hash prefix | `5717A425F7514FB2` |
-| SHA-256 | `58D18336B15D7F270D45EDD090A4BE4482B20765570528BAE332A8DDFA21FC67` |
-| MD5 | `31382F11BBF963B7D5D7880CC9C470AE` |
+| Content hash prefix | `259C8F979E3A8040` |
+| SHA-256 | `292381CBBECE88CA4A03B3F4738722DB57E316E1DD2486819242410E795DB0B6` |
+| MD5 | `3E087DD28B39EB9D159C4AD6ACDC6D5E` |
 
 The content hash is the 32 bytes the CDX header carries at offsets 8..39
 and it deliberately EXCLUDES the signature, so it is not a prefix of the
@@ -270,7 +270,7 @@ font selection and notices are documented in [fonts/README.md](fonts/README.md).
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `18AA25DCE75B8B94A103665F41EF7A39EF28736DAA6F4D1D89D349C8FE5DB663` |
+| SHA-256 | `053815D8247512B2B8FA75F10A744BBE585145CD6964838AA49D0B544C3DAB61` |
 
 Boot it on a UEFI machine and it runs its own first-boot ceremony on the
 GOP framebuffer with no OS beneath it: choose an interface, walk the
@@ -294,13 +294,13 @@ stranger; the procedure is in
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `2F3E8BDDB58BF81DA89F1466DC66975FFF9409AA58CE1285B6239A359C3A40C6` |
+| SHA-256 | `2F5A0C63AE0FB532131801C12AF524B65E217264B9EC233EF15A76BF5EF6655C` |
 
 All 60 rehearsal arms (including the fast-acknowledgment flood arm `b3-flood`)
-passed on Codex VM and QEMU/OVMF on 2026-10-07 against seed 58D18336 (Update
-69), and the shipping check confirmed the checked-in default configuration.
-`seed/Codex.img` is built from the release seed (Update 69), and all 6,480 rows
-of `seed/Codex.map` match the seed's embedded MAP1 (checked 2026-10-07).
+passed on Codex VM and QEMU/OVMF on 2026-10-18 against seed 292381CB (Update
+70), and the shipping check confirmed the checked-in default configuration.
+`seed/Codex.img` is built from the release seed (Update 70), and all 5,843 rows
+of `seed/Codex.map` match the seed's embedded MAP1 (checked 2026-10-18).
 
 The payload is reproducible from its source and this seed: `DIAG.RCP` inside
 the image names both and carries `payload-sha256`, `bundled-sha256` and
@@ -611,9 +611,9 @@ codex/
   foreword/      451 library modules across 13 quires
   boards/        Board HAL drivers -- 9 target boards
   os/            Kernel, net, trust, verify, sched, dev, observe (186 modules) (2026-10-06)
-  plugs/         59 plugs, 258 source modules -- IR-text-driven emitters (2026-10-07)
-  test/          Compiler samples + OS integration tests (2,281 files) (2026-10-07)
-apps/            75 applications, 1,861 modules (2026-10-07)
+  plugs/         59 plugs, 262 source modules -- IR-text-driven emitters (2026-10-18)
+  test/          Compiler samples + OS integration tests (2,285 files) (2026-10-18)
+apps/            75 applications, 2,263 modules (2026-10-18)
 annotations/     On-disk annotation sidecars (JSON facts)
 build/           Build and test harness (PowerShell)
 tools/           codex-vm, status server, USB writer, VS extensions
@@ -647,7 +647,7 @@ non-blank lines, including comments and markup.
 |---|---:|---:|---:|---:|
 | `apps/` | 1,158 | 210,502 | 13,774 | 38,878 |
 | `codex/foreword/` | 439 | 61,643 | 7,231 | 14,584 |
-| `codex/test/` | 2,281 | 68,000 | 10,381 | 16,575 |
+| `codex/test/` | 2,285 | 68,000 | 10,381 | 16,575 |
 | `codex/plugs/` | 262 | 63,515 | 5,726 | 9,988 |
 | `codex/compiler/` | 68 | 45,246 | 6,145 | 9,482 |
 | `codex/os/` | 162 | 24,698 | 2,416 | 5,950 |

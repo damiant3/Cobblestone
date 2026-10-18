@@ -1,0 +1,46 @@
+Chapter: BvtImageDigest
+  cites Uoaix chapter WorldSnapshot
+  cites Uoaix chapter BvtCheck
+  cites Kernel chapter Hpet
+
+ UOAIX-196: ws-digest, the composite image's digest, is FNV-1a over 32-bit little-endian words built here from bytes, with
+ ws-hash's skip of bytes 48-55 and its byte tail; fill bytes reach 250, so qwords with the top bit set are covered.
+  bid-fill : Integer, Integer, Integer -> Integer
+  bid-fill (buf) (n) (i) = if i >= n then 0 else let a = poke-byte buf i (int-mod (i * 37 + 11) 251) in bid-fill buf n (i + 1)
+  bid-word : Integer, Integer -> Integer
+  bid-word (buf) (i) = peek-byte buf i + peek-byte buf (i + 1) * 256 + peek-byte buf (i + 2) * 65536 + peek-byte buf (i + 3) * 16777216
+  bid-mix : Integer, Integer -> Integer
+  bid-mix (hash) (v) = bit-and ((bit-xor hash v) * 16777619) 4294967295
+  bid-ref : Integer, Integer, Integer, Integer -> Integer
+  bid-ref (buf) (size) (i) (hash) = if i >= size then hash
+    else if i == 48 then bid-ref buf size 56 hash
+    else if size - i >= 8 & (i >= 56 | i + 8 <= 48) then bid-ref buf size (i + 8) (bid-mix (bid-mix hash (bid-word buf i)) (bid-word buf (i + 4)))
+    else bid-ref buf size (i + 1) (bid-mix hash (peek-byte buf i))
+  bid-agrees : Integer, Integer -> Boolean
+  bid-agrees (buf) (size) = if size < 0 then True
+    else ws-digest buf size 0 2166136261 == bid-ref buf size 0 2166136261 & ws-digest (buf + 3) size 0 2166136261 == bid-ref (buf + 3) size 0 2166136261
+      & bid-agrees buf (size - 7)
+ Flip byte i of a 128-byte buffer: the digest must move, except inside 48-55.
+  bid-moves : Integer, Integer -> Boolean
+  bid-moves (buf) (i) = if i >= 128 then True
+    else let before = ws-digest buf 128 0 2166136261
+    in let old = peek-byte buf i
+    in let flipped = poke-byte buf i (bit-xor old 1)
+    in let after = ws-digest buf 128 0 2166136261
+    in let back = poke-byte buf i old
+    in (if i >= 48 & i < 56 then after == before else after /= before) & bid-moves buf (i + 1)
+  bvt-image-digest : Integer -> [Console] Integer
+  bvt-image-digest (unused) = let buf = alloc-bytes 320 in let filled = bid-fill buf 320 0
+    in let big = alloc-bytes 4194304 in let bigfilled = bid-fill big 4194304 0 in act
+    a <- bvt-check "ws-digest is FNV-1a over 32-bit little-endian words, skipping bytes 48-55, with a byte tail, at every length 0..300 by 7, aligned and at offset 3 (UOAIX-196)" (bid-agrees buf 300)
+    b <- bvt-check "a one-bit change in any byte of a 128-byte image moves ws-digest, except in the digest's own bytes 48-55" (bid-moves buf 0)
+    started <- hpet-start
+    t0 <- hpet-ticks
+    h <- ws-hash big 4194304 0 2166136261
+    t1 <- hpet-ticks
+    d <- ws-digest big 4194304 0 2166136261
+    t2 <- hpet-ticks
+    print-line-uni ("IMAGE DIGEST 4 MiB ticks ws-hash=" & show (t1 - t0) & " ws-digest=" & show (t2 - t1) & " digests " & show h & " " & show d)
+    c <- bvt-check "ws-digest takes less time than ws-hash over 4 MiB, on a running HPET" (t1 > t0 & t2 - t1 < t1 - t0)
+    a + b + c
+  end

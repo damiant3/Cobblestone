@@ -30,17 +30,29 @@ Chapter: TownLive
   tl-held (r) (at-time) (packets) = let retry = __record-set r "next-step" (at-time + tl-retry-seconds)
     in let count = __record-set r "blocked" (r.blocked + 1)
     in Ok packets
+ A resident whose mobile is gone (an NPC killed by cb-die is deleted, its clothes moved to the corpse) or at 0 hits dies in
+ the census, keeps no clothes and steps no more (UOAIX-143: Jorin stayed alive bound to a deleted mobile).
+  tl-die : TownLive, TlResident, TfPerson -> Result (List (List Integer)) Text
+  tl-die (t) (r) (p) = let death = tf-death t.people p
+    in let bare = tl-unclothe r 0
+    in let stopped = __record-set r "next-step" tl-max-seconds
+    in Ok []
+  tl-unclothe : TlResident, Integer -> Integer
+  tl-unclothe (r) (i) = if i == 3 then 0
+    else let c = list-at r.clothes i
+    in let a = __record-set c "serial" 0
+    in let b = __record-set c "quality" 0
+    in let d = __record-set c "wear" 0
+    in let e = __record-set c "basis" 0
+    in tl-unclothe r (i + 1)
   tl-step-resident : TownLive, TlResident, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
   tl-step-resident (t) (r) (map) (doors) =
     let p = tf-person t.people r.person
     in let at-time = r.next-step
     in if p.alive == 0 then let stopped = __record-set r "next-step" tl-max-seconds in Ok []
     else when world-get t.vendors.game.world p.world-serial
-      is Err (e) -> Err e
-      is Ok (mobile) -> if mobile.health <= 0 then
-        let death = tf-death t.people p
-        in let stopped = __record-set r "next-step" tl-max-seconds
-        in Ok []
+      is Err (_) -> tl-die t r p
+      is Ok (mobile) -> if mobile.health <= 0 then tl-die t r p
       else let controlled = r.control.expires > at-time
       in let action = if controlled then r.control.action else tl-action p (at-time / 3600)
       in let town = tf-town t.people p.town
@@ -52,7 +64,7 @@ Chapter: TownLive
         in let selected = __record-set r "goal" goal
         in tl-reset-path r
       in let target = if controlled & r.via-home == 0 then r.control.target else tl-target t r
-      in if tl-at mobile target then
+      in if tl-at mobile target | (r.via-home == 0 & r.goal == 0 & not controlled & tl-in-lodging mobile) then
         if r.via-home == 1 then let arrived = __record-set r "via-home" 0
           in let cleared = tl-reset-path r in Ok []
         else let rest = __record-set r "next-step" (if controlled then r.control.expires else tl-next-change p (at-time / 3600) action 1)
@@ -134,6 +146,7 @@ Chapter: TownLive
         in let was = bit-and view.inside mask /= 0
         in let near = p.alive == 1 & npc.health > 0 & viewer.health > 0
           & walk-abs (viewer.x - npc.x) <= 3 & walk-abs (viewer.y - npc.y) <= 3 & walk-abs (viewer.z - npc.z) <= 16 & tl-sight map npc viewer
+          & tl-at-work (tl-shop-of i) npc viewer
         in let changed = if was == near then 0 else let updated = __record-set view "inside" (bit-xor view.inside mask) in 0
         in let persona = list-at t.mind.personas (p.serial - 1)
         in let same = list-at r.last-speaker slot == viewer.serial
@@ -141,11 +154,15 @@ Chapter: TownLive
           | t.mind.audit-count >= 1024 | persona.request >= 1000000000
           | (persona.call-hour == t.people.hour & persona.calls >= persona.call-limit) then tl-greet t map view viewer slot (i + 1) packets
         else let reply = tm-stub t.mind t.people p.serial 1 (persona.request + 1) ""
-        in let line = tl-line t i 0 persona.request
+        in let closed = gv-shut t.vendors (tl-shop-of i)
+        in let work = if closed then "" else tl-line t i 2 persona.request
+        in let line = tl-salute t.now (if closed then 2 else 1) &(if text-length work == 0 then "" else " " & work)
         in let owner = list-set-at r.last-speaker slot viewer.serial
         in let said = list-set-at r.last-speech slot t.now
         in let touched = world-touch t.vendors.game.world
-        in tl-greet t map view viewer slot (i + 1) (list-push packets (gvp-speech npc p.name (if text-length line == 0 then reply.speech else line)))
+        in let warned = t.warn-hook npc.serial viewer.serial
+        in if (if warned then False else not (world-announce t.vendors.game.world npc.serial (tl-state-key t.now (if closed then 2 else 1)))) then tl-greet t map view viewer slot (i + 1) packets
+        else tl-greet t map view viewer slot (i + 1) (list-push packets (gvp-speech npc p.name (if warned then "I know what thou didst. Keep away from me." else if text-length line == 0 then reply.speech else line)))
   tl-pulse : TownLive, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   tl-pulse (t) (game) (input) (map) (port) (tick) =
     if input.mode /= 2 | input.session.phase /= 2 then Ok None

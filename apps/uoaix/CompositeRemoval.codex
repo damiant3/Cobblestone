@@ -20,7 +20,7 @@ Chapter: CompositeRemoval
   crm-unclothe : EpWorld, TlResident, Integer -> Integer
   crm-unclothe (w) (r) (i) = if i == 3 then 0
     else let c = list-at r.clothes i
-    in let used = if c.serial == 0 then 0 else ep-consume w (ep-actor w r.actor) 46 1
+    in let used = if c.serial == 0 then 0 else ep-consume w r.actor 46 1
     in let a = __record-set c "serial" 0
     in let b = __record-set c "quality" 0
     in let d = __record-set c "wear" 0
@@ -34,7 +34,7 @@ Chapter: CompositeRemoval
   crm-conceal : CompositeGame, Integer -> Integer
   crm-conceal (s) (serial) = let slot = world-slot s.items.world serial
     in let dropped = gmb-drop-banker s.banks serial 0
-    in if slot < 0 then 0 else poke-byte s.active.concealed slot 3
+    in if slot < 0 then 0 else poke-byte (sa-at s.active.concealed slot) 0 3
   crm-reapply : CompositeGame, Integer -> Integer
   crm-reapply (s) (i) = if i >= peek-qword s.vendor.gone 0 then 0
     else let hidden = crm-conceal s (peek-qword s.vendor.gone (8 + i * 8)) in crm-reapply s (i + 1)
@@ -44,11 +44,11 @@ Chapter: CompositeRemoval
   crm-gate (xs) (serial) (i) = if i >= list-length xs then False else if (list-at xs i).serial == serial then True else crm-gate xs serial (i + 1)
   crm-town : CompositeGame, Integer -> Boolean
   crm-town (s) (serial) = if gv-vendor s.vendor serial 0 >= 0 | gv-owner s.vendor serial 0 >= 0 | gmb-is-banker s.banks serial 0 then True
-    else if s.smith.serial == serial | s.baker.serial == serial | s.tailor.serial == serial | s.tinker.serial == serial | s.carpenter.serial == serial then True
+    else if s.smith.serial == serial | s.baker.serial == serial | s.tailor.serial == serial | s.tinker.serial == serial | s.carpenter.serial == serial | s.glassblower.serial == serial | s.potter.serial == serial | s.bowyer.serial == serial | s.tanner.serial == serial | s.leatherworker.serial == serial | s.cobbler.serial == serial then True
     else if crm-miner s.miners serial 0 then True
     else if (when s.gatherer is None -> False is Just (g) -> g.serial == serial) then True
     else if (when s.farmer is None -> False is Just (g) -> g.serial == serial) then True
-    else if (when s.fighter is None -> False is Just (f) -> f.serial == serial) then True
+    else if (when s.fighter is None -> False is Just (f) -> f.serial == serial) | (when s.hunter is None -> False is Just (h) -> h.serial == serial) then True
     else if (when s.british is None -> False is Just (b) -> b.serial == serial) then True
     else if (when s.lineup is None -> False is Just (l) -> l.resident == serial | l.banker == serial) then True
     else if (when s.speech is None -> False is Just (p) -> crm-speaker p serial 0) then True
@@ -56,7 +56,7 @@ Chapter: CompositeRemoval
   crm-top : WorldTable, Integer, Integer -> Integer
   crm-top (world) (serial) (left) = let slot = world-slot world serial
     in if slot < 0 | left == 0 then serial
-    else let container = peek-qword world.buffer (72 + slot * 80)
+    else let container = peek-qword (wi-object world.buffer slot) 56
     in if container == 0 then serial else crm-top world container (left - 1)
   crm-item-refusal : CompositeGame, GameShard, WorldObject -> Text
   crm-item-refusal (s) (game) (item) = let top = crm-top game.world item.serial 64
@@ -75,9 +75,7 @@ Chapter: CompositeRemoval
         is Err (e) -> Err e
         is Ok (m) -> Ok (n + m)
     else let at = gv-lot v serial 0
-    in let retired = if at < 0 then 0 else let l = list-at v.lots at
-      in let lost = ep-consume v.currency.world (ep-actor v.currency.world l.actor) l.item l.quantity
-      in gh-retire-lot v at
+    in let retired = if at < 0 then 0 else ep-forget-lot v.currency.world at
     in when world-delete world serial
       is Err (e) -> Err e
       is Ok (_) -> Ok 1
@@ -85,7 +83,7 @@ Chapter: CompositeRemoval
   crm-done (owner) (input) (o) (n) (what) = act
     slg-line owner.state.checkpoint.game.log slg-admin slg-info ("REMOVE " & what & " serial=" & show o.serial & " graphic=" & show o.graphic
       & " x=" & show o.x & " y=" & show o.y & " z=" & show o.z & " container=" & show o.container & " objects=" & show n)
-    committed <- cs-commit owner False
+    committed <- cs-commit-play owner False
     when committed
       is Err (e) -> Err e
       is Ok (_) -> Ok (gs-reply [sip-remove o.serial, crm-line input (if n == 0 then "Removed from the world." else "Removed " & show n & (if n == 1 then " object." else " objects."))] "british:remove")
@@ -132,7 +130,7 @@ Chapter: CompositeRemoval
     is Err (_) -> let opened = gr-corpse-packets owner.state.items packets 0 in act
       slg-line owner.state.checkpoint.game.log slg-admin slg-info ("KILL serial=" & show m.serial & " graphic=" & show m.graphic
         & " x=" & show m.x & " y=" & show m.y & " z=" & show m.z)
-      committed <- cs-commit owner False
+      committed <- cs-commit-play owner False
       when committed
         is Err (e) -> Err e
         is Ok (_) -> Ok (gs-reply (packets & [crm-line input "Killed."]) "british:kill")

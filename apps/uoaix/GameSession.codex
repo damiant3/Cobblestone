@@ -2,11 +2,15 @@ Chapter: GameSession
   cites Uoaix chapter GamePackets
   cites Uoaix chapter WalkMap
   cites Uoaix chapter WorldRecords
+  cites Uoaix chapter WorldIndex
   cites Uoaix chapter GameAccounts
   cites Uoaix chapter CharacterSkills
+  cites Uoaix chapter SkillCurve
+  cites Uoaix chapter Skill1998
   cites Uoaix chapter ServerLog
   cites Uoaix chapter GameHunger
   cites Foreword chapter Result
+  cites Foreword chapter Random
 
  Five character slots, 160 bytes each: mobile serial, 100 creation bytes
  plus four server clothing-hue bytes, and four equipment serials. The fixed world budget is 64 objects.
@@ -24,15 +28,31 @@ Chapter: GameSession
   gs-new : Integer -> Result GameShard Text
   gs-new (capacity) = when world-new (if capacity <= 0 then 64 else capacity)
     is Err (e) -> Err e
-    is Ok (world) ->
-      let characters = alloc-bytes 800
-      in let clear = gs-zero characters 0
-      in Ok (GameShard { world = world, characters = characters, accounts = ga-new ga-dev, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 })
+    is Ok (world) -> let accounts = ga-new ga-dev
+      in Ok (GameShard { world = world, characters = ga-working accounts, accounts = accounts, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 })
+
+ Binding an account points the shard's working slots at that account's own record; nothing is copied.
+  gs-bind : GameShard, Integer -> Boolean
+  gs-bind (shard) (index) = if ga-bound shard.accounts == index then False
+    else let bound = poke-qword shard.accounts 8 index
+    in let pointed = __record-set shard "characters" (ga-working shard.accounts) in True
 
   gs-skill : GameShard, Integer, Integer -> Integer
   gs-skill (shard) (serial) (skill) = chs-level shard.skills shard.characters shard.accounts serial skill
   gs-skill-set : GameShard, Integer, Integer, Integer -> Integer
   gs-skill-set (shard) (serial) (skill) (value) = chs-set shard.skills shard.characters shard.accounts serial skill value
+ A play check's gain under the skill total, and the stat rolls it earns; the cached combat and magery actors follow the
+ record at the player's next pulse (cp-stats-follow).
+  gs-skill-chance : GameShard, Integer, Integer, Integer, Integer -> Integer
+  gs-skill-chance (shard) (serial) (skill) (difficulty) (range) = skc-check-chance (gs-skill-row shard serial) (gs-card shard serial) skill difficulty range
+  gs-skill-learn : GameShard, Integer, Integer, Integer, Boolean, Integer, Integer -> Integer
+  gs-skill-learn (shard) (serial) (skill) (chance) (passed) (percent) (draw) = skc-learn-at (gs-skill-row shard serial) (gs-card shard serial) skill chance passed percent draw
+  gs-rep : GameShard, Integer, Integer -> Integer
+  gs-rep (shard) (serial) (cell) = chs-rep shard.skills serial cell
+  gs-rep-set : GameShard, Integer, Integer, Integer -> Integer
+  gs-rep-set (shard) (serial) (cell) (value) = chs-rep-set shard.skills shard.characters shard.accounts serial cell value
+  gs-card : GameShard, Integer -> Integer
+  gs-card (shard) (serial) = chs-record shard.characters shard.accounts serial
   gs-skill-row : GameShard, Integer -> Integer
   gs-skill-row (shard) (serial) = chs-row shard.skills shard.characters shard.accounts serial
   gs-skill-rows : GameShard, Integer, Integer, List Integer -> List Integer
@@ -41,6 +61,74 @@ Chapter: GameSession
  The 0x3A full list: length 190, then id (1-based) and value in tenths per skill, ending in a zero id.
   gs-skills : GameShard, Integer -> List Integer
   gs-skills (shard) (serial) = gs-skill-rows shard serial 0 [#3A,0,190,0]
+ OUO combat.c Mobile_IsFacingEntity (0x00443166): a mobile faces a neighbour when its direction, or the octant either side
+ of it, points at the neighbour; on the same tile it always does. Slot byte 151 holds a character's facing + 1 (gs-walk,
+ gs-enter); 0 is unknown and faces every way.
+  gs-face-set : GameShard, Integer, Integer -> Integer
+  gs-face-set (shard) (serial) (direction) = let card = gs-card shard serial
+    in if card == 0 then 0 else poke-byte card 151 (bit-and direction 7 + 1)
+  gs-facing : GameShard, Integer -> Integer
+  gs-facing (shard) (serial) = let card = gs-card shard serial in if card == 0 then -1 else peek-byte card 151 - 1
+  gs-sign : Integer -> Integer
+  gs-sign (n) = if n > 0 then 1 else if n < 0 then -1 else 0
+  gs-points : Integer, Integer, Integer -> Boolean
+  gs-points (direction) (dx) (dy) = walk-dx direction == dx & walk-dy direction == dy
+  gs-faces : Integer, Integer, Integer -> Boolean
+  gs-faces (facing) (dx) (dy) = facing < 0 | (dx == 0 & dy == 0) | gs-points facing dx dy
+    | gs-points (int-mod (facing + 1) 8) dx dy | gs-points (int-mod (facing + 7) 8) dx dy
+ OUO skill.c: a player's check (SkillCheck, 0x004D52ED) and a direct use's watchers (HandleWatchingSkill, 0x004D5916)
+ reach every mobile within 1 tile that sees the user and faces it (CEntity_CanSee, Mobile_IsFacingEntity): here every
+ living present character within 1 tile and 16 z. Answers the tenths the visits raised.
+  gs-near : GameShard, WorldObject, (Integer -> Boolean), (Integer -> Integer), Integer, Integer -> Integer
+  gs-near (shard) (me) (present) (visit) (cell) (raised) = if cell == 9 then raised
+    else let head = world-tile-first shard.world (me.x + int-mod cell 3 - 1) (me.y + cell / 3 - 1)
+    in gs-near shard me present visit (cell + 1) (gs-near-tile shard me present visit head shard.world.capacity raised)
+  gs-near-tile : GameShard, WorldObject, (Integer -> Boolean), (Integer -> Integer), Integer, Integer, Integer -> Integer
+  gs-near-tile (shard) (me) (present) (visit) (serial) (fuel) (raised) = if serial == 0 | fuel <= 0 then raised
+    else let slot = world-slot shard.world serial
+    in let got = if serial == me.serial | slot < 0 then 0
+      else if peek-qword (wi-object shard.world.buffer slot) 8 /= 1 | gs-card shard serial == 0 then 0
+      else if not (present serial) then 0
+      else gs-near-visit shard me visit serial
+    in gs-near-tile shard me present visit (world-tile-next shard.world serial) (fuel - 1) (raised + got)
+  gs-near-visit : GameShard, WorldObject, (Integer -> Integer), Integer -> Integer
+  gs-near-visit (shard) (me) (visit) (serial) = when world-get shard.world serial
+    is Err (_) -> 0
+    is Ok (them) -> if them.health <= 0 | walk-abs (them.z - me.z) > 16 then 0
+      else if not (gs-faces (gs-facing shard serial) (gs-sign (me.x - them.x)) (gs-sign (me.y - them.y))) then 0
+      else visit serial
+  gs-near-user : GameShard, Integer, Integer, (Integer -> Boolean), (Integer -> Integer) -> Integer
+  gs-near-user (shard) (serial) (skill) (present) (visit) = if not (s98-valid skill) | gs-card shard serial == 0 then 0
+    else when world-get shard.world serial
+      is Err (_) -> 0
+      is Ok (me) -> if me.health <= 0 then 0 else gs-near shard me present visit 0 0
+ The bystander's own SkillCheck at divisor 4 with alwaysGain 0: it succeeds on chance / 4 - random(1000) > 0 at the
+ user's difficulty and range and only then gains SkillGain on 1000 - chance at the user's gain percent, with no usage and
+ no stat try.
+  gs-skill-share : GameShard, Integer, Integer, Integer, Integer, Integer, Integer, (Integer -> Boolean) -> Integer
+  gs-skill-share (shard) (serial) (skill) (difficulty) (range) (percent) (draw) (present) =
+    gs-near-user shard serial skill present (gs-share-one shard skill difficulty range percent draw)
+  gs-share-one : GameShard, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gs-share-one (shard) (skill) (difficulty) (range) (percent) (draw) (serial) = let row = gs-skill-row shard serial
+    in let base = if row == 0 then 1000 else peek-qword row (skill * 8)
+    in let chance = gs-skill-chance shard serial skill difficulty range
+    in let roll = mix-bits (draw + serial) 4
+    in if base >= 1000 | chance / 4 - int-mod (bit-and roll #7FFFFFFF) 1000 <= 0 then 0
+    else skc-raise row (gs-card shard serial) skill (s98-tenths (s98-gain skill base chance percent) (int-mod (bit-and (bit-shru roll 32) #7FFFFFFF) 1000)) roll 0
+ A watcher whose base is below the user's checked value learns by TestSkillInternal at factor (value - base) * factor /
+ 1000, behind its own anti-macro gate (refused when random(100) is 0), without stats and without watchers of its own.
+  gs-skill-watch : GameShard, Integer, Integer, Integer, Integer, Integer, (Integer -> Boolean) -> Integer
+  gs-skill-watch (shard) (serial) (skill) (value) (factor) (draw) (present) =
+    gs-near-user shard serial skill present (gs-watch-one shard skill value factor draw)
+  gs-watch-factor : Integer, Integer, Integer -> Integer
+  gs-watch-factor (value) (base) (factor) = (value - base) * factor / 1000
+  gs-watch-one : GameShard, Integer, Integer, Integer, Integer, Integer -> Integer
+  gs-watch-one (shard) (skill) (value) (factor) (draw) (serial) = let row = gs-skill-row shard serial
+    in let base = if row == 0 then 1000 else peek-qword row (skill * 8)
+    in let roll = mix-bits (draw + serial) 5
+    in if base >= 1000 | base >= value | int-mod (bit-and roll #7FFFFFFF) 100 == 0 then 0
+    else let gain = s98-gain skill base (1000 - (1000 - base) * gs-watch-factor value base factor / 100) 100
+    in skc-raise row (gs-card shard serial) skill (s98-tenths gain (int-mod (bit-and (bit-shru roll 32) #7FFFFFFF) 1000)) roll 0
 
   gs-relay-key : GameShard -> Result Integer Text
   gs-relay-key (shard) =
@@ -186,6 +274,7 @@ Chapter: GameSession
             let a = __record-set session "phase" 2
             in let b = __record-set a "serial" serial
             in let c = __record-set b "direction" 0
+            in let faced = gs-face-set shard serial 0
             in let d = __record-set c "sequence" 0
             in let active = __record-set shard "active" serial
             in Ok (gs-reply (list-push (list-push equipped [79, 0]) [85]) "entered world")
@@ -265,7 +354,7 @@ Chapter: GameSession
     else when ga-login shard.accounts packet 5 35
       is Err (e) -> Err e
       is Ok (index) ->
-        let rebound = ga-bind shard.accounts shard.characters index
+        let rebound = gs-bind shard index
         in let logged = ga-logged shard.accounts
         in let touched = if rebound then world-touch shard.world else 0
         in let logged = __record-set session "phase" 1
@@ -278,9 +367,11 @@ Chapter: GameSession
 
   gs-char-slot : Integer, Integer, Integer -> Integer
   gs-char-slot (characters) (serial) (i) = if i >= 5 then -1 else if peek-qword characters (i * 160) == serial then i else gs-char-slot characters serial (i + 1)
- UOX3 uox.ini STAMINAREGENTIMER=2 and MAXSTAMINAMOVEMENTS=15: a point of stamina returns every 2 s and a point is spent
- every 15 running steps. Slot byte 145 is stamina spent, 146 the running steps, 152..159 the tick regeneration counts from.
-  gs-stamina-period : Integer = (2000 * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
+ A point of stamina returns every 2778 ms: OUO (github.com/draxinar/ouo, MIT) CMobile_StaminaRegenTick (0x0047152E) takes
+ 18 off a 200-point counter each 250 ms server tick (main.c TICK_INTERVAL_MS). Running in the clear spends nothing
+ (Damian, 2026-10-12, UOAIX-245). Slot byte 145 is stamina spent, 146 the running steps, 152..159 the tick regeneration
+ counts from.
+  gs-stamina-period : Integer = (2778 * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
   gs-stamina : Integer, Integer, Boolean -> Boolean
   gs-stamina (at) (now) (ran) =
     let before = peek-byte at 145
@@ -333,11 +424,12 @@ Chapter: GameSession
             is Err (e) -> Err e
             is Ok (serial) ->
               let a = __record-set session "direction" dir
+              in let faced = gs-face-set shard session.serial dir
               in let b = __record-set a "sequence" (if sequence == 255 then 1 else sequence + 1)
               in let stepped = if moving then __record-set session "moved" get-ticks else session
               in let slot = gs-char-slot shard.characters session.serial 0
               in let at = shard.characters + slot * 160
-              in let changed = if slot < 0 then False else gs-stamina at get-ticks (moving & bit-and raw-dir 128 /= 0)
+              in let changed = if slot < 0 then False else gs-stamina at get-ticks False
               in Ok (gs-reply ([gp-move-accepted sequence] & (if changed then [gs-stamina-packet at session.serial] else [])) (if moving then "walked" else "turned"))
 
   gs-handle : GameShard, GameSession, WalkMap, List Integer -> Result GameReply Text
@@ -364,7 +456,16 @@ Chapter: GameSession
     else if opcode == 52 & session.phase == 2 then
       if gp-u32 packet 6 /= session.serial | list-at packet 5 /= 4 then Err "status query target/type"
       else gs-status shard session 0
+    else if opcode == 34 & session.phase == 2 then gs-resync shard session
+    else if session.phase == 2 then Ok (gs-reply [] ("unhandled packet skipped opcode=" & show opcode & " length=" & show (list-length packet)))
     else Err "packet not admitted in session phase"
+ 0x22 from the client asks for a resync: the server draws the player where it stands (0x20), which also restarts the
+ client's walk sequence. A packet the client sends in play that no handler claims is skipped with a note the logs count,
+ not answered by a disconnect (0x56 map pins, 0x75 pet names, 0x93 book titles; UOAIX backlog).
+  gs-resync : GameShard, GameSession -> Result GameReply Text
+  gs-resync (shard) (session) = when world-get shard.world session.serial
+    is Err (e) -> Err e
+    is Ok (mobile) -> let reset = __record-set session "sequence" 0 in Ok (gs-reply [gp-player mobile session.direction] "resync")
 
   gs-speech : GameShard, GameSession, List Integer, Integer -> Result GameReply Text
   gs-speech (shard) (session) (packet) (slot) =

@@ -1,0 +1,31 @@
+Chapter: Teleporters
+  cites Uoaix chapter TeleporterData
+
+ Dungeon entrances, exits and level links (Damian, 2026-10-10: "then enterance to wrong dungeon does not work", "same
+ with shame"). TeleporterData's rows are copied once at boot into a buffer of 48 bytes a teleporter (x, y, z, then the
+ destination's), sorted by x * 4096 + y, so a step finds its tile by binary search. ServUO Teleporter fires on a walk
+ onto its tile; a walker within tp-rise of its z takes it.
+  tp-row-bytes : Integer = 48
+  tp-rise : Integer = 10
+  tp-copy : Integer, List Integer, Integer -> Integer
+  tp-copy (buf) (rows) (i) = if i == list-length rows then 0 else let w = poke-qword buf (i * 8) (list-at rows i) in tp-copy buf rows (i + 1)
+  tp-load : Integer -> Integer
+  tp-load (unused) = let rows = tpd-rows 0
+    in if list-length rows /= tpd-count * 6 then 0
+    else let buf = alloc-bytes (tpd-count * tp-row-bytes) in let copied = tp-copy buf rows 0 in buf
+  tp-key : Integer, Integer -> Integer
+  tp-key (x) (y) = x * 4096 + y
+  tp-at : Integer, Integer, Integer -> Integer
+  tp-at (buf) (i) (field) = peek-qword buf (i * tp-row-bytes + field * 8)
+  tp-search : Integer, Integer, Integer, Integer -> Integer
+  tp-search (buf) (key) (lo) (hi) = if lo > hi then 0 - 1
+    else let mid = (lo + hi) / 2
+    in let k = tp-key (tp-at buf mid 0) (tp-at buf mid 1)
+    in if k == key then mid else if k < key then tp-search buf key (mid + 1) hi else tp-search buf key lo (mid - 1)
+ The teleporter a walker standing at x, y, z takes, or -1.
+  tp-find : Integer, Integer, Integer, Integer -> Integer
+  tp-find (buf) (x) (y) (z) = if buf == 0 then 0 - 1
+    else let i = tp-search buf (tp-key x y) 0 (tpd-count - 1)
+    in if i < 0 then 0 - 1 else let d = z - tp-at buf i 2 in if d <= tp-rise & d >= 0 - tp-rise then i else 0 - 1
+  tp-dest : Integer, Integer -> List Integer
+  tp-dest (buf) (i) = [tp-at buf i 3, tp-at buf i 4, tp-at buf i 5]

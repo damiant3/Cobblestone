@@ -42,7 +42,7 @@ The fixed payload is 198240 bytes. All cells are little-endian integers.
 | Offset | Content |
 |---:|---|
 | 0 | Magic `0x31434754` |
-| 8 | Version 1 |
+| 8 | Version 2 (the decoder also reads version 1) |
 | 16 | Total length |
 | 24 | Gold mode 1 or currency mode 2 |
 | 32 | Outer tick |
@@ -53,7 +53,7 @@ The fixed payload is 198240 bytes. All cells are little-endian integers.
 | 152 | Reserved zero |
 | 160 | Four offices, 72 bytes each |
 | 448 | 64 guards, 48 bytes each |
-| 3520 | 2048 civic events, 64 bytes each |
+| 3520 | Civic events, 64 bytes each: 8192 in version 2, 2048 in version 1; every later offset below is version 1's, and version 2 adds 393216 |
 | 134592 | 1024 dues-day stamps |
 | 142784 | Four public-works towns, 40 bytes each |
 | 142944 | 64 site bindings, 16 bytes each |
@@ -124,7 +124,9 @@ active militia, debt/land/misconduct cases, canonical roundtrip, detached civic
 records, duplicate-dues/report refusal and rehashed corruption. Run normal and
 poisoned builds against the complete oracle.
 
-Ordered civic inputs, composite shard inclusion and disk restart of the complete
-bound state remain integration work. TGC1 alone cannot recover currency,
-registered titles, physical world state or keeper report bodies. Restore their
-own checkpoints from the same commit before supplying bindings.
+[TownGovernmentInput.md](TownGovernmentInput.md) defines ordered TGI1 replay,
+the TGB1 bundle of civic/money/queue state, and a separate-VM restart witness
+with unchanged external anchors. Full composite shard inclusion remains open.
+TGC1 alone cannot recover currency, registered titles, physical world state or
+keeper report bodies. Restore their owning checkpoints from the same commit
+before supplying bindings.

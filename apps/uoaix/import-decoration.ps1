@@ -135,26 +135,35 @@ function Add-Decoration([string]$Type,[int]$Art,[hashtable]$Props,[int]$AtX,[int
     $rows[$key]=[pscustomobject]@{X=$AtX;Y=$AtY;Z=$AtZ;Art=$Art;Hue=$hue;Flags=$tile.Flags;Height=$tile.Height;Kind=$kind;Open=$open;DX=$ox;DY=$oy;Light=$light;OpenFlags=$openTile.Flags;OpenHeight=$openTile.Height;Name=$Name;Source=$Source}
     if($kind -eq 1 -or $kind -eq 4) {$doorPositions["$AtX,$AtY,$AtZ"]=$true}
 }
+function Read-DecorationCfg([string]$Path,[string]$Label) {
+    $inputs.Add($Path)
+    $type='';$art=0;$props=@{};$comment='';$lineNo=0
+    foreach($line in [IO.File]::ReadLines($Path)) {
+        $lineNo++;$line=$line.Trim()
+        if($line.Length -eq 0) {continue}
+        if($line.StartsWith('#')) {$comment=$line.TrimStart('#').Trim();continue}
+        if($line -match '^Strip\s') {continue}
+        if($line -match '^Clear\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$') {
+            $x1=[int]$Matches[1];$y1=[int]$Matches[2];$x2=[int]$Matches[3];$y2=[int]$Matches[4]
+            foreach($key in @($rows.Keys)) {$row=$rows[$key];if($row.Kind -in 0,3 -and $row.X -ge $x1 -and $row.X -le $x2 -and $row.Y -ge $y1 -and $row.Y -le $y2) {$rows.Remove($key)}}
+            continue
+        }
+        if($line -match '^(\w+)\s+(0x[0-9a-fA-F]+|\d+)(?:\s*\((.*)\))?$') {
+            $type=$Matches[1];$art=[Convert]::ToInt32($Matches[2],$(if($Matches[2].StartsWith('0x')){16}else{10}));$props=@{}
+            if($Matches.ContainsKey(3)) {foreach($property in $Matches[3].Split(';')) {
+                $pair=$property.Trim().Split('=',2);if($pair[0]) {$props[$pair[0].Trim()]=if($pair.Length -eq 2){$pair[1].Trim()}else{'true'}}
+            }}
+        } elseif($line -match '^(-?\d+)\s+(-?\d+)\s+(-?\d+)(?:\s+.*)?$') {
+            if(-not $type) {throw "Placement without definition at ${Label}:$lineNo"}
+            Add-Placement $type $art $props ([int]$Matches[1]) ([int]$Matches[2]) ([int]$Matches[3]) $comment "${Label}:$lineNo"
+        } elseif($line -match '^-?\d+\s+-?\d+\s+\S+') {
+            $skipped.Add([pscustomobject]@{Source="${Label}:$lineNo";Art=$art;Reason='malformed placement';Text=$line})
+        } else {throw "Unparsed decoration at ${Label}:$lineNo"}
+    }
+}
 foreach($folder in @('ServUO/Data/Decoration/Old/Britannia','ServUO/Data/Decoration/Britannia')) {
     foreach($file in (Get-ChildItem (Join-Path $ReferenceRoot $folder) -Filter '*.cfg' -File | Sort-Object Name)) {
-        $inputs.Add($file.FullName)
-        $type='';$art=0;$props=@{};$comment='';$lineNo=0
-        foreach($line in [IO.File]::ReadLines($file.FullName)) {
-            $lineNo++;$line=$line.Trim()
-            if($line.Length -eq 0) {continue}
-            if($line.StartsWith('#')) {$comment=$line.TrimStart('#').Trim();continue}
-            if($line -match '^(\w+)\s+(0x[0-9a-fA-F]+|\d+)(?:\s*\((.*)\))?$') {
-                $type=$Matches[1];$art=[Convert]::ToInt32($Matches[2],$(if($Matches[2].StartsWith('0x')){16}else{10}));$props=@{}
-                if($Matches.ContainsKey(3)) {foreach($property in $Matches[3].Split(';')) {
-                    $pair=$property.Trim().Split('=',2);if($pair[0]) {$props[$pair[0].Trim()]=if($pair.Length -eq 2){$pair[1].Trim()}else{'true'}}
-                }}
-            } elseif($line -match '^(-?\d+)\s+(-?\d+)\s+(-?\d+)(?:\s+.*)?$') {
-                if(-not $type) {throw "Placement without definition at $($file.Name):$lineNo"}
-                Add-Placement $type $art $props ([int]$Matches[1]) ([int]$Matches[2]) ([int]$Matches[3]) $comment "$folder/$($file.Name):$lineNo"
-            } elseif($line -match '^-?\d+\s+-?\d+\s+\S+') {
-                $skipped.Add([pscustomobject]@{Source="$folder/$($file.Name):$lineNo";Art=$art;Reason='malformed placement';Text=$line})
-            } else {throw "Unparsed decoration at $($file.Name):$lineNo"}
-        }
+        Read-DecorationCfg $file.FullName "$folder/$($file.Name)"
     }
 }
 # ServUO's CFGs omit doors installed by DoorGenerator. UOX3's literal Felucca
@@ -195,6 +204,8 @@ foreach($line in [IO.File]::ReadLines($signs)) {
     if($parts.Length -lt 7 -or $parts[1] -eq '#') {continue}
     Add-Decoration 'Sign' ([int]$parts[0]) @{} ([int]$parts[4]) ([int]$parts[5]) ([int]$parts[6]) $parts[1] 'UOX3/felucca_signs.jsdata'
 }
+Read-DecorationCfg (Join-Path $PSScriptRoot 'premises.cfg') 'apps/uoaix/premises.cfg'
+Read-DecorationCfg (Join-Path $PSScriptRoot 'houses.cfg') 'apps/uoaix/houses.cfg'
 # A door or gate stands in a wall or fence: one with no wall (0x10) or impassable (0x40) static within one tile
 # at its height floats in the open (two UOX3 template gates at 1421,1563-1564 beside the Britain forge), so it is dropped.
 $staticIndex=[IO.File]::ReadAllBytes((Join-Path $ClientRoot 'STAIDX0.MUL'))

@@ -42,18 +42,19 @@ Chapter: TreasuryProof
     in let hand = ep-station w actor 1 1
     in let smelter = ep-station w actor 3 1
     in let mint = ep-station w actor 12 1
-    in let stone = eh-source w 1 1
-    in let branch = eh-source w 2 1
-    in let fuel = eh-source w 2 1
+    in let saw = ep-station w actor 8 1
     in let copper = eh-source w 25 1
-    in let s = eh-harvest w actor stone
-    in let b = eh-harvest w actor branch
-    in let f = eh-harvest w actor fuel
-    in let pick = ep-craft w actor 1 hand
-    in let hammer = ep-craft w actor 31 hand
     in let skill1 = ep-set person.skills 1 1000
     in let skill2 = ep-set person.skills 2 1000
+    in let skill6 = ep-set person.skills 6 1000
     in let skill8 = ep-set person.skills 8 1000
+    in let s = eh-harvest w actor (eh-source w 1 1)
+    in let axe = ep-craft w actor 2 hand
+    in let t = eh-harvest w actor (eh-source w 1 1)
+    in let logs = eh-harvest w actor (eh-source w 15 1)
+    in let boards = ep-craft w actor 16 saw
+    in let pick = ep-craft w actor 1 hand
+    in let hammer = ep-craft w actor 31 hand
     in let mined = eh-harvest w actor copper
     in let smelted = ep-craft w actor 32 smelter
     in let policy = eu-mint-policy x True actor 1 1000
@@ -66,15 +67,21 @@ Chapter: TreasuryProof
     in let grant = panel-human p (tp-json ("{\"command\":\"treasury-grant\",\"session\":1,\"purse\":" & show business & ",\"metal\":1,\"amount\":125}")) 102
     in let event = list-at x.events (x.count - 1)
     in let before = x.count
-    in let rows = x.silver.entry-count
-    in let full = __record-set x.silver "entry-count" em-rows
+    in let rows = x.world.money.entry-count
+    in let full = __record-set x.world.money "entry-count" em-rows
     in let refused = panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 103
-    in let restored = __record-set x.silver "entry-count" rows
+    in let restored = __record-set x.world.money "entry-count" rows
+    in let unchanged = x.count == before
+    in let granted = (em-purse x.copper 1).coin == 875 & (em-purse x.copper business).coin == 125
+    in let gold-only = eu-tax x True actor 900
+    in let crown-before = (em-purse x.copper 1).coin
+    in let paid = eu-pay x True business person.purse 100 0 0
+    in let crown-take = (em-purse x.copper 1).coin - crown-before
     in struck == 0 & bypass == -1 & bound == 0 & text-contains tax "\"ok\":1" & text-contains grant "\"ok\":1"
-      & x.copper.tax == 500 & x.silver.tax == 500 & w.money.tax == 500
-      & (em-purse x.copper 1).coin == 875 & (em-purse x.copper business).coin == 125
+      & x.copper.tax == 0 & x.silver.tax == 0 & granted
       & event.kind == 5 & event.actor == actor & event.party == business & event.copper == 125 & event.gold == 0
-      & text-contains refused "treasury-refused" & x.count == before & eu-census x
+      & text-contains refused "treasury-refused" & unchanged
+      & gold-only == 0 & paid == 0 & crown-take == 9 & eu-census x
 
   tp-rates : EuCurrency -> Integer
   tp-rates (x) =
@@ -92,9 +99,6 @@ Chapter: TreasuryProof
     in let changed = panel-human p (tp-json request) 103
     in let event = list-at x.events before
     in let logged = admin-load p.log 1024
-    in let full = __record-set p "log-count" 127
-    in let stopped = panel-human p (tp-json "{\"command\":\"treasury-rates\",\"session\":1,\"copper_per_gold\":400,\"silver_per_gold\":40}") 104
-    in let restored = __record-set p "log-count" 2
     in let event-full = __record-set x "count" em-rows
     in let refused = panel-human p (tp-json request) 105
     in let event-restored = __record-set x "count" (before + 1)
@@ -105,7 +109,7 @@ Chapter: TreasuryProof
       & event.kind == 2 & event.actor == 1 & event.copper-rate == 300 & event.silver-rate == 30
     in let audit = text-contains logged "\"old_copper_per_gold\":100" & text-contains logged "\"old_silver_per_gold\":10"
       & text-contains logged "\"copper_per_gold\":300" & text-contains logged "\"economy_actor\":1"
-    in let refusal = text-contains stopped "action-log-full" & text-contains refused "treasury-refused" & list-at p.log (2 * 1024 + 1022) == -1
+    in let refusal = text-contains refused "treasury-refused" & list-at p.log (2 * 1024 + 1022) == -1
       & text-contains readonly "treasury-read-only"
     in let conserved = (em-purse x.copper 1).coin == copper & (em-purse x.silver 1).coin == silver & (em-purse x.world.money 1).coin == gold & eu-census x
     in (if authority then 0 else 1) + (if policy then 0 else 2) + (if audit then 0 else 4) + (if refusal then 0 else 8) + (if conserved then 0 else 16)
@@ -143,10 +147,7 @@ Chapter: TreasuryProof
     npc <- panel-human p (tp-json "{\"command\":\"treasury-grant\",\"session\":1,\"purse\":2,\"amount\":1}") 104
     c4 <- tp-check "nonroyal recipient is refused and audited" (text-contains npc "treasury-refused" & list-at p.log (3 * 1024 + 1022) == -1 & (em-purse w.money 1).coin == balance - 123)
     saved <- p.log-count
-    full <- __record-set p "log-count" 127
-    blocked <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 105
-    c5 <- tp-check "full panel audit refuses before economy effect" (text-contains blocked "action-log-full" & w.money.tax == 750)
-    restored <- __record-set p "log-count" saved
+    c5 <- tp-check "the panel log rolls: index 128 is slot 0, never a refusal" (panel-log-at p 128 == 0 & panel-log-at p saved == saved * 1024)
     entries <- w.money.entry-count
     exhausted <- __record-set w.money "entry-count" em-rows
     refused <- panel-human p (tp-json "{\"command\":\"treasury-tax\",\"session\":1,\"basis_points\":0}") 106

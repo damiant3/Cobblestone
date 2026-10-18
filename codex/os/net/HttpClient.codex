@@ -100,7 +100,7 @@ Section: Response Parsing
       text-concat-list (read-body-from-bytes bs body-start (list-length bs) (__list-with-capacity (list-length bs - body-start + 1)))
     in HttpClientResponse {
       status-code = code,
-      status-text = list-at parts 1,
+      status-text = status-reason status-line 0 (text-length status-line) 0,
       body = body,
       content-length = text-length body,
       valid = code >= 0
@@ -140,6 +140,17 @@ Section: Response Parsing
     in if ch == 2 then
       split-space-loop s (i + 1) len "" (if text-length cur > 0 then list-push acc cur else acc)
     else split-space-loop s (i + 1) len (cur & char-to-text (char-at s i)) acc
+
+ RFC 9112 status-line = HTTP-version SP status-code SP [ reason-phrase ]: the
+ reason is everything after the second space, spaces included.
+
+  status-reason : Text, Integer, Integer, Integer -> Text
+  status-reason (s) (i) (len) (spaces) =
+    if i >= len then ""
+    else if char-code (char-at s i) == 2 then
+      if spaces == 1 then substring s (i + 1) (len - i - 1)
+      else status-reason s (i + 1) len (spaces + 1)
+    else status-reason s (i + 1) len spaces
 
   parse-status-code : Text -> Integer
   parse-status-code (s) =

@@ -218,6 +218,7 @@ $rRanges = @(
     @{ n = 'thai';         lo = 0x0E00; hi = 0x0E7F; step = 3 },
     @{ n = 'hangul-jamo';  lo = 0x1100; hi = 0x117F; step = 3 },
     @{ n = 'gen-punct';    lo = 0x2000; hi = 0x21FF; step = 5 },
+    @{ n = 'dingbats';     lo = 0x2700; hi = 0x27BF; step = 1 },
     @{ n = 'kana';         lo = 0x3040; hi = 0x30FF; step = 3 },
     @{ n = 'cjk';          lo = 0x4E00; hi = 0x5FFF; step = 53 },
     @{ n = 'hangul-syl';   lo = 0xAC00; hi = 0xD7A3; step = 211 },

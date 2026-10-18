@@ -1,0 +1,129 @@
+Chapter: BvtWorkerDay
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ The founded Britain workers on the fixture town (flat land over the Britain window, the proofs' one-door decoration)
+ run one game day on the wheel alone: each drain is one 400 ms step, and an economy hour passes every 75 steps, so 1800
+ steps are a 720-second day (UoaixTimingWheel.md stage 1).
+  bwd-fill : WalkMap, Integer -> Integer
+  bwd-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bwd-fill map (i + 1)
+  bwd-data : Integer -> Integer
+  bwd-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  bwd-founded : Integer -> Result CompositeGame Text
+  bwd-founded (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> Err e
+      is Ok (britain) -> let filled = bwd-fill map 0
+        in let town-filled = bwd-fill britain 0
+        in let data = bwd-data 0
+        in when wd-read data 240 map map.stride
+          is Err (e) -> Err e
+          is Ok (decoration) -> when cg-britain britain
+            is Err (e) -> Err e
+            is Ok (owner) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+              is Err (e) -> Err e
+              is Ok (_) -> let seeded = cg-seed-gold owner
+                in let growing = world-bind-grow owner.checkpoint.game.world (\u -> cg-grow owner)
+                in let day = __record-set owner "day-hook" (\unused -> 720) in when cg-town-doors owner data 240
+                is Err (e) -> Err e
+                is Ok (_) -> Ok owner
+  bwd-tick : Integer -> Integer
+  bwd-tick (step) = 1000 + step * cgf-step-ticks
+  bwd-run : CompositeGame, Integer, Integer -> Integer
+  bwd-run (owner) (step) (last) = if step >= last then step
+    else let x = owner.vendor.currency
+    in let hour = if int-mod step 75 == 74 then cg-economy-hours x (x.world.hour + 1) 1 else True
+    in when cg-drain owner owner.checkpoint.game (bwd-tick step)
+      is Err (_) -> 0 - 1 - step
+      is Ok (_) -> bwd-run owner (step + 1) last
+  bwd-armed : CompositeGame, Integer -> Boolean
+  bwd-armed (owner) (i) = if i >= list-length owner.miners then wtm-find owner.timers cgw-kind 0 >= 0 & wtm-find owner.timers cgw-kind 1 >= 0
+    else if wtm-find owner.timers cgm-kind i < 0 then False else bwd-armed owner (i + 1)
+ Every worker but the lumberjack (no tree stands on the fixture) leaves the inn, reaches its node, works it and makes a lot.
+  bwd-worked : List CgGatherer, Integer -> Integer
+  bwd-worked (workers) (i) = if i >= list-length workers then 0
+    else let c = list-at workers i
+    in (if c.gatherer.place == cgg-lumber-place | (c.trips >= 1 & c.gatherer.gathered > 0 & c.made >= 1) then 0 else 1) + bwd-worked workers (i + 1)
+ The fresh treasury is empty, so no buyer can pay: a worker with a lot is refused once and waits out the day.
+  bwd-stormed : List CgGatherer, Integer -> Integer
+  bwd-stormed (workers) (i) = if i >= list-length workers then 0
+    else let c = list-at workers i
+    in (if c.refusals <= 1 & c.sold == 0 & (c.lot == 0 | c.refusals == 1) then 0 else 1) + bwd-stormed workers (i + 1)
+  bwd-pace : CgGatherer -> Boolean
+  bwd-pace (model) = let c = cgg-make model.gatherer 0 model.home model.home 0 0 0 0
+      in let a = cg-worker-pace c True
+      in let b = cg-worker-pace c True
+      in let d = cg-worker-pace c True
+      in let e = cg-worker-pace c True
+      in let f = cg-worker-pace c True
+      in let g = cg-worker-pace c True
+      in let h = cg-worker-pace c False
+      in a == 2 * cgf-step-ticks & b == 4 * cgf-step-ticks & d == 8 * cgf-step-ticks & e == 16 * cgf-step-ticks & f == 32 * cgf-step-ticks & g == 32 * cgf-step-ticks & h == cgf-step-ticks
+ Miner 0 is sent to a node off the map, and miner 1 toward the farther of its own node and its home, so it walks the
+ whole window; both re-arm at tick and run for 64 steps.
+  bwd-leg : CompositeGame, CgGatherer -> Integer
+  bwd-leg (owner) (c) = when world-get owner.checkpoint.game.world c.serial
+    is Err (_) -> 1
+    is Ok (m) -> if walk-abs (m.x - c.node.x) + walk-abs (m.y - c.node.y) < walk-abs (m.x - c.home.x) + walk-abs (m.y - c.home.y) then 3 else 1
+  bwd-send : CompositeGame, Integer, Integer, Boolean -> Integer
+  bwd-send (owner) (key) (tick) (lost) = let c = list-at owner.miners key
+    in let far = if lost then __record-set c "node" (BbSpot { x = 5000, y = 100, z = 0 }) else c
+    in let out = __record-set c "leg" (if lost then 1 else bwd-leg owner c)
+    in let direct = __record-set c "via" 0
+    in let calm = cgg-calm c
+    in let unplanned = cgg-reset c
+    in let rested = __record-set c "idle" 0
+    in wtm-set owner.timers tick cgm-kind key
+  bwd-line : CgGatherer, Text -> Text
+  bwd-line (c) (name) = "WORKERDAY " & name & " place=" & show c.gatherer.place & " trips=" & show c.trips & " gathered=" & show c.gatherer.gathered & " made=" & show c.made & " sold=" & show c.sold & " lot=" & show c.lot & " refusals=" & show c.refusals & " blocked=" & show c.blocked & " idle=" & show c.idle & " leg=" & show c.leg
+  bwd-print : List CgGatherer, Integer -> [Console] Integer
+  bwd-print (workers) (i) = if i >= list-length workers then 0
+    else act
+      print-line-uni (bwd-line (list-at workers i) (show i))
+      bwd-print workers (i + 1)
+    end
+  bvt-worker-day : Integer -> [Console] Integer
+  bvt-worker-day (unused) = when bwd-founded 0
+    is Err (e) -> bvt-check ("worker day fixture: " & e) False
+    is Ok (owner) -> act
+      armed <- bwd-armed owner 0
+      ran <- bwd-run owner 0 1800
+      print-line-uni ("WORKERDAY steps=" & show ran & " fired=" & show owner.timers.fired & " used=" & show owner.timers.used & " hour=" & show owner.vendor.currency.world.hour & " workers=" & show (list-length (cg-workers owner)))
+      listed <- bwd-print (cg-workers owner) 0
+      a <- bvt-check "founding arms every worker on the wheel: each miner, the gatherer and the farmer (UoaixTimingWheel.md stage 1)" armed
+      b <- bvt-check "in one game day on the wheel every worker the fixture supplies leaves the inn, reaches its node, works it and makes a lot" (ran == 1800 & list-length (cg-workers owner) >= 6 & bwd-worked (cg-workers owner) 0 == 0)
+      d <- bvt-check "with the treasury empty no buyer pays, and each worker holding a lot is refused once in the day, not once a step" (bwd-stormed (cg-workers owner) 0 == 0)
+      e <- bvt-check "an idle or failed worker step doubles the wait to 32 steps; any progress returns it to one step" (bwd-pace (list-at owner.miners 2))
+      lost <- list-at owner.miners 0
+      kept <- list-at owner.miners 1
+      before-lost <- lost.blocked
+      before-kept <- kept.walk.moves
+      start <- bwd-tick 1800
+      sent <- min (bwd-send owner 0 start True) (bwd-send owner 1 start False)
+      window <- bwd-run owner 1800 1864
+      blocked <- lost.blocked - before-lost
+      progressed <- kept.walk.moves - before-kept
+      print-line-uni ("WORKERDAY lost blocked=" & show blocked & " idle=" & show lost.idle & " kept progress=" & show progressed & " idle=" & show kept.idle)
+      f <- bvt-check "a miner sent to an unreachable node backs off to the longest wait, stepping at most 24 times in 64 steps (it blocked at least once)" (sent >= 0 & window == 1864 & blocked >= 1 & blocked <= 24 & lost.idle == cgw-backoff-most)
+      g <- bvt-check "the control miner sent the far way in the same window keeps stepping (at least 16 moves)" (progressed >= 16 & kept.idle < cgw-backoff-most)
+      a + b + d + e + f + g
+    end

@@ -1,0 +1,68 @@
+Chapter: BvtCastleGuards
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter CivicLiveCodec
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bcgd-hall : Integer, Integer -> Boolean
+  bcgd-hall (x) (y) = (x >= 1321 & x <= 1359 & ((y >= 1610 & y <= 1616) | (y >= 1634 & y <= 1640)))
+    | (x >= 1356 & x <= 1359 & y >= 1617 & y <= 1633)
+  bcgd-fill : WalkMap, Boolean, Integer -> Integer
+  bcgd-fill (map) (floored) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let land = walk-set-land map x y 50 0
+    in let floor = if floored & bcgd-hall x y then (when walk-add-solid map x y 72 0 #200 is Ok (_) -> 0 is Err (_) -> 1) else 0
+    in floor + bcgd-fill map floored (i + 1)
+  bcgd-map : Boolean -> Result WalkMap Text
+  bcgd-map (floored) = when walk-map-sized 1316 1604 48 42 4
+    is Err (e) -> Err e
+    is Ok (map) -> if bcgd-fill map floored 0 == 0 then Ok map else Err "castle floor fixture"
+  bcgd-guard : Integer, Integer, Integer -> WorldObject
+  bcgd-guard (x) (y) (z) = WorldObject { serial = 0, kind = 1, x = x, y = y, z = z, graphic = 400, hue = 0, container = 0, amount = 1, health = 100 }
+  bcgd-spots : List BbSpot, Integer -> Boolean
+  bcgd-spots (route) (i) = if i == 4 then True
+    else let s = list-at route i
+    in s.z == cv-castle-floor & s.x == (if i == 0 | i == 3 then 1324 else 1357) & s.y == (if i < 2 then 1613 else 1637) & bcgd-spots route (i + 1)
+  bcgd-flat : WalkMap, Integer -> Integer
+  bcgd-flat (map) (i) = if i == map.width * map.height then 0
+    else let land = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0 in bcgd-flat map (i + 1)
+ UOAIX-150's alarm sites (trials 43060 and 43363), each within cv-earshot of a north-streets waypoint.
+  bcgd-heard : List BbSpot, List Integer, Integer -> Boolean
+  bcgd-heard (route) (sites) (i) = if i >= list-length sites then True
+    else bcgd-near route (list-at sites i) (list-at sites (i + 1)) 0 & bcgd-heard route sites (i + 2)
+  bcgd-near : List BbSpot, Integer, Integer, Integer -> Boolean
+  bcgd-near (route) (x) (y) (i) = if i == 4 then False
+    else bcgd-spot-near (list-at route i) x y | bcgd-near route x y (i + 1)
+  bcgd-spot-near : BbSpot, Integer, Integer -> Boolean
+  bcgd-spot-near (s) (x) (y) = walk-abs (s.x - x) <= cv-earshot & walk-abs (s.y - y) <= cv-earshot
+  bvt-castle-guards : Integer -> [Console] Integer
+  bvt-castle-guards (unused) = when bcgd-map True
+    is Err (e) -> act bvt-check ("castle guards floor fixture: " & e) False end
+    is Ok (map) -> when bcgd-map False
+      is Err (e) -> act bvt-check ("castle guards land fixture: " & e) False end
+      is Ok (bare) -> let p = list-at (cv-patrols 0 0 (__list-with-capacity 1)) 0
+        in let routed = cv-route p map 2 0
+        in let q = list-at (cv-patrols 0 0 (__list-with-capacity 1)) 0
+        in let unfloored = cv-route q bare 2 0
+        in let landward = when cv-floor map 1324 1613 0 is Ok (z) -> z is Err (_) -> -1
+        in let heard = cv-hear map 1341 1612 72 (bcgd-guard 1357 1613 72) cv-earshot
+        in let under = cv-hear map 1341 1612 72 (bcgd-guard 1357 1613 50) cv-earshot
+        in let shape = cv-guard-limit == 6 & cv-which 0 == 0 & cv-which 1 == 1 & cv-which 2 == 0 & cv-which 3 == 3
+          & cv-which 4 == 2 & cv-which 5 == 2 & cvx-bytes == 8 + 4 * 432 + 16 * 56
+        in act
+          a <- bvt-check "the castle patrol loops the north hall, the east corridor and the south hall on the z 72 floor" (is-ok routed & bcgd-spots p.route 0)
+          b <- bvt-check ("a castle route refuses a castle with no main floor, and the town's land-up search stands a guard under the hall: " & show landward) (is-err unfloored & landward == 50)
+          c <- bvt-check "a call from Damian's spot in the north hall (1341,1612 z 72) reaches a castle guard on the hall floor, and not one below it" (heard & not under)
+          d <- bvt-check ("guards 4 and 5 walk the castle loop, 0 to 2 the town's two, 3 the north streets, and CVX holds all four extra patrols: " & show cvx-bytes) shape
+          e <- bvt-check "the north streets beat routes on open land, and every UOAIX-150 alarm site lies within earshot of it" (bcgd-north 0)
+          a + b + c + d + e
+        end
+  bcgd-north : Integer -> Boolean
+  bcgd-north (unused) = when walk-map-sized 1416 1520 88 112 4
+    is Err (_) -> False
+    is Ok (flat) -> let filled = bcgd-flat flat 0
+      in let n = list-at (cv-patrols 0 0 (__list-with-capacity 1)) 0
+      in is-ok (cv-route n flat 3 0) & (list-at n.route 2).x == 1481 & (list-at n.route 2).y == 1530
+        & bcgd-heard n.route [1455, 1531, 1449, 1529, 1465, 1542, 1474, 1597, 1474, 1610] 0

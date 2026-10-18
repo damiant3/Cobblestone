@@ -1,0 +1,21 @@
+Chapter: BvtWearLayer
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ Damian, 2026-10-10: "i can't equip a longsword". A testing grant registers layer 0 (cts-item), so equipping one asked
+ only the tool table and bounced; it now falls back to the art's TILEDATA layer (gsi-wear-layer, it-layer). The table
+ here is built by hand: 0x0F61 wearable on layer 1, 0x0F62 with a layer byte and no wearable flag.
+  bwl-entry : Integer, Integer, Integer, Integer -> Integer
+  bwl-entry (tiles) (graphic) (flag) (layer) = let at = it-entry tiles graphic in let f = poke-byte tiles (at + 2) flag in poke-byte tiles (at + 5) layer
+  bvt-wear-layer : Integer -> [Console] Integer
+  bvt-wear-layer (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("wear layer fixture: " & e) False
+    is Ok (owner) -> let tiles = alloc-bytes (512 * it-group-bytes)
+      in let sword = bwl-entry tiles #0F61 #40 1
+      in let plain = bwl-entry tiles #0F62 0 1
+      in let items = owner.items
+      in let tiled = __record-set items "tiles" tiles in act
+      a <- bvt-check "TILEDATA gives a wearable art its layer and a non-wearable one none, and no table gives none" (it-layer tiles #0F61 == 1 & it-layer tiles #0F62 == 0 & it-layer 0 #0F61 == 0)
+      b <- bvt-check "an item registered with no layer is worn on its tool layer first, else its TILEDATA layer: the longsword in the hand" (gsi-wear-layer items #0F61 == 1 & gsi-wear-layer items #13E3 == 1 & gsi-wear-layer items #0F43 == 2 & gsi-wear-layer items #0F62 == 0)
+      a + b
+    end

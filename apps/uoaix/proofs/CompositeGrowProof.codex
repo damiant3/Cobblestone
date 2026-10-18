@@ -1,7 +1,8 @@
 Chapter: CompositeGrowProof
+  cites Uoaix chapter WorldDisk
   cites Uoaix chapter CompositeStore
 
- Boot 1 writes a current-format composite at capacity 4096; boot 2 loads it through cs-upgrade and cu-grow.
+ Boot 1 writes a current-format composite at capacity 4096; boot 2 loads it at that capacity (UoaixDynamicTables.md step 5).
   cgp-small : Integer = 4096
   cgp-check : Text, Boolean -> [Console] Integer
   cgp-check (label) (ok) = act
@@ -48,12 +49,12 @@ Chapter: CompositeGrowProof
     is Ok (state) -> when cg-install state cgp-setup
       is Err (e) -> cgp-check e False
       is Ok (_) -> let size = cc-size cgp-small
-        in let saved = alloc-bytes size
-        in when cc-encode state 0 0 saved size
+        in let saved = alloc-bytes (us-max-payload)
+        in when cc-encode state 0 0 saved us-max-payload
           is Err (e) -> cgp-check e False
           is Ok (written) -> act
             appended <- us-append store 1 0 0 saved written
-            owner <- cs-owner state store saved written
+            owner <- cs-owner state store saved written us-max-payload
             input <- gn-input-with specs 1
             mode <- __record-set input "mode" 2
             phase <- __record-set input.session "phase" 1
@@ -76,8 +77,8 @@ Chapter: CompositeGrowProof
         in let serial = peek-qword game.characters 0
         in let player = list-at owner.state.vendor.players 0
         in act
-          a <- cgp-check "a small composite upgrades capacity and components" (game.world.capacity == world-max-objects & store.sequence == before & owner.state.resurrection.shrine > 0)
-          b <- cgp-check "character serial position and death survive upgrade" (serial > 0 & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.x == 1421 & m.y == 1698 & m.health == 0))
+          a <- cgp-check "a small composite loads at its own capacity with its components" (game.world.capacity == cgp-small & store.sequence == before & owner.state.resurrection.shrine > 0)
+          b <- cgp-check "character serial position and death survive the load" (serial > 0 & (when world-get game.world serial is Err (_) -> False is Ok (m) -> m.x == 1421 & m.y == 1698 & m.health == 0))
           c <- cgp-check "vendor binding, ledger and inventory remain bound" (owner.state.vendor.player-count == 1 & player.serial == serial & euv-valid owner.state.vendor.currency & gsi-known owner.state.items player.pack)
           a + b + c
         end

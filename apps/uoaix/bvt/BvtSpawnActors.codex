@@ -1,0 +1,49 @@
+Chapter: BvtSpawnActors
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bsa-owner : Integer -> Result CompositeGame Text
+  bsa-owner (z) = when cg-game 512
+    is Err (e) -> Err e
+    is Ok (game) -> when gvd-mixed-economy 0
+      is Err (e) -> Err e
+      is Ok (currency) -> when gvd-world game currency z
+        is Err (e) -> Err e
+        is Ok (vendor) -> cg-founded game vendor (gsi-new game.world)
+  bsa-slot : CompositeGame, GameWorldSpawn, Integer -> Boolean
+  bsa-slot (owner) (g) (i) = let a = (list-at g.slots i).actor
+    in let w = owner.vendor.currency.world
+    in if a < 1 | a > w.actor-count then False else em-find w.money 2 (cg-wild-owner + i) 1 == (ep-actor w a).purse
+  bsa-all : CompositeGame, GameWorldSpawn, Integer -> Boolean
+  bsa-all (owner) (g) (i) = if i >= list-length g.slots then True else bsa-slot owner g i & bsa-all owner g (i + 1)
+  bsa-clear : GameWorldSpawn, Integer -> Integer
+  bsa-clear (g) (i) = if i >= list-length g.slots then 0 else let c = __record-set (list-at g.slots i) "actor" 0 in bsa-clear g (i + 1)
+  bsa-spawns : CompositeGame -> Result GameWorldSpawn Text
+  bsa-spawns (owner) = when owner.spawns
+    is Just (g) -> Ok g
+    is None -> when cg-spawn-attach owner
+      is Err (e) -> Err e
+      is Ok (_) -> when owner.spawns is None -> Err "no spawns" is Just (g) -> Ok g
+  bsa-bound : Integer -> Boolean
+  bsa-bound (unused) = when bsa-owner 0
+    is Err (_) -> False
+    is Ok (owner) -> when bsa-spawns owner
+      is Err (_) -> False
+      is Ok (g) -> bsa-all owner g 0
+  bsa-again : Integer -> Boolean
+  bsa-again (unused) = when bsa-owner 0
+    is Err (_) -> False
+    is Ok (owner) -> when bsa-spawns owner
+      is Err (_) -> False
+      is Ok (g) -> let before = owner.vendor.currency.world.actor-count
+        in let cleared = bsa-clear g 0
+        in when cg-bind-spawns owner g 0
+          is Err (_) -> False
+          is Ok (_) -> owner.vendor.currency.world.actor-count == before & bsa-all owner g 0
+  bvt-spawn-actors : Integer -> [Console] Integer
+  bvt-spawn-actors (unused) = act
+    a <- bvt-check "every spawn slot is bound to an economy actor on its own wild purse (UOAIX-140 a)" (bsa-bound 0)
+    b <- bvt-check "binding again finds the same actors in the economy and admits none" (bsa-again 0)
+    c <- bvt-check "a purse no actor holds names no actor" (when bsa-owner 0 is Err (_) -> False is Ok (owner) -> cg-actor-of owner.vendor.currency.world 999999 0 == 0)
+    a + b + c
+  end

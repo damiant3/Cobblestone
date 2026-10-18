@@ -1,0 +1,44 @@
+Chapter: BvtWindowColliders
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter BvtCheck
+
+ The Britain window's collider stride is its own busiest cell (wmc-window-colliders). A 16 by 16 window at 1000,1000 and
+ a four-row decoration: a door at 1001,1001 opening east, a chest on the same tile, a sign (no collision) there too, and a
+ chest outside the window. Answers a bit per check: 1 the door's tile holds the door and the chest, 2 the door's open tile
+ holds the door once, 4 the sign and the outside chest count nowhere (three colliders in all), 8 the busiest cell is the
+ door's, 16 a decoration whose size disagrees with its row count is read as none; 31 is all.
+  bwc-row : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  bwc-row (data) (i) (x) (y) (flags) (dx) = let at = 64 + i * 176
+    in let a = poke-qword data at x
+    in let b = poke-qword data (at + 8) y
+    in let c = poke-qword data (at + 40) flags
+    in let d = poke-qword data (at + 72) dx
+    in poke-qword data (at + 96) flags
+  bwc-data : Integer -> Integer
+  bwc-data (unused) = let data = alloc-bytes (64 + 4 * 176)
+    in let zero = wmc-zero data 0 ((64 + 4 * 176) / 8)
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 4
+    in let door = bwc-row data 0 1001 1001 64 1
+    in let chest = bwc-row data 1 1001 1001 64 0
+    in let sign = bwc-row data 2 1001 1001 #8004 0
+    in let away = bwc-row data 3 1100 1001 64 0 in data
+  bwc-at : Integer, Integer, Integer -> Integer
+  bwc-at (counts) (x) (y) = peek-qword counts (((y - 1000) * 16 + x - 1000) * 8)
+  bwc-sum : Integer, Integer, Integer -> Integer
+  bwc-sum (counts) (i) (total) = if i >= 256 then total else bwc-sum counts (i + 1) (total + peek-qword counts (i * 8))
+  bwc-checks : Integer -> Integer
+  bwc-checks (unused) = let data = bwc-data 0
+    in let install = MapInstallData { data = data, size = 64 + 4 * 176 }
+    in let counts = alloc-bytes (256 * 8)
+    in let zero = wmc-zero counts 0 256
+    in let counted = wmc-count-decoration counts 1000 1000 16 16 data (wmc-rows install) 0
+    in (if bwc-at counts 1001 1001 == 2 then 1 else 0) + (if bwc-at counts 1002 1001 == 1 then 2 else 0)
+      + (if bwc-sum counts 0 0 == 3 then 4 else 0) + (if wmc-most counts 256 0 0 == 2 then 8 else 0)
+      + (if wmc-rows (MapInstallData { data = data, size = 64 + 3 * 176 }) == 0 & wmc-rows install == 4 then 16 else 0)
+  bvt-window-colliders : Integer -> [Console] Integer
+  bvt-window-colliders (unused) = act
+    n <- bwc-checks 0
+    a <- bvt-check ("a window counts each decoration collider once per tile it can stand on, and its busiest cell sets the stride (code " & show n & ")") (n == 31)
+    a
+  end

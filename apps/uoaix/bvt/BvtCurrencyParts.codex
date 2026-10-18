@@ -1,0 +1,47 @@
+Chapter: BvtCurrencyParts
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter EconomyCurrencyCodec
+  cites Uoaix chapter EconomyStateCodec
+  cites Uoaix chapter EconomyCurrencyValid
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bcp-write : EuCurrency, Integer -> Integer
+  bcp-write (x) (prev) = let size = euc-size-in x prev
+    in let buf = alloc-bytes size
+    in when euc-write-in (CurrencyCheckpoint { currency = x, tick = 0, sequence = 0 }) buf size prev
+      is Err (_) -> 0
+      is Ok (_) -> buf
+  bcp-same-parts : Integer, Integer, Integer -> Boolean
+  bcp-same-parts (a) (b) (k) = if k == euc-part-count then True
+    else euc-part-at a k - a == euc-part-at b k - b & bcp-same-parts a b (k + 1)
+  bcp-econ-part : Integer, Integer -> Integer
+  bcp-econ-part (buf) (k) = let e = buf + euc-gold-at in bcp-econ-walk e (es-head-at (peek-qword e 64) (peek-qword e 72) (peek-qword e 80)) k
+  bcp-econ-walk : Integer, Integer, Integer -> Integer
+  bcp-econ-walk (e) (at) (k) = if k == 0 then at else bcp-econ-walk e (at + 8 + peek-qword e at) (k - 1)
+  bcp-econ-same : Integer, Integer, Integer -> Boolean
+  bcp-econ-same (a) (b) (k) = if k == es-part-count then peek-qword (a + euc-gold-at) 16 == peek-qword (b + euc-gold-at) 16
+    else bcp-econ-part a k == bcp-econ-part b k & bcp-econ-same a b (k + 1)
+  bcp-open : EuCurrency, Integer, Integer -> Integer
+  bcp-open (x) (i) (n) = if i >= n then i else if eu-open x 2 (5000 + i) < 0 then i else bcp-open x (i + 1) n
+  bcp-decodes : EuCurrency, Integer -> Boolean
+  bcp-decodes (x) (buf) = buf /= 0 & (when euc-decode buf (peek-qword buf 16)
+    is Err (_) -> False
+    is Ok (c) -> c.currency.copper.purse-count == x.copper.purse-count & c.currency.silver.purse-count == x.silver.purse-count & euv-valid c.currency)
+  bvt-currency-parts : Integer -> [Console] Integer
+  bvt-currency-parts (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("currency parts fixture: " & e) False
+    is Ok (x) -> act
+      grown <- eu-grow-purses x
+      first <- bcp-write x 0
+      opened <- bcp-open x 0 1
+      second <- bcp-write x first
+      a <- bvt-check "a record written over the last keeps its size and all fifteen purse table parts where they were when a purse is added, so the loans after the copper purses do not move (UOAIX-138)" (first /= 0 & second /= 0 & opened == 1 & peek-qword second 16 == peek-qword first 16 & bcp-same-parts first second 0 & bcp-decodes x second)
+      many <- bcp-open x 1 400
+      third <- bcp-write x second
+      b <- bvt-check ("a table that outgrows its part's slot moves the parts after it and the record still keeps every purse: " & show many & " opened") (many > 300 & third /= 0 & not (bcp-same-parts second third 0) & bcp-decodes x third)
+      admitted <- (let purse = eu-open x 2 6000 in if purse < 0 then -1 else ep-admit x.world purse 100)
+      fourth <- bcp-write x third
+      c <- bvt-check "a new actor grows the gold economy's actor part and moves none of its seven parts, so purses, stations, nodes, loans and trades stay where they were (UOAIX-138)" (admitted >= 0 & fourth /= 0 & bcp-econ-same third fourth 0 & bcp-decodes x fourth)
+      a + b + c
+    end

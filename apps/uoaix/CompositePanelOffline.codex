@@ -1,0 +1,196 @@
+Chapter: CompositePanelOffline
+  cites Uoaix chapter CompositePaging
+  cites Uoaix chapter AdminWorld
+  cites Encode chapter Json
+
+  cpo-actions : List Text = ["teleport", "invisible", "summon-item", "summon-creature", "inspect", "move", "lord-british-enter", "lord-british-leave",
+    "ban", "unban", "navy", "decor-baked"]
+  cpo-offline : Text -> Boolean
+  cpo-offline (action) = cpo-listed action 0
+  cpo-listed : Text, Integer -> Boolean
+  cpo-listed (action) (i) = if i >= list-length cpo-actions then False else if list-at cpo-actions i == action then True else cpo-listed action (i + 1)
+  cpo-british : GameShard -> Integer
+  cpo-british (game) = let index = ga-british game.accounts
+    in if index < 0 then 0 else cpo-first (ga-slots game.accounts index) 0
+  cpo-first : Integer, Integer -> Integer
+  cpo-first (slots) (i) = if i >= 5 then 0 else if peek-qword slots (i * 160) /= 0 then peek-qword slots (i * 160) else cpo-first slots (i + 1)
+  cpo-teleport : WalkMap, GameShard, Integer, Integer, Integer -> Result Text Text
+  cpo-teleport (map) (game) (serial) (x) (y) = when cp-go-stand map x y -1
+    is Err (e) -> Err ("No standing room within 3 tiles: " & e)
+    is Ok (spot) -> when world-get game.world serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> let a = __record-set mobile "x" (list-at spot 0)
+        in let b = __record-set mobile "y" (list-at spot 1)
+        in let c = __record-set mobile "z" (list-at spot 2)
+        in when world-update game.world mobile
+          is Err (e) -> Err e
+          is Ok (_) -> Ok ("British moved to " & show mobile.x & " " & show mobile.y & " " & show mobile.z & ".")
+  cpo-invisible : CompositeGame, Integer -> Result Text Text
+  cpo-invisible (g) (serial) = if cg-invisible g serial then Ok "British is invisible." else Ok "British is visible."
+  cpo-add : CompositeGame, GameShard, Integer, Integer, Integer -> Result Text Text
+  cpo-add (g) (game) (serial) (graphic) (amount) = let pack = gsi-pack-find game.world serial 0
+    in if pack == 0 then Err "British has no backpack."
+    else when cts-item g.items pack graphic amount (cp-add-gump graphic)
+      is Err (e) -> Err ("Cannot add: " & e)
+      is Ok (item) -> let stacked = if cp-add-stacks graphic then gsi-register g.items item 0 0 True True else 0
+        in let touched = world-item-touch game.world
+        in let lotted = cp-add-lot g serial item (cp-add-item graphic) amount
+        in Ok ("Added " & show amount & " of " & cp-hex-text graphic "" & " to British's backpack as " & cp-hex-text item "" & ".")
+  cpo-summon : WalkMap, CompositeGame, GameShard, Integer, Integer, Integer -> Result Text Text
+  cpo-summon (map) (g) (game) (graphic) (x) (y) = when cp-go-ring map x y 0 0
+    is Err (e) -> Err ("No standing room within 3 tiles: " & e)
+    is Ok (spot) -> if world-room game.world <= 0 then Err "The world is full."
+      else when world-create game.world (__record-set (gs-mobile 0 (list-at spot 0) (list-at spot 1) (list-at spot 2) graphic 0) "health" 30)
+        is Err (e) -> Err ("Cannot summon: " & e)
+        is Ok (serial) -> let profile = cb-profile g.combat game serial "Creature" 40 2 5 300
+          in Ok ("Summoned " & cp-hex-text serial "" & " at " & show (list-at spot 0) & " " & show (list-at spot 1) & " " & show (list-at spot 2) & ".")
+  cpo-inspect : GameShard, Integer -> Result Text Text
+  cpo-inspect (game) (serial) = when world-get game.world serial
+    is Err (e) -> Err ("Nothing to inspect: " & e)
+    is Ok (o) -> let lines = cp-inspect-lines o in Ok (list-at lines 0 & "; " & list-at lines 1)
+  cpo-move : WalkMap, CompositeGame, GameShard, Integer, Integer, Integer, Integer -> Result Text Text
+  cpo-move (map) (g) (game) (serial) (x) (y) (z) = when world-get game.world serial
+    is Err (e) -> Err ("Nothing to move: " & e)
+    is Ok (o) -> if o.container /= 0 then Err "Only an object on the ground or a creature moves."
+      else if o.kind == 1 & ga-owner game.accounts serial 0 >= 0 then Err "A character moves with teleport."
+      else when (if o.kind == 1 then cp-go-ring map x y 0 0 else Ok [x, y, z])
+        is Err (e) -> Err ("No standing room within 3 tiles: " & e)
+        is Ok (spot) -> let a = __record-set o "x" (list-at spot 0)
+          in let b = __record-set o "y" (list-at spot 1)
+          in let c = __record-set o "z" (list-at spot 2)
+          in when world-update game.world o
+            is Err (e) -> Err ("Cannot move: " & e)
+            is Ok (_) -> let routine = if o.kind == 1 then cg-npc-moved g o.serial else ""
+              in Ok ("Moved " & cp-hex-text o.serial "" & " to " & show o.x & " " & show o.y & " " & show o.z
+                & (if routine == "" then "." else "; the " & routine & " goes on from here."))
+ The game-login flag (accounts cell 56) is never set here: lending British's slots must not open a British power.
+  cpo-lord : CompositeGame, GameShard, Integer -> Result Text Text
+  cpo-lord (g) (game) (serial) = let held = ga-bound game.accounts
+    in let lent = gs-bind game (ga-british game.accounts)
+    in let raised = cpo-raise g game serial
+    in let restored = if held >= 0 then gs-bind game held else False
+    in raised
+  cpo-raise : CompositeGame, GameShard, Integer -> Result Text Text
+  cpo-raise (g) (game) (serial) = let slot = gsi-slot game serial 0
+    in if slot < 0 then Err "That character is not British's."
+    else when world-get game.world serial
+      is Err (e) -> Err e
+      is Ok (mobile) -> let skilled = cpo-skills game serial 0
+        in let row = game.characters + slot * 160
+        in let set = cat-set row 0 cat-most + cat-set row 1 cat-most + cat-set row 2 cat-most
+        in when cat-sync g game mobile row
+          is Err (e) -> Err e
+          is Ok (_) -> when cat-pool g game mobile row (CskRequest { skill = 4, value = cat-most, target = False })
+            is Err (e) -> Err e
+            is Ok (_) -> let touched = world-touch game.world in Ok "Lord British mode: every skill 100.0, every stat and hits 100."
+  cpo-skills : GameShard, Integer, Integer -> Integer
+  cpo-skills (game) (serial) (i) = if i == 46 then 0 else let one = gs-skill-set game serial i 1000 in cpo-skills game serial (i + 1)
+  cpo-navy : CompositeGame, GameShard -> Result Text Text
+  cpo-navy (g) (game) = let order = 1 - g.ships.patrol
+    in let set = __record-set g.ships "patrol" order
+    in let touched = world-touch game.world
+    in Ok (if order == 1 then "The royal navy will patrol the coast every day." else "The royal navy returns to its regular patrols.")
+  cpo-ban : (Integer -> Integer), GameShard, Integer -> Result Text Text
+  cpo-ban (kick) (game) (serial) = let account = ga-owner game.accounts serial 0
+    in if account < 0 then Err "Only a player's character can be banned."
+    else if account == ga-british game.accounts then Err "Lord British cannot be banned."
+    else let set = ga-set-ban game.accounts account True
+    in Ok (if kick serial > 0 then "Banned; the player is disconnected and cannot log in." else "Banned; that account cannot log in.")
+  cpo-name : Text, Integer, List Integer -> List Integer
+  cpo-name (name) (i) (out) = if i >= text-length name then out
+    else let b = to-unicode (char-code (char-at name i))
+    in if list-length out >= 30 | not (ga-name-byte b) then [] else cpo-name name (i + 1) (out & [b])
+  cpo-unban : GameShard, Text -> Result Text Text
+  cpo-unban (game) (name) = let bytes = cpo-name name 0 []
+    in let account = if list-length bytes == 0 then 0 - 1 else ga-find game.accounts bytes 0
+    in if account < 0 then Err "No account has that name."
+    else if not (ga-banned game.accounts account) then Err "That account is not banned."
+    else let set = ga-set-ban game.accounts account False
+    in Ok "Unbanned; that account can log in again."
+  cpo-serials : Text, Integer, Integer, Integer, List Integer -> List Integer
+  cpo-serials (t) (i) (value) (digits) (out) = if i >= text-length t then (if digits > 0 then list-push out value else out)
+    else if is-digit (char-at t i) then (if digits >= 10 then [] else cpo-serials t (i + 1) (value * 10 + digit-value (char-at t i)) (digits + 1) out)
+    else if char-at t i == char-at "," 0 then cpo-serials t (i + 1) 0 0 (if digits > 0 then list-push out value else out)
+    else []
+  cpo-baked : CompositeGame, GameShard, Text -> Result Text Text
+  cpo-baked (g) (game) (serials) = let asked = cpo-serials serials 0 0 0 []
+    in if list-length asked == 0 then Err "No decoration serials."
+    else let n = dc-baked g.decor g.items asked 0 0
+    in let touched = world-item-touch game.world
+    in Ok ("Baked " & show n & " of " & show (list-length asked) & " decorations.")
+  cpo-window : MapCacheState, CompositeOwner, Integer, Integer -> [Device.Block] Result WalkMap Text
+  cpo-window (cache) (owner) (x) (y) = act
+    loaded <- wmc-cover cache x y
+    when loaded
+      is Err (e) -> Err ("Cannot page the map there: " & e)
+      is Ok (map) -> when owner.state.decoration
+        is None -> Ok map
+        is Just (state) -> when wd-rebind state map map.stride
+          is Err (e) -> Err ("Cannot page the map there: " & e)
+          is Ok (_) -> Ok map
+  end
+  cpo-apply : MapCacheState, CompositeOwner, GameShard, JsonValue, Text -> [Device.Block] Result Text Text
+  cpo-apply (cache) (owner) (game) (v) (action) = let serial = cpo-british game
+    in let x = admin-int v "x"
+    in let y = admin-int v "y"
+    in let z = admin-int v "z"
+    in let target = admin-int v "target"
+    in if serial == 0 then act Err "British has no character." end
+    else if action == "invisible" then act cpo-invisible owner.state serial end
+    else if action == "summon-item" then act cpo-add owner.state game serial (admin-int v "graphic") (admin-int v "amount") end
+    else if action == "inspect" then act cpo-inspect game target end
+    else if action == "lord-british-enter" then act cpo-lord owner.state game serial end
+    else if action == "lord-british-leave" then act Ok "Lord British mode left; British stays invulnerable and keeps his stats and skills." end
+    else if action == "navy" then act cpo-navy owner.state game end
+    else if action == "ban" then act cpo-ban owner.kick game target end
+    else if action == "unban" then act cpo-unban game (json-get-str v "account" "") end
+    else if action == "decor-baked" then act cpo-baked owner.state game (json-get-str v "serials" "") end
+    else if action == "teleport" then act
+      window <- cpo-window cache owner x y
+      when window
+        is Err (e) -> Err e
+        is Ok (map) -> cpo-teleport map game serial x y
+    end
+    else if action == "move" then act
+      window <- cpo-window cache owner x y
+      when window
+        is Err (e) -> Err e
+        is Ok (map) -> cpo-move map owner.state game target x y z
+    end
+    else when world-get game.world serial
+      is Err (e) -> act Err e end
+      is Ok (me) -> let given = x >= 0 & y >= 0 & x < 6144 & y < 4096 & (x > 0 | y > 0)
+        in let sx = if given then x else me.x + 1
+        in let sy = if given then y else me.y
+        in act
+          window <- cpo-window cache owner sx sy
+          when window
+            is Err (e) -> Err e
+            is Ok (map) -> cpo-summon map owner.state game (admin-int v "graphic") sx sy
+        end
+  cpo-run : MapCacheState, CompositeOwner, GameShard, Text -> [Console, Device.Block] Result Integer Text
+  cpo-run (cache) (owner) (game) (claimed) = let v = (json-parse-value claimed 0 (text-length claimed)).value
+    in let action = json-get-str v "action" ""
+    in act
+      done <- cpo-apply cache owner game v action
+      let ok = is-ok done
+      in let said = when done
+        is Ok (t) -> t
+        is Err (e) -> e
+      in let answered = owner.panel-answer said ok
+      in act
+        logged <- slg-line game.log slg-admin slg-info ("ADMIN panel " & action & " with British offline: " & (if ok then "" else "refused: ") & said)
+        if ok then cs-commit-play owner False else act Ok 0 end
+      end
+    end
+  cpo-tick : MapCacheState, CompositeOwner, GameShard, WalkMap, Integer -> [Console, Network.Read, Network.Write, Device.Block] Result Integer Text
+  cpo-tick (cache) (owner) (game) (map) (tick) = let claimed = owner.panel-offline 0
+    in if claimed == "" then cp-tick cache owner game map tick
+    else act
+      applied <- cpo-run cache owner game claimed
+      when applied
+        is Err (e) -> Err e
+        is Ok (_) -> act
+          cp-tick cache owner game map tick
+        end
+    end

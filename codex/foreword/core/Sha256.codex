@@ -2,7 +2,6 @@ Chapter: Sha256
   cites Foreword chapter Maybe
 
  SHA-256 cryptographic hash producing a 256-bit digest from a byte list.
- A Sha256State is a record containing eight 32-bit working variables a through h.
  To sha256 gives a List Integer digest from a byte list.
  To sha256-buf gives the same digest from len bytes at a raw buffer
  address, threading the hash as scalars and reclaiming per-block
@@ -43,30 +42,6 @@ Section: Constants
     1359893119, 2600822924, 528734635, 1541459225
   ]
 
-Section: Bitwise Helpers
-
-  rotr32 : Integer, Integer -> Integer
-  rotr32 (x) (n) =
-    w32 (bit-or (bit-shru (bit-and x mask32) n) (bit-shl x (32 - n)))
-
-  sigma0 : Integer -> Integer
-  sigma0 (x) = bit-xor (rotr32 x 7) (bit-xor (rotr32 x 18) (bit-shru (bit-and x mask32) 3))
-
-  sigma1 : Integer -> Integer
-  sigma1 (x) = bit-xor (rotr32 x 17) (bit-xor (rotr32 x 19) (bit-shru (bit-and x mask32) 10))
-
-  big-sigma0 : Integer -> Integer
-  big-sigma0 (x) = bit-xor (rotr32 x 2) (bit-xor (rotr32 x 13) (rotr32 x 22))
-
-  big-sigma1 : Integer -> Integer
-  big-sigma1 (x) = bit-xor (rotr32 x 6) (bit-xor (rotr32 x 11) (rotr32 x 25))
-
-  ch : Integer, Integer, Integer -> Integer
-  ch (x) (y) (z) = bit-xor (bit-and x y) (bit-and (bit-xor x mask32) z)
-
-  maj : Integer, Integer, Integer -> Integer
-  maj (x) (y) (z) = bit-xor (bit-and x y) (bit-xor (bit-and x z) (bit-and y z))
-
 Section: Message Schedule
 
   sha256-schedule : List Integer -> List Integer
@@ -75,51 +50,59 @@ Section: Message Schedule
   sha256-schedule-loop : List Integer, Integer -> List Integer
   sha256-schedule-loop (w) (t) =
     if t == 64 then w
-    else let s0 = sigma0 (list-at w (t - 15))
-    in let s1 = sigma1 (list-at w (t - 2))
-    in let val = w32 (list-at w (t - 16) + s0 + list-at w (t - 7) + s1)
+    else let x = bit-and (list-at w (t - 15)) mask32
+    in let x7 = bit-or (bit-shru x 7) (bit-shl x 25)
+    in let s0 = bit-xor (bit-xor x7 (bit-or (bit-shru x 18) (bit-shl x 14))) (bit-shru x 3)
+    in let y = bit-and (list-at w (t - 2)) mask32
+    in let y17 = bit-or (bit-shru y 17) (bit-shl y 15)
+    in let s1 = bit-xor (bit-xor y17 (bit-or (bit-shru y 19) (bit-shl y 13))) (bit-shru y 10)
+    in let val = w32 (list-at w (t - 16) + w32 s0 + list-at w (t - 7) + w32 s1)
     in sha256-schedule-loop (list-push w val) (t + 1)
 
 Section: Compression
 
-  Sha256State = record {
-    a : Integer, b : Integer, c : Integer, d : Integer,
-    e : Integer, f : Integer, g : Integer, h : Integer
-  }
+ The round functions are written out rather than called: on x86-64 a
+ helper call per rotate and per mask made compression 3.9 times slower
+ (CORE-11, measured 2026-10-16). Each rotate keeps bits above 32 and the
+ sum masks once, which is exact because every input is already 32 bits.
 
-  state-from-hash : List Integer -> Sha256State
-  state-from-hash (hs) = Sha256State {
-    a = list-at hs 0, b = list-at hs 1, c = list-at hs 2, d = list-at hs 3,
-    e = list-at hs 4, f = list-at hs 5, g = list-at hs 6, h = list-at hs 7
-  }
+  sha256-rounds : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    List Integer, List Integer, Integer -> List Integer
+  sha256-rounds (a) (b) (c) (d) (e) (f) (g) (h) (hash) (w) (t) =
+    if t == 64 then sha256-add-state hash a b c d e f g h
+    else let e25 = bit-or (bit-shru e 25) (bit-shl e 7)
+    in let s1 = bit-xor (bit-xor (bit-or (bit-shru e 6) (bit-shl e 26)) (bit-or (bit-shru e 11) (bit-shl e 21))) e25
+    in let chv = bit-xor (bit-and e f) (bit-and (bit-xor e mask32) g)
+    in let t1 = h + w32 s1 + chv + list-at sha256-k t + list-at w t
+    in let a22 = bit-or (bit-shru a 22) (bit-shl a 10)
+    in let s0 = bit-xor (bit-xor (bit-or (bit-shru a 2) (bit-shl a 30)) (bit-or (bit-shru a 13) (bit-shl a 19))) a22
+    in let mj = bit-xor (bit-and a b) (bit-xor (bit-and a c) (bit-and b c))
+    in sha256-rounds (w32 (t1 + w32 s0 + mj)) a b c (w32 (d + t1)) e f g hash w (t + 1)
 
-  sha256-round : Sha256State, Integer, Integer -> Sha256State
-  sha256-round (s) (ki) (wi) =
-    let t1 = w32 (s.h + big-sigma1 (s.e) + ch (s.e) (s.f) (s.g) + ki + wi)
-    in let t2 = w32 (big-sigma0 (s.a) + maj (s.a) (s.b) (s.c))
-    in Sha256State {
-      a = w32 (t1 + t2), b = s.a, c = s.b, d = s.c,
-      e = w32 (s.d + t1), f = s.e, g = s.f, h = s.g
-    }
-
-  sha256-rounds : Sha256State, List Integer, List Integer, Integer -> Sha256State
-  sha256-rounds (s) (k) (w) (t) =
-    if t == 64 then s
-    else sha256-rounds (sha256-round s (list-at k t) (list-at w t)) k w (t + 1)
+  sha256-add-state : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Integer -> List Integer
+  sha256-add-state (hash) (a) (b) (c) (d) (e) (f) (g) (h) =
+    let h0 = list-set-at hash 0 (w32 (list-at hash 0 + a))
+    in let h1 = list-set-at h0 1 (w32 (list-at h0 1 + b))
+    in let h2 = list-set-at h1 2 (w32 (list-at h1 2 + c))
+    in let h3 = list-set-at h2 3 (w32 (list-at h2 3 + d))
+    in let h4 = list-set-at h3 4 (w32 (list-at h3 4 + e))
+    in let h5 = list-set-at h4 5 (w32 (list-at h4 5 + f))
+    in let h6 = list-set-at h5 6 (w32 (list-at h5 6 + g))
+    in list-set-at h6 7 (w32 (list-at h6 7 + h))
 
   sha256-compress : List Integer, List Integer -> List Integer
   sha256-compress (hash) (block-words) =
     let w = sha256-schedule block-words
-    in let s0 = state-from-hash hash
-    in let sf = sha256-rounds s0 sha256-k w 0
-    in let h0 = list-set-at hash 0 (w32 (list-at hash 0 + sf.a))
-    in let h1 = list-set-at h0 1 (w32 (list-at h0 1 + sf.b))
-    in let h2 = list-set-at h1 2 (w32 (list-at h1 2 + sf.c))
-    in let h3 = list-set-at h2 3 (w32 (list-at h2 3 + sf.d))
-    in let h4 = list-set-at h3 4 (w32 (list-at h3 4 + sf.e))
-    in let h5 = list-set-at h4 5 (w32 (list-at h4 5 + sf.f))
-    in let h6 = list-set-at h5 6 (w32 (list-at h5 6 + sf.g))
-    in list-set-at h6 7 (w32 (list-at h6 7 + sf.h))
+    in let a = w32 (list-at hash 0)
+    in let b = w32 (list-at hash 1)
+    in let c = w32 (list-at hash 2)
+    in let d = w32 (list-at hash 3)
+    in let e = w32 (list-at hash 4)
+    in let f = w32 (list-at hash 5)
+    in let g = w32 (list-at hash 6)
+    in let h = w32 (list-at hash 7)
+    in sha256-rounds a b c d e f g h hash w 0
 
 Section: Padding
 

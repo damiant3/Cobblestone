@@ -1,0 +1,100 @@
+Chapter: BvtNpcMove
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ [move on an NPC (Damian, 2026-10-09): each kind's routine restarts from where it stands. On BvtWorkerDay's fixture a
+ worker, a shopkeeper, a guard and a townsperson are each parked mid-route and resting far ahead, then moved; a serial
+ that is no NPC changes nothing.
+  bnm-fill : WalkMap, Integer -> Integer
+  bnm-fill (map) (i) = if i == map.width * map.height then 0
+    else let mark = __heap-save
+    in let result = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bnm-fill map (i + 1)
+  bnm-data : Integer -> Integer
+  bnm-data (unused) = let data = alloc-bytes 240
+    in let clear = wd-zero data 0 240
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 8 1
+    in let c = poke-qword data 32 6144
+    in let d = poke-qword data 40 4096
+    in let e = poke-qword data 48 42
+    in let x = poke-qword data 64 1419
+    in let y = poke-qword data 72 1690
+    in let art = poke-qword data 88 #0675
+    in let flags = poke-qword data 104 64
+    in let height = poke-qword data 112 20
+    in let kind = poke-qword data 120 1
+    in let opened = poke-qword data 128 #0676
+    in let dx = poke-qword data 136 1
+    in let light = poke-qword data 152 -1 in data
+  bnm-founded : Integer -> Result CompositeGame Text
+  bnm-founded (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> Err e
+    is Ok (map) -> when walk-map-new 1408 1520 96 240
+      is Err (e) -> Err e
+      is Ok (britain) -> let filled = bnm-fill map 0
+        in let town-filled = bnm-fill britain 0
+        in let data = bnm-data 0
+        in when wd-read data 240 map map.stride
+          is Err (e) -> Err e
+          is Ok (decoration) -> when cg-britain britain
+            is Err (e) -> Err e
+            is Ok (owner) -> when cg-install owner (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = Just decoration })
+              is Err (e) -> Err e
+              is Ok (_) -> when cg-town-doors owner data 240
+                is Err (e) -> Err e
+                is Ok (_) -> Ok owner
+  bnm-far : Integer = 1000000
+  bnm-park : RteWalk -> Integer
+  bnm-park (w) = let a = __record-set w "route" 3 in let b = __record-set w "rest" 5 in 0
+  bnm-resumed : RteWalk -> Boolean
+  bnm-resumed (w) = w.route < 0
+  bnm-worker : CompositeGame -> Boolean
+  bnm-worker (owner) = let c = list-at owner.miners 0
+    in let parked = bnm-park c.walk
+    in let said = cg-npc-moved owner c.serial
+    in said == "worker" & bnm-resumed c.walk & c.walk.rest == 0
+  bnm-keeper : CompositeGame -> Boolean
+  bnm-keeper (owner) = when owner.staff
+    is None -> False
+    is Just (s) -> let k = list-at s.keepers 0
+      in let a = __record-set k "settled" 1
+      in let b = __record-set k "next-step" bnm-far
+      in let parked = bnm-park k.walk
+      in let said = cg-npc-moved owner (list-at owner.vendor.vendors 0).serial
+      in said == "shopkeeper" & k.settled == 0 & k.next-step == 0 & bnm-resumed k.walk
+  bnm-guard : CompositeGame -> Boolean
+  bnm-guard (owner) = when owner.civic
+    is None -> False
+    is Just (s) -> if list-length s.guards == 0 then False
+      else let p = list-at s.guards 0
+      in let a = __record-set p "next-step" (s.now + bnm-far)
+      in let parked = bnm-park p.walk
+      in let said = cg-npc-moved owner p.serial
+      in p.serial /= 0 & said == "guard" & p.next-step == s.now & bnm-resumed p.walk
+  bnm-resident : CompositeGame -> Boolean
+  bnm-resident (owner) = when owner.town
+    is None -> False
+    is Just (t) -> if t.count == 0 then False
+      else let r = list-at t.residents 0
+      in let a = __record-set r "next-step" (t.now + bnm-far)
+      in let parked = bnm-park r.walk
+      in let said = cg-npc-moved owner (tf-person t.people r.person).world-serial
+      in said == "townsperson" & r.next-step == t.now & bnm-resumed r.walk
+ A serial that is no NPC answers "" and leaves a parked worker parked.
+  bnm-stranger : CompositeGame -> Boolean
+  bnm-stranger (owner) = let c = list-at owner.miners 1
+    in let parked = bnm-park c.walk
+    in let said = cg-npc-moved owner #7FFFFFF0
+    in said == "" & c.walk.route == 3 & c.walk.rest == 5
+  bvt-npc-move : Integer -> [Console] Integer
+  bvt-npc-move (unused) = when bnm-founded 0
+    is Err (e) -> bvt-check ("npc move fixture: " & e) False
+    is Ok (owner) -> act
+      a <- bvt-check "[move on a worker drops its route and its rest, so it plans from the new spot" (bnm-worker owner)
+      b <- bvt-check "[move on a shopkeeper settled at work unsettles it and ends its rest" (bnm-keeper owner)
+      d <- bvt-check "[move on a guard drops its route and restarts its rest at the patrol's now" (bnm-guard owner)
+      e <- bvt-check "[move on a townsperson drops its route and restarts its rest at the town's now" (bnm-resident owner)
+      f <- bvt-check "[move on a serial that is no NPC changes no routine" (bnm-stranger owner)
+      a + b + d + e + f
+    end

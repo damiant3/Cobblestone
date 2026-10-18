@@ -6,7 +6,7 @@ client's raw bytes when a new client or packet form needs measuring.
 
 `WireCapture.codex` is an experimental listener, not an account server.
 Use only the synthetic account `uoaixtest` with password `uoaixtest` in
-the separate install at `D:\Projects\uoaix-client`. The original client
+the separate install at `D:\Games\UOAIX-Reference`. The original client
 install is not modified. The listener records credentials as wire bytes;
 the capture stays under the ignored `build-output/uoaix/wire/` directory.
 The separate install's `LOGIN.CFG` must contain

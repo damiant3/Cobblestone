@@ -20,7 +20,7 @@ Chapter: CompositeDelta
     in cd-write before after size out (at + 8) (count + 1)
   cd-encode : Integer, Integer, Integer, Integer, Integer, Integer -> Result Integer Text
   cd-encode (before) (after) (size) (sequence) (tick) (out) =
-    if size < 64 | size > us-max-payload | int-mod size 8 /= 0 | sequence < 1 | tick < 0 then Err "composite delta metadata invalid"
+    if size < 64 | int-mod size 8 /= 0 | sequence < 1 | tick < 0 then Err "composite delta metadata invalid"
     else when cd-write before after size out 0 0
       is Err (e) -> Err e
       is Ok (count) -> let bytes = 64 + count * 24
@@ -33,6 +33,12 @@ Chapter: CompositeDelta
         in let g = poke-qword out 56 count
         in let h = poke-qword out 48 (ws-hash out bytes 0 2166136261)
         in Ok bytes
+ The value a patch writes at offset at, or fallback when it leaves at unchanged; rows are in rising offset order.
+  cd-after : Integer, Integer, Integer, Integer -> Integer
+  cd-after (patch) (at) (fallback) (i) = if i >= peek-qword patch 56 | i >= cd-max-changes then fallback
+    else let row = 64 + i * 24
+    in let offset = peek-qword patch row
+    in if offset == at then peek-qword patch (row + 16) else if offset > at then fallback else cd-after patch at fallback (i + 1)
   cd-check : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
   cd-check (state) (size) (patch) (count) (i) (previous) = if i == count then True
     else let row = 64 + i * 24

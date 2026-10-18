@@ -1,0 +1,48 @@
+Chapter: BvtCityGuards
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CivicLiveCodec
+  cites Uoaix chapter Cities
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvcg-fill : WalkMap, Integer -> Integer
+  bvcg-fill (map) (i) = if i == map.width * map.height then 0
+    else let land = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 10 0 in bvcg-fill map (i + 1)
+  bvcg-map : Integer -> Result WalkMap Text
+  bvcg-map (unused) = when walk-map-sized 1816 2640 64 48 4
+    is Err (e) -> Err e
+    is Ok (map) -> let filled = bvcg-fill map 0 in Ok map
+  bvcg-patrol : Integer -> CvPatrol
+  bvcg-patrol (unused) = list-at (cv-patrols 0 0 (__list-with-capacity 1)) 0
+  bvcg-dress : Integer -> CvDress
+  bvcg-dress (unused) = list-at (cv-clothes 0 (__list-with-capacity 1)) 0
+  bvt-city-guards : Integer -> [Console] Integer
+  bvt-city-guards (unused) = when bvcg-map 0
+    is Err (e) -> act bvt-check ("city guards map fixture: " & e) False end
+    is Ok (map) -> let patrols = ct-city-patrols 0
+      in let p = bvcg-patrol 0
+      in let routed = cg-city-route p map (list-at patrols 0) 0
+      in let q = bvcg-patrol 0
+      in let wide = cg-city-route q map (list-at patrols 1) 0
+      in let buf = alloc-bytes cvt-row-bytes
+      in let a1 = __record-set p "serial" 4097
+      in let a2 = __record-set p "law-id" 7
+      in let a3 = __record-set p "waypoint" 2
+      in let a4 = __record-set p "next-step" 3600
+      in let written = cvc-patrol-fields p buf False 0
+      in let r = bvcg-patrol 0
+      in let read = cvc-patrol-fields r buf True 0
+      in let d = bvcg-dress 0
+      in let b1 = __record-set d "serial" 8193
+      in let b2 = __record-set d "owner" 4097
+      in let b3 = __record-set d "layer" 5
+      in let worn = cvc-cloth-fields d buf False 432
+      in let e = bvcg-dress 0
+      in let back = cvc-cloth-fields e buf True 432
+      in act
+        a <- bvt-check "a Trinsic patrol takes its four UOX3 guard-post waypoints on its city's map, standing on the land (UOAIX-217 guards part 2)" (is-ok routed & (list-at p.route 0).x == 1825 & (list-at p.route 1).y == 2644 & (list-at p.route 3).z == 10)
+        b <- bvt-check "a patrol whose waypoints leave the map is refused, not stood at a guessed height" (is-err wide)
+        c <- bvt-check "a city guard's patrol and clothes rows round-trip through the city guard tail's 656-byte row (composite tail 19)" (cvt-row-bytes == 656 & r.serial == 4097 & r.law-id == 7 & r.waypoint == 2 & r.next-step == 3600 & (list-at r.route 2).x == 1866 & e.serial == 8193 & e.owner == 4097 & e.layer == 5)
+        a + b + c
+      end

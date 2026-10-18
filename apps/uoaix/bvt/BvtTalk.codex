@@ -1,0 +1,56 @@
+Chapter: BvtTalk
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+  bvt-talk-event : Integer, Integer, Integer -> EaEvent
+  bvt-talk-event (sequence) (kind) (price) = EaEvent { sequence = sequence, hour = 0, principal = 1, actor = 1, kind = kind, target = 0,
+    item = 31, quantity = 2, offer = 0, result = 0, price = price, money-sequence = 0, proposed-kind = kind, limit = 0,
+    recipe = 0, station = 0, node = 0 }
+  bvt-talk-rolls : CgGatherer, Integer, Integer -> Integer
+  bvt-talk-rolls (c) (visit) (n) = if visit == 64 then n
+    else let v = __record-set c "visit" visit
+    in let cleared = __record-set c "say" 0
+    in bvt-talk-rolls c (visit + 1) (n + cgg-say c 1 5 0 8)
+  bvt-talk : Integer -> [Console] Integer
+  bvt-talk (unused) = when bb-economy 0
+    is Err (e) -> bvt-check ("talk fixture economy: " & e) False
+    is Ok (x) -> when egg-new x 3001 200
+      is Err (e) -> bvt-check ("talk fixture gatherer: " & e) False
+      is Ok (g) -> act
+        spot <- BbSpot { x = 1410, y = 1630, z = 0 }
+        c <- cgg-make g 7 spot spot 0 0 0 0
+        items <- x.world.catalog.items
+        ingot <- (list-at items (cgg-ingot - 1)).name
+        a <- bvt-check "an economic remark names its goods and price (NpcSpeech ruling: harvest, made, bought, sold)" (tls-say 1 0 "iron ore" 1 0 == "Oh, a nice pile of iron ore!" & tls-say 2 0 "gorget" 1 0 == "That gorget is one of my best!" & tls-say 3 0 "iron ingot" 2 30 == "That iron ingot cost me 30 copper. I shall have to raise my prices." & tls-say 4 1 "iron ingot" 2 30 == "My iron ingot fetched 30 copper apiece. A fair price.")
+        b <- bvt-check "a trade with no known price is told plainly" (tls-say 3 0 "iron ingot" 2 0 == "Bought 2 iron ingot.")
+        sold <- cgg-say c 4 cgg-ingot 120 1
+        d <- bvt-check "a worker's sale is remembered for its next show and names the catalog item it sold" (sold == 1 & c.say == 4 & c.say-price == 120 & ingot /= "goods" & cgg-say-text c == tls-say 4 (int-mod (c.serial + c.trips) 2) ingot 1 120)
+        pricked <- cgg-say c 5 0 0 1
+        e <- bvt-check "a cotton picker's prick is said through the same show (the step's own packets reach no player)" (pricked == 1 & cgg-say-text c == cpr-prick-line)
+        heard <- bvt-talk-rolls c 0 0
+        f <- bvt-check "a worker remarks on its harvest only now and then: 2 to 20 of 64 swings at odds 8" (heard >= 2 & heard <= 20)
+        e8 <- tls-told (bvt-talk-event 8 1 0)
+        e9 <- tls-told (bvt-talk-event 9 1 0)
+        h <- bvt-check "a resident remarks on one work event in four and on every trade" (e8 & not e9 & tls-told (bvt-talk-event 9 2 30) & tls-told (bvt-talk-event 9 3 30))
+        heard-farmer <- bvt-talk-farmer c
+        k <- bvt-check "the farmer's remark, made on the server tick, is spoken once on the next pulse of a player in range, and not to one 30 tiles off" heard-farmer
+        a + b + d + e + f + h + k
+      end
+  bvt-talk-farmer : CgGatherer -> Boolean
+  bvt-talk-farmer (c) = when gs-new 64
+    is Err (_) -> False
+    is Ok (game) -> when world-create game.world (gs-mobile 0 1420 1698 0 400 1002)
+      is Err (_) -> False
+      is Ok (worker) -> when world-create game.world (gs-mobile 0 1424 1698 0 400 1002)
+        is Err (_) -> False
+        is Ok (near) -> when world-create game.world (gs-mobile 0 1450 1698 0 400 1002)
+          is Err (_) -> False
+          is Ok (far) -> let bound = __record-set c "serial" worker
+            in let said = __record-set c "say" 2
+            in let off = __record-set game "active" far
+            in let unheard = list-length (cg-worker-say (Just c) game) == 0 & c.say == 2
+            in let on = __record-set game "active" near
+            in let first = list-length (cg-worker-say (Just c) game)
+            in let again = list-length (cg-worker-say (Just c) game)
+            in unheard & first == 1 & again == 0 & c.say == 0

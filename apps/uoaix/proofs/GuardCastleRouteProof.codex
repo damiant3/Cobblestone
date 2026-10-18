@@ -1,0 +1,99 @@
+Chapter: GuardCastleRouteProof
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter BritainWindow
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter WorldRecords
+
+ UOAIX-216 13.45, live-43827: castle foot guard 4 stood at 1417,1548,30 for 7 game hours and every patrol plan to its
+ waypoint 1357,1613,72 failed. This loads Britain's window as the server does (cgs-load) from the installed map cache,
+ with the portcullis raised as the live log says (no door state, so no gate pieces), and plans under the foot guards'
+ budget (cv-plan-budget) and over the whole window. The planner keeps one z a cell, and the castle's main floor (z 72)
+ stands over courtyard land (z 50) on the same cells, so a search from the town settles those cells at z 50 and never
+ steps from the stair top onto the floor: the direct legs are the witness, and the leg by the north stair top
+ (cv-leg-goal) is the fix. The castle loop's own legs are the control. Run: build/test-run.ps1 -DiskFile <a disk
+ install-map-cache.ps1 wrote>.
+  gcr-say : Text, Integer -> [Console] Integer
+  gcr-say (line) (code) = act
+    said <- print-line-uni line
+    code
+  end
+  gcr-bridge-z : Integer = 28
+  gcr-mob : Integer, Integer, Integer -> WorldObject
+  gcr-mob (x) (y) (z) = WorldObject { serial = 0, kind = 1, x = x, y = y, z = z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+  gcr-plan : TlPath, WorldTable, WalkMap, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gcr-plan (nav) (world) (map) (x) (y) (z) (tx) (ty) (tz) (budget) = tl-plan-budget nav world map None (gcr-mob x y z) tx ty tz (alloc-bytes (tl-route-step-bytes nav)) (tl-route-step-bytes nav) budget
+  gcr-leg : TlPath, WorldTable, WalkMap, Text, Integer, Integer, Integer, Integer, Integer, Integer -> [Console] Integer
+  gcr-leg (nav) (world) (map) (name) (x) (y) (z) (tx) (ty) (tz) = act
+    mark <- __heap-save
+    capped <- gcr-plan nav world map x y z tx ty tz cv-plan-budget
+    capped-cells <- nav.expanded
+    whole <- gcr-plan nav world map x y z tx ty tz (nav.width * nav.height)
+    whole-cells <- nav.expanded
+    restored <- __heap-restore mark
+    print-line-uni ("LEG " & name & " " & show x & "," & show y & "," & show z & " -> " & show tx & "," & show ty & "," & show tz
+      & " capped=" & show capped & " expanded=" & show capped-cells & " whole=" & show whole & " expanded=" & show whole-cells)
+    (if capped > 0 then 1 else 0) + (if whole > 0 then 10 else 0)
+  end
+ Every walkable tile on the north stair (cv-on-stair) plans the leg cv-leg-goal gives it toward waypoint 1 under
+ cv-plan-budget; one that does not is printed and counted. Any other tile from 1348,1611 to 1356,1621 with no leg is
+ printed as OPEN and not graded.
+  gcr-scan : TlPath, WorldTable, WalkMap, Integer, Integer -> [Console] Integer
+  gcr-scan (nav) (world) (map) (x) (y) = if y > 1621 then 0 else if x > 1356 then gcr-scan nav world map 1348 (y + 1)
+    else when walk-height map x y 72
+      is Err (_) -> gcr-scan nav world map (x + 1) y
+      is Ok (z) -> let leg = cv-leg-goal (gcr-mob x y z) (BbSpot { x = 1357, y = 1613, z = 72 }) in act
+        m <- __heap-save
+        planned <- gcr-plan nav world map x y z leg.x leg.y leg.z cv-plan-budget
+        restored <- __heap-restore m
+        stair <- cv-on-stair (gcr-mob x y z)
+        said <- if planned >= 0 | (x == leg.x & y == leg.y) then 0
+          else gcr-say ((if stair then "NO LEG " else "OPEN no leg ") & show x & "," & show y & "," & show z & " -> " & show leg.x & "," & show leg.y & "," & show leg.z) (if stair then 1 else 0)
+        rest <- gcr-scan nav world map (x + 1) y
+        said + rest
+      end
+  gcr-run : WalkMap -> [Console] Integer
+  gcr-run (map) = when world-new 64
+    is Err (e) -> gcr-say ("FAIL world: " & e) 1
+    is Ok (world) -> act
+      nav <- tl-path-new map
+      c1 <- gcr-leg nav world map "castle 0-1" 1324 1613 72 1357 1613 72
+      c2 <- gcr-leg nav world map "castle 1-2" 1357 1613 72 1357 1637 72
+      c3 <- gcr-leg nav world map "castle 2-3" 1357 1637 72 1324 1637 72
+      c4 <- gcr-leg nav world map "castle 3-0" 1324 1637 72 1324 1613 72
+      g4 <- gcr-leg nav world map "guard 4" 1417 1548 30 1357 1613 72
+      bridge <- gcr-leg nav world map "bridge east" 1411 1625 gcr-bridge-z 1357 1613 72
+      up <- gcr-leg nav world map "guard 4 to stair top" 1417 1548 30 cv-castle-stair-x cv-castle-stair-y cv-castle-floor
+      on <- gcr-leg nav world map "stair top to waypoint" cv-castle-stair-x cv-castle-stair-y cv-castle-floor 1357 1613 72
+      top <- gcr-leg nav world map "stair top step to waypoint" 1352 1617 72 1357 1613 72
+      scanned <- gcr-scan nav world map 1348 1611
+      print-line-uni (if c1 + c2 + c3 + c4 == 44 then "PASS control: every castle loop leg routes, capped and whole" else "FAIL control: a castle loop leg does not route (" & show (c1 + c2 + c3 + c4) & " of 44)")
+      print-line-uni (if up == 11 & on == 11 then "PASS guard 4 reaches its waypoint by the north stair top, both legs under cv-plan-budget" else "FAIL the stair-top legs do not route under cv-plan-budget (" & show up & ", " & show on & ")")
+      print-line-uni (if top == 0 & scanned == 0 then "PASS the stair's top step at z 72 plans no direct route (trial 44158), and every stair tile plans its cv-leg-goal leg" else "FAIL stair tiles: top step direct " & show top & ", " & show scanned & " stair tiles with no leg")
+      print-line-uni (if g4 == 0 & bridge == 0 then "PASS witness: the direct legs from the town plan no route even over the whole window" else "FAIL witness: a direct leg routes, so the instrument does not see what live saw")
+      0
+    end
+  opening : [Console, Device.Block] Integer = act
+    opened <- wmc-open UoIde
+    when opened
+      is Err (e) -> gcr-say ("FAIL map cache: " & e) 1
+      is Ok (cache) -> act
+        data <- wmc-decoration cache
+        when data
+          is Err (e) -> gcr-say ("FAIL decoration: " & e) 1
+          is Ok (installed) -> act
+            counted <- wmc-window-colliders cache bwn-x1 bwn-y1 bwn-width bwn-height installed
+            when counted
+              is Err (e) -> gcr-say ("FAIL colliders: " & e) 1
+              is Ok (colliders) -> when walk-map-sized bwn-x1 bwn-y1 bwn-width bwn-height colliders
+                is Err (e) -> gcr-say ("FAIL map: " & e) 1
+                is Ok (map) -> act
+                  filled <- wmc-fill cache map 0
+                  when filled
+                    is Err (e) -> gcr-say ("FAIL fill: " & e) 1
+                    is Ok (_) -> gcr-run map
+                end
+            end
+          end
+      end
+  end

@@ -1,0 +1,46 @@
+Chapter: BvtGuardGorget
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-150 (live 43827: a guard stood at the Hammer And Anvil for six game hours): on BvtWorkerDay's town a gorget lot
+ lies in the smith's crate with the buy window shut, and a funded guard buys it through cg-guard-buy. Answers a bit per
+ check: 1 the offer finds the crated gorget, 2 the guard wears a gorget after the buy, 4 the window is empty again;
+ 7 is all, negative when not buildable.
+  bgg-checks : Integer -> Integer
+  bgg-checks (unused) = when bwd-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.gatherer
+      is None -> -2
+      is Just (c) -> let v = owner.vendor
+        in let x = v.currency
+        in let opened = cg-open-treasury owner
+        in let bound = __record-set v "window" (ss-window v)
+        in let stocked = ss-ensure v owner.items owner.town-map 0
+        in let merchant = list-at v.vendors cg-armory
+        in let crate = ss-box v cg-armory ss-crate-art
+        in let p = bb-producer x merchant.actor
+        in if crate == 0 then -3
+        else when bb-produce p cg-gorget-item
+          is Err (_) -> -4
+          is Ok (_) -> when bb-materialise v owner.items p crate cg-gorget-art 0 0 0 True
+            is Err (_) -> -5
+            is Ok (gorget) -> when world-create v.game.world (gs-mobile 0 1418 1546 0 400 1002)
+              is Err (_) -> -6
+              is Ok (serial) -> when world-get v.game.world serial
+                is Err (_) -> -6
+                is Ok (guard) -> let actor = c.gatherer.producer.actor
+                  in let price = ep-price x.world merchant.actor cg-gorget-item
+                  in let funded = cgf-borrow x (ep-actor x.world actor).purse price
+                  in let at = cgg-tool-offer v merchant cg-gorget-item 0
+                  in if price < 1 then -7 else if funded < 0 then -8
+                  else let offered = if at == gorget then 1 else 0
+                  in let bought = cg-guard-buy owner v merchant actor at price guard
+                  in let worn = if gmb-layer owner.items serial 10 0 > 0 then 2 else 0
+                  in let shut = if world-first-child v.game.world merchant.stock == 0 then 4 else 0
+                  in offered + worn + shut
+  bvt-guard-gorget : Integer -> [Console] Integer
+  bvt-guard-gorget (unused) = act
+    n <- bgg-checks 0
+    bvt-check ("a guard buys a gorget lying in the smith's crate, and the buy window shuts after (UOAIX-150, code " & show n & ")") (n == 7)
+  end

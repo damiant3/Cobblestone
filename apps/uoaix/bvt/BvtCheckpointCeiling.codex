@@ -1,0 +1,44 @@
+Chapter: BvtCheckpointCeiling
+  cites Uoaix chapter CompositeCodec
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter BvtCheck
+
+ A world grown to its ceiling must still save: the checkpoint buffers are sized from the world (cs-room), not a cap.
+ cc-layout must cover cc-size exactly at every capacity, and a relayout must carry every byte to its segment's new
+ offset and zero only the appended rows.
+  bcc-sum : Integer, Integer -> Integer
+  bcc-sum (capacity) (k) = if k >= list-length cc-layout then 0 else cc-segment-length (list-at cc-layout k) capacity + bcc-sum capacity (k + 1)
+  bcc-aligned : Integer -> Boolean
+  bcc-aligned (k) = if k >= list-length cc-layout then True
+    else int-mod (list-at (list-at cc-layout k) 0) 8 == 0 & int-mod (list-at (list-at cc-layout k) 1) 8 == 0 & bcc-aligned (k + 1)
+  bcc-covers : List Integer, Integer -> Boolean
+  bcc-covers (caps) (i) = if i >= list-length caps then True
+    else let c = list-at caps i in bcc-sum c 0 == cc-size c & bcc-covers caps (i + 1)
+  bcc-mark : Integer, Integer, Integer, Integer, Integer -> Integer
+  bcc-mark (buf) (at) (i) (n) (k) = if i >= n then 0 else let p = poke-qword buf (at + i) (k * 4294967296 + i + 1) in bcc-mark buf at (i + 8) n k
+  bcc-fill : Integer, Integer, Integer -> Integer
+  bcc-fill (buf) (capacity) (k) = if k >= list-length cc-layout then 0
+    else let filled = bcc-mark buf (cc-offset k capacity 0) 0 (cc-segment-length (list-at cc-layout k) capacity) k in bcc-fill buf capacity (k + 1)
+  bcc-segment : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  bcc-segment (buf) (at) (i) (kept) (n) (k) = if i >= n then True
+    else let v = peek-qword buf (at + i)
+    in if (if i < kept then v /= k * 4294967296 + i + 1 else v /= 0) then False else bcc-segment buf at (i + 8) kept n k
+  bcc-moved : Integer, Integer, Integer, Integer -> Boolean
+  bcc-moved (buf) (from) (to) (k) = if k >= list-length cc-layout then True
+    else let s = list-at cc-layout k
+    in bcc-segment buf (cc-offset k to 0) 0 (cc-segment-length s from) (cc-segment-length s to) k & bcc-moved buf from to (k + 1)
+ The currency closes the image after cc-size: a tail of 64 bytes grows to 96 and keeps its first 64.
+  bcc-relayout : Integer, Integer -> Boolean
+  bcc-relayout (from) (to) = let buf = alloc-bytes (cc-size to + 96)
+    in let filled = bcc-fill buf from 0
+    in let tail = bcc-mark buf (cc-size from) 0 64 99
+    in let moved = cc-relayout buf from (cc-size from + 64) to (cc-size to + 96)
+    in bcc-moved buf from to 0 & bcc-segment buf (cc-size to) 0 64 96 99
+  bvt-checkpoint-ceiling : Integer -> [Console] Integer
+  bvt-checkpoint-ceiling (unused) = act
+    top <- cc-size world-max-objects + euc-fixed + es-bytes + 8
+    a <- bvt-check ("the composite checkpoint of a world at world-max-objects with an empty economy gets a buffer with a quarter to spare: " & show top & " of " & show (cs-room top) & " bytes") (cs-room top - top >= cs-room top / 4 & int-mod (cs-room top) 8 == 0)
+    b <- bvt-check "the checkpoint's segments cover cc-size exactly at 64, 256, 300, 1024, 16384 and world-max-objects slots, aligned" (bcc-aligned 0 & bcc-covers [64, 256, 300, 1024, 16384, world-max-objects] 0)
+    c <- bvt-check "a relayout from 64 to 300 slots carries every byte to its segment's new offset, the currency tail to the image's end, and zeroes only what was appended" (bcc-relayout 64 300)
+    a + b + c
+  end

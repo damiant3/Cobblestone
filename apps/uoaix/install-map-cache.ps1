@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ClientRoot,[Parameter(Mandatory)][string]$WorldDisk,[string]$DecorationFile='',[string]$FloraFile='')
+param([Parameter(Mandatory)][string]$ClientRoot,[Parameter(Mandatory)][string]$WorldDisk,[string]$DecorationFile='',[string]$FloraFile='',[ValidateRange(64,1048576)][long]$StoreMiB=1024,[string]$MultiDir='')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path -LiteralPath $ClientRoot).Path
@@ -25,6 +25,8 @@ public static class UoaixMapInstaller {
  public const long Base=67108864;
  // UOAIX-50 economy archive region: 256 MiB after the cache, named by header cells 304 (start sector) and 312 (capacity).
  public const long ArchiveSectors=524288;
+ // The world journal (UOS1 pair) after the archive, named by header cells 320 (start sector) and 328 (sectors), sized by -StoreMiB.
+ // A reinstall keeps it in place; one that would move it refuses.
  public const int Blocks=393216,DirectoryBytes=Blocks*16,DataSector=1+DirectoryBytes/512;
  public static uint Hash(byte[] b,int count,bool header) {uint h=2166136261;for(int i=0;i<count;i++)if(!header||i<48||i>=56)h=unchecked((h^b[i])*16777619);return h;}
  public static long U32(byte[] b,int o) {return (long)b[o]|((long)b[o+1]<<8)|((long)b[o+2]<<16)|((long)b[o+3]<<24);}
@@ -35,6 +37,8 @@ public static class UoaixMapInstaller {
  public static bool Same(byte[] a,byte[] b) {return a.AsSpan().SequenceEqual(b);}
  // Source-X CItemBase::IsID_Chair, as WalkMap.codex walk-chair: seats never collide.
  public static bool Chair(int g) {return (g>=0x0459&&g<=0x045C)||(g>=0x0B2C&&g<=0x0B33)||(g>=0x0B4E&&g<=0x0B6A)||(g>=0x0B91&&g<=0x0B94)||g==0x0C17||g==0x0C18||g==0x1049||g==0x104A||(g>=0x1207&&g<=0x120C)||(g>=0x1218&&g<=0x121B)||g==0x1526||g==0x1527||(g>=0x19F1&&g<=0x19F3)||(g>=0x19F5&&g<=0x19F7)||(g>=0x19F9&&g<=0x19FC)||(g>=0x1DC7&&g<=0x1DD2)||g==0x1E6F||g==0x1E78||g==0x3DFF||g==0x3E00;}
+ // As WalkMap.codex walk-brush: brambles, saplings and small rocks never collide (Damian, 2026-10-10).
+ public static bool Brush(int g) {return g==0x0D3F||g==0x0D40||g==0x0CE9||g==0x0CEA||(g>=0x1363&&g<=0x136D)||(g>=0x1771&&g<=0x177C);}
  public static int OverlayMaximum(byte[] data) {
   long count=R(data,8);if(count<0||count>65536||data.Length!=64+count*176)throw new Exception("DWD1 count invalid");
   var cells=new Dictionary<long,int>();int maximum=0;
@@ -46,6 +50,14 @@ public static class UoaixMapInstaller {
   }
   return maximum;
  }
+ // FLR1 kind 3 rows are furnishings premises.cfg strips from the player's statics, so they collide nowhere.
+ public static long Key(int x,int y,int graphic,byte z) {return (((long)x*4096+y)*16384+graphic)*256+z;}
+ public static HashSet<long> Stripped(string flora) {
+  var set=new HashSet<long>();if(String.IsNullOrEmpty(flora))return set;
+  byte[] t=File.ReadAllBytes(flora);if(t.Length<64||R(t,0)!=0x31524C46||R(t,48)!=12||t.Length!=R(t,40)+R(t,16)*12)throw new Exception("Invalid FLR1 flora table (transform-flora.ps1 writes flora.flr)");
+  for(long i=0,at=R(t,40);i<R(t,16);i++,at+=12)if(t[at+9]==3)set.Add(Key(U16(t,(int)at),U16(t,(int)at+2),U16(t,(int)at+4),t[at+8]));
+  return set;
+ }
  public static byte[] Prefix(FileStream disk) {
   using(var hash=IncrementalHash.CreateHash(HashAlgorithmName.SHA256)) {
    byte[] buf=new byte[65536];disk.Position=0;
@@ -53,13 +65,68 @@ public static class UoaixMapInstaller {
    return hash.GetHashAndReset();
   }
  }
- public static long[] Build(string root,string path,string[] fingerprints,string decoration,string flora,bool[] mountain) {
+ // MCP1, the multis' colliders (UoaixMultis.md), after the world journal so its size never moves the store: a 64-byte
+ // head (magic, 4096 ids, rows, 12), 4096 directory entries of first row and row count (u32 each), then 12-byte rows
+ // sorted by dx then dy: dx, dy, dz (i16), height (u16) and TILEDATA flags (u32), one a drawn component that collides
+ // as a client static does (MULTI.MUL component flags nonzero; TILEDATA 0x40 or 0x200; not a chair or brush). The
+ // design names follow the rows (head cell 32 counts them), 32 bytes each: the id (u32) and up to 28 ASCII bytes, from
+ // build-multis.ps1's MULTI.NAMES when the directory holds one.
+ public static byte[] Multis(string dir,byte[] tiles) {
+  byte[] idx=File.ReadAllBytes(Path.Combine(dir,"MULTI.IDX")),mul=File.ReadAllBytes(Path.Combine(dir,"MULTI.MUL"));
+  if(idx.Length!=4096*12)throw new Exception("MULTI.IDX must hold 4096 entries");
+  byte[] head=new byte[64+4096*8];var rows=new MemoryStream();long n=0;byte[] row=new byte[12];
+  for(int id=0;id<4096;id++) {
+   int off=BitConverter.ToInt32(idx,id*12),len=BitConverter.ToInt32(idx,id*12+4);if(off<0||len<=0)continue;
+   if(len%12!=0||(long)off+len>mul.Length)throw new Exception("MULTI.IDX entry "+id+" outside MULTI.MUL");
+   var list=new List<int[]>();
+   for(int a=off;a<off+len;a+=12) {
+    int graphic=BitConverter.ToUInt16(mul,a);if(BitConverter.ToInt32(mul,a+8)==0||graphic>=16384)continue;
+    int tile=428032+(graphic/32)*1188+4+(graphic%32)*37;long flags=U32(tiles,tile);if((flags&576)==0||Chair(graphic)||Brush(graphic))continue;
+    list.Add(new int[]{BitConverter.ToInt16(mul,a+2),BitConverter.ToInt16(mul,a+4),BitConverter.ToInt16(mul,a+6),tiles[tile+16],(int)flags});
+   }
+   list.Sort((p,q)=>p[0]!=q[0]?p[0].CompareTo(q[0]):p[1].CompareTo(q[1]));
+   D(head,64+id*8,(uint)n);D(head,64+id*8+4,(uint)list.Count);
+   foreach(var c in list){BitConverter.TryWriteBytes(row.AsSpan(0,2),(short)c[0]);BitConverter.TryWriteBytes(row.AsSpan(2,2),(short)c[1]);BitConverter.TryWriteBytes(row.AsSpan(4,2),(short)c[2]);BitConverter.TryWriteBytes(row.AsSpan(6,2),(ushort)c[3]);D(row,8,(uint)c[4]);rows.Write(row,0,12);n++;}
+  }
+  string namesFile=Path.Combine(dir,"MULTI.NAMES");long named=0;
+  if(File.Exists(namesFile))foreach(string line in File.ReadAllLines(namesFile)) {
+   var m=System.Text.RegularExpressions.Regex.Match(line,"^0x([0-9A-Fa-f]{1,4}) ([a-z0-9-]{1,28})$");if(!m.Success)throw new Exception("MULTI.NAMES line unparsed: "+line);
+   byte[] entry=new byte[32];D(entry,0,(uint)Convert.ToInt32(m.Groups[1].Value,16));System.Text.Encoding.ASCII.GetBytes(m.Groups[2].Value).CopyTo(entry,4);rows.Write(entry,0,32);named++;
+  }
+  // The designs' front doors follow the names (head cell 40 counts them), 16 bytes each: id, dx, dy, dz, closed art,
+  // open art, open dx, open dy (16-bit each), from build-multis.ps1's MULTI.DOORS.
+  string doorsFile=Path.Combine(dir,"MULTI.DOORS");long doors=0;
+  if(File.Exists(doorsFile))foreach(string line in File.ReadAllLines(doorsFile)) {
+   var m=System.Text.RegularExpressions.Regex.Match(line,"^0x([0-9A-Fa-f]{1,4}) (-?\\d+) (-?\\d+) (-?\\d+) 0x([0-9A-Fa-f]{1,4}) 0x([0-9A-Fa-f]{1,4}) (-?\\d+) (-?\\d+)$");if(!m.Success)throw new Exception("MULTI.DOORS line unparsed: "+line);
+   byte[] entry=new byte[16];
+   for(int f=0;f<8;f++){string g=m.Groups[f+1].Value;int v=(f==0||f==4||f==5)?Convert.ToInt32(g,16):int.Parse(g);BitConverter.TryWriteBytes(entry.AsSpan(f*2,2),(short)v);}
+   rows.Write(entry,0,16);doors++;
+  }
+  Q(head,0,0x3150434D);Q(head,8,4096);Q(head,16,n);Q(head,24,12);Q(head,32,named);Q(head,40,doors);
+  byte[] all=new byte[head.Length+rows.Length];Buffer.BlockCopy(head,0,all,0,head.Length);rows.ToArray().CopyTo(all,head.Length);
+  return all;
+ }
+ public static long[] Build(string root,string path,string[] fingerprints,string decoration,string flora,bool[] mountain,bool[] sand,long storeSectors,int[] baked,int[] landEdits,int[] removes,string multiDir) {
+  // decor.cfg's Remove lines (x, y, art, z): the matching client static collides nowhere, as the players' clients no longer draw it.
+  var removed=new HashSet<long>();long removedRecords=0;
+  for(int i=0;i+3<removes.Length;i+=4)removed.Add(Key(removes[i],removes[i+1],removes[i+2],(byte)(sbyte)removes[i+3]));
+  var landAt=new System.Collections.Generic.Dictionary<int,System.Collections.Generic.List<int>>();long landRecords=0;
+  for(int i=0;i+3<landEdits.Length;i+=4){
+   if(landEdits[i]<0||landEdits[i]>=6144||landEdits[i+1]<0||landEdits[i+1]>=4096||landEdits[i+2]<-1||landEdits[i+2]>=16384||landEdits[i+3]<-128||landEdits[i+3]>127)throw new Exception("Land edit outside the legacy map");
+   int block=(landEdits[i]/8)*512+landEdits[i+1]/8;if(!landAt.ContainsKey(block))landAt[block]=new System.Collections.Generic.List<int>();landAt[block].Add(i);
+  }
+  var bakedAt=new System.Collections.Generic.Dictionary<int,System.Collections.Generic.List<int>>();long bakedRecords=0;
+  for(int i=0;i+3<baked.Length;i+=4){
+   if(baked[i]<0||baked[i]>=6144||baked[i+1]<0||baked[i+1]>=4096||baked[i+2]<0||baked[i+2]>=16384||baked[i+3]<-128||baked[i+3]>127)throw new Exception("Baked static outside the legacy map");
+   int block=(baked[i]/8)*512+baked[i+1]/8;if(!bakedAt.ContainsKey(block))bakedAt[block]=new System.Collections.Generic.List<int>();bakedAt[block].Add(i);
+  }
   using(var disk=new FileStream(path,FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None,65536)) {
    if(disk.Length==0)disk.SetLength(Base);
    if(disk.Length<Base)throw new Exception("World journal prefix must be64 MiB; existing data was not resized");
    byte[] header=new byte[512];
    if(disk.Length>Base){disk.Position=Base;disk.ReadExactly(header);if((R(header,0)!=0x32434D55&&R(header,0)!=0x32494D55)||(R(header,8)!=2&&R(header,8)!=3)||R(header,48)!=Hash(header,512,true))throw new Exception("Unrecognized data after world journal; refused");}
-   byte[] carried=new byte[0];
+   byte[] carried=new byte[0];long oldStore=0,oldStoreSectors=0;
+   if(disk.Length>Base&&R(header,0)==0x32434D55&&R(header,320)>0){oldStore=R(header,320);oldStoreSectors=R(header,328);if(oldStoreSectors<2||Base+(oldStore+oldStoreSectors)*512>disk.Length)throw new Exception("Store region outside the disk; refused");}
    if(disk.Length>Base&&R(header,0)==0x32434D55&&R(header,304)>0) {
     long region=R(header,304),capacity=R(header,312);if(capacity<2||Base+(region+capacity)*512>disk.Length)throw new Exception("Archive region outside the disk; refused");
     byte[] arc=new byte[512];disk.Position=Base+region*512;disk.ReadExactly(arc);
@@ -68,6 +135,7 @@ public static class UoaixMapInstaller {
    }
    byte[] prefix=Prefix(disk);Array.Clear(header);Q(header,0,0x32494D55);Q(header,8,3);Q(header,48,Hash(header,512,true));disk.Position=Base;disk.Write(header);disk.Flush(true);
    byte[] directory=new byte[DirectoryBytes],tiles=File.ReadAllBytes(Path.Combine(root,"TILEDATA.MUL"));
+   var stripped=Stripped(flora);
    byte[] land=new byte[196],idx=new byte[12],item=new byte[7],rows=new byte[64*256*6],block=new byte[99328];
    int[] counts=new int[64];int maximum=1;long records=0;
    using(var map=new FileStream(Path.Combine(root,"MAP0.MUL"),FileMode.Open,FileAccess.Read,FileShare.Read,65536,FileOptions.SequentialScan))
@@ -77,10 +145,11 @@ public static class UoaixMapInstaller {
     disk.Position=Base+(long)DataSector*512;
     for(int id=0;id<Blocks;id++) {
      map.ReadExactly(land);index.ReadExactly(idx);Array.Clear(counts);Q(block,0,id);Q(block,8,64);
+     if(landAt.ContainsKey(id))foreach(int i in landAt[id]){int at=4+((landEdits[i+1]%8)*8+landEdits[i]%8)*3;if(landEdits[i+2]>=0){land[at]=(byte)landEdits[i+2];land[at+1]=(byte)(landEdits[i+2]>>8);}land[at+2]=(byte)(sbyte)landEdits[i+3];landRecords++;}
      for(int cell=0;cell<64;cell++) {
       int at=4+cell*3,graphic=U16(land,at);if(graphic>=16384)throw new Exception("Invalid land graphic");
       int tile=(graphic/32)*836+4+(graphic%32)*26;
-      uint landFlags=(uint)U32(tiles,tile);if((landFlags&0x80000000u)!=0)throw new Exception("Land tiledata sets the mountain mark bit");if(mountain[graphic])landFlags|=0x80000000u;D(block,16+cell*7,landFlags);block[20+cell*7]=land[at+2];
+      uint landFlags=(uint)U32(tiles,tile);if((landFlags&0x80000000u)!=0)throw new Exception("Land tiledata sets the mountain mark bit");if((landFlags&0x40000000u)!=0)throw new Exception("Land tiledata sets the sand mark bit");if(mountain[graphic])landFlags|=0x80000000u;if(sand[graphic])landFlags|=0x40000000u;D(block,16+cell*7,landFlags);block[20+cell*7]=land[at+2];
      }
      long offset=U32(idx,0),size=U32(idx,4);
      if(offset!=4294967295) {
@@ -89,10 +158,17 @@ public static class UoaixMapInstaller {
       for(long n=0;n<size;n+=7) {
        statics.ReadExactly(item);int graphic=U16(item,0),dx=item[2],dy=item[3];
        if(graphic>=16384||dx>=8||dy>=8)throw new Exception("Invalid static record");
-       int tile=428032+(graphic/32)*1188+4+(graphic%32)*37;long flags=U32(tiles,tile);if((flags&576)==0||Chair(graphic))continue;
+       int tile=428032+(graphic/32)*1188+4+(graphic%32)*37;long flags=U32(tiles,tile);if((flags&576)==0||Chair(graphic)||Brush(graphic))continue;
+       if(stripped.Contains(Key((id/512)*8+dx,(id%512)*8+dy,graphic,item[4])))continue;
+       if(removed.Count>0&&removed.Contains(Key((id/512)*8+dx,(id%512)*8+dy,graphic,item[4]))){removedRecords++;continue;}
        int cell=dy*8+dx,count=counts[cell]++;if(count>=256)throw new Exception("Collider limit exceeded");
        int target=(cell*256+count)*6;D(rows,target,(uint)flags);rows[target+4]=item[4];rows[target+5]=tiles[tile+16];records++;
       }
+     }
+     if(bakedAt.ContainsKey(id))foreach(int i in bakedAt[id]) {
+      int graphic=baked[i+2],tile=428032+(graphic/32)*1188+4+(graphic%32)*37;long flags=U32(tiles,tile);if((flags&576)==0||Chair(graphic)||Brush(graphic))continue;
+      int cell=(baked[i+1]%8)*8+baked[i]%8,count=counts[cell]++;if(count>=256)throw new Exception("Collider limit exceeded");
+      int target=(cell*256+count)*6;D(rows,target,(uint)flags);rows[target+4]=(byte)(sbyte)baked[i+3];rows[target+5]=tiles[tile+16];records++;bakedRecords++;
      }
      int used=464;
      for(int cell=0;cell<64;cell++) {
@@ -119,14 +195,21 @@ public static class UoaixMapInstaller {
     int pad=(512-data.Length%512)%512;if(pad>0)disk.Write(new byte[pad]);
    }
    long archiveSector=(disk.Position-Base)/512;if(carried.Length>0)disk.Write(carried);else disk.Write(new byte[512]);
-   long length=Base+(archiveSector+ArchiveSectors)*512;disk.SetLength(length);disk.Position=Base+512;disk.Write(directory);disk.Flush(true);
+   long storeSector=archiveSector+ArchiveSectors;if(oldStore>0&&oldStore!=storeSector)throw new Exception("The world journal's store region would move; install on a fresh disk");
+   long stores=Math.Max(storeSectors,oldStoreSectors);long length=Base+(storeSector+stores)*512;if(oldStore==0)disk.SetLength(Base+storeSector*512);disk.SetLength(length);disk.Position=Base+512;disk.Write(directory);disk.Flush(true);
+   long multiSector=0,multiBytes=0;uint multiHash=0;
+   if(!String.IsNullOrEmpty(multiDir)) {
+    byte[] multis=Multis(multiDir,tiles);multiSector=storeSector+stores;multiBytes=multis.Length;multiHash=Hash(multis,multis.Length,false);
+    disk.Position=Base+multiSector*512;disk.Write(multis);int pad=(512-multis.Length%512)%512;if(pad>0)disk.Write(new byte[pad]);
+    length=Base+(multiSector+(multiBytes+511)/512)*512;disk.SetLength(length);disk.Flush(true);
+   }
    if(!Same(prefix,Prefix(disk)))throw new Exception("Journal prefix changed; cache remains uncommitted");
    for(int i=0;i<4;i++){string name=new[]{"MAP0.MUL","STAIDX0.MUL","STATICS0.MUL","TILEDATA.MUL"}[i];using(var f=File.OpenRead(Path.Combine(root,name))){if(Convert.ToHexString(SHA256.HashData(f))!=fingerprints[i])throw new Exception("Client changed during installation");}Convert.FromHexString(fingerprints[i]).CopyTo(header,128+i*32);}
    Q(header,0,0x32434D55);Q(header,8,3);Q(header,16,6144);Q(header,24,4096);Q(header,32,Blocks);Q(header,40,DirectoryBytes);
    Q(header,56,length-Base);Q(header,64,maximum);Q(header,72,DataSector);Q(header,80,records);
-   Q(header,88,decorSector);Q(header,96,decorBytes);Q(header,104,decorHash);Q(header,112,mapEnd);Q(header,120,maximum+overlay);Q(header,256,itemSector);Q(header,264,itemTable.Length);Q(header,272,itemHash);Q(header,280,floraSector);Q(header,288,floraBytes);Q(header,296,floraHash);Q(header,304,archiveSector);Q(header,312,ArchiveSectors);Q(header,48,Hash(header,512,true));
+   Q(header,88,decorSector);Q(header,96,decorBytes);Q(header,104,decorHash);Q(header,112,mapEnd);Q(header,120,maximum+overlay);Q(header,256,itemSector);Q(header,264,itemTable.Length);Q(header,272,itemHash);Q(header,280,floraSector);Q(header,288,floraBytes);Q(header,296,floraHash);Q(header,304,archiveSector);Q(header,312,ArchiveSectors);Q(header,320,storeSector);Q(header,328,stores);Q(header,336,multiSector);Q(header,344,multiBytes);Q(header,352,multiHash);Q(header,48,Hash(header,512,true));
    disk.Position=Base;disk.Write(header);disk.Flush(true);byte[] verify=new byte[512];disk.Position=Base;disk.ReadExactly(verify);if(!Same(header,verify))throw new Exception("Cache header readback failed");
-   return new long[]{length,length-Base,maximum,records};
+   return new long[]{length,length-Base,maximum,records,bakedRecords,landRecords,removedRecords,multiBytes};
   }
  }
 }
@@ -138,11 +221,40 @@ $mountain=[bool[]]::new(16384);$marked=0
 $tilesText=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'MiningTiles.codex'))
 foreach($m in [regex]::Matches($tilesText,'g >= (\d+) & g <= (\d+)|g == (\d+)')){$a=if($m.Groups[3].Success){[int]$m.Groups[3].Value}else{[int]$m.Groups[1].Value};$b=if($m.Groups[3].Success){$a}else{[int]$m.Groups[2].Value};for($g=$a;$g -le $b;$g++){if(-not $mountain[$g]){$mountain[$g]=$true;$marked++}}}
 if($marked -ne 294){throw "MiningTiles.codex lists $marked mountain land IDs, not 294"}
+# The legacy TILEDATA names 169 land IDs "sand" (26-byte land records, name at byte 6); bit 30 marks them for the sand gatherer.
+$tiledata=[IO.File]::ReadAllBytes($paths[3]);$sand=[bool[]]::new(16384);$sandMarked=0
+for($g=0;$g -lt 16384;$g++){$at=[math]::Floor($g/32)*836+4+($g%32)*26+6;if([Text.Encoding]::ASCII.GetString($tiledata,$at,20).Trim([char]0).Trim() -ieq 'sand'){$sand[$g]=$true;$sandMarked++}}
+if($sandMarked -ne 169){throw "TILEDATA names $sandMarked sand land IDs, not 169"}
 $watch=[Diagnostics.Stopwatch]::StartNew()
 if($DecorationFile){$DecorationFile=(Resolve-Path -LiteralPath $DecorationFile).Path}
 if($FloraFile){$FloraFile=(Resolve-Path -LiteralPath $FloraFile).Path}
-$result=[UoaixMapInstaller]::Build($root,$WorldDisk,[string[]]$fingerprints,$DecorationFile,$FloraFile,$mountain)
+# decor.cfg's baked items are statics of the shard's own (UoaixDecorator.md): each collides like a client static.
+$baked=[Collections.Generic.List[int]]::new();$removes=[Collections.Generic.List[int]]::new();$bakedArt=-1;$bakedLine=0
+foreach($line in [IO.File]::ReadLines((Join-Path $PSScriptRoot 'decor.cfg'))){
+    $bakedLine++;$text=$line.Trim()
+    if($text.Length -eq 0 -or $text.StartsWith('#')){continue}
+    if($text -match '^Remove\s+0x([0-9A-Fa-f]+)\s+(\d+)\s+(\d+)\s+(-?\d+)(?:\s|$)'){
+        $ra=[Convert]::ToInt32($Matches[1],16);$rx=[int]$Matches[2];$ry=[int]$Matches[3];$rz=[int]$Matches[4]
+        if($rx -ge 6144 -or $ry -ge 4096 -or $rz -lt -128 -or $rz -gt 127 -or $ra -lt 1 -or $ra -ge 16384){throw "decor.cfg:$bakedLine Remove outside the legacy map or record"}
+        $removes.AddRange([int[]]@($rx,$ry,$ra,$rz));continue
+    }
+    if($text -match '^Static\s+0x([0-9A-Fa-f]+)\b'){$bakedArt=[Convert]::ToInt32($Matches[1],16);continue}
+    if($text -match '^(\d+)\s+(\d+)\s+(-?\d+)(?:\s|$)'){if($bakedArt -lt 0){throw "decor.cfg:$bakedLine placement without a Static definition"};$baked.Add([int]$Matches[1]);$baked.Add([int]$Matches[2]);$baked.Add($bakedArt);$baked.Add([int]$Matches[3]);continue}
+    throw "decor.cfg:$bakedLine unparsed"
+}
+# land.cfg's baked land edits replace a cell's land art and height (UoaixDecorator.md item 6): x y art z per line.
+$landEdits=[Collections.Generic.List[int]]::new();$landLine=0
+foreach($line in [IO.File]::ReadLines((Join-Path $PSScriptRoot 'land.cfg'))){
+    $landLine++;$text=$line.Trim()
+    if($text.Length -eq 0 -or $text.StartsWith('#')){continue}
+    if($text -match '^(\d+)\s+(\d+)\s+(?:0x([0-9A-Fa-f]+)|keep)\s+(-?\d+)(?:\s|$)'){$landEdits.AddRange([int[]]@([int]$Matches[1],[int]$Matches[2],$(if($Matches[3]){[Convert]::ToInt32($Matches[3],16)}else{-1}),[int]$Matches[4]));continue}
+    throw "land.cfg:$landLine unparsed"
+}
+# The multis' colliders come from build-multis.ps1's output (-MultiDir) when given, else the client's own MULTI files.
+$MultiDir=if($MultiDir){(Resolve-Path -LiteralPath $MultiDir).Path}else{$root}
+$result=[UoaixMapInstaller]::Build($root,$WorldDisk,[string[]]$fingerprints,$DecorationFile,$FloraFile,$mountain,$sand,$StoreMiB*2048,$baked.ToArray(),$landEdits.ToArray(),$removes.ToArray(),$MultiDir)
 $watch.Stop()
-$receipt=[ordered]@{worldDisk=$WorldDisk;width=6144;height=4096;blocks=393216;sourceSha256=$fingerprints;diskBytes=$result[0];cacheBytes=$result[1];maximumColliders=$result[2];colliders=$result[3];elapsedSeconds=$watch.Elapsed.TotalSeconds;localOnly=$true}
+if($result[6] -ne $removes.Count/4){Write-Warning "decor.cfg names $($removes.Count/4) static removals; $($result[6]) colliding client statics matched (a Remove naming a non-colliding or absent static drops no collider)"}
+$receipt=[ordered]@{worldDisk=$WorldDisk;width=6144;height=4096;blocks=393216;sourceSha256=$fingerprints;diskBytes=$result[0];cacheBytes=$result[1];maximumColliders=$result[2];colliders=$result[3];bakedColliders=$result[4];landEdits=$result[5];removedColliders=$result[6];multiDir=$MultiDir;multiBytes=$result[7];elapsedSeconds=$watch.Elapsed.TotalSeconds;localOnly=$true}
 $receipt|ConvertTo-Json|Set-Content -LiteralPath ($WorldDisk+'.map-install.json')
 Write-Output "INSTALLED whole local map; cache bytes=$($result[1]); seconds=$($watch.Elapsed.TotalSeconds); $WorldDisk"

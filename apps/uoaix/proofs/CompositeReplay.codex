@@ -350,9 +350,9 @@ Chapter: CompositeReplay
     warred <- fighter.war
     relog <- cg-peace owner owner.checkpoint.game input (gs-reply [] "relog")
     relogged <- cr-check "a relogin in war mode starts in peace" (warred & not fighter.war & cr-peace (Ok relog))
-    buy-packet <- gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] (list-at owner.vendor.vendors 0).serial) 2) 26) (list-at owner.vendor.lots 0).serial) 1
+    buy-packet <- gp-put16 (gp-put32 (list-push (list-push (gp-put32 [59,0,15] (list-at owner.vendor.vendors 0).serial) 2) 26) (ep-lot owner.vendor.currency.world.goods (ep-lot-nth owner.vendor.currency.world.goods 0)).serial) 1
     bought <- cs-route store owner.checkpoint.game input map 2593 buy-packet
-    h <- cr-check "vendor checkout commits currency and split lot together" (is-ok bought & owner.vendor.sale-count == 1 & owner.vendor.lot-count == 2)
+    h <- cr-check "vendor checkout commits currency and split lot together" (is-ok bought & owner.vendor.sale-count == 1 & (ep-lot-count owner.vendor.currency.world.goods) == 2)
     shirt <- peek-qword owner.checkpoint.game.characters 112
     lifted <- cs-route store owner.checkpoint.game input map 2593 (gp-put16 (gp-put32 [7] shirt) 1)
     dropped <- cs-route store owner.checkpoint.game input map 2593 (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] shirt) 20) 20) 0) (list-at owner.vendor.players 0).pack)
@@ -371,6 +371,7 @@ Chapter: CompositeReplay
     early <- cs-timer store (store.last-save + 59 * hpet-ticks-per-second)
     m <- cr-check "timer does not save before sixty seconds" (is-ok early & store.store.sequence == before-walk)
     saved <- cs-timer store (store.last-save + 60 * hpet-ticks-per-second)
+    landed <- cs-flight-drain store
     n <- cr-check "timer commits pending position" (is-ok saved & store.store.sequence == before-walk + 1)
     moved <- cs-route store owner.checkpoint.game input map 2593 [2,2,2]
     quit <- cs-route store owner.checkpoint.game input map 2593 [1,0,0,0,0]
@@ -387,10 +388,37 @@ Chapter: CompositeReplay
     summoned <- cr-check "British summons an item stack into the backpack and it commits" (cr-noted added "british:add" & cr-child owner.checkpoint.game.world (world-first-child owner.checkpoint.game.world holder) #1BF2 5 & store.store.sequence > before-walk + 3)
     summon-lot <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #1BF2 5
     lotted <- cr-check "the summoned ingots are a found economy lot of 5 for British and the census balances (UOAIX-85)" (summon-lot >= 0
-      & (list-at owner.vendor.lots (max 0 summon-lot)).item == 31 & (list-at owner.vendor.lots (max 0 summon-lot)).quantity == 5 & euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1)
+      & (ep-lot owner.vendor.currency.world.goods (max 0 summon-lot)).item == 31 & (ep-lot-amount owner.vendor.currency.world.goods (max 0 summon-lot)) == 5 & euv-valid owner.vendor.currency & ep-census owner.vendor.currency.world 1)
+    split <- cr-lot-moves store map input holder summon-lot
+    ore-added <- cp-add store owner.checkpoint.game input (cr-say "[add 19B9 3")
+    ore-lot <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #19B9 3
+    staled <- (if ore-lot < 0 then -1 else gsi-register owner.items (ep-lot owner.vendor.currency.world.goods ore-lot).serial 0 0 True False)
+    ore-old <- cr-check "summoned iron ore is a resource lot, here registered non-stackable as a world saved before UOAIX-103 holds it" (cr-noted ore-added "british:add" & ore-lot >= 0 & staled >= 0
+      & not (gsi-meta owner.items (ep-lot owner.vendor.currency.world.goods (max 0 ore-lot)).serial).stackable)
     named <- cr-named store input holder
     british <- cr-british store map input before-walk
-    a + peaceful + b + safe + migration + door-check + c + d + e + f + g + relogged + h + j + bank-check + k + l + m + n + p + q + summoned + named + british
+    a + peaceful + b + safe + migration + door-check + c + d + e + f + g + relogged + h + j + bank-check + k + l + m + n + p + q + summoned + split + ore-old + named + british
+  end
+  cr-lot-moves : CompositeOwner, WalkMap, GameInput, Integer, Integer -> [Console, Device.Block] Integer
+  cr-lot-moves (store) (map) (input) (holder) (lot) = let owner = store.state in act
+    ingot <- (ep-lot owner.vendor.currency.world.goods (max 0 lot)).serial
+    lots <- (ep-lot-count owner.vendor.currency.world.goods)
+    slot <- gsi-slot owner.checkpoint.game input.session.serial 0
+    ready <- __record-set (list-at owner.items.actors (max 0 slot)) "next-lift" 0
+    lifted <- cs-route store owner.checkpoint.game input map 2593 (gp-put16 (gp-put32 [7] ingot) 2)
+    dropped <- cs-route store owner.checkpoint.game input map 2593 (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] ingot) 30) 30) 0) holder)
+    piece <- cr-summoned-lot owner.vendor (world-first-child owner.checkpoint.game.world holder) #1BF2 2
+    piece-serial <- (ep-lot owner.vendor.currency.world.goods (max 0 piece)).serial
+    split <- cr-check "a part lifted from a lot stack takes its own lot and the stack's lot keeps the rest, so the vendor state still saves (UOAIX-99)" (is-ok lifted & is-ok dropped & lot >= 0 & piece >= 0 & piece-serial /= ingot
+      & (ep-lot-amount owner.vendor.currency.world.goods lot) == 3 & (ep-lot-amount owner.vendor.currency.world.goods piece) == 2 & (ep-lot-count owner.vendor.currency.world.goods) == lots + 1 & gvsc-valid owner.vendor)
+    graded <- if piece < 0 then 0 else poke-qword (ep-row owner.vendor.currency.world.goods piece) 24 500
+    again <- __record-set (list-at owner.items.actors (max 0 slot)) "next-lift" 0
+    relifted <- cs-route store owner.checkpoint.game input map 2593 (gp-put16 (gp-put32 [7] piece-serial) 2)
+    stacked <- cs-route store owner.checkpoint.game input map 2593 (gp-put32 (list-push (gp-put16 (gp-put16 (gp-put32 [8] piece-serial) 65535) 65535) 0) ingot)
+    merged <- cr-check "stacking a part of another grade back onto the stack folds its lot into the stack's lot at the averaged quality (UOAIX-99, UOAIX-103)" (is-ok relifted & is-ok stacked & gv-lot owner.vendor piece-serial 0 < 0
+      & gv-lot owner.vendor ingot 0 >= 0 & (ep-lot-amount owner.vendor.currency.world.goods (max 0 (gv-lot owner.vendor ingot 0))) == 5
+      & (ep-lot owner.vendor.currency.world.goods (max 0 (gv-lot owner.vendor ingot 0))).quality == 800 & (ep-lot-count owner.vendor.currency.world.goods) == lots & gvsc-valid owner.vendor)
+    split + merged
   end
   cr-tile : Integer, Integer, Text -> Integer
   cr-tile (tiles) (graphic) (name) = let bytes = text-to-unicode-bytes name
@@ -439,14 +467,16 @@ Chapter: CompositeReplay
     in let player = list-at owner.vendor.players 0
     in let holder = gsi-pack-find game.world player.serial 0
     in act
-      a <- cr-check "restart restores vendor sale and physical lot, the summoned ingot lot (UOAIX-85) and the summoned longswords (UOAIX-69)" (owner.vendor.sale-count == 1 & owner.vendor.lot-count == 3
+      a <- cr-check "restart restores vendor sale and physical lot, the summoned ingot lot (UOAIX-85) and the summoned longswords (UOAIX-69)" (owner.vendor.sale-count == 1 & (ep-lot-count owner.vendor.currency.world.goods) == 4
         & cr-summoned-lot owner.vendor (world-first-child game.world holder) #1BF2 5 >= 0 & cr-child game.world (world-first-child game.world holder) #0F60 2
-        & world-count game.world == 31 + cr-farm game.world)
+        & world-count game.world == 32 + cr-farm game.world)
       b <- cr-check "restart clears quote and live authority" (player.side == 0 & player.connection == -1 & game.active == 0 & game.pending-key == 0)
       c <- cr-check "restart preserves character position and moved equipment" (peek-qword game.characters 112 == 0 & (when world-get game.world player.serial is Err (_) -> False is Ok (m) -> m.x == 1423))
       d <- cr-check "restart preserves definitions and currency census" (gsi-known owner.items player.pack & euv-valid owner.vendor.currency & owner.combat.scene == 0 & cbw-fixture-count owner.combat 0 0 == 0)
+      ore <- cr-check "a resource pile saved non-stackable is stackable after the restart (UOAIX-103 load repair)" (cr-summoned-lot owner.vendor (world-first-child game.world holder) #19B9 3 >= 0
+        & (gsi-meta owner.items (ep-lot owner.vendor.currency.world.goods (max 0 (cr-summoned-lot owner.vendor (world-first-child game.world holder) #19B9 3))).serial).stackable)
       e <- cr-check "restart preserves monsters shrine and door" ((list-at owner.monsters.slots 0).serial > 0 & owner.resurrection.shrine > 0 & (when owner.decoration is None -> False is Just (state) -> peek-byte state.opened 0 == 1))
-      a + b + c + d + e
+      a + b + c + d + e + ore
     end
   cr-death : CompositeOwner -> [Console, Device.Block] Integer
   cr-death (store) = let owner = store.state

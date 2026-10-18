@@ -15,7 +15,8 @@ already carry their complete catalog and retain their saved meanings.
 Copper and silver use the existing mining skill and stone pickaxe. The copper
 source yields up to four ore and regrows in 48 game hours; silver yields up to
 two and regrows in 72 game hours. These are simulation defaults. Each smelting
-recipe consumes two matching ore and one fallen branch at an owned smelter,
+recipe lists two matching ore and one fallen branch at an owned smelter; `ep-craft`
+spends no branch on a smelt and rolls Mining (UOAIX-108, Damian 2026-10-07),
 using metalworking practice. No stock or trained skill is granted at admission.
 
 All three coin edges require the royal mint and stone hammer. Their unit

@@ -1,0 +1,57 @@
+Chapter: BvtDurability
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-238 stage 1: every weapon and armour graphic has ServUO's starting durability range; an item never worn reads
+ full at a max rolled in that range; a set value is kept and survives the codec tail; a deleted item's row is not saved.
+  bvt-durability : Integer -> [Console] Integer
+  bvt-durability (unused) = when cg-new 0
+    is Err (e) -> bvt-check ("durability fixture: " & e) False
+    is Ok (owner) -> let world = owner.items.world
+      in when world-create world (gs-item 0 #1415 0)
+        is Err (e) -> bvt-check ("durability plate: " & e) False
+        is Ok (plate) -> when world-create world (gs-item 0 #13B9 0)
+          is Err (e) -> bvt-check ("durability sword: " & e) False
+          is Ok (sword) -> let s = owner.durability
+            in let full = id-read s world plate #1415
+            in let m = int-mod full 65536
+            in let set = id-set s world plate 20 m
+            in let over = id-set s world plate (m + 1) m
+            in let worn = id-read s world plate #1415
+            in let swung = id-set s world sword 7 (id-max sword #13B9)
+            in let gone = world-delete world sword
+            in let buf = alloc-bytes (id-tail-size s world)
+            in let written = id-write-tail s world buf
+            in let back = id-new world.capacity
+            in let kept = id-read-tail back world buf (id-tail-size s world)
+            in let lightly = id-wear s world plate #1415 5
+            in let after = id-read s world plate #1415
+            in let deep = id-wear s world plate #1415 20
+            in let deeper = id-read s world plate #1415
+            in let floor = id-wear s world plate #1415 500
+            in let last = id-read s world plate #1415
+            in let mendable = id-set s world plate 10 m
+            in let mended = id-repair s world plate #1415 1000 0
+            in let whole = id-read s world plate #1415
+            in let again = id-repair s world plate #1415 1000 99
+            in let wrecked = id-set s world plate 0 m
+            in let failed = id-repair s world plate #1415 0 99
+            in let still = id-read s world plate #1415
+            in let thin = id-set s world plate 0 1
+            in let spent = id-repair s world plate #1415 1000 0
+            in let renewed = id-restore s world plate #1415
+            in let fresh = id-read s world plate #1415
+            in let nothing = id-restore s world plate #1F03
+            in act
+            print-line-uni ("DURABILITY plate=" & show (full / 65536) & "/" & show m & " worn=" & show (worn / 65536) & " kept=" & show kept)
+            a <- bvt-check "ServUO's ranges: plate chest 0x1415 50..65, viking sword 0x13B9 31..100, a robe 0x1F03 none (dur-range)" (dur-range #1415 == 50 * 65536 + 65 & dur-range #13B9 == 31 * 65536 + 100 & dur-range #1F03 == 0)
+            b <- bvt-check "an item never worn reads full at a max in its range, the same every time" (full / 65536 == m & m >= 50 & m <= 65 & id-max plate #1415 == m)
+            c <- bvt-check "a set durability is kept; hits past the max are refused" (set == 0 & over < 0 & worn == 20 * 65536 + m)
+            d <- bvt-check "the durability tail keeps a standing item's row and drops a deleted item's (codec tail 22)" (swung == 0 & is-ok gone & kept == 1 & id-read back world plate #1415 == 20 * 65536 + m & written == buf + 8 + 16)
+            e <- bvt-check "wear spends hits first, then the max, which stops at 1 (ServUO OnHit; UOAIX-238)" (lightly == 0 & after == 15 * 65536 + m & deep == 1 & deeper == m - 5 & floor == 1 & last == 1)
+            r <- bvt-check "UOAIX-242 D5: a repair that succeeds mends the hits to a max lowered by 1, a full item needs none, a failure also lowers the max, a max of 1 cannot be repaired" (mendable == 0 & mended == 1 & whole / 65536 == m - 1 & int-mod whole 65536 == m - 1 & again == 0 & wrecked == 0 & failed == 2 & still == m - 1 & thin == 0 & spent == 3)
+            l <- bvt-check "UOAIX-242 D5: every repair lowers the max by max(1, (max + 25) / 50): 5 at 255, 3 at 127, 1 at 74, 2 at 75" (id-max-loss 255 == 5 & id-max-loss 127 == 3 & id-max-loss 74 == 1 & id-max-loss 75 == 2 & id-max-loss 1 == 1)
+            k <- bvt-check "UOAIX-242 D5: the repair difficulty is (max - hits) * 1250 / max - 250, from the item before the loss" (id-repair-difficulty s world sword #13B9 == 0 - 250)
+            p <- bvt-check "a powder of restoration sets the max to its kind's highest and keeps the hits; item 166 is the powder, drawn 0x1006, found only in Nujel'm's sand (UOAIX-238)" (renewed == 65 & fresh == 65 & nothing < 0 & (list-at (bb-catalog 0).items 165).name == "powder of restoration" & gh-output-graphic gh-powder == #1006 & gh-powder == 166)
+            a + b + c + d + e + r + l + k + p
+            end

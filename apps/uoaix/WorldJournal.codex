@@ -26,8 +26,7 @@ Chapter: WorldJournal
     in let b = poke-qword buf 8 event.sequence
     in let c = poke-qword buf 16 event.tick
     in let d = poke-qword buf 24 event.operation
-    in let view = WorldTable { buffer = buf + 16, capacity = 1, index = 0 }
-    in let obj = world-write-slot view 0 event.object.serial event.object
+    in let obj = world-write-row (buf + 32) event.object.serial event.object
     in let e = poke-qword buf 112 0
     in let f = poke-qword buf 120 0
     in let checksum = poke-qword buf 112 (wj-hash buf 0 2166136261)
@@ -42,14 +41,14 @@ Chapter: WorldJournal
     in let op = peek-qword buf 24
     in if seq <= 0 | tick < 0 | op < 1 | op > 3 then Err "journal metadata invalid"
     else Ok (WorldEvent { sequence = seq, tick = tick, operation = op,
-      object = world-read-slot (WorldTable { buffer = buf + 16, capacity = 1, index = 0 }) 0 })
+      object = world-read-row (buf + 32) })
 
   wj-create : WorldTable, WorldObject -> Result Integer Text
   wj-create (world) (obj) =
     let slot = peek-qword world.buffer 8
     in if slot < 0 then Err "journal create exceeds object budget"
-    else let old = peek-qword world.buffer (16 + slot * 80)
-    in let low = if old == 0 then slot + 1 else bit-and (0 - old) world-serial-mask + world.capacity
+    else let old = peek-qword (wi-object world.buffer slot) 0
+    in let low = wi-next-low old slot
     in let serial = low + (if obj.kind == 2 then world-item-bit else 0)
     in if obj.serial /= serial then Err "journal create serial disagrees with allocator"
     else world-create world (WorldObject { serial = 0, kind = obj.kind, x = obj.x, y = obj.y, z = obj.z,
@@ -81,13 +80,12 @@ Chapter: WorldJournal
     if size < 0 | size > wj-max-events * 128 then Err "journal replay budget exceeded"
     else if checkpoint.world.capacity < 1 | checkpoint.world.capacity > world-max-objects then Err "journal world capacity invalid"
     else if checkpoint.tick < 0 | checkpoint.sequence < 0 then Err "journal checkpoint metadata invalid"
-    else let bytes = 16 + checkpoint.world.capacity * 80
-    in let memory = alloc-bytes bytes
-    in let copied = ws-copy checkpoint.world.buffer memory bytes 0
-    in let world = WorldTable { buffer = memory, capacity = checkpoint.world.capacity, index = 0 }
-    in if not (world-reindex world) then Err "journal index rebuild failed"
-    else when wj-loop world buf (size / 128) 0 checkpoint.tick checkpoint.sequence
+    else when world-new checkpoint.world.capacity
       is Err (e) -> Err e
-      is Ok (next) -> Ok (WorldReplay { checkpoint = next, applied = size / 128, tail-bytes = int-mod size 128 })
+      is Ok (world) -> let copied = ws-pair-copy checkpoint.world world 0
+        in if not (world-reindex world) then Err "journal index rebuild failed"
+        else when wj-loop world buf (size / 128) 0 checkpoint.tick checkpoint.sequence
+          is Err (e) -> Err e
+          is Ok (next) -> Ok (WorldReplay { checkpoint = next, applied = size / 128, tail-bytes = int-mod size 128 })
 
 Page 1

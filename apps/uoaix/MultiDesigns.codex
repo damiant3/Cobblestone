@@ -1,0 +1,212 @@
+Chapter: MultiDesigns
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldFlora
+  cites Uoaix chapter MulReaders
+  cites Uoaix chapter Decorator
+  cites Uoaix chapter WorldRecords
+  cites Foreword chapter CCE
+
+ MCP1 (install-map-cache.ps1): a 64-byte head (magic, 4096 ids, rows, 12), 4096 directory entries of first row and row
+ count (u32 each) from 64, then 12-byte rows from 32832 sorted by dx then dy: dx, dy, dz (i16), height (u16) and
+ TILEDATA flags (u32).
+  md-ids : Integer = 4096
+  md-rows-at : Integer = 32832
+  MdState = record { data : Integer, map-x : Integer, map-y : Integer, map-revision : Integer, town-solids : Integer, town-revision : Integer,
+    cuts : Integer, cut-count : Integer, cut-pending : Boolean }
+  md-new : Integer -> MdState
+  md-new (unused) = MdState { data = 0, map-x = -1, map-y = -1, map-revision = -1, town-solids = 0, town-revision = -1,
+    cuts = alloc-bytes (md-cut-room * md-cut-bytes), cut-count = 0, cut-pending = False }
+  md-count : MdState, Integer -> Integer
+  md-count (s) (id) = if s.data == 0 | id < 0 | id >= md-ids then 0
+    else let first = mul-u32 s.data (64 + id * 8)
+    in let count = mul-u32 s.data (64 + id * 8 + 4)
+    in if first + count > peek-qword s.data 16 then 0 else count
+  md-row : MdState, Integer -> Integer
+  md-row (s) (id) = s.data + md-rows-at + mul-u32 s.data (64 + id * 8) * 12
+ The design names follow the rows (head cell 32 counts them): 32 bytes each, the id (u32) and up to 28 ASCII bytes.
+  md-names : MdState -> Integer
+  md-names (s) = if s.data == 0 then 0 else peek-qword s.data 32
+  md-name-at : MdState, Integer -> Integer
+  md-name-at (s) (i) = s.data + md-rows-at + peek-qword s.data 16 * 12 + i * 32
+  md-name-id : MdState, Integer -> Integer
+  md-name-id (s) (i) = mul-u32 (md-name-at s i) 0
+  md-name-text : MdState, Integer -> Text
+  md-name-text (s) (i) = unicode-bytes-to-text (md-name-bytes (md-name-at s i) 0 [])
+  md-name-bytes : Integer, Integer, List Integer -> List Integer
+  md-name-bytes (at) (i) (out) = if i >= 28 | peek-byte at (4 + i) == 0 then out else md-name-bytes at (i + 1) (out & [peek-byte at (4 + i)])
+ The designs' front doors follow the names (head cell 40 counts them): 16 bytes each, the id, dx, dy, dz, closed art,
+ open art, open dx and open dy (16-bit each); a design has at most two (a single or a double door).
+  md-doors : MdState -> Integer
+  md-doors (s) = if s.data == 0 then 0 else peek-qword s.data 40
+  md-door-at : MdState, Integer -> Integer
+  md-door-at (s) (i) = s.data + md-rows-at + peek-qword s.data 16 * 12 + md-names s * 32 + i * 16
+  md-door-count : MdState, Integer -> Integer
+  md-door-count (s) (id) = md-door-tally s id 0 0
+  md-door-tally : MdState, Integer, Integer, Integer -> Integer
+  md-door-tally (s) (id) (i) (n) = if i >= md-doors s then n else md-door-tally s id (i + 1) (if mul-u16 (md-door-at s i) 0 == id then n + 1 else n)
+ The address of door n of design id, or 0.
+  md-door : MdState, Integer, Integer -> Integer
+  md-door (s) (id) (n) = md-door-nth s id n 0
+  md-door-nth : MdState, Integer, Integer, Integer -> Integer
+  md-door-nth (s) (id) (n) (i) = if i >= md-doors s then 0
+    else if mul-u16 (md-door-at s i) 0 /= id then md-door-nth s id n (i + 1)
+    else if n == 0 then md-door-at s i
+    else md-door-nth s id (n - 1) (i + 1)
+  md-door-field : Integer, Integer -> Integer
+  md-door-field (at) (f) = if f == 4 | f == 5 then mul-u16 at (f * 2) else mul-s16 (mul-u16 at (f * 2))
+ The id named by the ASCII bytes of packet from up to stop, or -1.
+  md-find-name : MdState, List Integer, Integer, Integer, Integer -> Integer
+  md-find-name (s) (packet) (from) (stop) (i) = if i >= md-names s then -1
+    else if stop - from >= 1 & md-name-same (md-name-at s i) packet from stop 0 then md-name-id s i
+    else md-find-name s packet from stop (i + 1)
+  md-name-same : Integer, List Integer, Integer, Integer, Integer -> Boolean
+  md-name-same (at) (packet) (from) (stop) (i) = if from + i >= stop then i >= 28 | peek-byte at (4 + i) == 0
+    else if i >= 28 then False
+    else if peek-byte at (4 + i) /= list-at packet (from + i) then False
+    else md-name-same at packet from stop (i + 1)
+
+ One collider in or out of the window: 1 changed, 0 already so or outside the window, -1 the cell had no room.
+  md-solid : WalkMap, Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
+  md-solid (map) (x) (y) (z) (height) (flags) (present) = let cell = walk-cell map x y
+    in if cell < 0 then 0
+    else if z < -128 | z > 127 then (if present then -1 else 0)
+    else let found = wf-solid-find map cell z height flags 0
+    in if present & found < 0 then (when walk-add-solid map x y z height flags is Err (_) -> -1 is Ok (_) -> 1)
+    else if not present & found >= 0 then let dropped = wf-solid-drop map cell found in 1
+    else 0
+ Lays (present) or lifts multi id's colliders with its origin at x, y, z; answers the colliders that found no room.
+  md-lay : MdState, WalkMap, Integer, Integer, Integer, Integer, Boolean -> Integer
+  md-lay (s) (map) (id) (x) (y) (z) (present) = md-lay-rows map (md-row s id) x y z present (md-count s id) 0
+  md-lay-rows : WalkMap, Integer, Integer, Integer, Integer, Boolean, Integer, Integer -> Integer
+  md-lay-rows (map) (at) (x) (y) (z) (present) (left) (missed) = if left <= 0 then missed
+    else let r = md-solid map (x + mul-s16 (mul-u16 at 0)) (y + mul-s16 (mul-u16 at 2)) (z + mul-s16 (mul-u16 at 4)) (mul-u16 at 6) (mul-u32 at 8) present
+    in md-lay-rows map (at + 12) x y z present (left - 1) (if r < 0 then missed + 1 else missed)
+ The cells inside the window that lack room for multi id's colliders there; rows of one cell are adjacent.
+  md-fits : MdState, WalkMap, Integer, Integer, Integer -> Integer
+  md-fits (s) (map) (id) (x) (y) = md-fit-rows map (md-row s id) x y (md-count s id) 1 0
+  md-fit-rows : WalkMap, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  md-fit-rows (map) (at) (x) (y) (left) (run) (short) = if left <= 0 then short
+    else if left > 1 & mul-u16 at 0 == mul-u16 at 12 & mul-u16 at 2 == mul-u16 at 14 then md-fit-rows map (at + 12) x y (left - 1) (run + 1) short
+    else let cell = walk-cell map (x + mul-s16 (mul-u16 at 0)) (y + mul-s16 (mul-u16 at 2))
+    in let full = if cell < 0 then False else peek-qword map.solids (cell * map.stride) + run > (map.stride - 8) / 24
+    in md-fit-rows map (at + 12) x y (left - 1) 1 (if full then short + 1 else short)
+
+ Pieces a GM cuts from the map in game ([decor cut) and designs a GM composes from placed decorations ([decor compose),
+ kept in memory until the bake exports them to multis.cfg (the bake's restart empties the list): 48 bytes a row, the
+ GM's account (u32), the name (28 ASCII bytes from 4), x0, y0, x1, y1 (u16 each from 32), the kind (byte 40: 0 a cut,
+ 1 a compose) and a compose's origin z, x, y (16-bit each from 42). md-cut-room is a deliberate cap between two bakes.
+  md-cut-room : Integer = 32
+  md-cut-bytes : Integer = 48
+  md-cut-at : MdState, Integer -> Integer
+  md-cut-at (s) (i) = s.cuts + i * md-cut-bytes
+  md-cut-find : MdState, List Integer, Integer, Integer, Integer -> Integer
+  md-cut-find (s) (packet) (from) (stop) (i) = if i >= s.cut-count then -1
+    else if md-name-same (md-cut-at s i) packet from stop 0 then i
+    else md-cut-find s packet from stop (i + 1)
+  md-name-valid : List Integer, Integer, Integer -> Boolean
+  md-name-valid (packet) (from) (stop) = stop - from >= 1 & stop - from <= 28 & md-name-chars packet from stop
+  md-name-chars : List Integer, Integer, Integer -> Boolean
+  md-name-chars (packet) (i) (stop) = if i >= stop then True
+    else let c = list-at packet i
+    in if (c >= 97 & c <= 122) | (c >= 48 & c <= 57) | c == 45 then md-name-chars packet (i + 1) stop else False
+ Writes the name into the next free cut row without counting it; md-cut-close counts it once its corners are known
+ (alloc-bytes does not zero, so whether a row is open is a flag, not its bytes).
+  md-cut-open : MdState, List Integer, Integer, Integer, Integer -> Boolean
+  md-cut-open (s) (packet) (from) (stop) (account) = if s.cut-count >= md-cut-room then False
+    else let at = md-cut-at s s.cut-count
+    in let zeroed = md-zero at 0 (md-cut-bytes / 8)
+    in let a = poke-32 at 0 account
+    in let named = md-put packet from stop at 4
+    in let pending = __record-set s "cut-pending" True in True
+  md-compose-open : MdState, List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  md-compose-open (s) (packet) (from) (stop) (account) (x) (y) (z) = if not (md-cut-open s packet from stop account) then False
+    else let at = md-cut-at s s.cut-count
+    in let a = poke-byte at 40 1
+    in let b = poke-16 at 42 (bit-and z #FFFF)
+    in let c = poke-16 at 44 x
+    in let d = poke-16 at 46 y in True
+  md-cut-close : MdState, Integer, Integer, Integer, Integer -> Integer
+  md-cut-close (s) (x0) (y0) (x1) (y1) = if s.cut-count >= md-cut-room | not s.cut-pending then -1
+    else let at = md-cut-at s s.cut-count
+    in let done = __record-set s "cut-pending" False
+    in let a = poke-16 at 32 x0
+    in let b = poke-16 at 34 y0
+    in let c = poke-16 at 36 x1
+    in let d = poke-16 at 38 y1
+    in let e = __record-set s "cut-count" (s.cut-count + 1) in s.cut-count - 1
+  md-zero : Integer, Integer, Integer -> Integer
+  md-zero (at) (i) (n) = if i >= n then 0 else let a = poke-qword at (i * 8) 0 in md-zero at (i + 1) n
+  md-put : List Integer, Integer, Integer, Integer, Integer -> Integer
+  md-put (packet) (i) (stop) (at) (k) = if i >= stop then 0 else let a = poke-byte at k (list-at packet i) in md-put packet (i + 1) stop at (k + 1)
+  md-cuts-json : MdState, DcState, WorldTable, Integer, Text -> Text
+  md-cuts-json (s) (decor) (world) (i) (out) = if i >= s.cut-count then "[" & out & "]"
+    else let at = md-cut-at s i
+    in let composed = peek-byte at 40 == 1
+    in md-cuts-json s decor world (i + 1) ((if out == "" then "" else out & ",") & "{\"name\":\"" & unicode-bytes-to-text (md-name-bytes at 0 [])
+      & "\",\"x0\":" & show (mul-u16 at 32) & ",\"y0\":" & show (mul-u16 at 34) & ",\"x1\":" & show (mul-u16 at 36) & ",\"y1\":" & show (mul-u16 at 38)
+      & ",\"account\":" & show (mul-u32 at 0)
+      & (if composed then ",\"compose\":{\"x\":" & show (mul-u16 at 44) & ",\"y\":" & show (mul-u16 at 46) & ",\"z\":" & show (mul-s16 (mul-u16 at 42))
+        & ",\"members\":[" & md-members-json decor world (mul-u16 at 32) (mul-u16 at 34) (mul-u16 at 36) (mul-u16 at 38) 0 "" & "]}" else "") & "}")
+ Every decoration standing in the rectangle, as {art, x, y, z}; a removal mark is no part of a design.
+  md-members-json : DcState, WorldTable, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  md-members-json (decor) (world) (x0) (y0) (x1) (y1) (i) (out) = if i >= decor.count then out
+    else if dc-removal decor i then md-members-json decor world x0 y0 x1 y1 (i + 1) out
+    else when world-get world (dc-serial decor i)
+      is Err (_) -> md-members-json decor world x0 y0 x1 y1 (i + 1) out
+      is Ok (o) -> if o.x < x0 | o.x > x1 | o.y < y0 | o.y > y1 then md-members-json decor world x0 y0 x1 y1 (i + 1) out
+        else md-members-json decor world x0 y0 x1 y1 (i + 1) ((if out == "" then "" else out & ",")
+          & "{\"art\":" & show o.graphic & ",\"x\":" & show o.x & ",\"y\":" & show o.y & ",\"z\":" & show o.z & "}")
+
+ The rectangle multi id's colliders cover, relative to its origin, as [dx0, dy0, dx1, dy1]; all 0 with no rows.
+  md-bounds : MdState, Integer -> List Integer
+  md-bounds (s) (id) = let n = md-count s id
+    in if n == 0 then [0, 0, 0, 0]
+    else let at = md-row s id
+    in [mul-s16 (mul-u16 at 0), md-dy at n 0 32767 True, mul-s16 (mul-u16 (at + (n - 1) * 12) 0), md-dy at n 0 (0 - 32768) False]
+  md-dy : Integer, Integer, Integer, Integer, Boolean -> Integer
+  md-dy (at) (n) (i) (best) (low) = if i >= n then best
+    else let dy = mul-s16 (mul-u16 (at + i * 12) 2)
+    in md-dy at n (i + 1) (if low then min best dy else max best dy) low
+
+ The paged window is laid again when it moves or a placement source's revision changes, the Britain window when the
+ revision changes; laying is idempotent, so a window keeps one copy.
+  md-map-due : MdState, Integer, WalkMap -> Boolean
+  md-map-due (s) (revision) (map) = s.data /= 0 & not (map.x == s.map-x & map.y == s.map-y & revision == s.map-revision)
+  md-town-due : MdState, Integer, Maybe WalkMap -> Boolean
+  md-town-due (s) (revision) (town) = if s.data == 0 then False
+    else when town
+      is None -> False
+      is Just (t) -> not (t.solids == s.town-solids & revision == s.town-revision)
+  md-mark : MdState, Integer, WalkMap, Maybe WalkMap -> Integer
+  md-mark (s) (revision) (map) (town) = let a = __record-set s "map-x" map.x
+    in let b = __record-set s "map-y" map.y
+    in let c = __record-set s "map-revision" revision
+    in when town
+      is None -> 0
+      is Just (t) -> let d = __record-set s "town-solids" t.solids in let e = __record-set s "town-revision" revision in 0
+ A decoration of art 0x4000 + id is a placed multi.
+  md-sync : MdState, DcState, WorldTable, WalkMap, Maybe WalkMap -> Integer
+  md-sync (s) (decor) (world) (map) (town) = let paged = md-map-due s decor.revision map
+    in let towned = md-town-due s decor.revision town
+    in let missed = (if paged then md-lay-all s decor world map 0 0 else 0)
+      + (if towned then (when town is None -> 0 is Just (t) -> md-lay-all s decor world t 0 0) else 0)
+    in let marked = if paged | towned then md-mark s decor.revision map town else 0 in missed
+  md-lay-all : MdState, DcState, WorldTable, WalkMap, Integer, Integer -> Integer
+  md-lay-all (s) (decor) (world) (map) (i) (missed) = if i >= decor.count then missed
+    else let mark = __heap-save
+    in let more = when world-get world (dc-serial decor i)
+      is Err (_) -> 0
+      is Ok (o) -> if o.graphic < #4000 then 0 else md-lay s map (o.graphic - #4000) o.x o.y o.z True
+    in let restored = __heap-restore mark
+    in md-lay-all s decor world map (i + 1) (missed + more)
+ Lifts a placed multi from both windows before the decorator removes or moves it.
+  md-lift : MdState, WorldTable, Integer, WalkMap, Maybe WalkMap -> Integer
+  md-lift (s) (world) (serial) (map) (town) = let mark = __heap-save
+    in let lifted = when world-get world serial
+      is Err (_) -> 0
+      is Ok (o) -> if o.graphic < #4000 | s.data == 0 then 0
+        else let a = md-lay s map (o.graphic - #4000) o.x o.y o.z False
+        in when town
+          is None -> 0
+          is Just (t) -> md-lay s t (o.graphic - #4000) o.x o.y o.z False
+    in let restored = __heap-restore mark in lifted

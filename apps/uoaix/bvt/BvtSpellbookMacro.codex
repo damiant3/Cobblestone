@@ -1,0 +1,69 @@
+Chapter: BvtSpellbookMacro
+  cites Uoaix chapter GameMagery
+  cites Uoaix chapter MageryCodec
+  cites Uoaix chapter EconomyMetals
+  cites Uoaix chapter BvtCheck
+
+ A caster at 1421,1698 carrying a spellbook (0x0EFA) in a pack, as MageryReplay's fixture builds one.
+  BsmEnv = record { game : GameShard, map : WalkMap, magic : Magery, input : GameInput }
+  bsm-land : WalkMap, Integer -> Integer
+  bsm-land (map) (i) = if i == map.width * map.height then 0 else let mark = __heap-save
+    in let written = walk-set-land map (map.x + int-mod i map.width) (map.y + i / map.width) 0 0
+    in let restored = __heap-restore mark in bsm-land map (i + 1)
+  bsm-decoration : WalkMap -> Result WdState Text
+  bsm-decoration (map) = let data = alloc-bytes 64
+    in let zero = mgs-zero data 0 8
+    in let a = poke-qword data 0 #31445744
+    in let b = poke-qword data 16 map.x
+    in let c = poke-qword data 24 map.y
+    in let d = poke-qword data 32 map.width
+    in let e = poke-qword data 40 map.height
+    in wd-read data 64 map 200
+  bsm-cover : WalkMap, Integer, Integer, Integer -> [Device.Block] Result WalkMap Text
+  bsm-cover (map) (x) (y) (z) = act
+    if walk-cell map x y < 0 then Err "fixture destination outside map" else Ok map
+  end
+  bsm-env : Integer -> Result BsmEnv Text
+  bsm-env (unused) = when gs-new 0
+    is Err (e) -> Err e
+    is Ok (game) -> when walk-map-new 1408 1680 64 64
+      is Err (e) -> Err e
+      is Ok (map) -> let filled = bsm-land map 0
+        in when bsm-decoration map
+          is Err (e) -> Err e
+          is Ok (decoration) -> let hero = world-create game.world (gs-mobile 0 1421 1698 0 400 1002)
+            in let character = poke-qword game.characters 0 1
+            in let pack = world-create game.world (gs-item 1 #0E75 0)
+            in let book = world-create game.world (gs-item #40000002 #0EFA 0)
+            in let items = gsi-new game.world
+            in let pack-def = gsi-register items #40000002 21 #3C False False
+            in let bank = gmb-new items #4A
+            in let combat = cb-new game 42
+            in let magic = mgs-new items bank combat decoration None (bsm-cover map)
+            in let book-def = mgs-book magic #40000003 #FF
+            in let input = gn-input-with (gsi-specs 0) 1
+            in let mode = __record-set input "mode" 2
+            in let phase = __record-set input.session "phase" 2
+            in let serial = __record-set input.session "serial" 1
+            in let active = __record-set game "active" 1
+            in let bound = mge-bind magic
+            in if not (is-ok hero & is-ok pack & is-ok book & is-ok book-def) then Err "fixture allocation"
+            else Ok (BsmEnv { game = game, map = map, magic = magic, input = input })
+ The note the magery text command (mg-text-command, the tail of mg-handle-at) answers one 0x12 packet with.
+  bsm-note : List Integer -> Text
+  bsm-note (packet) = when bsm-env 0
+    is Err (e) -> "ERROR " & e
+    is Ok (env) -> when mg-session env.magic env.game env.input
+      is Err (e) -> "ERROR " & e
+      is Ok (actor) -> (mg-text-command env.magic env.game env.input actor packet).note
+  bvt-spellbook-macro : Integer -> [Console] Integer
+  bvt-spellbook-macro (unused) =
+    let opened = bsm-note (sip-length [#12,0,0,#43,0])
+    in let first = bsm-note (sip-length [#12,0,0,#43,49,0])
+    in let bare = bsm-note (sip-length [#12,0,0,#27,0])
+    in act
+      print-line-uni ("SPELLBOOK empty=" & opened & " one=" & first & " cast=" & bare)
+      a <- bvt-check "the 1.25 client's Open Spellbook macro (0x12 type 0x43, empty text) opens the carried book (mg-handle-at)" (opened == "magery:spellbook" & first == "magery:spellbook")
+      b <- bvt-check "a cast command (0x12 type 0x27) with no spell number is still an invalid spell command" (bare == "Invalid spell command.")
+      a + b
+    end

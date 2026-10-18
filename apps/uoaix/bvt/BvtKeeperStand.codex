@@ -1,0 +1,60 @@
+Chapter: BvtKeeperStand
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter BvtCheck
+  cites Uoaix chapter BvtDoorReach
+
+ UOAIX-259: a Britain keeper standing on a decoration item keeps a work tile no plan reaches. On a 64 by 64 map with one
+ impassable tile (flag 64) at 1010,1010: a keeper there is not standable, one on open ground at 1012,1010 is.
+  bks-fill : WalkMap, Integer -> Integer
+  bks-fill (map) (i) = if i == map.width * map.height then 0
+    else let x = map.x + int-mod i map.width
+    in let y = map.y + i / map.width
+    in let mark = __heap-save
+    in let set = walk-set-land map x y 0 (if x == 1010 & y == 1010 then 64 else 0)
+    in let restored = __heap-restore mark in bks-fill map (i + 1)
+  bks-npc : Integer, Integer -> WorldObject
+  bks-npc (x) (y) = WorldObject { serial = 0, kind = 1, x = x, y = y, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+  bvt-keeper-stand : Integer -> [Console] Integer
+  bvt-keeper-stand (unused) = when walk-map-new 1000 1000 64 64
+    is Err (e) -> bvt-check ("keeper stand fixture: " & e) False
+    is Ok (map) -> act
+      filled <- bks-fill map 0
+      blocked <- bsh-standable map (bks-npc 1010 1010)
+      open <- bsh-standable map (bks-npc 1012 1010)
+      a <- bvt-check "a keeper on an impassable tile is not standable and takes the shop's first clear tile for work; one on open ground keeps its own (UOAIX-259)" (not blocked & open)
+      b <- bks-epoch 0
+      c <- bks-refusal 0
+      a + b + c
+    end
+ BvtDoorReach's one-door decoration: a fresh door state's epoch is 0, a bar raises it, the unbar raises it again, and an
+ unbar of a door not barred changes nothing.
+  bks-epoch : Integer -> [Console] Integer
+  bks-epoch (unused) = when walk-map-new 1408 1680 64 64
+    is Err (e) -> bvt-check ("door epoch fixture: " & e) False
+    is Ok (map) -> let land = bdr-land map 0 in when wd-read (bdr-fixture map) 240 map 200
+      is Err (e) -> bvt-check ("door epoch doors: " & e) False
+      is Ok (doors) -> act
+        fresh <- wd-epoch doors
+        barred <- wd-bar doors 0
+        one <- wd-epoch doors
+        lifted <- wd-unbar doors 0
+        two <- wd-epoch doors
+        again <- wd-unbar doors 0
+        same <- wd-epoch doors
+        bvt-check ("a door's change raises the door epoch and a no-op does not (UOAIX-259: " & show fresh & " " & show one & " " & show two & " " & show same & ")") (fresh == 0 & barred == 1 & one == 1 & two == 2 & same == 2)
+      end
+ A Britain keeper's sealed plan is refused while the door epoch stands and searched again once it moves; the way back
+ is a second refusal beside the first.
+  bks-refusal : Integer -> [Console] Integer
+  bks-refusal (unused) = act
+    k <- list-at (bsh-keepers (bb-shop-count - 1) []) 0
+    out <- bsh-pair (bks-npc 1704 1552) (BbSpot { x = 1495, y = 1618, z = 20 })
+    back <- bsh-pair (bks-npc 1495 1618) (BbSpot { x = 1704, y = 1552, z = 50 })
+    none <- bsh-refuses k out 7
+    one <- bsh-refuse k out 7
+    held <- bsh-refuses k out 7
+    moved <- bsh-refuses k out 8
+    two <- bsh-refuse k back 7
+    both <- bsh-refuses k out 7 & bsh-refuses k back 7
+    bvt-check "a keeper's sealed plan is refused while no door changed, searched again after one did, and the way back is refused beside it (UOAIX-259)" (not none & one == 1 & held & not moved & two == 2 & both)
+  end
