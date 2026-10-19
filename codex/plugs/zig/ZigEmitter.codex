@@ -2883,13 +2883,13 @@ Section: Failure
   zig-fails : IRExpr, List Text -> Boolean
   zig-fails (e) (set) =
     when e
-     is IrName (n) (ty) (sp) -> n == "fail" | zig-in-set set n
+     is IrName (n) (ty) (sp) -> zig-in-set set n
      is IrList (es) (ty) (sp) -> zig-fails-list es 0 set
      is IrBinary (op) (l) (r) (ty) (sp) -> zig-fails l set | zig-fails r set
      is IrNegate (o) (ty) (sp) -> zig-fails o set
      is IrIf (c) (t) (el) (ty) (sp) -> zig-fails c set | zig-fails t set | zig-fails el set
      is IrLet (m) (ty) (v) (b) (sp) -> zig-fails v set | zig-fails b set
-     is IrApply (f) (a) (ty) (sp) -> zig-fails f set | zig-fails a set
+     is IrApply (f) (a) (ty) (sp) -> zig-is-fail-callee f | zig-fails f set | zig-fails a set
      is IrMatch (s) (bs) (ty) (sp) -> zig-fails s set | zig-fails-branches bs 0 set
      is IrAct (ss) (ty) (sp) -> zig-fails-stmts ss 0 set
      is IrTry (mx) (b) (fb) (fs) (ty) (sp) ->
@@ -2902,6 +2902,20 @@ Section: Failure
      is IrFieldStore (r) (f) (v) (ty) (sp) -> zig-fails r set | zig-fails v set
      is IrFork (b) (ty) (sp) -> zig-fails b set
      is IrAwait (t) (ty) (sp) -> zig-fails t set
+     is otherwise -> False
+
+ `fail` raises only where it is called. A bare name `fail` is a value, and the
+ compiler binds that name itself (`emit-try`'s fail-statements parameter in
+ `Emit/X86_64.codex`), so counting every reference put the whole x86-64 emitter
+ and everything that calls it, `opening` included, in the failing set of a
+ program with no `fail` in it: every definition returned `anyerror!T`, the entry
+ wrapper called `cx_fail_exit`, which the shake never kept, and lifted lambdas
+ returned error unions through closure wrappers that do not catch.
+
+  zig-is-fail-callee : IRExpr -> Boolean
+  zig-is-fail-callee (f) =
+    when f
+     is IrName (n) (ty) (sp) -> n == "fail"
      is otherwise -> False
 
   zig-fails-list : List IRExpr, Integer, List Text -> Boolean
