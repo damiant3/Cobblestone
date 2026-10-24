@@ -1,0 +1,77 @@
+Chapter: Fat16Append
+  cites Foreword chapter Fat16
+  cites Foreword chapter StringUtils
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    vol <- fat16-init 2048
+
+    a <- fat16-append-file "AP.TXT" "abc"
+    b <- fat16-append-file "AP.TXT" "def"
+    one <- fat16-read-text vol "AP.TXT"
+    print-line-uni ("small appends " & show a & " " & show b & " reads " & ap-text one)
+
+    c <- fat16-append-file "AP.TXT" (ap-repeat "x" 600 "")
+    two <- fat16-read-text vol "AP.TXT"
+    print-line-uni ("across a cluster " & show c & " " & ap-shape two)
+
+    d <- fat16-append-file "AP.TXT" (ap-repeat "y" 418 "")
+    full <- fat16-read-text vol "AP.TXT"
+    print-line-uni ("to a full cluster " & show d & " " & ap-shape full)
+
+    e <- fat16-append-file "AP.TXT" "z"
+    past <- fat16-read-text vol "AP.TXT"
+    print-line-uni ("past a full cluster " & show e & " " & ap-shape past)
+
+    mk <- fat16-create-directory vol "LOG"
+    f <- fat16-append-file "LOG/DAY.TXT" "one,"
+    g <- fat16-append-file "LOG/DAY.TXT" "two"
+    sub <- fat16-read-text vol "LOG/DAY.TXT"
+    print-line-uni ("subdir appends " & show f & " " & show g & " reads " & ap-text sub)
+
+    stray <- ap-crash vol "AP.TXT"
+    h <- fat16-append-file "AP.TXT" "!"
+    healed <- fat16-read-text vol "AP.TXT"
+    left <- fat16-read-fat-entry vol 0 stray
+    print-line-uni ("after a crashed append " & show h & " " & ap-shape healed & " stray cluster entry " & show left)
+  end
+
+Section: A Crashed Append
+
+  ap-crash : Fat16Volume, Text -> [Device.Block] Integer
+  ap-crash (vol) (path) = act
+    found <- fat16-resolve-path vol path
+    when found
+      is Just (e) -> ap-link-stray vol e
+      is None -> 0
+  end
+
+  ap-link-stray : Fat16Volume, Fat16DirEntry -> [Device.Block] Integer
+  ap-link-stray (vol) (e) = act
+    last <- fat16-nth-cluster vol (e.de-cluster) (((e.de-size) - 1) / fat16-bytes-per-cluster vol)
+    stray <- fat16-alloc-cluster vol
+    w <- fat16-write-fat-entry vol last stray
+    if w == 0 then stray else 0
+  end
+
+Section: Reporting
+
+  ap-repeat : Text, Integer, Text -> Text
+  ap-repeat (s) (n) (acc) = if n <= 0 then acc else ap-repeat s (n - 1) (acc & s)
+
+  ap-text : Maybe Text -> Text
+  ap-text (m) = when m
+    is Just (t) -> t
+    is None -> "<none>"
+
+  ap-shape : Maybe Text -> Text
+  ap-shape (m) = when m
+    is Just (t) -> "length " & show (text-length t) & " starts " & text-substring t 0 6 & ap-edges t 512 ""
+    is None -> "<none>"
+
+  ap-edges : Text, Integer, Text -> Text
+  ap-edges (t) (at) (acc) =
+    if at >= text-length t then acc
+    else ap-edges t (at + 512) (acc & " at " & show at & " " & text-substring t (at - 1) 2)
