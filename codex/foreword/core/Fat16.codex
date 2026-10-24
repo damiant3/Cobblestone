@@ -2137,6 +2137,139 @@ Section: Saving A File
     fat16-create-file vol path src
   end
 
+Section: Appending To A File
+
+  fat16-append-file : Text, Text -> [Device.Block] Boolean
+  fat16-append-file (path) (content) =
+    fat16-append-binary-file path (fat16-text-bytes content 0 (text-length content) [])
+
+  fat16-append-binary-file : Text, List Integer -> [Device.Block] Boolean
+  fat16-append-binary-file (path) (bytes) = act
+    vol <- fat16-boot-volume
+    fat16-append-on vol path (fat16-src-of-list bytes)
+  end
+
+  fat16-append-on : Fat16Volume, Text, Fat16Source -> [Device.Block] Boolean
+  fat16-append-on (vol) (path) (src) =
+    if fat16-scope-admits path == False then False
+    else if fat16-path-writable path == False then False
+    else if fat16-vol-is-usable vol == False then False
+    else if (src.fs-len) == 0 then True
+    else act
+      found <- fat16-resolve-path vol path
+      when found
+        is None -> fat16-create-file vol path src
+        is Just (e) ->
+          if bit-and (e.de-attr) 16 == 16 then False
+          else if (e.de-size) == 0 | (e.de-cluster) < 2 then fat16-create-file vol path src
+          else act
+            slot <- fat16-entry-slot vol path e
+            fat16-append-at vol e slot src
+          end
+    end
+
+  fat16-entry-slot : Fat16Volume, Text, Fat16DirEntry -> [Device.Block] Integer
+  fat16-entry-slot (vol) (path) (e) =
+    let parts = fat16-split-path path
+    in let n = list-length parts
+    in if n < 2 then fat16-find-name-slot vol (e.de-name)
+    else act
+      parent <- fat16-walk-path vol parts 0 (n - 1)
+      when parent
+        is Just (d) -> fat16-find-name-slot-in-dir vol (d.de-cluster) (e.de-name)
+        is None -> 0 - 1
+    end
+
+  fat16-append-at : Fat16Volume, Fat16DirEntry, Integer, Fat16Source -> [Device.Block] Boolean
+  fat16-append-at (vol) (e) (slot) (src) =
+    if slot < 0 then False
+    else let cb = fat16-bytes-per-cluster vol
+    in let k = ((e.de-size) - 1) / cb
+    in act
+      last <- fat16-nth-cluster vol (e.de-cluster) k
+      if last < 2 then False
+      else act
+        cut <- fat16-cut-chain-after vol last
+        let used = (e.de-size) - k * cb
+        in let take = if cb - used < (src.fs-len) then cb - used else (src.fs-len)
+        in act
+          w <- fat16-patch-cluster vol last used src 0 take
+          ext <- fat16-extend-chain vol last src take
+          if ext == 0 then False
+          else act
+            s <- fat16-set-entry-size slot ((e.de-size) + (src.fs-len))
+            if s == 0 then True else False
+          end
+        end
+      end
+    end
+
+  fat16-nth-cluster : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fat16-nth-cluster (vol) (cluster) (n) =
+    if fat16-cluster-ok vol cluster == False then 0
+    else if n <= 0 then cluster
+    else act
+      next <- fat16-next-cluster vol cluster
+      fat16-nth-cluster vol next (n - 1)
+    end
+
+  fat16-cut-chain-after : Fat16Volume, Integer -> [Device.Block] Integer
+  fat16-cut-chain-after (vol) (last) = act
+    next <- fat16-next-cluster vol last
+    if fat16-dir-chain-ends-at next then 0
+    else act
+      w <- fat16-write-fat-entry vol last 65535
+      fat16-free-chain vol next
+    end
+  end
+
+  fat16-patch-cluster : Fat16Volume, Integer, Integer, Fat16Source, Integer, Integer -> [Device.Block] Integer
+  fat16-patch-cluster (vol) (cluster) (off) (src) (s) (n) =
+    if n <= 0 then 0
+    else let bps = vol.vol-bytes-per-sector
+    in let at = int-mod off bps
+    in let k = if bps - at < n then bps - at else n
+    in act
+      w <- fat16-patch-sector (fat16-cluster-sector vol cluster + off / bps) at src s k
+      fat16-patch-cluster vol cluster (off + k) src (s + k) (n - k)
+    end
+
+  fat16-patch-sector : Integer, Integer, Fat16Source, Integer, Integer -> [Device.Block] Integer
+  fat16-patch-sector (sector) (at) (src) (s) (k) =
+    let h = __heap-save
+    in act
+      buf <- block-read-sector sector
+      r <- fat16-put-patched sector buf at src s k
+      fat16-drop-to h r
+    end
+
+  fat16-put-patched : Integer, Integer, Integer, Fat16Source, Integer, Integer -> [Device.Block] Integer
+  fat16-put-patched (sector) (buf) (at) (src) (s) (k) =
+    let p = fat16-poke-src buf at src s k 0
+    in block-write-sector sector buf
+
+  fat16-poke-src : Integer, Integer, Fat16Source, Integer, Integer, Integer -> Integer
+  fat16-poke-src (buf) (at) (src) (s) (k) (i) =
+    if i >= k then 0
+    else let w = poke-byte buf (at + i) (fat16-src-at src (s + i))
+    in fat16-poke-src buf at src s k (i + 1)
+
+  fat16-set-entry-size : Integer, Integer -> [Device.Block] Integer
+  fat16-set-entry-size (slot) (size) =
+    let h = __heap-save
+    in act
+      buf <- block-read-sector (slot / 512)
+      r <- fat16-put-entry-size slot buf size
+      fat16-drop-to h r
+    end
+
+  fat16-put-entry-size : Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-put-entry-size (slot) (buf) (size) =
+    let off = int-mod slot 512 + 28
+    in let lo = fat16-write-u16 buf off (bit-and size 65535)
+    in let hi = fat16-write-u16 buf (off + 2) (bit-and (bit-shru size 16) 65535)
+    in block-write-sector (slot / 512) buf
+
 Section: Root Listing
 
  A scoped grant may not enumerate the root. Listing "/" answers with

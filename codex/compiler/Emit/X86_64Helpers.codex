@@ -1930,57 +1930,37 @@ Section: I/O Boundary Helpers
 
     in emit-fs-servicer-helpers st90
 
+  fs-deny-false : Integer = 0
+  fs-deny-empty-text : Integer = 1
+  fs-deny-empty-list : Integer = 2
+
   emit-fs-servicer-helpers : CodegenState -> CodegenState
   emit-fs-servicer-helpers (st) =
     if find-effect-op-addr (st.effect-op-addrs) "read-text" 0 (list-length (st.effect-op-addrs)) < 0 then
       st
-    else let st1 = emit-fs-read-servicer-helper st
-    in emit-fs-write-servicer-helper st1
+    else let st1 = emit-fs-servicer-helper st "__fs-read-servicer" cap-filesystem-read "fat16-servicer-read" 1 fs-deny-empty-text
+    in let st2 = emit-fs-servicer-helper st1 "__fs-write-servicer" cap-filesystem-write "fat16-servicer-write" 2 fs-deny-false
+    in let st3 = emit-fs-servicer-helper st2 "__fs-append-servicer" cap-filesystem-write "fat16-servicer-append" 2 fs-deny-false
+    in let st4 = emit-fs-servicer-helper st3 "__fs-list-servicer" cap-filesystem-read "fat16-servicer-list" 1 fs-deny-empty-list
+    in emit-fs-servicer-helper st4 "__fs-make-dir-servicer" cap-filesystem-write "fat16-servicer-make-dir" 1 fs-deny-false
 
-  emit-fs-read-servicer-helper : CodegenState -> CodegenState
-  emit-fs-read-servicer-helper (st) =
+  emit-fs-servicer-helper : CodegenState, Text, Integer, Text, Integer, Integer -> CodegenState
+  emit-fs-servicer-helper (st) (stub) (cap) (servicer) (args) (deny-kind) =
     let fn-off = st.code-len
-    in let n = list-push (st.fo-names) "__fs-read-servicer"
+    in let n = list-push (st.fo-names) stub
     in let o = list-push (st.fo-offsets) fn-off
     in let st0 = emit-consume-arg-count (__record-set (__record-set st "fo-names" n) "fo-offsets" o)
-    in let st1 = emit-check-capability st0 cap-filesystem-read
+    in let st1 = emit-check-capability st0 cap
     in let deny-pos = st1.code-len
     in let st2 = st-append-code st1 (jcc cc-ae 0)
     in let st3 = st-append-code st2 (push-r reg-rdi)
-    in let st4 = st-append-code st3 (li reg-rax fs-elevated-addr)
-    in let st5 = st-append-code st4 (li reg-rcx 1)
-    in let st6 = st-append-code st5 (mov-store reg-rax reg-rcx 0)
-    in let st7 = st-append-code st6 (pop-r reg-rdi)
-    in let st8 = emit-call-to st7 "fat16-servicer-read"
-    in let st9 = st-append-code st8 (push-r reg-rax)
-    in let st10 = st-append-code st9 (li reg-rax fs-elevated-addr)
-    in let st11 = st-append-code st10 (li reg-rcx 0)
-    in let st12 = st-append-code st11 (mov-store reg-rax reg-rcx 0)
-    in let st13 = st-append-code st12 (pop-r reg-rax)
-    in let st14 = st-append-code st13 x86-ret
-    in let deny = st14.code-len
-    in let empty = emit-text-lit st14 ""
-    in let st15 = st-append-code (empty.state) (mov-rr reg-rax (empty.reg))
-    in let st16 = st-append-code st15 x86-ret
-    in patch-jcc-at st16 deny-pos deny
-
-  emit-fs-write-servicer-helper : CodegenState -> CodegenState
-  emit-fs-write-servicer-helper (st) =
-    let fn-off = st.code-len
-    in let n = list-push (st.fo-names) "__fs-write-servicer"
-    in let o = list-push (st.fo-offsets) fn-off
-    in let st0 = emit-consume-arg-count (__record-set (__record-set st "fo-names" n) "fo-offsets" o)
-    in let st1 = emit-check-capability st0 cap-filesystem-write
-    in let deny-pos = st1.code-len
-    in let st2 = st-append-code st1 (jcc cc-ae 0)
-    in let st3 = st-append-code st2 (push-r reg-rdi)
-    in let st3b = st-append-code st3 (push-r reg-rsi)
+    in let st3b = if args == 2 then st-append-code st3 (push-r reg-rsi) else st3
     in let st4 = st-append-code st3b (li reg-rax fs-elevated-addr)
     in let st5 = st-append-code st4 (li reg-rcx 1)
     in let st6 = st-append-code st5 (mov-store reg-rax reg-rcx 0)
-    in let st6b = st-append-code st6 (pop-r reg-rsi)
+    in let st6b = if args == 2 then st-append-code st6 (pop-r reg-rsi) else st6
     in let st7 = st-append-code st6b (pop-r reg-rdi)
-    in let st8 = emit-call-to st7 "fat16-servicer-write"
+    in let st8 = emit-call-to st7 servicer
     in let st9 = st-append-code st8 (push-r reg-rax)
     in let st10 = st-append-code st9 (li reg-rax fs-elevated-addr)
     in let st11 = st-append-code st10 (li reg-rcx 0)
@@ -1988,9 +1968,17 @@ Section: I/O Boundary Helpers
     in let st13 = st-append-code st12 (pop-r reg-rax)
     in let st14 = st-append-code st13 x86-ret
     in let deny = st14.code-len
-    in let st15 = st-append-code st14 (li reg-rax 0)
-    in let st16 = st-append-code st15 x86-ret
-    in patch-jcc-at st16 deny-pos deny
+    in patch-jcc-at (emit-fs-deny st14 deny-kind) deny-pos deny
+
+  emit-fs-deny : CodegenState, Integer -> CodegenState
+  emit-fs-deny (st) (deny-kind) =
+    if deny-kind == fs-deny-empty-text then
+      let empty = emit-text-lit st ""
+      in st-append-code (st-append-code (empty.state) (mov-rr reg-rax (empty.reg))) x86-ret
+    else if deny-kind == fs-deny-empty-list then
+      let empty = emit-list st []
+      in st-append-code (st-append-code (empty.state) (mov-rr reg-rax (empty.reg))) x86-ret
+    else st-append-code (st-append-code st (li reg-rax 0)) x86-ret
 
   emit-prof-start-helper : CodegenState -> CodegenState
   emit-prof-start-helper (st) =
