@@ -1426,6 +1426,26 @@ Section: Builtin Emitter
        emit = \args ctx d ty -> "cx_process_get_scope(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
      },
      ZigBuiltinEmitter {
+       name = "read-text",
+       emit = \args ctx d ty -> "cx_fs_read_text(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "write-file",
+       emit = \args ctx d ty -> "cx_fs_write_file(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "append-file",
+       emit = \args ctx d ty -> "cx_fs_append_file(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "list-dir",
+       emit = \args ctx d ty -> "cx_fs_list_dir(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "make-dir",
+       emit = \args ctx d ty -> "cx_fs_make_dir(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
        name = "peek-32",
        emit = \args ctx d ty -> "cx_peek_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")"
      },
@@ -5652,6 +5672,42 @@ Section: Chapter Emission
     ShakeLit "[@intCast(buf)..][0..512])) 0 else 1;\n}\n"
   ]
 
+  zig-p-cx-fs : List ShakeFrag
+  zig-p-cx-fs = [
+    ShakeLit "pub const CxFileHost = struct {\n    read: *const fn (path: []const u8) ?[]const u8,\n    write: *const fn (path: []const u8, bytes: []const u8) bool,\n    append: *const fn (path: []const u8, bytes: []const u8) bool,\n    list: *const fn (path: []const u8) []const u8,\n    make_dir: *const fn (path: []const u8) bool,\n};\npub var cx_file_host: ?CxFileHost = null;\n",
+    ShakeLit "fn cx_fs_read_text(path: []const u8) []const u8 {\n    const host = cx_file_host orelse return \"\";\n    const bytes = host.read(",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(path)) orelse return \"\";\n    return ",
+    ShakeUse "cx_utf8_to_cce",
+    ShakeLit "(bytes);\n}\n",
+    ShakeLit "fn cx_fs_write_file(path: []const u8, text: []const u8) bool {\n    const host = cx_file_host orelse return false;\n    return host.write(",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(path), ",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(text));\n}\n",
+    ShakeLit "fn cx_fs_append_file(path: []const u8, text: []const u8) bool {\n    const host = cx_file_host orelse return false;\n    return host.append(",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(path), ",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(text));\n}\n",
+    ShakeLit "fn cx_fs_list_dir(path: []const u8) *",
+    ShakeUse "CxList",
+    ShakeLit "([]const u8) {\n    const out = ",
+    ShakeUse "cx_ll_empty",
+    ShakeLit "([]const u8);\n    const host = cx_file_host orelse return out;\n    var names = ",
+    ShakeUse "std",
+    ShakeLit ".mem.splitScalar(u8, host.list(",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(path)), '\\n');\n    while (names.next()) |name| {\n        if (name.len > 0) _ = ",
+    ShakeUse "cx_ll_push",
+    ShakeLit "(out, ",
+    ShakeUse "cx_utf8_to_cce",
+    ShakeLit "(name));\n    }\n    return out;\n}\n",
+    ShakeLit "fn cx_fs_make_dir(path: []const u8) bool {\n    const host = cx_file_host orelse return false;\n    return host.make_dir(",
+    ShakeUse "cx_cce_to_utf8",
+    ShakeLit "(path));\n}\n"
+  ]
+
   zig-p-cx-process-get-scope : List ShakeFrag
   zig-p-cx-process-get-scope = [
     ShakeLit "fn ",
@@ -6177,6 +6233,7 @@ Section: Chapter Emission
      ShakePart { name = "cx_block_read_sector", frags = zig-p-cx-block-read-sector },
      ShakePart { name = "cx_block_write_sector", frags = zig-p-cx-block-write-sector },
      ShakePart { name = "cx_process_get_scope", frags = zig-p-cx-process-get-scope },
+    ShakePart { name = "cx_fs", frags = zig-p-cx-fs },
      ShakePart { name = "cx_peek_32", frags = zig-p-cx-peek-32 },
      ShakePart { name = "cx_poke_32", frags = zig-p-cx-poke-32 },
      ShakePart { name = "cx_poke_16", frags = zig-p-cx-poke-16 },
