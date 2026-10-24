@@ -7,12 +7,15 @@ Chapter: FileSystem
 Section: Definitions
 
   effect FileSystem where
-    open-file  : Text -> [FileSystem.Read] linear FileHandle
-    read-all   : linear FileHandle -> [FileSystem.Read] Pair Text (linear FileHandle)
-    close-file : linear FileHandle -> [FileSystem.Write] Nothing
-    read-file  : Text -> [FileSystem.Read] Text
-    read-text  : Text -> [FileSystem.Read] Text
-    write-file : Text, Text -> [FileSystem.Write] Boolean
+    open-file   : Text -> [FileSystem.Read] linear FileHandle
+    read-all    : linear FileHandle -> [FileSystem.Read] Pair Text (linear FileHandle)
+    close-file  : linear FileHandle -> [FileSystem.Write] Nothing
+    read-file   : Text -> [FileSystem.Read] Text
+    read-text   : Text -> [FileSystem.Read] Text
+    write-file  : Text, Text -> [FileSystem.Write] Boolean
+    append-file : Text, Text -> [FileSystem.Write] Boolean
+    list-dir    : Text -> [FileSystem.Read] List Text
+    make-dir    : Text -> [FileSystem.Write] Boolean
 
 Section: Path Utilities
 
@@ -42,5 +45,34 @@ Section: Default Servicer
 
   fat16-servicer-write : Text, Text -> [Device.Block] Boolean
   fat16-servicer-write (path) (content) = fat16-write-file path content
+
+  fat16-servicer-append : Text, Text -> [Device.Block] Boolean
+  fat16-servicer-append (path) (content) = fat16-append-file path content
+
+  fat16-servicer-list : Text -> [Device.Block] List Text
+  fat16-servicer-list (path) = act
+    vol <- fat16-boot-volume
+    if fat16-vol-is-usable vol == False then []
+    else act
+      entries <- fat16-list-dir vol path
+      fs-entry-names entries 0 []
+    end
+  end
+
+  fs-entry-names : List Fat16DirEntry, Integer, List Text -> List Text
+  fs-entry-names (es) (i) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in if (e.de-name) == "." | (e.de-name) == ".." then fs-entry-names es (i + 1) acc
+    else fs-entry-names es (i + 1) (list-push acc (if fat16-is-dir-entry e then (e.de-name) & "/" else e.de-name))
+
+  fat16-servicer-make-dir : Text -> [Device.Block] Boolean
+  fat16-servicer-make-dir (path) = act
+    vol <- fat16-boot-volume
+    found <- fat16-resolve-path vol path
+    when found
+      is Just (e) -> fat16-is-dir-entry e
+      is None -> fat16-create-directory vol path
+  end
 
 Page 1
