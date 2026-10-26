@@ -1835,7 +1835,7 @@ producing function returns.
 | `integer-to-text i` | one text | 16 bytes per call |
 | `a & b` | **a new text of length(a) + length(b)** | see below |
 | `text-concat-list xs` | one text | one allocation for the whole list |
-| `to-unicode cp` | **about a kilobyte** | **1,040 bytes per call** |
+| `to-unicode cp` | none | **0** (2026-10-20; its table is a shared literal list) |
 
 **A Text built from foreign bytes: push the bytes onto a list sized by the bytes
 PRESENT, never by a declared length, then call `raw-bytes-to-text` once**
@@ -2397,26 +2397,15 @@ The bump semantics are load-bearing elsewhere and must not be "fixed"
 casually: `PerfMonitor` allocates **zero** bytes purely to read the heap
 position, and `VecArray`'s prose already calls it a raw bump.
 
-**A list CONSTANT is rebuilt at every mention, and it is invisible in the
-source.** `xs : List Integer = [...]` is a definition, not storage: each
-reference re-materialises the whole list. Measured on a 121-element list, 100000
-reads of one element cost **98.4 MB of heap** through the constant and **1 KB**
-through the same list passed in as a parameter -- a 91000-fold difference, and
-both sites read `list-at xs i`.
+**A list constant of integer literals is shared, not rebuilt.** `xs : List
+Integer = [...]` read in a loop costs 0 bytes, read directly or through a
+helper, and a `list-set-at` through one mention is not seen by the next
+(`codex/test/const-share`, 0 at seed 9D87E951, 2026-10-20). That is the one
+shape measured shared; for a constant computed from anything else, measure
+before reading it in a loop.
 
-This is survivable where a table is touched once per call and fatal inside a
-search loop. A dictionary matcher reading three such tables per candidate, per
-chain slot, per input byte ran the heap into the stack and double-faulted; the
-fix was to load them once into a record and thread it. **If a table is read in a
-loop, hoist it into a parameter or a record field.** There is no collector, so
-every rebuild is permanent until the producing function returns.
-
-The same applies to a large data constant read per element: build it once and
-thread it, never re-reference it per position.
-
-**It is not only lists: a module-level binding of ANY shape is a recipe, not a
-cell, and this keeps being rediscovered as though it were several separate
-traps.** A module-level 8-field record costs 56 bytes **per reference**,
+**Any other module-level binding is a recipe, not a cell, and this keeps being
+rediscovered as though it were several separate traps.** A module-level 8-field record costs 56 bytes **per reference**,
 measured 2026-07-29 at 100000 iterations -- exactly the same as rebuilding it
 inside the loop, against 0 for a control touching no record. So there is no
 module-level value to park a device handle, a bound driver or any
@@ -2435,9 +2424,9 @@ Two consequences worth naming because each shipped:
   exactly this reason, and `mat4-identity` re-allocates at every reference
   inside a triangle loop.
 
-**`to-unicode` allocates about 1 KB per call.** It is correct at an I/O
-boundary and ruinous in a hot loop; convert once at the edge and carry CCE
-inside.
+**`to-unicode` allocates 0 bytes per call** (ASCII and tier 1, seed 9D87E951,
+2026-10-20), because the table it reads is a shared literal list. Convert at the
+edge and carry CCE inside for correctness, not for cost.
 
 **A setter that RETURNS the container costs per element, and a one-frame test
 cannot see it.** Two framebuffers exist and only one can back a screen. `Game

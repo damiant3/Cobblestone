@@ -18,6 +18,8 @@ if($Open){$ErrandSeconds=0}
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $script:poisoned=@{}
+$script:widenStop=$false
+$script:corWatch=$null
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 $Artifact=(Resolve-Path -LiteralPath $Artifact).Path;$World=(Resolve-Path -LiteralPath $World).Path
 $map=[IO.Path]::ChangeExtension($Artifact,'.map');if(-not (Test-Path $map)){throw "No symbol map beside the artifact: $map"}
@@ -92,19 +94,19 @@ $families=@('mint','walk','say','go','goto','vendor','bank','harvest','craft','c
     'camping','cartography','taste','forensics','spirit','poisoning','stealing','herding',
     'bard','tracking','healing','alchemy','inscription','arms','slay','cull','fallen','dungeons','smite','pick','pet','sell',
     'petname','mappins','book','decay','venom','speechbuy','trade','play','duel','eat','donate','gm','build','trinsic','cove','minoc','vesper','vesperwork','minocwork','covework','moonglowwork','yewwork','windwork','buccwork','bucc','jhelom','serpents','moonglow','yew','wind','skara','nujelm','ocllo','magincia','spells','wild',
-    'eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon','graded','castle','cheer','loom','fell','farm','reekgraded','festergraded','redgraded','load')
+    'eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon','graded','castle','cheer','loom','fell','farm','reekgraded','festergraded','redgraded','load','widen','coroner')
 # UOAIX-254: -Only load gives every bot, British too, a draw from this mix; bot names soakbot and a letter cap -Bots at 26.
 $loadMix=@('walk','say','combat','craft','vendor','trade','bank','harvest')
 # -Only runs only the named families (a scenario run); British's own draw is limited to them too.
 if($Only.Count -gt 0){$Only=@($Only -join ',' -split ','|Where-Object{$_});$bad=@($Only|Where-Object{$families -notcontains $_});if($bad.Count){throw "Unknown families: $($bad -join ',')"};$families=$Only}
 $fatalPattern='(?m)^.*(?:^FAIL|!EXC|OUT OF MEMORY|requires restart|SAVE FAILED).*$'
 $tally=@{};foreach($f in $families+@('death','ghost','buy','target','menu')){$tally[$f]=0}
-$recvOps=@{};$disconnects=[Collections.Generic.List[string]]::new()
+$recvOps=@{};$disconnects=[Collections.Generic.List[string]]::new();$gmDrops=[Collections.Generic.List[string]]::new()
 function New-Bot([int]$Index){
     [pscustomobject]@{Index=$Index;Name=$(if($Index -eq 1){'British'}else{'soakbot'+[char](96+$Index)});Password=$(if($Index -eq 1){'Astronaut'}else{''});Flora=@{};Crops=@{};Tcp=$null;Stream=$null;Key=0L;Plain=$null;Up=$false;Serial=0L;X=0;Y=0;Z=0;
         Seq=0;Pending=-1;Pack=0L;Cursor=0L;CursorAt=[datetime]::MinValue;Dead=$false;DeathAsked=$false;Mobiles=@{};Items=@{};Corpses=@{};Places=[Collections.Generic.List[string]]::new();
-        BuyFrom=0L;Shop=@{};Sale=$null;Bank=0L;Opened=$false;Fields=@{};Said=[Collections.Generic.List[string]]::new();Menu=$null;Gump=$null;Decor=0L;Runes=@{};MapEdit=-1;Course=0;BookHead=$null;BookPages=$null;Dropped=@{};Ground=@{};Sites=@{};Built=$false;Blocked=@{};Held=@{};Sent=0;Received=0;NextAt=[datetime]::UtcNow;Last='login';Logins=0;Reconnect=[datetime]::UtcNow;
-        Labels=@{};BuyNames=$null;SellNames=$null;Gate=@{};Winch=0L;LastSent=[datetime]::UtcNow;Swings=@{};Worn=@{};Fires=@{};Doors=@{};TradeBox=0L;Opens=@{};CursorType=-1;Cases=@{};Noto=@{};CraftReady=[datetime]::MinValue}
+        BuyFrom=0L;Shop=@{};Sale=$null;Bank=0L;Opened=$false;Fields=@{};FieldSeen=[Collections.Generic.HashSet[long]]::new();Said=[Collections.Generic.List[string]]::new();Menu=$null;Gump=$null;Decor=0L;Runes=@{};MapEdit=-1;Course=0;BookHead=$null;BookPages=$null;Dropped=@{};Ground=@{};Sites=@{};Built=$false;Blocked=@{};Held=@{};Sent=0;Received=0;NextAt=[datetime]::UtcNow;Last='login';Logins=0;Reconnect=[datetime]::UtcNow;Kicked=$null;
+        Labels=@{};BuyNames=$null;SellNames=$null;Gate=@{};Winch=0L;LastSent=[datetime]::UtcNow;Swings=@{};Worn=@{};Fires=@{};Doors=@{};TradeBox=0L;Opens=@{};CursorType=-1;Cases=@{};Noto=@{};CraftReady=[datetime]::MinValue;Hits=100}
 }
 function Connect-Bot($B){
     $B.Logins++;$key=Open-Relay $B.Name $B.Password
@@ -125,7 +127,8 @@ function Connect-Bot($B){
     $B.Up=$true;$B.Dead=$false;$B.DeathAsked=$false;$B.Seq=0;$B.Pending=-1;$B.Mobiles=@{};$B.Items=@{};$B.Corpses=@{};$B.Opened=$false;$B.Bank=0
 }
 function Drop-Bot($B,[string]$Why){
-    $disconnects.Add("$($B.Name) after '$($B.Last)': $Why");Note "DISCONNECT $($B.Name) after '$($B.Last)': $Why"
+    if($B.Kicked -and ([datetime]::UtcNow - $B.Kicked).TotalSeconds -lt 60){$B.Kicked=$null;$gmDrops.Add("$($B.Name) after '$($B.Last)': $Why");Note "GM DISCONNECT $($B.Name) after '$($B.Last)': $Why"}
+    else{$disconnects.Add("$($B.Name) after '$($B.Last)': $Why");Note "DISCONNECT $($B.Name) after '$($B.Last)': $Why"}
     try{if($B.Tcp){$B.Tcp.Dispose()}}catch{}
     $B.Up=$false;$B.Serial=0;$B.Reconnect=[datetime]::UtcNow.AddSeconds(5)
 }
@@ -148,7 +151,7 @@ function Handle($B,[byte[]]$P){
         0x66{$B.BookPages=$P}
         0x1A{$s=U32 $P 3;$g=U16 $P 7;$at=9;if($s -band 0x80000000){$at=11};$s=$s-band 0x7FFFFFFF;$x=(U16 $P $at)-band 0x7FFF;$y=(U16 $P ($at+2))-band 0x3FFF
             if($g -eq 0x2006){$B.Corpses[$s]=@($x,$y)};if($g -eq 0x0B90){$B.Decor=$s};if($g -eq 0x1F14){$B.Runes[$s]=1};if(@(0x0FA2,0x0FA3,0x14F1,0x0FA6,0x0E1C,0x0FAD,0x0FA7,0x1061,0x1062) -contains $g){$B.Ground[$s]=@($x,$y,$g)};if($s -ge 0x7C000001 -and $s -lt 0x7D000000){$B.Flora[$s]=@($x,$y,$g)};if($s -ge 0x7D000001 -and $s -lt 0x7E000000){$B.Crops[$s]=@($x,$y,$g)};if($s -ge 0x7B000001 -and $s -lt 0x7C000000){$B.Sites[$s]=@($x,$y,$g)};if($g -ge 0x0DE3 -and $g -le 0x0DE8){$B.Fires[$s]=@($x,$y,$g)};if(($g -ge 0x0675 -and $g -le 0x06F4) -or ($g -ge 0x0839 -and $g -le 0x0848)){$B.Doors[$s]=@($x,$y,$g)}
-            if(@(0x0082,0x398C,0x3996,0x3915,0x3922,0x3967,0x3979,0x3946,0x3956,0x0F6C) -contains $g){$B.Fields[$s]=@($x,$y,$g)}
+            if(@(0x0082,0x398C,0x3996,0x3915,0x3922,0x3967,0x3979,0x3946,0x3956,0x0F6C) -contains $g){$B.Fields[$s]=@($x,$y,$g);[void]$B.FieldSeen.Add($s)}
             if($g -ge 0x0A97 -and $g -le 0x0A9C){$B.Cases[$s]=@($x,$y,$g)}
             $zAt=$at+4+$(if((U16 $P $at) -band 0x8000){1}else{0});if($g -eq 0x06F6 -and $zAt -lt $P.Length){$B.Gate[$s]=S8 $P[$zAt]};if($g -eq 0x1EAC){$B.Winch=$s}}
         0x2E{if((U32 $P 9) -eq $B.Serial -and $P[8] -eq 0x15){$B.Pack=U32 $P 1};if((U32 $P 9) -eq $B.Serial -and $P[8] -eq 0x1D){$B.Bank=U32 $P 1};if($P[8] -eq 0x1A -or $P[8] -eq 0x1B){$B.Shop[(U32 $P 1)]=U32 $P 9}}
@@ -160,7 +163,9 @@ function Handle($B,[byte[]]$P){
         0x74{$B.BuyFrom=U32 $P 3;$names=[Collections.Generic.List[object]]::new();$at=8;for($i=0;$i -lt $P[7] -and $at+5 -le $P.Length;$i++){$n=$P[$at+4];if($at+5+$n -gt $P.Length){break};$names.Add(@((U32 $P $at),[Text.Encoding]::ASCII.GetString($P,$at+5,$n).Trim([char]0)));$at+=5+$n};$B.BuyNames=$names}
         0x9E{$B.Sale=$P;$names=[Collections.Generic.List[object]]::new();$at=9;for($i=0;$i -lt (U16 $P 7) -and $at+14 -le $P.Length;$i++){$n=U16 $P ($at+12);if($at+14+$n -gt $P.Length){break};$names.Add(@((U16 $P ($at+10)),[Text.Encoding]::ASCII.GetString($P,$at+14,$n).Trim([char]0)));$at+=14+$n};$B.SellNames=$names}
         0x7C{$B.Menu=$P}
-        0x1C{if($P.Length -gt 44){$t=[Text.Encoding]::ASCII.GetString($P,44,$P.Length-44).Trim([char]0);if($B.Said.Count -lt 32){$B.Said.Add($t)};$B.Labels[(U32 $P 3)]=$t
+        0x11{if($P.Length -ge 41 -and (U32 $P 3) -eq $B.Serial){$B.Hits=U16 $P 37}}
+        0xA1{if($P.Length -ge 9 -and (U32 $P 1) -eq $B.Serial){$B.Hits=U16 $P 7}}
+        0x1C{if($P.Length -gt 44){$t=[Text.Encoding]::ASCII.GetString($P,44,$P.Length-44).Trim([char]0);if($script:corWatch -and $B -eq $script:corWatch){$who=U32 $P 3;if($who -ne 0 -and $who -ne 0xFFFFFFFFL -and @($fleet|ForEach-Object Serial) -notcontains $who){[void]$script:corHeard.Add($t)}};if($B.Said.Count -lt 32){$B.Said.Add($t)};$B.Labels[(U32 $P 3)]=$t
             if($t -match 'successfully steal'){Count 'stolen'}
             if($t -match 'walks where it was instructed|begins to follow you'){Count 'herded'}
             if($t -match '^Killed\.'){Count 'killed'}
@@ -236,7 +241,7 @@ function Answer-Craft($B,[string]$Family){
 # UOAIX-49 C: British's GM and admin speech (CompositePaging cp-route, cp-british, cp-target, the decorator, land and
 # moderation commands, their menus and gumps), one step per draw in a fixed cycle so a short run reaches every step.
 function Gm-Victim{$v=@($fleet|Where-Object{$_.Index -ne 1 -and $_.Up -and -not $_.Dead -and $_.Serial});if($v.Count -eq 0){Count 'notarget-gm';return $null};return $v[$rng.Next($v.Count)]}
-function Gm-At($B,$O,[string]$Speech,[string]$Name){if($O){Use-Then-Target $B 0 {Target-Object $B $O.Serial $O.X $O.Y $O.Z 400} "gm-$Name" -Speech $Speech}}
+function Gm-At($B,$O,[string]$Speech,[string]$Name){if($O -and $Name -in 'kick','unstuck','jail','ban'){$O.Kicked=[datetime]::UtcNow};if($O){Use-Then-Target $B 0 {Target-Object $B $O.Serial $O.X $O.Y $O.Z 400} "gm-$Name" -Speech $Speech}}
 function Gm-Gump($B,[string]$Speech,[int]$Button,[string]$Name){$B.Gump=$null;Send-Plain $B (Say $Speech);$deadline=[datetime]::UtcNow.AddSeconds(2);while($null -eq $B.Gump -and [datetime]::UtcNow -lt $deadline){Pump-Bot $B 1}
     if($null -eq $B.Gump){Count "nogump-gm-$Name";return};$g=$B.Gump;$B.Gump=$null
     $a=[byte[]]::new(23);$a[0]=0xB1;Put16 $a 1 23;Put32 $a 3 (U32 $g 3);Put32 $a 7 (U32 $g 7);Put32 $a 11 $Button;Send-Plain $B $a;Count "gump-gm-$Name";Pump-Bot $B 32}
@@ -279,7 +284,10 @@ $gmSteps=[ordered]@{
     'decor-place'={param($B) Send-Plain $B (Say '[decor place 0B90');Pump-Bot $B 32;Send-Plain $B (Say '[decor list');Send-Plain $B (Say '[decor markarea 3')}
     'decor-mark'={param($B) Gm-Decor $B '[decor mark' 'mark';Gm-Decor $B '[decor unmark' 'unmark';Gm-Decor $B '[decor nudge 1 0' 'nudge'}
     'decor-remove'={param($B) Gm-Decor $B '[decor remove' 'decor-remove';$B.Decor=0}
-    'decor-build'={param($B) Use-Then-Target $B 0 {Target-Ground $B ($B.X+3) $B.Y $B.Z} 'gm-run' -Speech '[decor run 0080';Use-Then-Target $B 0 {Target-Ground $B ($B.X+1) ($B.Y+1) $B.Z} 'gm-fill' -Speech '[decor fill 0519';Send-Plain $B (Say '[decor multi 1')}
+    'decor-build'={param($B) Use-Then-Target $B 0 {Target-Ground $B ($B.X+3) $B.Y $B.Z} 'gm-run' -Speech '[decor run 0080';Use-Then-Target $B 0 {Target-Ground $B ($B.X+1) ($B.Y+1) $B.Z} 'gm-fill' -Speech '[decor fill 0519'
+        # A cut design (UoaixMultis.md, ids from 0x200) placed at British's tile, then a walk east across its site: main 45460 fixed a ring of walls every placed design raised.
+        Send-Plain $B (Say '[decor multi 200');Pump-Bot $B 16;$blocked=$B.Blocked.Count;for($i=0;$i -lt 8;$i++){Walk $B 2;Pump-Bot $B 8};Count $(if($B.Blocked.Count -gt $blocked){'multi-walk-blocked'}else{'multi-walk-clear'})
+        Send-Plain $B (Say '[decor multi 1')}
     'decor-unstatic'={param($B) Use-Then-Target $B 0 {$p=Target-Ground $B ($B.X+1) $B.Y $B.Z;Put16 $p 17 0x0080;return ,$p} 'gm-unstatic' -Speech '[decor unstatic'}
     'decor-more'={param($B) Gm-Gump $B '[decor gump' 7 'decor';foreach($w in @('[decor set none none','[decor baked 1 2','[decor bogus')){Send-Plain $B (Say $w);Pump-Bot $B 16}}
     'land'={param($B) foreach($w in @('[land grass','[land dirt','[land 0x0003','[land 4','[land nowhere','[raise 1','[flatten')){Use-Then-Target $B 0 {Target-Ground $B ($B.X+2) $B.Y $B.Z} 'gm-land' -Speech $w};Use-Then-Target $B 0 {Target-Ground $B ($B.X+2) $B.Y $B.Z} 'gm-land' -Speech '[landclear'
@@ -511,7 +519,7 @@ $gradedSteps=[ordered]@{
             foreach($side in @('buy','sell')){if($side -eq 'buy'){$C.BuyNames=$null}else{$C.SellNames=$null}
                 Send-Plain $C (Say "vendor $side");$until=[datetime]::UtcNow.AddSeconds(3)
                 while([datetime]::UtcNow -lt $until -and $null -eq $(if($side -eq 'buy'){$C.BuyNames}else{$C.SellNames})){Pump-Bot $C 4}
-                $list=if($side -eq 'buy'){$C.BuyNames}else{$C.SellNames};if($null -eq $list -or $list.Count -eq 0){Count "nolist-169-$side";continue}
+                $list=@(@(if($side -eq 'buy'){$C.BuyNames}else{$C.SellNames}) | Where-Object {$null -ne $_});if($list.Count -eq 0){Count "nolist-169-$side";continue}
                 $graded=$true;Count "pass-169-$side";foreach($e in $list){Grade-Price $e[0] $e[1] $side}}}}
     # UOAIX-160 and 207: British works the winch (reach is 3 tiles in x and y, any z); every viewer, British and a bot
     # stood at the gatehouse, sees all six portcullis pieces move, raised and lowered (gcv-item-update at any z).
@@ -526,18 +534,26 @@ $gradedSteps=[ordered]@{
     # UOAIX-221: a summoned creature left 8 tiles behind answers "all follow me" and runs to within 3 tiles.
     'follow'={param($C) Go-Wait $C 1420 1698;$before=@($C.Mobiles.Keys);Spell-Cast $C 40 $null 'follow-summon';$t=New-Mobile $C $before 3
         if(-not $t){Count 'nosummon-221';return};Go-Wait $C ($C.X+8) $C.Y;Send-Plain $C (Say 'all follow me')
-        $until=[datetime]::UtcNow.AddSeconds(10);$d=99;while([datetime]::UtcNow -lt $until -and $d -gt 3){Pump-Bot $C 16;if($C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];$d=[Math]::Max([Math]::Abs($m[1]-$C.X),[Math]::Abs($m[2]-$C.Y))}}
+        $until=[datetime]::UtcNow.AddSeconds(10);$d=99;$track=[Collections.Generic.List[string]]::new()
+        while([datetime]::UtcNow -lt $until -and $d -gt 3){Pump-Bot $C 16;if($C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];$d=[Math]::Max([Math]::Abs($m[1]-$C.X),[Math]::Abs($m[2]-$C.Y));$at="$($m[1]),$($m[2])";if($track.Count -eq 0 -or $track[$track.Count-1] -ne $at){$track.Add($at)}}}
         Count $(if($d -le 3){'pass-221-follow'}else{'fail-221-follow'});Note "FOLLOW summon $t ends $d tiles from British"
+        # A stalled follower names what it stalled beside: its track, its body, and every mobile within 2 tiles of it.
+        if($d -gt 3 -and $C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];$near=@($C.Mobiles.Keys|Where-Object{$_ -ne $t}|ForEach-Object{$o=$C.Mobiles[$_];if([Math]::Max([Math]::Abs($o[1]-$m[1]),[Math]::Abs($o[2]-$m[2])) -le 2){"$_ body $($o[0]) at $($o[1]),$($o[2])"}})
+            Note "GRADE 221 fail summon $t body $($m[0]) British at $($C.X),$($C.Y) track $($track -join ' ') near: $($near -join '; ')"}
         if($C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];Use-Then-Target $C 0 {Target-Object $C $t $m[1] $m[2] 0 $m[0]} 'graded-remove' -Speech '[remove'}}
     # UOAIX-220: every field cast across a street lands the tiles that fit (Wall of Stone too) and never answers that the
-    # spell requirements are no longer met.
+    # spell requirements are no longer met. A field is graded on the tile's arrival (FieldSeen): at -ClockScale 30 a
+    # 10 s stone wall stands 0.33 s of wall time and is gone before Spell-Cast returns.
     'fields'={param($C) Go-Wait $C 1420 1698
-        foreach($w in @(@(24,6),@(28,5),@(39,4),@(47,3),@(50,2))){$before=@($C.Fields.Keys);$x=$C.X+$w[1];$y=$C.Y;$z=$C.Z
+        foreach($w in @(@(24,6),@(28,5),@(39,4),@(47,3),@(50,2))){$before=@($C.FieldSeen);$x=$C.X+$w[1];$y=$C.Y;$z=$C.Z
             Spell-Cast $C $w[0] {Target-Ground $C $x $y $z} "graded-field-$($w[0])"
-            $f=0;$until=[datetime]::UtcNow.AddSeconds(2);while(-not $f -and [datetime]::UtcNow -lt $until){Pump-Bot $C 8;foreach($k in @($C.Fields.Keys)){if($before -notcontains $k){$f=$k;break}}}
+            $f=0;$until=[datetime]::UtcNow.AddSeconds(2);while(-not $f -and [datetime]::UtcNow -lt $until){Pump-Bot $C 8;foreach($k in @($C.FieldSeen)){if($before -notcontains $k){$f=$k;break}}}
             $refused=@($C.Said|Where-Object{$_ -match 'no longer met'}).Count -gt 0
+            # A fizzle is the skill roll failing, which places nothing and refuses nothing: not graded either way.
+            if(-not $f -and -not $refused -and (Said-Has $C '(?i)spell fizzles')){Count "fizzled-220-$($w[0])";continue}
             Count $(if($f -and -not $refused){"pass-220-$($w[0])"}else{"fail-220-$($w[0])"})
-            if($f){$at=$C.Fields[$f];Spell-Cast $C 34 {Target-Object $C $f $at[0] $at[1] $z $at[2]} "graded-dispel-$($w[0])"}}}
+            if(-not $f -or $refused){Note "GRADE 220 fail spell=$($w[0]) field=$f said: $(Said-Text $C)"}
+            if($f -and $C.Fields.ContainsKey($f)){$at=$C.Fields[$f];Spell-Cast $C 34 {Target-Object $C $f $at[0] $at[1] $z $at[2]} "graded-dispel-$($w[0])"}elseif($f){Count "expired-220-$($w[0])"}}}
     # UOAIX-230: in Go Fish both seats' gumps follow every move (Play-Gumps counts relay- and norelay-gofish).
     'cards'={param($C) Tavern-Game $C 'gofish'}
 }
@@ -911,23 +927,37 @@ function Gump-Texts([byte[]]$G){$n=U16 $G 19;$at=21+$n;if($at+2 -gt $G.Length){r
 # The game's end is a gump or line naming a win, a draw or a sunk fleet.
 # Every bot logged in but not seated is read too while a table game runs, so a watcher's socket does not fill and drop it.
 function Pump-Watchers($Players){foreach($x in $fleet){if($x.Up -and @($Players|Where-Object{$_.Index -eq $x.Index}).Count -eq 0){Pump-Bot $x 64}}}
+# The seat's socket timing since the press it is owed a gump for: first bytes and packets read (UOAIX-230 late relays).
+function Since-Text($Since,$P){if(-not $Since.ContainsKey($P.Index)){return ''};$s=$Since[$P.Index];"first bytes $(if($s.first -lt 0){'none'}else{"at $($s.first) ms"}), $($P.Received-$s.r0) packets read"}
 function Play-Gumps($Players,[long[]]$Tables,[long]$Mask,[long]$Id,[string]$Family,[int]$Seconds,[long]$Choice){
-    $deadline=[datetime]::UtcNow.AddSeconds($Seconds);$quiet=@{};$owed=@{};$last='';foreach($p in $Players){$quiet[$p.Index]=[datetime]::UtcNow}
+    $deadline=[datetime]::UtcNow.AddSeconds($Seconds);$quiet=@{};$owed=@{};$late=@{};$since=@{};$last='';foreach($p in $Players){$quiet[$p.Index]=[datetime]::UtcNow}
     while([datetime]::UtcNow -lt $deadline){
         Pump-Watchers $Players
-        for($k=0;$k -lt $Players.Count;$k++){$p=$Players[$k];Pump-Bot $p 32;$g=$p.Gump
-            # UOAIX-230: a move owes the other seat a gump of the game within 3 s; a relayed gump once outgrew the event ring.
-            if($owed.ContainsKey($p.Index) -and ([datetime]::UtcNow-$owed[$p.Index]).TotalSeconds -gt 3){$owed.Remove($p.Index);Count "norelay-$Family"}
+        for($k=0;$k -lt $Players.Count;$k++){$p=$Players[$k]
+            # When an owed seat's socket first holds bytes after the press: early bytes and a late gump is the soak reading a backlog.
+            if($since.ContainsKey($p.Index) -and $since[$p.Index].first -lt 0 -and $p.Tcp -and $p.Tcp.Available -gt 0){$since[$p.Index].first=[int]([datetime]::UtcNow-$since[$p.Index].at).TotalMilliseconds}
+            Pump-Bot $p 32;$g=$p.Gump
+            # UOAIX-230: a move owes the other seat a gump of the game within 10 s; a relayed gump once outgrew the event ring. The
+            # server tells it in about 54 ms of wall time (trial-46810 CARDS TOLD median), and a relay over 3 s was the soak decoding a
+            # backlog of 36 packets, so 3 to 10 s is counted slow-relay, not a miss.
+            # A seat a GM command disconnected (kick, unstuck, jail, ban: Gm-At marks it Kicked) has nowhere to receive a gump.
+            if($owed.ContainsKey($p.Index) -and (-not $p.Up -or ($p.Kicked -and ([datetime]::UtcNow-$p.Kicked).TotalSeconds -lt 60))){$owed.Remove($p.Index);Count "kicked-norelay-$Family"}
+            if($owed.ContainsKey($p.Index) -and ([datetime]::UtcNow-$owed[$p.Index]).TotalSeconds -gt 10){$late[$p.Index]=$owed[$p.Index];$owed.Remove($p.Index);Count "norelay-$Family";Note "NORELAY $Family $($p.Name) got no gump 10 s after the other seat's press ($(Since-Text $since $p)) (last: $($last.Substring(0,[Math]::Min(120,$last.Length))))"}
             if($null -eq $g -or $g.Length -lt 21 -or ((U32 $g 7) -band $Mask) -ne $Id){if(([datetime]::UtcNow-$quiet[$p.Index]).TotalSeconds -gt 5){Send-Plain $p (Serial-Packet 6 $Tables[$k]);$quiet[$p.Index]=[datetime]::UtcNow;Count "reopen-$Family"};continue}
-            if($owed.ContainsKey($p.Index)){$owed.Remove($p.Index);Count "relay-$Family"}
+            # A press the server refused ("It is not your turn.", a stale gump) moved nothing, so it owes no relay.
+            if($Players.Count -gt 1 -and (Said-Has $p '(?i)not your turn')){$o=$Players[1-$k].Index;if($owed.ContainsKey($o)){$owed.Remove($o);Count "stale-$Family"}}
+            if($owed.ContainsKey($p.Index)){$waited=([datetime]::UtcNow-$owed[$p.Index]).TotalMilliseconds;$owed.Remove($p.Index);Count "relay-$Family";if($waited -gt 3000){Count "slow-relay-$Family";Note "SLOW RELAY $Family $($p.Name) $([int]$waited) ms after the press ($(Since-Text $since $p))"}}
+            # A norelay whose gump arrives later is a slow relay, not a lost one: count it and say how late.
+            if($late.ContainsKey($p.Index)){Count "late-relay-$Family";Note "LATE RELAY $Family $($p.Name) $([int]([datetime]::UtcNow-$late[$p.Index]).TotalMilliseconds) ms after the press ($(Since-Text $since $p))";$late.Remove($p.Index)}
             $p.Gump=$null;$quiet[$p.Index]=[datetime]::UtcNow
             $layout=[Text.Encoding]::ASCII.GetString($g,21,[Math]::Min((U16 $g 19),$g.Length-21));$texts=Gump-Texts $g;$last="$($p.Name): $texts"
             if($texts -match '(?i)\bwins?\b|\bwon\b|drawn|sunk the last|game over|busts?\b|push'){Count "ended-$Family";Note "GAME $Family $($p.Name): $($texts.Substring(0,[Math]::Min(160,$texts.Length)))";return}
             $ids=@([regex]::Matches($layout,'\{ button \d+ \d+ \d+ \d+ 1 0 (\d+) \}')|ForEach-Object{[long]$_.Groups[1].Value}|Where-Object{$_ -ne 0})
             if($ids.Count -eq 0){Count $(if($texts -match '(?i)opponent.s turn|waiting for'){"wait-$Family"}else{"nobutton-$Family"});continue}
             $button=if($ids -contains $Choice){$Choice}else{$ids[$rng.Next($ids.Count)]}
-            $a=[byte[]]::new(23);$a[0]=0xB1;Put16 $a 1 23;Put32 $a 3 (U32 $g 3);Put32 $a 7 (U32 $g 7);Put32 $a 11 $button;Send-Plain $p $a;Count "move-$Family"
-            if($Players.Count -gt 1){$owed[$Players[1-$k].Index]=[datetime]::UtcNow}}}
+            $a=[byte[]]::new(23);$a[0]=0xB1;Put16 $a 1 23;Put32 $a 3 (U32 $g 3);Put32 $a 7 (U32 $g 7);Put32 $a 11 $button;$p.Said.Clear();Send-Plain $p $a;Count "move-$Family"
+            # Choosing the game seats nobody opposite, so the chooser's press owes the other bot nothing.
+            if($Players.Count -gt 1 -and $texts -notmatch '(?i)choose a game'){$o=$Players[1-$k];$owed[$o.Index]=[datetime]::UtcNow;$since[$o.Index]=@{at=[datetime]::UtcNow;r0=$o.Received;first=-1}}}}
     Count "timeout-$Family";Note "GAMEOPEN $Family last gump $($last.Substring(0,[Math]::Min(200,$last.Length)))"
 }
 # Two bots play a board game by dragging pieces (0x07 lift, 0x08 drop into the board's container at a place): a piece of
@@ -980,6 +1010,75 @@ function Tavern-Game($B,[string]$Family){
     Play-Board $two $board $cups $Family 75
     Send-Plain $B (Serial-Packet 6 $board);Count "watch-$Family"
 }
+# UOAIX-275 (-Only coroner -Bots 4; British runs it once all four bots are up): bot c, set to 1 hit point and struck by
+# British beside a miner working the Britain mine, is an innocent's death (a GM [kill refuses a player, crm-kill); the
+# miner runs to the mayor, the mayor walks to the corpse and offers bot b the burial quest, and b accepts. Bot d killed
+# the same way brings the mayor again, and b's second accept is refused (once per account); British stands off 12 tiles
+# after each kill, so the only living player in reach is b. b then stands in the graveyard while British walks both its
+# regions killing every creature he sees, and the coroners bury c and pay b. Each step ends in one Grade line,
+# unreached when its scene never arose (L-VACUOUS). The run holds the main loop (no fatal-log or guest-exit check) for
+# up to about two hours; run it alone, -Minutes 60 or more. The town purse's refusal is said at the mayor's post, out
+# of b's hearing, so an unpaid burial grades 275-paid unreached, not fail.
+$corMine=@(1445,1526,1457,1534)
+# The mine's earth elementals killed bot b in trial-47148, so British kills every creature he sees around the mine
+# (his post 12 tiles east of a kill sees it) before each kill and through each wait there.
+$corPit=@(1430,1512,1470,1548)
+function Cor-Pit($C){$bots=@($fleet|ForEach-Object Serial);foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -notcontains $k -and $m[0] -lt 400 -and (In-Box $m $corPit)){Use-Then-Target $C 0 {Target-Object $C $k $m[1] $m[2] 0 $m[0]} 'coroner-pit' -Speech '[kill'}}}
+$corYards=@(@(1338,1445,1374,1509),@(1368,1444,1389,1491))
+$corSweep=@(@(1356,1460),@(1356,1495),@(1378,1466))
+function Cor-Heard([string]$Pattern){@($script:corHeard|Where-Object{$_ -match $Pattern}).Count -gt 0}
+function Cor-Text{(@($script:corHeard)|Select-Object -Last 8) -join ' / '}
+# A line heard by b grades a bot's death only once the server's INCIDENT line for that victim shows the mayor waiting
+# there (stage 4), with an offer made where one is owed: another incident's corpse (a miner, a guard) can stand within b's hearing.
+function Cor-Inc([long]$Victim){$m=@([regex]::Matches((Read-Log),"INCIDENT row=\d+ stage=(\d+) corpse=\d+ at \d+,\d+ victim=$Victim .*? holder=(\d+) .*? offers=(\d+)"));if($m.Count -eq 0){return $null};$g=$m[$m.Count-1].Groups;@{Stage=[int]$g[1].Value;Holder=[long]$g[2].Value;Offers=[int]$g[3].Value}}
+# b waits 6 rows off a mine corpse, outside the mine region (y 1526-1534) where its creatures take no new prey and
+# inside the mayor's 6-tile offer reach (trial-47739: b waiting in the region was killed by an earth elemental).
+function Cor-Safe-Y([int]$Y){if($Y -ge 1529){$Y+6}else{$Y-6}}
+function Cor-Await($H,[string]$Pattern,[long]$Victim,[int]$Offers,[int]$Seconds,$C){$until=[datetime]::UtcNow.AddSeconds($Seconds)
+    while([datetime]::UtcNow -lt $until){if($H.Dead -or -not (Cor-Wait $H $Pattern ([int][Math]::Max(1,($until-[datetime]::UtcNow).TotalSeconds)) $C)){return $false}
+        $seen=[datetime]::UtcNow.AddSeconds(180);while([datetime]::UtcNow -lt $seen -and -not $H.Dead){$i=Cor-Inc $Victim;if($i -and $i.Stage -eq 4 -and $i.Offers -ge $Offers){return $true};[void](Cor-Wait $H '(?!)' 15 $C)}
+        Note "COR '$Pattern' heard, but victim $Victim's incident shows no waiting offer: another incident's";$script:corHeard.Clear()};return $false}
+function Cor-Wait($Bot,[string]$Pattern,[int]$Seconds,$Clear){$until=[datetime]::UtcNow.AddSeconds($Seconds);if((Test-Path variable:script:end) -and $script:end -lt $until){$until=$script:end}
+    while([datetime]::UtcNow -lt $until){Pump-All 2;if($Clear){if($script:corAtPit){Cor-Pit $Clear;$script:corHeal++;if((($script:corHeal % 2 -eq 0 -and $script:corWatch.Hits -lt 80) -or $script:corHeal % 30 -eq 0) -and $script:corWatch.Up -and -not $script:corWatch.Dead){Send-Plain $script:corWatch (Say '[attr hits 100')}}else{Cor-Clear $Clear}};if(Cor-Heard 'fetch the mayor'){$script:corFetched=$true};if(Cor-Heard $Pattern){return $true};if($Bot.Said.Count -ge 12){$Bot.Said.RemoveRange(0,$Bot.Said.Count-4)}};return $false}
+function Cor-Miner($C){$bots=@($fleet|ForEach-Object Serial);foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -notcontains $k -and $m[0] -ge 400 -and $m[0] -le 401 -and (In-Box $m $corMine)){return $k}};return 0}
+function Cor-Find-Miner($C,[int]$Seconds){Go-Wait $C 1451 1531;Pump-All 2;Cor-Pit $C;$until=[datetime]::UtcNow.AddSeconds($Seconds);$m=Cor-Miner $C;while(-not $m -and [datetime]::UtcNow -lt $until){Pump-All 2;$m=Cor-Miner $C};$m}
+function Cor-Kill($C,$V,[int]$X,[int]$Y){Send-Plain $V (Say "[go $X $Y");Pump-All 2;Send-Plain $V (Say '[attr hits 1');Go-Wait $C ($X+1) $Y;Pump-All 2
+    Send-Plain $C ([byte[]]@(114,1,0,50,0));Send-Plain $C (Serial-Packet 5 $V.Serial);$until=[datetime]::UtcNow.AddSeconds(20);while(-not $V.Dead -and [datetime]::UtcNow -lt $until){Pump-All 1}
+    Send-Plain $C ([byte[]]@(114,0,0,50,0));Go-Wait $C ($X+12) $Y}
+function Cor-Clear($C){if(-not (Test-Path variable:script:corTick)){$script:corTick=0};$script:corTick++
+    if($script:corTick % 10 -eq 0){$p=$corSweep[[int][Math]::Floor($script:corTick/10) % $corSweep.Count];Go-Wait $C $p[0] $p[1]}
+    $bots=@($fleet|ForEach-Object Serial);foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -notcontains $k -and $m[0] -lt 400 -and ((In-Box $m $corYards[0]) -or (In-Box $m $corYards[1]))){Use-Then-Target $C 0 {Target-Object $C $k $m[1] $m[2] 0 $m[0]} 'coroner-yard' -Speech '[kill'}}}
+# Once graded, b and British leave the graveyard for the login spot in town: two live players idle among its spawn keep
+# every creature there awake for the rest of the run (trial-47689, kind-16 wakes 2.8M), which is not the family's load.
+function Cor-Park($C){if(-not ((Test-Path variable:script:corDone) -and $script:corDone)){return};$H=@($fleet|Where-Object{$_.Index -eq 2})|Select-Object -First 1;$script:corAtPit=$false;if($H -and $H.Up){Send-Plain $H (Say '[go 1420 1698')};Go-Wait $C 1422 1698}
+function Cor-Run($C){
+    $H=@($fleet|Where-Object{$_.Index -eq 2})|Select-Object -First 1;$V1=@($fleet|Where-Object{$_.Index -eq 3})|Select-Object -First 1;$V2=@($fleet|Where-Object{$_.Index -eq 4})|Select-Object -First 1
+    if(-not $H -or -not $V1 -or -not $V2){$script:corDone=$true;Grade '275-offer' 'unreached' 'bots b, c and d are needed (-Bots 4)';return}
+    if(-not ($H.Up -and $V1.Up -and $V2.Up)){Count 'coroner-waiting';return}
+    $script:corDone=$true;$script:corFetched=$false;$script:corAtPit=$true;$script:corWatch=$H;$script:corHeard=[Collections.Generic.List[string]]::new();$script:corHeal=0;Send-Plain $H (Say '[attr hits 100')
+    $hour=Red-To-Hour $C $true 10;$m=@(Cor-Find-Miner $C 300)|Select-Object -Last 1
+    if(-not $m){Grade '275-offer' 'unreached' "no miner in the mine (1445-1457, 1526-1534) within 300 s at game hour $hour";return}
+    $mm=$C.Mobiles[$m];if(-not $mm){Grade '275-offer' 'unreached' "miner $m left British's view before c's kill";return};Send-Plain $H (Say "[go $($mm[1]+2) $(Cor-Safe-Y $mm[2])");$H.Said.Clear();$script:corHeard.Clear()
+    $cv=$V1.Serial;Cor-Kill $C $V1 ($mm[1]+2) $mm[2];if(-not $V1.Dead){Grade '275-offer' 'unreached' "bot c at 1 hit point was not killed by British within 20 s";return}
+    $offered=Cor-Await $H 'Wilt thou clear the graveyard' $cv 1 1800 $C;if(-not $offered -and $H.Dead){Grade '275-offer' 'unreached' "bot b was killed before any offer (said: $(Cor-Text))";return}
+    if(-not $offered){Grade '275-offer' $(if($script:corFetched){'fail'}else{'unreached'}) "no offer to bot b within 1800 s of c's death beside miner $m; a witness said 'fetch the mayor'=$($script:corFetched) (said: $(Cor-Text))";return}
+    Grade '275-offer' 'pass' "the witness ran, the mayor came to c's corpse and offered the quest (said: $(Cor-Text))"
+    $H.Said.Clear();$script:corHeard.Clear();Send-Plain $H (Say 'accept stone');$took=Cor-Wait $H 'Bless thee' 10 $null
+    Grade '275-accept' $(if($took){'pass'}else{'fail'}) "b said 'accept stone' (said: $(Cor-Text))";if(-not $took){return}
+    $m2=@(Cor-Find-Miner $C 300)|Select-Object -Last 1
+    if(-not $m2){Grade '275-refuse' 'unreached' 'no miner in the mine for the second death within 300 s'}
+    elseif(-not $C.Mobiles[$m2]){Grade '275-refuse' 'unreached' "miner $m2 left British's view before d's kill"}
+    else{$mm=$C.Mobiles[$m2];$x=$mm[1]-2;$y=$mm[2]+2;Send-Plain $H (Say "[go $x $(Cor-Safe-Y $y)");$H.Said.Clear();$script:corHeard.Clear();$dv=$V2.Serial;Cor-Kill $C $V2 $x $y;$died=$V2.Dead
+        $came=$died -and (Cor-Await $H 'A good soul fallen' $dv 0 1800 $C);$second=Cor-Heard 'Wilt thou clear the graveyard'
+        if(-not $came){Grade '275-refuse' 'unreached' "d killed=$died; the mayor did not reach d's corpse within 1800 s (said: $(Cor-Text))"}
+        else{$H.Said.Clear();$script:corHeard.Clear();Send-Plain $H (Say 'accept');$refused=Cor-Wait $H 'already laid one of ours' 10 $null
+            Grade '275-refuse' $(if($refused -and -not $second){'pass'}else{'fail'}) "offered again=$second, refused=$refused (said: $(Cor-Text))"}}
+    $script:corAtPit=$false;Send-Plain $H (Say '[go 1350 1495');Go-Wait $C 1356 1492;$H.Said.Clear();$script:corHeard.Clear()
+    $buried=Cor-Wait $H 'Rest now' 2400 $C
+    Grade '275-burial' $(if($buried){'pass'}else{'unreached'}) "b in the graveyard heard the coroners lay c to rest=$buried (said: $(Cor-Text))"
+    if(-not $buried){return};$paid=Cor-Wait $H 'hath set a deed' 60 $C
+    Grade '275-paid' $(if($paid){'pass'}else{'unreached'}) "b was told of a deed in the pack=$paid; unpaid means the town purse could not buy one (said at the mayor's post) (said: $(Cor-Text))"
+}
 function Creature($B){return Nearest $B {param($m) $m[0] -lt 400}}
 # Bodies the Britain forest spawns (regions 5649, 5651, 5653, 5783) only on profiles with a taming value; no taming-0 profile shares one.
 function Tameable($B){return Nearest $B {param($m) @(5,6,209,211,212,225,234,237,290) -contains $m[0]}}
@@ -1007,6 +1106,14 @@ function Act($B,[string]$Force=''){
     $f=if($Force){$Force}elseif($B.Index -eq 1 -and $special.Count -gt 0 -and $rng.Next(3) -eq 0){$special[$rng.Next($special.Count)]}else{$families[$rng.Next($families.Count)]};$B.Last=$f;$tally[$f]++;if($f -eq 'load'){$f=$loadMix[$rng.Next($loadMix.Count)];$B.Last=$f;$tally[$f]++}
     if($B.Dead -and $f -ne 'walk' -and $f -ne 'say'){$tally['ghost']++}
     switch($f){
+        # UOAIX-270 (-Only widen): British adds plain art 0x0A92 (no catalog item, so no lot) to his pack 8 a draw,
+        # reading each answer before the next (a 24-command burst failed his link, widen-45917), growing the world until
+        # the checkpoint bound (STORE ROOM bound=) passes three quarters of its room. The first refusal stops the family
+        # for the run (L-FUTILITY); the other bots walk.
+        'widen'{if($B.Index -ne 1 -or ($tally.ContainsKey('widen-added') -and $tally['widen-added'] -ge 6000)){Act $B 'walk';return};if($script:widenStop){Count 'stopped-widen';return}
+            $B.Said.Clear();for($i=0;$i -lt 8;$i++){Send-Plain $B (Say '[add 0A92 1');Pump-Bot $B 8}
+            $added=@($B.Said|Where-Object{$_ -match 'Added 1'}).Count;$tally['widen-added']=$(if($tally.ContainsKey('widen-added')){$tally['widen-added']}else{0})+$added
+            if(Said-Has $B 'Cannot add|Usage|No backpack'){$script:widenStop=$true;Count 'refused-widen';Note "WIDEN stopped: $(Said-Text $B)"}}
         'walk'{for($i=0;$i -lt 3;$i++){$open=@(0..7|Where-Object{-not $B.Blocked.ContainsKey("$($B.X),$($B.Y),$_")});if($open.Count -eq 0){break};Walk $B $open[$rng.Next($open.Count)];Pump-Bot $B 16}}
         'say'{Send-Plain $B (Say (@('hail','hello there','guards','what news','vendor buy','bank','I accept')[$rng.Next(7)]))}
         'go'{$spot=@(@(1475,1645),@(1437,1696),@(1452,1529),@(1385,1487),@(1340,1997),@(1420,1698),@(1495,1620))[$rng.Next(7)];Send-Plain $B (Say "[go $($spot[0]) $($spot[1])")}
@@ -1409,6 +1516,7 @@ function Act($B,[string]$Force=''){
             if(-not (Test-Path variable:script:gradedStep)){$script:gradedStep=0};$name=@($gradedSteps.Keys)[($script:gradedStep++) % $gradedSteps.Count];& $gradedSteps[$name] $B;Count "graded-$name"}
         'reekgraded'{if($B.Index -ne 1){return};if(-not (Test-Path variable:script:reekStep)){$script:reekStep=0};$name=@($reekSteps.Keys)[($script:reekStep++) % $reekSteps.Count];& $reekSteps[$name] $B;Count "reekgraded-$name"}
         'festergraded'{if($B.Index -ne 1){return};Prime $B 'magery';Send-Plain $B (Say '[attr int 100');if(-not (Test-Path variable:script:festerStep)){$script:festerStep=0};$name=@($festerSteps.Keys)[($script:festerStep++) % $festerSteps.Count];& $festerSteps[$name] $B;Count "festergraded-$name"}
+        'coroner'{if($B.Index -ne 1 -or (Test-Path variable:script:corDone)){return};Cor-Run $B;Cor-Park $B;Count 'coroner-draw'}
         'redgraded'{if($B.Index -ne 1){return};if(-not (Test-Path variable:script:redStep)){$script:redStep=0};$name=@($redSteps.Keys)[($script:redStep++) % $redSteps.Count];& $redSteps[$name] $B;Count "redgraded-$name"}
         {@('eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon') -contains $_}{if($B.Index -eq 1){Tavern-Game $B $f}}
         'pick'{Send-Plain $B (Say '[go 1230 1591');Pump-Bot $B 64;$c=@($B.Crops.Keys|Where-Object{$B.Crops[$_][0] -eq 1230 -and $B.Crops[$_][1] -eq 1590})
@@ -1469,7 +1577,8 @@ function Admin-Step{
         if($text -match '^\{"error"'){Count "adminerr-$c"}else{Count "admin-$c"}
     }catch{Count 'admin-refused';$admin.Session=0;$admin.Ceiling=0}
 }
-[IO.File]::WriteAllText($option,"ADMIN $($adminKeys -join ' ')`nUOAIX TESTING$(if($Open){' OPEN'})`n",[Text.Encoding]::ASCII)
+# TICKET: a relay ticket's 120 s (cl-ticket-default) is guest time, so a scaled clock gets 120 x ClockScale.
+[IO.File]::WriteAllText($option,"$(if($ClockScale -gt 1){"TICKET $(120*$ClockScale)`n"})ADMIN $($adminKeys -join ' ')`nUOAIX TESTING$(if($Open){' OPEN'})`n",[Text.Encoding]::ASCII)
 $vmPath=if($Vm){(Resolve-Path $Vm).Path}else{Join-Path $repo 'tools/codex-vm.exe'}
 if((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory -lt 1572864){throw 'RAM admission'}
 $fleet=@(1..$Bots|ForEach-Object{New-Bot $_})
@@ -1515,7 +1624,7 @@ try{
         Start-Sleep -Milliseconds 250
     }
     Note "SOAK server listening; logging in $Bots bots"
-    $elapsed=0;$end=[datetime]::UtcNow.AddMinutes($Minutes);$nextReport=[datetime]::UtcNow.AddMinutes(1);$seen=0
+    $elapsed=0;$end=[datetime]::UtcNow.AddMinutes($Minutes);$nextReport=[datetime]::UtcNow.AddMinutes(1);$seen=0;$nextCreate=[datetime]::MinValue
     $errandDone=($ErrandSeconds -eq 0);$errandDeadline=[datetime]::UtcNow.AddSeconds($ErrandSeconds);$errandNext=[datetime]::UtcNow
     while([datetime]::UtcNow -lt $end){
         if(-not $errandDone -and [datetime]::UtcNow -ge $errandNext){
@@ -1525,10 +1634,14 @@ try{
         }
         foreach($b in $fleet){
             try{
-                if(-not $b.Up){if($b.Index -eq 1 -and -not $errandDone){continue};if([datetime]::UtcNow -ge $b.Reconnect){Connect-Bot $b;Note "LOGIN $($b.Name) serial=$($b.Serial) at $($b.X),$($b.Y) (login $($b.Logins))"};continue}
+                # A first login creates the account, and the server creates one a 10 s (ga-may-create): space them 11 s apart.
+                if(-not $b.Up){if($b.Index -eq 1 -and -not $errandDone){continue};if($b.Logins -eq 0 -and [datetime]::UtcNow -lt $nextCreate){continue};if([datetime]::UtcNow -ge $b.Reconnect){if($b.Logins -eq 0){$nextCreate=[datetime]::UtcNow.AddSeconds(11)};Connect-Bot $b;Note "LOGIN $($b.Name) serial=$($b.Serial) at $($b.X),$($b.Y) (login $($b.Logins))"};continue}
                 Pump-Bot $b 256
                 if([datetime]::UtcNow -ge $b.NextAt){Act $b;$b.NextAt=[datetime]::UtcNow.AddMilliseconds(300+$rng.Next(1200))}
-            }catch{Drop-Bot $b $_.Exception.Message}
+            # A step drives other bots too (a card table's players): a write that failed on one of their sockets drops that
+            # bot, not the bot whose turn it is (trial-46700: British dropped for soakbotd's kicked socket).
+            }catch{$why="$($_.Exception.Message) (soak-bots line $($_.InvocationInfo.ScriptLineNumber))";$broken=@($fleet|Where-Object{$_.Up -and $_.Tcp -and -not $_.Tcp.Client.Connected})
+                if($broken.Count -gt 0 -and $broken -notcontains $b){foreach($x in $broken){Drop-Bot $x $why}}else{Drop-Bot $b $why}}
         }
         Admin-Step
         Start-Sleep -Milliseconds 10
@@ -1541,7 +1654,7 @@ try{
             $elapsed++;if($elapsed % 10 -eq 0){Dump-Cover}
             $up=@($fleet|Where-Object Up).Count
             if($Only -contains 'load'){Load-Minute $new $up}
-            Note ("STATUS up=$up/$Bots sent=$(($fleet|Measure-Object Sent -Sum).Sum) recv=$(($fleet|Measure-Object Received -Sum).Sum) disconnects=$($disconnects.Count) " + (($tally.Keys|Sort-Object|ForEach-Object{"$_=$($tally[$_])"}) -join ' '))
+            Note ("STATUS up=$up/$Bots sent=$(($fleet|Measure-Object Sent -Sum).Sum) recv=$(($fleet|Measure-Object Received -Sum).Sum) disconnects=$($disconnects.Count) gm-disconnects=$($gmDrops.Count) " +(($tally.Keys|Sort-Object|ForEach-Object{"$_=$($tally[$_])"}) -join ' '))
         }
     }
 }catch{$fatal="harness: $($_.Exception.Message)"}
@@ -1557,6 +1670,7 @@ finally{
 }
 Note ("OPS received " + (($recvOps.Keys|Sort-Object|ForEach-Object{'{0:X2}={1}' -f $_,$recvOps[$_]}) -join ' '))
 foreach($d in $disconnects){Note "DISCONNECTED $d"}
+foreach($d in $gmDrops){Note "GM DISCONNECTED $d"}
 if($Only -contains 'load'){Load-Grade}
 $syms=[Collections.Generic.List[object]]::new()
 foreach($line in [IO.File]::ReadLines($map)){if($line -match '^(0x[0-9a-fA-F]+)\s+(\d+)\s+(.+)$'){$syms.Add(@([Convert]::ToInt64($Matches[1],16),[int]$Matches[2],$Matches[3].Trim()))}}
@@ -1566,5 +1680,7 @@ if(Test-Path $prof){foreach($line in [IO.File]::ReadLines($prof)){if($line -matc
 Note "COVERAGE sampled functions hit $($hitNames.Count) of $($sorted.Count) in the map, from $samples host samples at about 18 Hz (a sampled floor, not a full coverage measure)"
 if($CoverLog){$md=Join-Path $OutDir 'coverage.md';try{pwsh -NoProfile -File (Join-Path $repo 'build/coverage-report.ps1') -Log $CoverLog -Output $log -Markdown $md | Select-Object -First 3 | ForEach-Object{Note "COVER $_"}}catch{Note "COVER report failed: $($_.Exception.Message)"}}
 if(-not $fatal){$hit=[regex]::Matches((Read-Log),$fatalPattern);if($hit.Count -gt 0){$fatal=($hit|Select-Object -First 3|ForEach-Object{$_.Value.Trim()}) -join ' | '}}
+# A drop no GM command made is a failure (L-FALSIF): trial-46602's 88 timeouts printed SOAK PASS. GM kicks are $gmDrops.
+if(-not $fatal -and $disconnects.Count -gt 0){$fatal="$($disconnects.Count) disconnects no GM made: "+(($disconnects|Select-Object -First 3) -join ' | ')}
 if($fatal){Note "SOAK FAIL $fatal";exit 1}
-Note "SOAK PASS $Minutes minutes, $Bots bots, $($disconnects.Count) disconnects"
+Note "SOAK PASS $Minutes minutes, $Bots bots, $($disconnects.Count) disconnects, $($gmDrops.Count) gm disconnects"

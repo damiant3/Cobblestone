@@ -543,6 +543,7 @@ Section: Definition Emission
     else if n == "url-encode" then True
     else if n == "download-text" then True
     else if n == "set-timeout" then True
+    else if n == "event-source-then" then True
     else if n == "local-storage-get" then True
     else if n == "local-storage-set" then True
     else if n == "generate-image" then True
@@ -914,6 +915,7 @@ Section: Chapter Emission
     & "function dom_body(){return document.body;}\n"
     & "function random_int(lo,hi){lo=BigInt(lo);hi=BigInt(hi);var span=hi-lo+1n;if(span<=0n)throw new RangeError('random-int lower bound exceeds upper bound');if(span===1n)return lo;var bits=(span-1n).toString(2).length,words=Math.ceil(bits/32),mask=(1n<<BigInt(bits))-1n,r;do{r=0n;for(var i=0;i<words;i++)r=(r<<32n)|BigInt(Math.floor(Math.random()*4294967296));r&=mask}while(r>=span);return lo+r}\n"
     & "function set_timeout(fn,ms){return setTimeout(function(){fn(0n)},Number(ms));}\n"
+    & "function event_source_then(u,cb){var s=new EventSource(u);s.onopen=function(){cb('open')};s.onmessage=function(e){cb(e.data)};return 0;}\n"
     & "var _actx=null;function _audioctx(){if(!_actx){try{_actx=new (window.AudioContext||window.webkitAudioContext)()}catch(e){return null}}if(_actx.state==='suspended'){try{_actx.resume()}catch(e){}}return _actx}\n"
     & "function play_tone(freq,ms,wave){freq=Number(freq);ms=Number(ms);wave=Number(wave);try{var c=_audioctx();if(!c)return 0;var o=c.createOscillator();var g=c.createGain();o.type=wave===1?'triangle':wave===2?'square':wave===3?'sawtooth':'sine';o.frequency.value=freq;o.connect(g);g.connect(c.destination);var t=c.currentTime;var d=ms/1000;g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.25,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+d);o.start(t);o.stop(t+d+0.02)}catch(e){}return 0}\n"
     & "function local_storage_get(k){try{return localStorage.getItem(k)||'';}catch(e){return'';}}\n"
@@ -1246,7 +1248,8 @@ Section: Chapter Emission
   emit-dom-dialog-a =
     "function _dlg(t,m,bs,inp){var d=document.createElement('dialog');"
     & "d.className='wk-dialog';"
-    & "d.innerHTML='<h3>'+t+'</h3><p>'+m+'</p>';"
+    & "var dh=document.createElement('h3');dh.textContent=t;d.appendChild(dh);"
+    & "var dp=document.createElement('p');dp.textContent=m;d.appendChild(dp);"
     & "if(inp){var i=document.createElement('input');"
     & "i.id='dlg-input';i.className='wk-input';"
     & "i.placeholder=inp;d.appendChild(i)}\n"
@@ -1425,11 +1428,16 @@ Section: Chapter Emission
 
   emit-dom-widget-create : Text
   emit-dom-widget-create =
-    "function _wk(n){var k=n.wn_kind,el;"
+    "function _wkEnt(s){var m={amp:38,apos:39,bull:8226,gt:62,hellip:8230,ldquo:8220,lt:60,mdash:8212,middot:183,nbsp:160,ndash:8211,quot:34,rdquo:8221,shy:173,times:215,larr:8592,rarr:8594,uarr:8593,darr:8595};"
+    & "return String(s).replace(/&(#[xX][0-9a-fA-F]{1,6}|#[0-9]{1,7}|[A-Za-z]+);/g,function(e,b){if(b.charAt(0)==='#'){"
+    & "var c=(b.charAt(1)==='x'||b.charAt(1)==='X')?parseInt(b.slice(2),16):parseInt(b.slice(1),10);"
+    & "return (c>0&&c<=1114111&&(c<55296||c>57343))?String.fromCodePoint(c):e}"
+    & "return Object.prototype.hasOwnProperty.call(m,b)?String.fromCodePoint(m[b]):e})}\n"
+    & "function _wk(n){var k=n.wn_kind,el;"
     & "if(k._tag==='WkCustom')return _wkCustom(n,k._0||'');"
     & "if(k._tag==='WkPanel'||k._tag==='WkStack'||k._tag==='WkScroll')el=document.createElement('div');"
-    & "else if(k._tag==='WkLabel'){el=document.createElement('span');if(k._0&&k._0.indexOf('&')>=0)el.innerHTML=k._0;else el.textContent=k._0}"
-    & "else if(k._tag==='WkButton'){el=document.createElement('button');if(k._0&&k._0.indexOf('&')>=0)el.innerHTML=k._0;else el.textContent=k._0}"
+    & "else if(k._tag==='WkLabel'){el=document.createElement('span');el.textContent=k._0?_wkEnt(k._0):k._0}"
+    & "else if(k._tag==='WkButton'){el=document.createElement('button');el.textContent=k._0?_wkEnt(k._0):k._0}"
     & "else if(k._tag==='WkInput'){el=document.createElement('input');el.value=k._0}"
     & "else if(k._tag==='WkGauge'){el=document.createElement('progress');el.value=Number(k._0);el.max=Number(k._1)}"
     & "else if(k._tag==='WkSeparator')el=document.createElement('hr');"

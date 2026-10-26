@@ -17,7 +17,12 @@ Section: The Rules
  Rule 2. Setting up: the territories are dealt round the table, one army on
  each, and the players then place the rest of their starting armies one at
  a time in turn, each on a territory of their own. Two players start with
- 40 armies, three with 35, four with 30.
+ 40 armies, three with 35, four with 30. Two players deal the territories
+ three ways, 14 each, the third share to a neutral army of 40, and each
+ turn of setting up then places 2 of the player's own armies and 1 neutral
+ army on a neutral territory of the player's choosing. The neutral army
+ never attacks, moves, draws cards or receives armies; when a player
+ attacks it, the opponent rolls its defence.
 
  Rule 3. A turn is three parts in order: reinforce, attack, fortify.
 
@@ -54,12 +59,20 @@ Section: The Rules
  territory to another of the player's own connected to it through their own
  territories, leaving at least one army behind.
 
- Rule 10. The player who holds all 42 territories wins.
+ Rule 10. The player who holds all 42 territories wins. Of two players,
+ the one who eliminates the other wins, whether or not the neutral army
+ still stands.
+
+ The two-player rules are the 1959 Parker Brothers edition's, as Winning
+ Moves reprinted that edition in 2008 ("Risk for two players").
 
  Where the rules leave a choice, this engine takes these. The defender
- always rolls as many dice as allowed. The deal and the deck are shuffled
- from the game's seed, the first player to set up plays first, and two
- players play without the neutral army. A card's symbol is its territory
+ always rolls as many dice as allowed, the neutral army's included. The
+ deal and the deck are shuffled from the game's seed, and the first player
+ to set up plays first. The neutral army is owner 2. A two-player turn of
+ setting up places the player's own armies before the neutral one, and the
+ engine's players put the neutral army on the neutral territory bordering
+ the opponent with the fewest armies. A card's symbol is its territory
  number modulo 3 (infantry, cavalry, artillery), 14 of each as the deck
  has. Traded cards go to a discard pile that is shuffled into a new deck
  when the deck runs out. The 2 armies for a held territory go to the first
@@ -82,7 +95,8 @@ Section: The State Layout
 
  The state is one Integer list of 280 slots. Slots 0 to 31 are the fields
  named below, with the starting armies each player has left to place at 26
- to 29. Territories sit at 40 in strides of 2 (owner, armies). Each card's
+ to 29, the neutral army's at 28 of two players, whose turn of setting up
+ counts the player's own armies placed at 25. Territories sit at 40 in strides of 2 (owner, armies). Each card's
  holder sits at 130 (-2 the deck, -1 the discard pile, else a player); the
  deck's order at 180 and the discard pile's at 230, each 44 slots.
 
@@ -148,6 +162,9 @@ Section: The State Layout
 
   rk-f-discardlen : Integer
   rk-f-discardlen = 24
+
+  rk-f-step : Integer
+  rk-f-step = 25
 
   rk-f-setup : Integer
   rk-f-setup = 26
@@ -389,8 +406,8 @@ Section: Setting Up
     in let s0 = RiskState { cells = rk-zeros rk-size [] }
     in let s1 = rk-put (rk-put (rk-put (rk-put s0 rk-f-np np) rk-f-winner (-1)) rk-f-human (-1)) rk-f-seed seed
     in let s2 = rk-put (rk-put (rk-put s1 rk-f-mfrom (-1)) rk-f-mto (-1)) rk-f-decklen 44
-    in let s3 = rk-deal-assign (rk-deal-shuffle (rk-order-fill s2 0) seed 41) np 0
-    in let s4 = rk-setup-left s3 0 np
+    in let s3 = rk-deal-assign (rk-deal-shuffle (rk-order-fill s2 0) seed 41) (rk-seats np) 0
+    in let s4 = rk-setup-left s3 0 (rk-seats np) np
     in let s5 = rk-deck-fill s4 0
     in rk-deck-shuffle s5 seed 43
 
@@ -416,10 +433,28 @@ Section: Setting Up
     else let t = rk-get s (230 + i)
     in rk-deal-assign (rk-put (rk-put (rk-put s (rk-tslot t 0) (rng-mod i np)) (rk-tslot t 1) 1) (230 + i) 0) np (i + 1)
 
-  rk-setup-left : RiskState, Integer, Integer -> RiskState
-  rk-setup-left (s) (p) (np) =
-    if p >= np then s
-    else rk-setup-left (rk-put s (rk-f-setup + p) (rk-start-armies np - rk-held s p)) (p + 1) np
+  rk-neutral : Integer
+  rk-neutral = 2
+
+  rk-seats : Integer -> Integer
+  rk-seats (np) = if np == 2 then 3 else np
+
+  rk-setup-left : RiskState, Integer, Integer, Integer -> RiskState
+  rk-setup-left (s) (p) (seats) (np) =
+    if p >= seats then s
+    else rk-setup-left (rk-put s (rk-f-setup + p) (rk-start-armies np - rk-held s p)) (p + 1) seats np
+
+  rk-neutral-due : RiskState, Integer -> Boolean
+  rk-neutral-due (s) (p) =
+    if rk-players s /= 2 then False
+    else if rk-get s (rk-f-setup + rk-neutral) <= 0 then False
+    else rk-get s rk-f-step >= 2 | rk-get s (rk-f-setup + p) <= 0
+
+  rk-setup-due : RiskState, Integer -> Boolean
+  rk-setup-due (s) (q) =
+    if rk-get s (rk-f-setup + q) > 0 then True
+    else if rk-players s /= 2 then False
+    else rk-get s (rk-f-setup + rk-neutral) > 0
 
   rk-deck-fill : RiskState, Integer -> RiskState
   rk-deck-fill (s) (c) =
@@ -603,8 +638,8 @@ Section: What Each Player May Do
   rk-can-place : RiskState, Integer, Integer, Integer -> Boolean
   rk-can-place (s) (p) (ph) (t) =
     if rk-terr-ok t == False then False
+    else if ph == 0 then (if rk-neutral-due s p then rk-owner s t == rk-neutral else (rk-owner s t == p) & (rk-get s (rk-f-setup + p) > 0))
     else if rk-owner s t /= p then False
-    else if ph == 0 then rk-get s (rk-f-setup + p) > 0
     else if ph == 1 | ph == 5 then (if rk-get s rk-f-place <= 0 then False else rk-hand s p < 5)
     else False
 
@@ -653,11 +688,22 @@ Section: Acting
   rk-place : RiskState, Integer, Integer -> RiskState
   rk-place (s) (p) (t) =
     let s2 = rk-set-armies s t (rk-armies s t + 1)
-    in if rk-phase s2 == 0 then rk-setup-next (rk-put s2 (rk-f-setup + p) (rk-get s2 (rk-f-setup + p) - 1)) p
+    in if rk-phase s2 == 0 then rk-setup-placed s2 p t
     else let left = rk-get s2 rk-f-place - 1
     in let s3 = rk-put s2 rk-f-place left
     in if left > 0 then s3
     else rk-put s3 rk-f-phase 2
+
+  rk-setup-placed : RiskState, Integer, Integer -> RiskState
+  rk-setup-placed (s) (p) (t) =
+    if rk-players s /= 2 then rk-setup-next (rk-put s (rk-f-setup + p) (rk-get s (rk-f-setup + p) - 1)) p
+    else if rk-owner s t == rk-neutral then rk-setup-next (rk-put (rk-put s (rk-f-setup + rk-neutral) (rk-get s (rk-f-setup + rk-neutral) - 1)) rk-f-step 0) p
+    else let own = rk-get s (rk-f-setup + p) - 1
+    in let step = rk-get s rk-f-step + 1
+    in let s2 = rk-put (rk-put s (rk-f-setup + p) own) rk-f-step step
+    in if (step < 2) & (own > 0) then s2
+    else if rk-get s2 (rk-f-setup + rk-neutral) > 0 then s2
+    else rk-setup-next (rk-put s2 rk-f-step 0) p
 
   rk-setup-next : RiskState, Integer -> RiskState
   rk-setup-next (s) (p) = rk-setup-next-loop s p 1
@@ -666,7 +712,7 @@ Section: Acting
   rk-setup-next-loop (s) (p) (k) =
     if k > rk-players s then rk-begin-turn (rk-put s rk-f-cur 0)
     else let q = rng-mod (p + k) (rk-players s)
-    in if rk-get s (rk-f-setup + q) > 0 then rk-put s rk-f-cur q
+    in if rk-setup-due s q then rk-put s rk-f-cur q
     else rk-setup-next-loop s p (k + 1)
 
   rk-begin-turn : RiskState -> RiskState
@@ -725,10 +771,16 @@ Section: Acting
     let q = rk-owner s dest
     in let s2 = rk-put (rk-put s (rk-tslot dest 0) p) rk-f-conquered 1
     in let s3 = rk-put (rk-put (rk-put s2 rk-f-mfrom from) rk-f-mto dest) rk-f-mmin n
-    in if rk-held s3 p == rk-territories then rk-finish (rk-set-armies (rk-set-armies s3 dest n) from (rk-armies s3 from - n)) p
+    in if rk-rivals-held s3 p 0 0 == 0 then rk-finish (rk-set-armies (rk-set-armies s3 dest n) from (rk-armies s3 from - n)) p
     else if rk-held s3 q > 0 then rk-put s3 rk-f-phase 3
+    else if q >= rk-players s3 then rk-put s3 rk-f-phase 3
     else let s4 = rk-take-cards s3 q p 0
     in rk-put (rk-put s4 rk-f-elim (if rk-hand s4 p >= 6 then 1 else 0)) rk-f-phase 3
+
+  rk-rivals-held : RiskState, Integer, Integer, Integer -> Integer
+  rk-rivals-held (s) (p) (q) (acc) =
+    if q >= rk-players s then acc
+    else rk-rivals-held s p (q + 1) (acc + (if q == p then 0 else rk-held s q))
 
   rk-finish : RiskState, Integer -> RiskState
   rk-finish (s) (p) =
@@ -820,6 +872,21 @@ Section: The Engine's Players
     let b = rk-pick-border s p want-most 0 (-1)
     in if b >= 0 then b else rk-first-owned s p 0
 
+  rk-beside : RiskState, Integer, Integer, Integer -> Boolean
+  rk-beside (s) (q) (t) (u) =
+    if u >= rk-territories then False
+    else if rk-adjacent t u & rk-owner s u == q then True
+    else rk-beside s q t (u + 1)
+
+  rk-ai-neutral-target : RiskState, Integer, Integer, Integer -> Integer
+  rk-ai-neutral-target (s) (p) (t) (best) =
+    if t >= rk-territories then (if best >= 0 then best else rk-first-owned s rk-neutral 0)
+    else if rk-owner s t /= rk-neutral then rk-ai-neutral-target s p (t + 1) best
+    else if rk-beside s (1 - p) t 0 == False then rk-ai-neutral-target s p (t + 1) best
+    else if best < 0 then rk-ai-neutral-target s p (t + 1) t
+    else if rk-armies s t < rk-armies s best then rk-ai-neutral-target s p (t + 1) t
+    else rk-ai-neutral-target s p (t + 1) best
+
   rk-first-set : RiskState, Integer, Integer, Integer, Integer -> Integer
   rk-first-set (s) (p) (a) (b) (c) =
     if a >= 42 then (-1)
@@ -871,7 +938,7 @@ Section: The Engine's Players
     let p = rk-cur s
     in let ph = rk-phase s
     in if rk-over s then (-1)
-    else if ph == 0 then rk-code 0 p (rk-ai-place-target s p False)
+    else if ph == 0 then rk-code 0 p (if rk-neutral-due s p then rk-ai-neutral-target s p 0 (-1) else rk-ai-place-target s p False)
     else if ph == 1 | ph == 5 then rk-ai-reinforce s p ph
     else if ph == 2 then rk-ai-attack s p
     else if ph == 3 then rk-code 4 p (rk-ai-move-in s)

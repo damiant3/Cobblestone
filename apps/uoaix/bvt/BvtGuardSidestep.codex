@@ -1,0 +1,52 @@
+Chapter: BvtGuardSidestep
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter BvtCheck
+
+  bgsd-land : WalkMap, Integer -> Integer
+  bgsd-land (map) (i) = if i >= 256 then 0 else let a = walk-set-land map (1400 + int-mod i 16) (1600 + i / 16) 0 0 in bgsd-land map (i + 1)
+  bgsd-at : WorldTable, Integer -> WorldObject
+  bgsd-at (world) (serial) = when world-get world serial
+    is Err (_) -> WorldObject { serial = 0, kind = 1, x = 0, y = 0, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 0 }
+    is Ok (m) -> m
+  bgsd-made : WorldTable, Integer, Integer -> Integer
+  bgsd-made (world) (x) (y) = when world-create world (__record-set (gs-mobile 0 x y 0 400 0) "health" 50) is Err (_) -> 0 is Ok (s) -> s
+ UOAIX guards (Damian, 2026-10-20): a walker steps once toward 1410,1605, then a mobile stands on its next route tile.
+ With sidestep set it answers 1 it stepped off its route to a free side tile, 2 the block is marked once, 4 its next step
+ rejoins the route's tile after the blocked one and clears the mark; without sidestep, 8 it stalls in place, marked; 15
+ is all.
+  bgsd-run : Integer -> Integer
+  bgsd-run (sidestep) = when walk-map-new 1400 1600 16 16
+    is Err (_) -> -1
+    is Ok (map) -> when world-new 64
+      is Err (_) -> -1
+      is Ok (world) -> let laid = bgsd-land map 0
+        in let indexed = world-reindex world
+        in let p = tl-path-new map
+        in let walker = bgsd-made world 1401 1605
+        in let w = rte-walk 0
+        in let on = __record-set w "sidestep" sidestep
+        in let first = rte-toward-budget p world None map None rte-any w (bgsd-at world walker) 1410 1605 0 (p.width * p.height)
+        in let m1 = bgsd-at world walker
+        in if w.route < 0 then -2
+        else let d1 = rte-route-step p w w.step
+        in let d2 = rte-route-step p w (w.step + 1)
+        in let t1x = m1.x + walk-dx d1
+        in let t1y = m1.y + walk-dy d1
+        in let blocker = bgsd-made world t1x t1y
+        in let moves = w.moves
+        in let second = rte-toward-budget p world None map None rte-any w m1 1410 1605 0 (p.width * p.height)
+        in let m2 = bgsd-at world walker
+        in let pressed = w.pressed
+        in if sidestep == 0 then (if m2.x == m1.x & m2.y == m1.y & w.stalls == 1 & pressed == 1 then 8 else 0)
+        else let stepped = w.moves == moves + 1 & not (m2.x == t1x & m2.y == t1y)
+        in let third = rte-toward-budget p world None map None rte-any w m2 1410 1605 0 (p.width * p.height)
+        in let m3 = bgsd-at world walker
+        in let rejoined = m3.x == t1x + walk-dx d2 & m3.y == t1y + walk-dy d2 & w.pressed == 0 & w.detour < 0 & w.route >= 0
+        in (if stepped then 1 else 0) + (if pressed == 1 then 2 else 0) + (if rejoined then 4 else 0)
+  bvt-guard-sidestep : Integer -> [Console] Integer
+  bvt-guard-sidestep (unused) = act
+    a <- bgsd-run 1
+    b <- bgsd-run 0
+    bvt-check ("a walker with sidestep steps around a mobile on its route and rejoins it, marking the block once; without it, it stalls (code " & show (a + b) & ")") (a + b == 15)
+  end

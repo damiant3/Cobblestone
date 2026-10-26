@@ -81,8 +81,19 @@ Put $exe (Raw 0x4AE64C) ([byte[]]::new(11))
 Expect $exe (Raw 0x46E86B) ('E8'+[Convert]::ToHexString((Le ($sprintf-0x46E870)))) 'the total sprintf call'
 Put $exe (Raw 0x46E86B) ([byte[]](@(0xE8)+(Le ($cave-0x46E870))))
 # Bill of Sale "Gold Avail" number: 15 pixels down (y 0xAB to 0xBA) with its label, freeing the total's row.
+# The server sends the purse and pack coin as copper in the status gold (UOAIX-279; it arrives as the dword 0x64CD74,
+# copied whole into the status gump at +0xD0 and as a word into the Bill's). Both draws call the coin formatter:
+# the status gump's sprintf(buf, fmt, [ebx+0xD0]) at 0x4692A9, and the Bill's Coin Available, whose word read
+# (mov dx,[ecx+0xD0]; push edx; push fmt; push eax; call sprintf, 0x46E8F3..0x46E905) becomes
+# push dword [0x64CD74]; push fmt; push eax; call formatter; nop; nop.
+Expect $exe (Raw 0x469299) ('8B83D0000000'+'8D4DB850'+'6830E44A00'+'51'+'E8'+[Convert]::ToHexString((Le ($sprintf-0x4692AE)))) 'the status gump gold draw'
+Put $exe (Raw 0x4692A9) ([byte[]](@(0xE8)+(Le ($cave-0x4692AE))))
+Expect $exe (Raw 0x46E8F3) ('668B91D0000000'+'52'+'681C644A00'+'50'+'E8'+[Convert]::ToHexString((Le ($sprintf-0x46E906)))) 'the Gold Avail draw'
+Put $exe (Raw 0x46E8F3) ([byte[]](@(0xFF,0x35,0x74,0xCD,0x64,0x00,0x68,0x1C,0x64,0x4A,0x00,0x50,0xE8)+(Le ($cave-0x46E904))+@(0x90,0x90)))
 Expect $exe (Raw 0x46E943) '81C1AB000000' 'the Gold Avail row'
 $exe[(Raw 0x46E945)]=0xBA
+# Its x (push 0xBC): moved past the wider "Coin Available:" label once the label's end is known, below.
+Expect $exe (Raw 0x46E94C) '68BC000000' 'the Gold Avail x'
 # The coin formatter, in .text slack past its virtual size (0x9AAC6, raw 0x9AC00, all zero in the reference client):
 # n = [esp+12]; writes "<g>g <s>s <c>c" into [esp+4], omitting zero coins and printing "0c" for zero, through the
 # client's own sprintf; returns the length.
@@ -107,7 +118,28 @@ $w=($extra -shr 16) -band 0xFFFF;$h=$extra -band 0xFFFF
 if($w -ne 283 -or $h -ne 248){throw "Gump 0x871 is ${w}x$h, not 283x248"}
 $entry=[byte[]]::new($len);[Array]::Copy($art,$off,$entry,0,$len)
 $px=[UoaixGump]::Decode($entry,$w,$h)
-for($y=168;$y -le 182;$y++){for($x=115;$x -le 190;$x++){$a=$y*$w+$x;$b=($y+15)*$w+$x;$t=$px[$a];$px[$a]=$px[$b];$px[$b]=$t}}
+# "Gold Avail:" becomes "Coin Available:" (Damian, 2026-10-20), lettered from this gump's own blackletter: C from
+# "Clear" (rows 220-231), the n from the m of "Amt." and the e from "More" (rows 43-50), the b the label's d mirrored, the
+# rest the label's own glyphs (rows 171-182). A glyph's ink (blue or near black) is drawn over parchment from rows 38 up.
+function Ink([int]$c){$r=($c -shr 10) -band 31;$g=($c -shr 5) -band 31;$b=$c -band 31;($b -gt $r+3 -and $r -lt 14) -or ($r+$g+$b -lt 30)}
+$glyphs=@(@{x0=170;x1=177;y0=220;y1=231;dy=-50},@{x0=128;x1=132;y0=171;y1=182;dy=0},@{x0=171;x1=174;y0=171;y1=182;dy=0},
+    @{x0=44;x1=49;y0=43;y1=50;dy=130},@{space=4},@{x0=148;x1=156;y0=171;y1=182;dy=0},@{x0=157;x1=162;y0=171;y1=182;dy=0},
+    @{x0=164;x1=168;y0=171;y1=182;dy=0},@{x0=171;x1=174;y0=171;y1=182;dy=0},@{x0=177;x1=181;y0=171;y1=182;dy=0},
+    @{x0=164;x1=168;y0=171;y1=182;dy=0},@{x0=138;x1=143;y0=171;y1=182;dy=0;mirror=$true},@{x0=177;x1=181;y0=171;y1=182;dy=0},
+    @{x0=186;x1=190;y0=43;y1=50;dy=130},@{x0=182;x1=183;y0=171;y1=182;dy=0})
+$labelEnd=118;foreach($gl in $glyphs){$labelEnd+=if($gl.ContainsKey('space')){$gl.space}else{$gl.x1-$gl.x0+2}}
+$swapEnd=[Math]::Max(190,$labelEnd+2)
+if($swapEnd -gt 240){throw "Coin Available label ends at x $labelEnd, past the clean parchment"}
+$src=[ushort[]]$px.Clone()
+for($y=168;$y -le 182;$y++){for($x=115;$x -le $swapEnd;$x++){$px[$y*$w+$x]=$src[($y-38)*$w+$x]}}
+$at=118
+foreach($gl in $glyphs){if($gl.ContainsKey('space')){$at+=$gl.space;continue}
+    $gw=$gl.x1-$gl.x0+1
+    for($y=$gl.y0;$y -le $gl.y1;$y++){for($i=0;$i -lt $gw;$i++){$sx=if($gl.ContainsKey('mirror')){$gl.x1-$i}else{$gl.x0+$i}
+        $c=$src[$y*$w+$sx];if(Ink $c){$px[($y+$gl.dy)*$w+$at+$i]=$c}}}
+    $at+=$gw+1}
+for($y=168;$y -le 182;$y++){for($x=115;$x -le $swapEnd;$x++){$a=$y*$w+$x;$b=($y+15)*$w+$x;$t=$px[$a];$px[$a]=$px[$b];$px[$b]=$t}}
+Put $exe (Raw 0x46E94D) (Le ($labelEnd+4))
 $new=[UoaixGump]::Encode($px,$w,$h)
 $back=[UoaixGump]::Decode($new,$w,$h);for($i=0;$i -lt $px.Length;$i++){if($back[$i] -ne $px[$i]){throw 'Re-encoded gump 0x871 does not decode to its pixels'}}
 $outArt=[byte[]]::new($art.Length+$new.Length);[Array]::Copy($art,$outArt,$art.Length);[Array]::Copy($new,0,$outArt,$art.Length,$new.Length)

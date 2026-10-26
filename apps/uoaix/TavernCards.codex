@@ -179,6 +179,8 @@ Section: Gump
     in let head = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) tcd-gump-id) 60) 60) (text-length layout + 1)
     in let counted = gp-put16 (gp-ascii head layout 0 (text-length layout + 1)) (list-length a.texts)
     in sip-length (tcd-texts counted a.texts 0)
+  tcd-over : Integer, Text, Text, List Text -> List Integer
+  tcd-over (serial) (title) (result) (rows) = tcd-panel serial ([title, result, ""] & rows) [] []
   tcd-choices : List Integer = [101, 102, 103, 104]
   tcd-chooser : Integer -> List Integer
   tcd-chooser (serial) = tcd-panel serial ["Card table", "Choose a game for this table."] tcd-choices ["Crazy Eights, two players", "Go Fish, two players", "Draw Poker, two players", "Blackjack, against the house"]
@@ -237,8 +239,10 @@ Section: Crazy Eights
     in if s.game-over then
       (let result = if s.winner == seat then "You win the game of Crazy Eights." else if s.winner < 0 then "The game of Crazy Eights is drawn." else "Your opponent wins the game of Crazy Eights."
       in let their = if s.winner == 1 - seat then "You win the game of Crazy Eights." else if s.winner < 0 then "The game of Crazy Eights is drawn." else "Your opponent wins the game of Crazy Eights."
+      in let shut = tcd-over (tcd-at buf t (1 + seat)) "Crazy Eights" result []
+      in let their-shut = tcd-over (tcd-at buf t (2 - seat)) "Crazy Eights" their []
       in let freed = tcd-reset buf t
-      in tcd-out (gs-reply [gs-system mine, gs-system result] "cards:over") other [gs-system theirs, gs-system their])
+      in tcd-out (gs-reply [gs-system mine, gs-system result, shut] "cards:over") other [gs-system theirs, gs-system their, their-shut])
     else tcd-out (gs-reply [gs-system mine, tcd-gump buf t seat] "cards:play") other [gs-system theirs, tcd-gump buf t (1 - seat)]
 
 Section: Go Fish
@@ -298,8 +302,11 @@ Section: Go Fish
       in let b1 = list-at s2.books (1 - seat)
       in let result = if b0 > b1 then "You win the game of Go Fish, " & show b0 & " books to " & show b1 & "." else if b0 < b1 then "Your opponent wins the game of Go Fish, " & show b1 & " books to " & show b0 & "." else "The game of Go Fish is drawn at " & show b0 & " books each."
       in let their = if b1 > b0 then "You win the game of Go Fish, " & show b1 & " books to " & show b0 & "." else if b1 < b0 then "Your opponent wins the game of Go Fish, " & show b0 & " books to " & show b1 & "." else "The game of Go Fish is drawn at " & show b0 & " books each."
+      in let books = ["Your books|" & show b0, "Their books|" & show b1]
+      in let shut = tcd-over (tcd-at buf t (1 + seat)) "Go Fish" result books
+      in let their-shut = tcd-over (tcd-at buf t (2 - seat)) "Go Fish" their ["Your books|" & show b1, "Their books|" & show b0]
       in let freed = tcd-reset buf t
-      in tcd-out (gs-reply [gs-system mine, gs-system result] "cards:over") other [gs-system theirs, gs-system their])
+      in tcd-out (gs-reply [gs-system mine, gs-system result, shut] "cards:over") other [gs-system theirs, gs-system their, their-shut])
     else tcd-out (gs-reply [gs-system mine, tcd-fish-gump buf t seat] "cards:ask") other [gs-system theirs, tcd-fish-gump buf t (1 - seat)]
 
 Section: Poker

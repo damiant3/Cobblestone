@@ -218,8 +218,7 @@ filter by callee grep (grep the chapter's defined names, never the citation
 table) and by recorded verdicts; within a rank prefer chapters with a published
 external answer (L-ORACLE). The filtered live top at that measurement:
 `gpu/DeviceMath` (34 gpushow kernels, every `[Device]` kernel's math library,
-zero answer tests); `ui/RichText` (7), `ui/Markdown` (6), `ui/Editor` (3),
-`ui/Window` (2), `ui/Canvas` (2), val's lane; `foreword/RankedTextSet` (4 plug
+zero answer tests); `foreword/RankedTextSet` (4 plug
 emitters) and `foreword/SourceDefWire` (2, repo protocol wire format), unowned.
 `shell/PowerShellEmit` ranks first at 48 and is PARKED: every consumer is a
 `codex/build/*Script.codex` shadow generator, and those do not produce the
@@ -227,6 +226,12 @@ hand-maintained `build/*.ps1`, so the weight belongs to a parallel system rather
 than to the product. The ai/AssetForge cluster (ImageTo3d, DiffusionPipeline,
 UNet, SafeTensors, Tokenizer, TextEncoder) waits on whether assetforge is on the
 bar.
+
+The UI cells in val's lane are answered (2026-10-20): `ui/RichText` and
+`ui/Markdown` by `codex/test/lib/markdown-guard` and `markdown-ordered`,
+`ui/Canvas` by `canvas-viewport`, `ui/Editor`'s live surface by
+`editor-surface` (its uncalled editing API is `ui-backlog.md`'s), and
+`ui/Window` no longer exists.
 
 **Where the tests land:** `codex/test/lib` for pure answers, `codex/test/apps`
 where a machine is needed; names stable so the run-over-run delta holds;

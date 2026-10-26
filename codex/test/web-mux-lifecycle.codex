@@ -22,15 +22,20 @@ Section: Wire Fixtures
   finack : Integer = bit-or tcp-flag-fin tcp-flag-ack
 
   mk : Integer, Integer, List Integer -> List Integer
-  mk (seq) (flags) (payload) =
-    let seg = tcp-with-checksum (tcp-build-segment 50000 80 seq 5000 flags 8192 payload) a-ip srv-ip
+  mk (seq) (flags) (payload) = mk-acking seq 5000 flags payload
+
+  mk-acking : Integer, Integer, Integer, List Integer -> List Integer
+  mk-acking (seq) (ack) (flags) (payload) =
+    let seg = tcp-with-checksum (tcp-build-segment 50000 80 seq ack flags 8192 payload) a-ip srv-ip
     in let ip = ip-build-packet a-ip srv-ip ip-proto-tcp seg
     in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
 
+  server-next : WebMux -> Integer
+  server-next (m) = ((((list-at (m.conns) (list-length (m.conns) - 1)).transport).session).conn).send-next
+
   a-syn : List Integer = mk 1000 tcp-flag-syn []
-  a-get1 : List Integer = mk 1001 psh get1-bytes
-  a-get2 : List Integer = mk 1020 psh get2-bytes
-  a-fin : List Integer = mk 1040 finack []
+  a-get2 : List Integer = mk 1019 psh get2-bytes
+  a-fin : List Integer = mk 1038 finack []
 
 Section: Route
   test-route : HttpRequest -> HttpResponse
@@ -41,7 +46,7 @@ Section: Entry
     let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
     in act
       m1 <- web-mux-feed test-route (\line -> 0) m0 a-syn 80
-      m2 <- web-mux-feed test-route (\line -> 0) m1 a-get1 80
+      m2 <- web-mux-feed test-route (\line -> 0) m1 (mk-acking 1001 (server-next m1) psh get1-bytes) 80
       print-line-uni ("g1served=" & show (m2.served))
       print-line-uni ("g1conns=" & show (list-length (m2.conns)))
       m3 <- web-mux-feed test-route (\line -> 0) m2 a-get2 80

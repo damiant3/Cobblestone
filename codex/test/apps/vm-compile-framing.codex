@@ -1,0 +1,86 @@
+Chapter: VmCompileFramingTest
+  cites Works chapter VmCompile
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+
+ The native compile path's serial protocol, graded without a guest: the launch
+ needs VT-x and no bed has it, while encoding and framing are pure. Fixtures
+ are built by Foreword `text-to-utf8-bytes`, not by the encoder under test.
+
+  u8 : Text -> List Integer
+  u8 (t) = text-to-utf8-bytes t
+
+  join-ints : List Integer, Integer, Text -> Text
+  join-ints (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else join-ints xs (i + 1) (if i == 0 then show (list-at xs i) else acc & "," & show (list-at xs i))
+
+  same-bytes : List Integer, List Integer, Integer -> Boolean
+  same-bytes (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same-bytes a b (i + 1)
+
+  verdict : VmCompileResult -> Text
+  verdict (r) =
+    if r.vcr-success then "ok size=" & show (r.vcr-size) & " bytes=" & join-ints (r.vcr-binary) 0 ""
+    else "refused"
+
+  logs : VmCompileResult, Text -> Text
+  logs (r) (needle) = needle & "=" & show (text-contains (r.vcr-log) needle)
+
+  ones : Integer, Integer, Text -> Text
+  ones (n) (i) (acc) =
+    if i >= n then acc
+    else ones n (i + 1) (acc & "a")
+
+  encode-heap : Text -> Integer
+  encode-heap (t) =
+    let b = __heap-save
+    in let xs = text-to-serial-bytes t 0 (text-length t) []
+    in let a = __heap-save
+    in (a - b) + list-length xs - list-length xs
+
+  opening : [Console] Nothing =
+    let complete = vm-parse-cdx-bytes (u8 "WD:PHASE-h0:1\nwarning CDX4001: w\nSIZE:3\n" & [1, 2, 3] & u8 "\nHEAP:9\n")
+    in let short = vm-parse-cdx-bytes (u8 "SIZE:5\n" & [1, 2])
+    in let midline = vm-parse-cdx-bytes (u8 "echo SIZE:3\n" & [1, 2, 3])
+    in let nodigits = vm-parse-cdx-bytes (u8 "SIZE:\n" & [1])
+    in let zero = vm-parse-cdx-bytes (u8 "SIZE:0\n")
+    in let shaped = vm-parse-cdx-bytes (u8 "SIZE:4\nWD:\n\n")
+    in let halted = vm-parse-cdx-bytes (u8 "error CDX2001: type mismatch\nWD:x\nCODEGEN-HALTED: errors in bag; no binary\nHEAP:1\n")
+    in let errors = vm-parse-cdx-bytes (u8 "CODEGEN-ERRORS: 1\nerror CDX3002: undefined\n")
+    in let trapped = vm-parse-cdx-bytes (u8 "!EXC=0e rip=1\n")
+    in let empty = vm-parse-cdx-bytes []
+    in let text = vm-parse-text-bytes (u8 "WD:a\nChapter: X" & [13] & u8 "\n  f = 1\nHEAP:9\n")
+    in let text-open = vm-parse-text-bytes (u8 "a\nb")
+    in let text-halted = vm-parse-text-bytes (u8 "error CDX2001: x\nWD:b\nCODEGEN-HALTED: errors in bag; no text emitted\n")
+    in let text-empty = vm-parse-text-bytes []
+    in let wide = [195, 169, 226, 130, 172, 228, 184, 173, 97]
+    in let wide-text = utf8-bytes-to-text wide
+    in let wide-out = text-to-serial-bytes wide-text 0 (text-length wide-text) []
+    in let small = ones 500 0 ""
+    in let large = ones 2000 0 ""
+    in let h-small = encode-heap small
+    in let h-large = encode-heap large
+    in act
+      print-line-uni ("cdx complete   : " & verdict complete & " " & logs complete "warning CDX4001" & " " & logs complete "WD:")
+      print-line-uni ("cdx short      : " & verdict short & " " & logs short "declared 5 byte(s), the stream carried 2")
+      print-line-uni ("cdx mid-line   : " & verdict midline & " " & logs midline "no SIZE: line")
+      print-line-uni ("cdx no digits  : " & verdict nodigits & " " & logs nodigits "no byte count")
+      print-line-uni ("cdx size zero  : " & verdict zero & " " & logs zero "empty binary")
+      print-line-uni ("cdx shaped     : " & verdict shaped)
+      print-line-uni ("cdx halted     : " & verdict halted & " " & logs halted "CDX2001" & " " & logs halted "WD:")
+      print-line-uni ("cdx errors     : " & verdict errors & " " & logs errors "CDX3002")
+      print-line-uni ("cdx trapped    : " & verdict trapped & " " & logs trapped "!EXC=0e")
+      print-line-uni ("cdx empty      : " & verdict empty)
+      print-line-uni ("text kept      : " & show (text.vcr-success) & " " & show (same-bytes (text.vcr-binary) (u8 "Chapter: X\n  f = 1\n") 0))
+      print-line-uni ("text open end  : " & verdict text-open)
+      print-line-uni ("text halted    : " & verdict text-halted & " " & logs text-halted "CDX2001")
+      print-line-uni ("text empty     : " & verdict text-empty)
+      print-line-uni ("utf8 round trip: " & show (same-bytes wide-out wide 0) & " " & join-ints wide-out 0 "")
+      print-line-uni ("serial frame   : " & join-ints (vm-build-serial-input "CDX" "ab") 0 "")
+      print-line-uni ("encode linear  : " & show (h-large < 4 * h-small + 64) & " under 64 a char " & show (h-large < 64 * 2000))
+      print-line-uni "done"
+    end

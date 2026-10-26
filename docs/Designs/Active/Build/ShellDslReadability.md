@@ -62,8 +62,7 @@ three emitters render a comment and a raw line the same way: `ScComment` is
 `ScComment "x"` are byte-identical everywhere today. The conversion moves the
 count by about a tenth of the corpus and changes nothing a reader, an emitter or
 a target can observe; its only value is a target that does not exist yet, one
-whose comment marker is not `#`. **Not taken**, and named here so the next owner
-does not take it for the count.
+whose comment marker is not `#`. **The count holds no comment payloads since 2026-10-18 (main 45983 to 46083): about 1,600 were converted, so roughly 1,600 of the fall from 7,908 to 5,898 is that conversion, not readability progress.** Measure progress against 5,898.
 
 **Do not rank a generator by its raw SHARE.** What converts is not "raw payloads
 with a constructor that does the job" but the narrower **"raw payloads whose

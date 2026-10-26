@@ -1,0 +1,39 @@
+Chapter: BvtPlacementStorey
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BvtCheck
+
+ The Wind Inn's colliders as the 2026-10-18 map cache holds them (UOAIX-266): land at 40, the upper storey a static
+ at 60 height 1 with flags 67133953, and on 5310,34 a piece at 40 height 2 with flags 279104 (impassable, 64). A plank
+ with flags 512 (surface only) and no storey over it stands for a dock.
+  bps-land : WalkMap, Boolean, Integer -> Integer
+  bps-land (map) (storey) (i) = if i >= 64 then 0
+    else let x = 1400 + int-mod i 8
+    in let y = 1600 + i / 8
+    in let a = walk-set-land map x y 40 0
+    in let b = if storey then walk-add-solid map x y 60 1 67133953 else Ok 0
+    in bps-land map storey (i + 1)
+  bps-map : Boolean -> Result WalkMap Text
+  bps-map (storey) = when walk-map-new 1400 1600 8 8
+    is Err (e) -> Err e
+    is Ok (map) -> let laid = bps-land map storey 0 in Ok map
+  bps-spot : WorldTable, WalkMap -> Text
+  bps-spot (w) (map) = when bb-placement w map (BbShop { title = "Inn", premises = "Storey", x1 = 1402, y1 = 1602, x2 = 1404, y2 = 1602 }) 0
+    is Err (e) -> e
+    is Ok (s) -> show s.x & "," & show s.y & "," & show s.z
+  bps-checks : Integer -> Text
+  bps-checks (unused) = when world-new 64
+    is Err (e) -> e
+    is Ok (w) -> when bps-map True
+      is Err (e) -> e
+      is Ok (blocked) -> when bps-map True
+        is Err (e) -> e
+        is Ok (open) -> when bps-map False
+          is Err (e) -> e
+          is Ok (dock) -> let piece = walk-add-solid blocked 1402 1602 40 2 279104
+            in let plank = walk-add-solid dock 1402 1602 40 5 512
+            in bps-spot w blocked & " " & bps-spot w open & " " & bps-spot w dock
+  bvt-placement-storey : Integer -> [Console] Integer
+  bvt-placement-storey (unused) = act
+    t <- bps-checks 0
+    bvt-check ("a shop placement passes over a floor tile an impassable piece blocks, not up to the storey above it, and keeps a plank surface (red, UOAIX-266; " & t & ")") (t == "1403,1602,40 1402,1602,40 1402,1602,45")
+  end

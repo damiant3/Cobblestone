@@ -18,6 +18,41 @@ Chapter: SassLower
  Constant bank 0 is our own layout (GspGpuStack.md stage 1): block size x
  at 0x0, parameter i at 0x140 + 8 i, low word first.
 
+Section: Operations
+
+  LOp =
+   | LoMovImm (Integer) (Integer)
+   | LoMovReg (Integer) (Integer)
+   | LoMovCb (Integer) (Integer)
+   | LoSys (Integer) (Integer)
+   | LoAdd64 (Integer) (Integer) (Integer) (Integer) (Integer)
+   | LoShl64 (Integer) (Integer) (Integer)
+   | LoMul64 (Integer) (Integer) (Integer)
+   | LoDivPow2 (Integer) (Integer) (Integer) (Integer) (Integer)
+   | LoCmp64 (Integer) (Integer) (Integer) (Integer) (Integer)
+   | LoLoad64 (Integer) (Integer)
+   | LoStore64 (Integer) (Integer)
+   | LoLoadN (Integer) (Integer) (Integer)
+   | LoStoreN (Integer) (Integer) (Integer)
+   | LoLdsN (Integer) (Integer) (Integer)
+   | LoStsN (Integer) (Integer) (Integer)
+   | LoBar
+   | LoPack (Integer) (Integer) (Integer)
+   | LoHmma (Integer) (Integer) (Integer)
+   | LoFop (Integer) (Integer) (Integer) (Integer)
+   | LoLdgsts (Integer) (Integer)
+   | LoCommit
+   | LoDepbar (Integer)
+   | LoWarpsync
+   | LoLabel (Integer)
+   | LoBra (Integer) (Text)
+   | LoExit
+
+  LInsn = record {
+   guard : Integer,
+   op : LOp
+  }
+
 Section: State
 
   LVal =
@@ -31,15 +66,37 @@ Section: State
    reg : Integer
   }
 
+  LRegs = record {
+   lo : Integer,
+   hi : Integer
+  }
+
+  LFrag = record {
+   c0 : Integer,
+   a0 : Integer,
+   b0 : Integer
+  }
+
   LState = record {
-   code : ConsList SassInsn,
-   next-reg : Integer,
-   next-pred : Integer,
+   code : ConsList LInsn,
+   regs : LRegs,
+   busy-preds : Integer,
    env : List LBind,
    guard : Integer,
    inlining : List Text,
-   defs : List IRDef
+   defs : List IRDef,
+   labels : Integer,
+   frag : LFrag
   }
+
+  LLoop = record {
+   name : Text,
+   params : List Integer,
+   label : Integer
+  }
+
+  lw-no-loop : LLoop
+  lw-no-loop = LLoop { name = "", params = [], label = -1 }
 
   LRes = record {
    st : LState,
@@ -64,29 +121,48 @@ Section: State
      is LInt (r) -> r
      is otherwise -> -1
 
-  lw-state : LState, ConsList SassInsn, Integer, Integer, List LBind, Integer, List Text -> LState
-  lw-state (st) (code) (nr) (np) (env) (g) (inl) = LState { code = code, next-reg = nr, next-pred = np, env = env, guard = g, inlining = inl, defs = st.defs }
+  lw-state : LState, ConsList LInsn, LRegs, Integer, List LBind, Integer, List Text -> LState
+  lw-state (st) (code) (nr) (np) (env) (g) (inl) = LState { code = code, regs = nr, busy-preds = np, env = env, guard = g, inlining = inl, defs = st.defs, labels = st.labels, frag = st.frag }
 
-  lw-emit-at : LState, Integer, SassBody -> LState
-  lw-emit-at (st) (g) (b) = lw-state st (Cons (sass-when g 0 b) st.code) st.next-reg st.next-pred st.env st.guard st.inlining
+  lw-with-label : LState -> LState
+  lw-with-label (st) = LState { code = Cons (LInsn { guard = 7, op = LoLabel st.labels }) st.code, regs = st.regs, busy-preds = st.busy-preds, env = st.env, guard = st.guard, inlining = st.inlining, defs = st.defs, labels = st.labels + 1, frag = st.frag }
 
-  lw-emit : LState, SassBody -> LState
+  lw-emit-at : LState, Integer, LOp -> LState
+  lw-emit-at (st) (g) (b) = lw-state st (Cons (LInsn { guard = g, op = b }) st.code) st.regs st.busy-preds st.env st.guard st.inlining
+
+  lw-emit : LState, LOp -> LState
   lw-emit (st) (b) = lw-emit-at st st.guard b
 
   lw-with-env : LState, List LBind -> LState
-  lw-with-env (st) (env) = lw-state st st.code st.next-reg st.next-pred env st.guard st.inlining
+  lw-with-env (st) (env) = lw-state st st.code st.regs st.busy-preds env st.guard st.inlining
 
   lw-with-guard : LState, Integer -> LState
-  lw-with-guard (st) (g) = lw-state st st.code st.next-reg st.next-pred st.env g st.inlining
+  lw-with-guard (st) (g) = lw-state st st.code st.regs st.busy-preds st.env g st.inlining
 
   lw-with-preds : LState, Integer -> LState
-  lw-with-preds (st) (np) = lw-state st st.code st.next-reg np st.env st.guard st.inlining
+  lw-with-preds (st) (np) = lw-state st st.code st.regs np st.env st.guard st.inlining
 
   lw-with-inlining : LState, List Text -> LState
-  lw-with-inlining (st) (inl) = lw-state st st.code st.next-reg st.next-pred st.env st.guard inl
+  lw-with-inlining (st) (inl) = lw-state st st.code st.regs st.busy-preds st.env st.guard inl
 
-  lw-bump-reg : LState -> LState
-  lw-bump-reg (st) = lw-state st st.code (st.next-reg + 2) st.next-pred st.env st.guard st.inlining
+  lw-regs-none : LRegs
+  lw-regs-none = LRegs { lo = 0, hi = 0 }
+
+  lw-regs-has : LRegs, Integer -> Boolean
+  lw-regs-has (m) (r) =
+    let p = r / 2
+    in if p < 63 then bit-and m.lo (bit-shl 1 p) /= 0 else bit-and m.hi (bit-shl 1 (p - 63)) /= 0
+
+  lw-regs-add : LRegs, Integer -> LRegs
+  lw-regs-add (m) (r) =
+    let p = r / 2
+    in if p < 63 then LRegs { lo = bit-or m.lo (bit-shl 1 p), hi = m.hi } else LRegs { lo = m.lo, hi = bit-or m.hi (bit-shl 1 (p - 63)) }
+
+  lw-regs-free : LRegs, Integer, Integer -> Integer
+  lw-regs-free (m) (r) (limit) =
+    if r > limit then -1
+    else if lw-regs-has m r then lw-regs-free m (r + 2) limit
+    else r
 
   lw-bind : LState, Text, Integer -> LState
   lw-bind (st) (n) (r) = lw-with-env st ([LBind { name = n, reg = r }] & st.env)
@@ -113,40 +189,56 @@ Section: Values
 
   lw-pair : LState -> LRes
   lw-pair (st) =
-    if st.next-reg > 252 then lw-fail st "registers"
-    else lw-res (lw-bump-reg st) (LInt st.next-reg)
+    let r = lw-regs-free st.regs 0 (st.frag.c0 - 2)
+    in if r < 0 then lw-fail st ("registers in " & list-at st.inlining 0)
+    else lw-res (lw-with-next st (lw-regs-add st.regs r)) (LInt r)
 
   lw-int-lit : LState, Integer -> LRes
   lw-int-lit (st) (v) =
     let p = lw-pair st
     in when p.val
-     is LInt (r) -> lw-res (lw-emit (lw-emit p.st (SMov32i r (bit-and v #FFFFFFFF))) (SMov32i (r + 1) (bit-shru v 32))) (LInt r)
+     is LInt (r) -> lw-res (lw-emit (lw-emit p.st (LoMovImm r (bit-and v #FFFFFFFF))) (LoMovImm (r + 1) (bit-shru v 32))) (LInt r)
      is otherwise -> p
 
-  lw-special : LState, SassBody, Integer -> LRes
-  lw-special (st) (lo) (r) = lw-res (lw-emit (lw-emit st lo) (SMov (r + 1) (SrcReg 255))) (LInt r)
+  lw-special : LState, LOp, Integer -> LRes
+  lw-special (st) (lo) (r) = lw-res (lw-emit (lw-emit st lo) (LoMovReg (r + 1) 255)) (LInt r)
 
   lw-name : LState, Text -> LRes
   lw-name (st) (n) =
     let bound = lw-lookup st.env n 0
     in if bound >= 0 then lw-res st (LInt bound)
     else if n == "thread-idx-x" then lw-name-special st 33
+    else if n == "thread-idx-y" then lw-name-special st 34
+    else if n == "thread-idx-z" then lw-name-special st 35
     else if n == "block-idx-x" then lw-name-special st 37
+    else if n == "block-idx-y" then lw-name-special st 38
+    else if n == "block-idx-z" then lw-name-special st 39
     else if n == "block-dim-x" then lw-name-cb st 0
+    else if n == "block-dim-y" then lw-name-cb st 4
+    else if n == "block-dim-z" then lw-name-cb st 8
+    else if n == "grid-dim-x" then lw-name-cb st 12
+    else if n == "grid-dim-y" then lw-name-cb st 16
+    else if n == "grid-dim-z" then lw-name-cb st 20
+    else if n == "shared-base" then lw-int-lit st 0
+    else if n == "sync-threads" then lw-int-lit (lw-emit st LoBar) 0
+    else if n == "cp-async-commit" then lw-int-lit (lw-emit st LoCommit) 0
+    else if n == "cp-async-wait-one" then lw-int-lit (lw-emit st (LoDepbar 1)) 0
+    else if n == "cp-async-wait-all" then lw-int-lit (lw-emit st (LoDepbar 0)) 0
+    else if n == "sync-warp" then lw-int-lit (lw-emit st LoWarpsync) 0
     else lw-fail st ("name " & n)
 
   lw-name-special : LState, Integer -> LRes
   lw-name-special (st) (id) =
     let p = lw-pair st
     in when p.val
-     is LInt (r) -> lw-special p.st (SS2r r id) r
+     is LInt (r) -> lw-special p.st (LoSys r id) r
      is otherwise -> p
 
   lw-name-cb : LState, Integer -> LRes
   lw-name-cb (st) (off) =
     let p = lw-pair st
     in when p.val
-     is LInt (r) -> lw-special p.st (SMov r (SrcCb 0 off)) r
+     is LInt (r) -> lw-special p.st (LoMovCb r off) r
      is otherwise -> p
 
 Section: Arithmetic
@@ -154,15 +246,48 @@ Section: Arithmetic
   lw-add64 : LState, Integer, Integer, Integer -> LRes
   lw-add64 (st) (a) (b) (neg) =
     let p = lw-pair st
-    in when p.val
-     is LInt (d) -> lw-res (lw-emit (lw-emit p.st (SIaddc d a (SrcReg b) (1 + 8 * neg))) (SIaddc (d + 1) (a + 1) (SrcReg (b + 1)) (2 + 8 * neg))) (LInt d)
+    in let carry = lw-free-pred st.busy-preds 0
+    in if carry > 6 then lw-fail st "predicates"
+    else when p.val
+     is LInt (d) -> lw-res (lw-emit p.st (LoAdd64 d a b neg carry)) (LInt d)
      is otherwise -> p
 
   lw-shl64 : LState, Integer, Integer -> LRes
   lw-shl64 (st) (a) (k) =
     let p = lw-pair st
     in when p.val
-     is LInt (d) -> lw-res (lw-emit (lw-emit p.st (SShf 0 d 255 (SrcImm k) a 0 3 0)) (SShf 0 (d + 1) a (SrcImm k) (a + 1) 0 3 0)) (LInt d)
+     is LInt (d) -> lw-res (lw-emit p.st (LoShl64 d a k)) (LInt d)
+     is otherwise -> p
+
+  lw-mul64 : LState, Integer, Integer -> LRes
+  lw-mul64 (st) (a) (b) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (d) -> lw-res (lw-emit p.st (LoMul64 d a b)) (LInt d)
+     is otherwise -> p
+
+  lw-div-pow2 : LState, IRExpr, Integer -> LRes
+  lw-div-pow2 (st) (x) (k) =
+    let rx = lower-expr st x
+    in when rx.val
+     is LInt (a) -> if k == 0 then rx else lw-div-pairs rx.st a k
+     is LFail (why) -> rx
+     is otherwise -> lw-fail rx.st "operand"
+
+  lw-div-pairs : LState, Integer, Integer -> LRes
+  lw-div-pairs (st) (a) (k) =
+    let t = lw-pair st
+    in when t.val
+     is LInt (sum) -> lw-div-emit t.st a k sum
+     is otherwise -> t
+
+  lw-div-emit : LState, Integer, Integer, Integer -> LRes
+  lw-div-emit (st) (a) (k) (sum) =
+    let p = lw-pair st
+    in let carry = lw-free-pred st.busy-preds 0
+    in if carry > 6 then lw-fail st "predicates"
+    else when p.val
+     is LInt (d) -> lw-res (lw-emit p.st (LoDivPow2 d sum a k carry)) (LInt d)
      is otherwise -> p
 
   lw-log2 : Integer, Integer -> Integer
@@ -193,21 +318,29 @@ Section: Arithmetic
 
   lw-pred : LState -> LRes
   lw-pred (st) =
-    if st.next-pred > 6 then lw-fail st "predicates"
-    else lw-res (lw-with-preds st (st.next-pred + 1)) (LPred st.next-pred)
+    let q = lw-free-pred st.busy-preds 0
+    in if q > 6 then lw-fail st "predicates"
+    else lw-res (lw-with-preds st (bit-or st.busy-preds (bit-shl 1 q))) (LPred q)
+
+  lw-free-pred : Integer, Integer -> Integer
+  lw-free-pred (busy) (i) =
+    if i > 6 then 7
+    else if bit-and busy (bit-shl 1 i) == 0 then i
+    else lw-free-pred busy (i + 1)
 
   lw-compare : LState, Integer, Integer, Integer -> LRes
   lw-compare (st) (c) (a) (b) =
     let p = lw-pred st
     in when p.val
-     is LPred (q) -> lw-res (lw-emit-at (lw-emit-at p.st 7 (SIaddc 255 a (SrcReg b) 9)) 7 (SIsetpc q c 0 1 (a + 1) (SrcReg (b + 1)) 0 st.guard 0)) (LPred q)
+     is LPred (q) -> lw-res (lw-emit-at p.st 7 (LoCmp64 q c a b st.guard)) (LPred q)
      is otherwise -> p
 
   lw-binary : LState, IRBinaryOp, IRExpr, IRExpr -> LRes
   lw-binary (st) (op) (x) (y) =
     let k = lw-pow2-lit y
     in when op
-     is IrMulInt -> if k >= 0 then lw-scaled st x k else if lw-pow2-lit x >= 0 then lw-scaled st y (lw-pow2-lit x) else lw-fail st "multiply"
+     is IrMulInt -> if k >= 0 then lw-scaled st x k else if lw-pow2-lit x >= 0 then lw-scaled st y (lw-pow2-lit x) else lw-binary-2 st op x y
+     is IrDivInt -> if k >= 0 then lw-div-pow2 st x k else lw-binary-2 st op x y
      is otherwise -> lw-binary-2 st op x y
 
   lw-scaled : LState, IRExpr, Integer -> LRes
@@ -231,6 +364,7 @@ Section: Arithmetic
     else when op
      is IrAddInt -> lw-add64 ry.st a b 0
      is IrSubInt -> lw-add64 ry.st a b 1
+     is IrMulInt -> lw-mul64 ry.st a b
      is otherwise -> if lw-cmp-code op == 0 then lw-fail ry.st "operator" else lw-compare ry.st (lw-cmp-code op) a b
 
 Section: Control
@@ -238,18 +372,26 @@ Section: Control
   lw-merge : LRes, Integer -> LState
   lw-merge (arm) (r) =
     when arm.val
-     is LInt (t) -> lw-emit (lw-emit arm.st (SMov r (SrcReg t))) (SMov (r + 1) (SrcReg (t + 1)))
+     is LInt (t) -> lw-emit (lw-emit arm.st (LoMovReg r t)) (LoMovReg (r + 1) (t + 1))
      is otherwise -> arm.st
 
-  lw-if : LState, IRExpr, IRExpr, IRExpr -> LRes
-  lw-if (st) (c) (x) (y) =
+  lw-arm : LState, LLoop, Boolean, IRExpr -> LRes
+  lw-arm (st) (lp) (tail) (e) = if tail then lw-tail st lp e else lower-expr st e
+
+  lw-if : LState, LLoop, Boolean, IRExpr, IRExpr, IRExpr -> LRes
+  lw-if (st) (lp) (tail) (c) (x) (y) = lw-if-into st lp tail c x y -1 False
+
+  lw-if-into : LState, LLoop, Boolean, IRExpr, IRExpr, IRExpr, Integer, Boolean -> LRes
+  lw-if-into (st) (lp) (tail) (c) (x) (y) (tr) (spent) =
     when c
-     is IrBinary (op) (ca) (cb) (ty) (sp) -> if lw-cmp-code op == 0 then lw-fail st "condition" else lw-if-cmp st (lw-cmp-code op) ca cb x y
+     is IrBinary (op) (ca) (cb) (ty) (sp) -> if lw-cmp-code op == 0 then lw-fail st "condition" else lw-if-cmp st lp tail (lw-cmp-code op) ca cb x y tr spent
      is otherwise -> lw-fail st "condition"
 
-  lw-if-cmp : LState, Integer, IRExpr, IRExpr, IRExpr, IRExpr -> LRes
-  lw-if-cmp (st) (c) (ca) (cb) (x) (y) =
-    let ra = lower-expr st ca
+  lw-if-cmp : LState, LLoop, Boolean, Integer, IRExpr, IRExpr, IRExpr, IRExpr, Integer, Boolean -> LRes
+  lw-if-cmp (st) (lp) (tail) (c) (ca) (cb) (x) (y) (tr) (spent) =
+    let res = if tr >= 0 then lw-res st (LInt tr) else lw-pair st
+    in if lw-is-fail res.val then res
+    else let ra = lower-expr res.st ca
     in if lw-is-fail ra.val then ra
     else let rb = lower-expr ra.st cb
     in if lw-is-fail rb.val then rb
@@ -257,11 +399,7 @@ Section: Control
     else if lw-int-reg rb.val < 0 then lw-fail rb.st "condition"
     else let pt = lw-compare rb.st c (lw-int-reg ra.val) (lw-int-reg rb.val)
     in if lw-is-fail pt.val then pt
-    else let pf = lw-compare pt.st (lw-cmp-inverse c) (lw-int-reg ra.val) (lw-int-reg rb.val)
-    in if lw-is-fail pf.val then pf
-    else let res = lw-pair pf.st
-    in if lw-is-fail res.val then res
-    else lw-if-arms res.st st.guard st.next-pred (lw-int-reg res.val) (lw-pred-reg pt.val) (lw-pred-reg pf.val) x y
+    else lw-if-arms pt.st lp tail st.guard st.busy-preds (lw-int-reg res.val) (lw-pred-reg pt.val) c (lw-int-reg ra.val) (lw-int-reg rb.val) x y spent res.st.regs
 
   lw-pred-reg : LVal -> Integer
   lw-pred-reg (v) =
@@ -269,47 +407,211 @@ Section: Control
      is LPred (q) -> q
      is otherwise -> 7
 
-  lw-if-arms : LState, Integer, Integer, Integer, Integer, Integer, IRExpr, IRExpr -> LRes
-  lw-if-arms (st) (outer) (preds) (r) (pt) (pf) (x) (y) =
-    let tx = lower-expr (lw-with-guard st pt) x
+  lw-if-arms : LState, LLoop, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer, IRExpr, IRExpr, Boolean, LRegs -> LRes
+  lw-if-arms (st) (lp) (tail) (outer) (preds) (r) (pt) (c) (a) (b) (x) (y) (spent) (floor) =
+    let held = st.busy-preds
+    in let tx = lw-if-arm (lw-with-guard st pt) lp tail x r
     in if lw-is-fail tx.val then tx
-    else let sx = lw-merge tx r
-    in let ty = lower-expr (lw-with-guard sx pf) y
+    else let inv = lw-emit-at (lw-with-preds tx.st held) 7 (LoCmp64 pt (lw-cmp-inverse c) a b outer)
+    in let sf = lw-with-next (if spent then lw-with-preds inv (held - bit-and held (bit-shl 1 outer)) else inv) floor
+    in let ty = lw-if-arm (lw-with-guard sf pt) lp tail y r
     in if lw-is-fail ty.val then ty
-    else let sy = lw-merge ty r
-    in lw-res (lw-with-preds (lw-with-guard sy outer) preds) (LInt r)
+    else lw-res (lw-with-next (lw-with-preds (lw-with-guard ty.st outer) preds) floor) (LInt r)
 
-  lw-let : LState, Text, IRExpr, IRExpr -> LRes
-  lw-let (st) (n) (v) (body) =
-    let rv = lower-expr st v
+  lw-if-arm : LState, LLoop, Boolean, IRExpr, Integer -> LRes
+  lw-if-arm (st) (lp) (tail) (e) (r) =
+    when e
+     is IrIf (c) (x) (y) (ty) (sp) -> lw-if-into st lp tail c x y r (st.guard < 7)
+     is otherwise -> lw-arm-back (lw-merge-res (lw-arm st lp tail e) r) st.regs
+
+  lw-arm-back : LRes, LRegs -> LRes
+  lw-arm-back (t) (nr) = if lw-is-fail t.val then t else lw-res (lw-with-next t.st nr) t.val
+
+  lw-merge-res : LRes, Integer -> LRes
+  lw-merge-res (arm) (r) = if lw-is-fail arm.val then arm else lw-res (lw-merge arm r) arm.val
+
+  lw-let : LState, LLoop, Boolean, Text, IRExpr, IRExpr -> LRes
+  lw-let (st) (lp) (tail) (n) (v) (body) =
+    let rv = lw-keep st (lower-expr st v)
     in when rv.val
-     is LInt (r) -> lw-scoped (lower-expr (lw-bind rv.st n r) body) st.env
+     is LInt (r) -> lw-scoped (lw-arm (lw-bind rv.st n r) lp tail body) st.env
      is LFail (why) -> rv
      is otherwise -> lw-fail rv.st "binding"
 
   lw-scoped : LRes, List LBind -> LRes
   lw-scoped (res) (env) = lw-res (lw-with-env res.st env) res.val
 
-  lw-stmts : LState, List IRActStmt, Integer, LVal -> LRes
-  lw-stmts (st) (stmts) (i) (last) =
-    if i >= list-length stmts then lw-res st last
-    else when list-at stmts i
-     is IrDoBind (n) (ty) (v) (sp) -> lw-stmt-bind st stmts i n v
-     is IrDoExec (v) (sp) -> lw-stmt-exec st stmts i v
+  lw-with-next : LState, LRegs -> LState
+  lw-with-next (st) (nr) = lw-state st st.code nr st.busy-preds st.env st.guard st.inlining
 
-  lw-stmt-bind : LState, List IRActStmt, Integer, Text, IRExpr -> LRes
-  lw-stmt-bind (st) (stmts) (i) (n) (v) =
-    let rv = lower-expr st v
+  lw-keep : LState, LRes -> LRes
+  lw-keep (before) (r) =
+    let w = before.regs
+    in when r.val
+     is LInt (v) -> if lw-regs-has w v | v >= 255 then lw-res (lw-with-next r.st w) r.val else lw-res (lw-with-next r.st (lw-regs-add w v)) r.val
+     is LNone -> lw-res (lw-with-next r.st w) r.val
+     is otherwise -> r
+
+  lw-drop : LRes -> LRes
+  lw-drop (r) = if lw-is-fail r.val then r else lw-res r.st LNone
+
+  lw-regs-del : LRegs, Integer -> LRegs
+  lw-regs-del (m) (r) =
+    let p = r / 2
+    in if p < 63 then LRegs { lo = m.lo - bit-and m.lo (bit-shl 1 p), hi = m.hi } else LRegs { lo = m.lo, hi = m.hi - bit-and m.hi (bit-shl 1 (p - 63)) }
+
+  LDead = record {
+   st : LState,
+   bound : List LBind
+  }
+
+  lw-live-in : List LBind, Integer, List IRActStmt, Integer, Integer -> Boolean
+  lw-live-in (bound) (r) (stmts) (i) (k) =
+    if k >= list-length bound then False
+    else let b = list-at bound k
+    in if b.reg == r & lw-mentions-stmts stmts b.name i then True else lw-live-in bound r stmts i (k + 1)
+
+  lw-free-dead : LState, List LBind, LRegs, List IRActStmt, Integer, Integer, List LBind -> LDead
+  lw-free-dead (st) (bound) (m0) (stmts) (i) (k) (keep) =
+    if k >= list-length bound then LDead { st = st, bound = keep }
+    else let b = list-at bound k
+    in if lw-mentions-stmts stmts b.name i then lw-free-dead st bound m0 stmts i (k + 1) (keep & [b])
+    else if lw-regs-has m0 b.reg | lw-live-in bound b.reg stmts i 0 then lw-free-dead st bound m0 stmts i (k + 1) keep
+    else lw-free-dead (lw-with-next st (lw-regs-del st.regs b.reg)) bound m0 stmts i (k + 1) keep
+
+  lw-stmts : LState, LLoop, Boolean, List IRActStmt, Integer, LVal, LRegs, List LBind -> LRes
+  lw-stmts (st) (lp) (tail) (stmts) (i) (last) (m0) (bound) =
+    if i >= list-length stmts then lw-res st last
+    else let fd = if i > 0 then lw-free-dead st bound m0 stmts i 0 [] else LDead { st = st, bound = bound }
+    in when list-at stmts i
+     is IrDoBind (n) (ty) (v) (sp) -> lw-stmt-bind fd.st lp tail stmts i n v m0 fd.bound
+     is IrDoExec (v) (sp) -> lw-stmt-exec fd.st lp tail stmts i v m0 fd.bound
+
+  lw-stmt-bind : LState, LLoop, Boolean, List IRActStmt, Integer, Text, IRExpr, LRegs, List LBind -> LRes
+  lw-stmt-bind (st) (lp) (tail) (stmts) (i) (n) (v) (m0) (bound) =
+    let unread = lw-lookup st.env n 0 < 0 & lw-mentions-stmts stmts n (i + 1) == False
+    in let rv = if unread then lw-keep st (lw-drop (lower-expr st v)) else lw-keep st (lower-expr st v)
     in when rv.val
-     is LInt (r) -> lw-stmts (lw-bind rv.st n r) stmts (i + 1) LNone
+     is LInt (r) -> lw-stmts (lw-bind rv.st n r) lp tail stmts (i + 1) LNone m0 (bound & [LBind { name = n, reg = r }])
+     is LNone -> lw-stmts rv.st lp tail stmts (i + 1) LNone m0 bound
      is LFail (why) -> rv
      is otherwise -> lw-fail rv.st "binding"
 
-  lw-stmt-exec : LState, List IRActStmt, Integer, IRExpr -> LRes
-  lw-stmt-exec (st) (stmts) (i) (v) =
-    let rv = lower-expr st v
+  lw-stmt-exec : LState, LLoop, Boolean, List IRActStmt, Integer, IRExpr, LRegs, List LBind -> LRes
+  lw-stmt-exec (st) (lp) (tail) (stmts) (i) (v) (m0) (bound) =
+    let rv = lw-arm st lp (tail & i == list-length stmts - 1) v
     in if lw-is-fail rv.val then rv
-    else lw-stmts rv.st stmts (i + 1) rv.val
+    else if i == list-length stmts - 1 then lw-stmts rv.st lp tail stmts (i + 1) rv.val m0 bound
+    else lw-stmts (lw-with-next rv.st st.regs) lp tail stmts (i + 1) LNone m0 bound
+
+Section: Loops
+
+ A call in tail position to the function being lowered, the kernel itself or
+ an inlined helper that names itself, is a loop: its arguments move into the
+ function's parameter registers and a branch, under the guard of the arm it
+ sits in, returns to the head. An argument that is another parameter's
+ register is copied out first, so no move overwrites a value a later move
+ reads. An inlined loop's arguments are copied into registers of its own, so
+ the loop never writes its caller's. Any other self call is refused.
+
+  lw-tail : LState, LLoop, IRExpr -> LRes
+  lw-tail (st) (lp) (e) =
+    when e
+     is IrIf (c) (x) (y) (ty) (sp) -> lw-if st lp True c x y
+     is IrLet (n) (ty) (v) (body) (sp) -> lw-let st lp True n v body
+     is IrAct (stmts) (ty) (sp) -> lw-stmts st lp True stmts 0 LNone st.regs []
+     is IrApply (f) (a) (ty) (sp) -> lw-tail-apply st lp e
+     is otherwise -> lower-expr st e
+
+  lw-tail-apply : LState, LLoop, IRExpr -> LRes
+  lw-tail-apply (st) (lp) (e) =
+    let chain = collect-apply-chain e []
+    in when chain.root
+     is IrName (n) (ty) (sp) -> if n == lp.name & list-length chain.args == list-length lp.params then lw-back st lp chain.args else lw-tail-loop st e n chain.args
+     is otherwise -> lower-expr st e
+
+  lw-tail-loop : LState, IRExpr, Text, List IRExpr -> LRes
+  lw-tail-loop (st) (e) (n) (args) =
+    let k = lw-find-def st.defs n 0
+    in if k < 0 | lw-text-in st.inlining n 0 then lower-expr st e
+    else let d = list-at st.defs k
+    in if list-length d.params /= list-length args | lw-mentions d.body n == False then lower-expr st e
+    else let la = lw-arg-regs st args 0 []
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else lw-inline-loop st la n d (if st.guard == 7 then lw-regs-none else st.regs)
+
+  lw-int-in : List Integer, Integer, Integer -> Boolean
+  lw-int-in (xs) (v) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == v then True
+    else lw-int-in xs v (i + 1)
+
+  lw-copy-one : LState, LLoop, List Integer, Integer, List Integer, Integer -> LArgs
+  lw-copy-one (st) (lp) (rs) (i) (acc) (r) =
+    let p = lw-pair st
+    in when p.val
+     is LInt (t) -> lw-back-free (lw-emit (lw-emit p.st (LoMovReg t r)) (LoMovReg (t + 1) (r + 1))) lp rs (i + 1) (acc & [t])
+     is otherwise -> LArgs { st = p.st, regs = acc, fail = "registers in " & list-at p.st.inlining 0 }
+
+  lw-back-free : LState, LLoop, List Integer, Integer, List Integer -> LArgs
+  lw-back-free (st) (lp) (rs) (i) (acc) =
+    if i >= list-length rs then LArgs { st = st, regs = acc, fail = "" }
+    else let r = list-at rs i
+    in if r /= list-at lp.params i & lw-int-in lp.params r 0 then lw-copy-one st lp rs i acc r
+    else lw-back-free st lp rs (i + 1) (acc & [r])
+
+  lw-back-move : LState, LLoop, List Integer, Integer -> LState
+  lw-back-move (st) (lp) (rs) (i) =
+    if i >= list-length rs then st
+    else let r = list-at rs i
+    in let p = list-at lp.params i
+    in if r == p then lw-back-move st lp rs (i + 1)
+    else lw-back-move (lw-emit (lw-emit st (LoMovReg p r)) (LoMovReg (p + 1) (r + 1))) lp rs (i + 1)
+
+  lw-back : LState, LLoop, List IRExpr -> LRes
+  lw-back (st) (lp) (args) =
+    let la = lw-arg-regs st args 0 []
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let free = lw-back-free la.st lp la.regs 0 []
+    in if free.fail /= "" then lw-fail free.st free.fail
+    else lw-res (lw-emit (lw-back-move free.st lp free.regs 0) (LoBra lp.label lp.name)) LNone
+
+  lw-copy-args : LState, List Integer, Integer, List Integer, LRegs -> LArgs
+  lw-copy-args (st) (rs) (i) (acc) (w) =
+    if i >= list-length rs then LArgs { st = st, regs = acc, fail = "" }
+    else let r = list-at rs i
+    in if lw-regs-has w r == False & lw-int-in acc r 0 == False then lw-copy-args st rs (i + 1) (acc & [r]) w
+    else let p = lw-pair st
+    in when p.val
+     is LInt (t) -> lw-copy-args (lw-emit (lw-emit p.st (LoMovReg t r)) (LoMovReg (t + 1) (r + 1))) rs (i + 1) (acc & [t]) w
+     is otherwise -> LArgs { st = p.st, regs = acc, fail = "registers in " & list-at p.st.inlining 0 }
+
+  lw-mentions-stmts : List IRActStmt, Text, Integer -> Boolean
+  lw-mentions-stmts (stmts) (n) (i) =
+    if i >= list-length stmts then False
+    else when list-at stmts i
+     is IrDoBind (m) (ty) (v) (sp) -> if lw-mentions v n then True else lw-mentions-stmts stmts n (i + 1)
+     is IrDoExec (v) (sp) -> if lw-mentions v n then True else lw-mentions-stmts stmts n (i + 1)
+
+  lw-mentions : IRExpr, Text -> Boolean
+  lw-mentions (e) (n) =
+    when e
+     is IrName (m) (ty) (sp) -> m == n
+     is IrBinary (op) (x) (y) (ty) (sp) -> if lw-mentions x n then True else lw-mentions y n
+     is IrIf (c) (x) (y) (ty) (sp) -> if lw-mentions c n then True else if lw-mentions x n then True else lw-mentions y n
+     is IrLet (m) (ty) (v) (body) (sp) -> if lw-mentions v n then True else lw-mentions body n
+     is IrApply (f) (a) (ty) (sp) -> if lw-mentions f n then True else lw-mentions a n
+     is IrAct (stmts) (ty) (sp) -> lw-mentions-stmts stmts n 0
+     is otherwise -> False
+
+  lw-inline-loop : LState, LArgs, Text, IRDef, LRegs -> LRes
+  lw-inline-loop (st) (la) (n) (d) (w) =
+    let cp = lw-copy-args la.st la.regs 0 [] w
+    in if cp.fail /= "" then lw-fail cp.st cp.fail
+    else let entry = lw-with-inlining (lw-with-env cp.st (lw-param-env d.params cp.regs 0 [])) ([n] & st.inlining)
+    in let lp = LLoop { name = n, params = cp.regs, label = entry.labels }
+    in let rbody = lw-tail (lw-with-label entry) lp d.body
+    in lw-res (lw-with-inlining (lw-with-env rbody.st st.env) st.inlining) rbody.val
 
 Section: Calls
 
@@ -344,7 +646,112 @@ Section: Calls
   lw-call (st) (n) (args) =
     if n == "device-load" then (if list-length args == 2 then lw-load st args else lw-fail st "device-load arity")
     else if n == "device-store" then (if list-length args == 3 then lw-store st args else lw-fail st "device-store arity")
+    else if n == "device-load-u16" then lw-load-n st args 16
+    else if n == "device-load-u32" then lw-load-n st args 32
+    else if n == "device-store-u16" then lw-store-n st args 16
+    else if n == "device-store-u32" then lw-store-n st args 32
+    else if n == "shared-load-u32" then lw-shared-load st args 32
+    else if n == "shared-store-u16" then lw-shared-store st args 16
+    else if n == "shared-store-u32" then lw-shared-store st args 32
+    else if n == "wmma-fill-f32" then lw-wmma-scope st (lw-wmma-fill st args)
+    else if n == "wmma-load-a-f16" then lw-wmma-scope st (lw-wmma-load-a st args False)
+    else if n == "wmma-load-b-f16" then lw-wmma-scope st (lw-wmma-load-b st args False)
+    else if n == "wmma-mma-f32" then lw-wmma-scope st (lw-wmma-mma st args)
+    else if n == "wmma-store-f32" then lw-wmma-scope st (lw-wmma-store st args False)
+    else if n == "wmma-load-a-f16-shared" then lw-wmma-scope st (lw-wmma-load-a st args True)
+    else if n == "wmma-load-b-f16-shared" then lw-wmma-scope st (lw-wmma-load-b st args True)
+    else if n == "wmma-load-b-col-f16-shared" then lw-wmma-scope st (lw-wmma-load-b-col st args)
+    else if n == "wmma-load-c-f32-shared" then lw-wmma-scope st (lw-wmma-load-c st args)
+    else if n == "wmma-store-f32-shared" then lw-wmma-scope st (lw-wmma-store st args True)
+    else if n == "wmma-mma-rc-f32" then lw-wmma-scope st (lw-wmma-mma st args)
+    else if n == "f32-add-bits" then lw-fop st args 0
+    else if n == "f32-sub-bits" then lw-fop st args 1
+    else if n == "f32-mul-bits" then lw-fop st args 2
+    else if n == "f32-max-bits" then lw-fop st args 3
+    else if n == "f32-ex2-bits" then lw-fop st args 4
+    else if n == "f32-lg2-bits" then lw-fop st args 5
+    else if n == "f32-to-f16-bits" then lw-fop st args 6
+    else if n == "cp-async-16" then lw-cp-async st args
     else lw-inline st n args
+
+  lw-cp-async : LState, List IRExpr -> LRes
+  lw-cp-async (st) (args) =
+    if list-length args /= 3 then lw-fail st "cp-async arity"
+    else let la = lw-arg-regs st args 0 []
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let dst = list-at la.regs 0
+    in let full = lw-int-lit la.st 16
+    in let zero = lw-int-lit full.st 0
+    in let dst8 = lw-plus-lit zero.st dst 8
+    in if lw-bad [lw-int-reg full.val, lw-int-reg zero.val, lw-int-reg dst8.val] 0 then lw-fail dst8.st ("registers in " & list-at dst8.st.inlining 0)
+    else let q = lw-pred dst8.st
+    in if lw-is-fail q.val then q
+    else let p = lw-pred-reg q.val
+    in let z = lw-int-reg zero.val
+    in let copy = lw-emit-at (lw-emit-at q.st 7 (LoCmp64 p 2 (list-at la.regs 2) (lw-int-reg full.val) st.guard)) p (LoLdgsts dst (list-at la.regs 1))
+    in let fill = lw-emit-at (lw-emit-at (lw-emit-at copy 7 (LoCmp64 p 5 (list-at la.regs 2) (lw-int-reg full.val) st.guard)) p (LoStsN dst z 64)) p (LoStsN (lw-int-reg dst8.val) z 64)
+    in lw-int-lit (lw-with-preds fill st.busy-preds) 0
+
+  lw-fop : LState, List IRExpr, Integer -> LRes
+  lw-fop (st) (args) (k) =
+    if list-length args /= (if k >= 4 then 1 else 2) then lw-fail st "float arity"
+    else let la = lw-arg-regs st args 0 []
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let p = lw-pair la.st
+    in when p.val
+     is LInt (d) -> lw-res (lw-emit (lw-emit p.st (LoFop k d (list-at la.regs 0) (list-at la.regs (list-length la.regs - 1)))) (LoMovReg (d + 1) 255)) (LInt d)
+     is otherwise -> p
+
+ The narrow forms take a byte address. A narrow load is zero-extended: its
+ high word is written 0. A shared address is the low word of its pair, an
+ offset in the block's shared window, where our layout puts the kernel's
+ shared buffer at 0 (shared-base).
+
+  lw-shared-load : LState, List IRExpr, Integer -> LRes
+  lw-shared-load (st) (args) (w) =
+    if list-length args /= 1 then lw-fail st "shared load arity"
+    else let p = lw-pair st
+    in if lw-is-fail p.val then p
+    else let raddr = lower-expr p.st (list-at args 0)
+    in if lw-is-fail raddr.val then raddr
+    else if lw-int-reg raddr.val < 0 then lw-fail raddr.st "address"
+    else let d = lw-int-reg p.val
+    in lw-res (lw-emit (lw-emit raddr.st (LoLdsN d (lw-int-reg raddr.val) w)) (LoMovReg (d + 1) 255)) (LInt d)
+
+  lw-shared-store : LState, List IRExpr, Integer -> LRes
+  lw-shared-store (st) (args) (w) =
+    if list-length args /= 2 then lw-fail st "shared store arity"
+    else let raddr = lower-expr st (list-at args 0)
+    in if lw-is-fail raddr.val then raddr
+    else if lw-int-reg raddr.val < 0 then lw-fail raddr.st "address"
+    else let rval = lower-expr raddr.st (list-at args 1)
+    in when rval.val
+     is LInt (v) -> lw-res (lw-emit rval.st (LoStsN (lw-int-reg raddr.val) v w)) (LInt v)
+     is LFail (why) -> rval
+     is otherwise -> lw-fail rval.st "stored value"
+
+  lw-load-n : LState, List IRExpr, Integer -> LRes
+  lw-load-n (st) (args) (w) =
+    if list-length args /= 1 then lw-fail st "narrow load arity"
+    else let p = lw-pair st
+    in if lw-is-fail p.val then p
+    else let raddr = lower-expr p.st (list-at args 0)
+    in if lw-is-fail raddr.val then raddr
+    else if lw-int-reg raddr.val < 0 then lw-fail raddr.st "address"
+    else let d = lw-int-reg p.val
+    in lw-res (lw-emit (lw-emit raddr.st (LoLoadN d (lw-int-reg raddr.val) w)) (LoMovReg (d + 1) 255)) (LInt d)
+
+  lw-store-n : LState, List IRExpr, Integer -> LRes
+  lw-store-n (st) (args) (w) =
+    if list-length args /= 2 then lw-fail st "narrow store arity"
+    else let raddr = lower-expr st (list-at args 0)
+    in if lw-is-fail raddr.val then raddr
+    else if lw-int-reg raddr.val < 0 then lw-fail raddr.st "address"
+    else let rval = lower-expr raddr.st (list-at args 1)
+    in when rval.val
+     is LInt (v) -> lw-res (lw-emit rval.st (LoStoreN (lw-int-reg raddr.val) v w)) (LInt v)
+     is LFail (why) -> rval
+     is otherwise -> lw-fail rval.st "stored value"
 
   lw-address : LState, IRExpr, IRExpr -> LRes
   lw-address (st) (base) (index) =
@@ -358,12 +765,11 @@ Section: Calls
 
   lw-load : LState, List IRExpr -> LRes
   lw-load (st) (args) =
-    let raddr = lw-address st (list-at args 0) (list-at args 1)
+    let p = lw-pair st
+    in if lw-is-fail p.val then p
+    else let raddr = lw-address p.st (list-at args 0) (list-at args 1)
     in if lw-is-fail raddr.val then raddr
-    else let p = lw-pair raddr.st
-    in when p.val
-     is LInt (d) -> lw-res (lw-emit p.st (SLdg d (lw-int-reg raddr.val) 0 64)) (LInt d)
-     is otherwise -> p
+    else lw-res (lw-emit raddr.st (LoLoad64 (lw-int-reg p.val) (lw-int-reg raddr.val))) p.val
 
   lw-store : LState, List IRExpr -> LRes
   lw-store (st) (args) =
@@ -371,7 +777,7 @@ Section: Calls
     in if lw-is-fail raddr.val then raddr
     else let rval = lower-expr raddr.st (list-at args 2)
     in when rval.val
-     is LInt (v) -> lw-res (lw-emit rval.st (SStg (lw-int-reg raddr.val) 0 v 64)) (LInt v)
+     is LInt (v) -> lw-res (lw-emit rval.st (LoStore64 (lw-int-reg raddr.val) v)) (LInt v)
      is LFail (why) -> rval
      is otherwise -> lw-fail rval.st "stored value"
 
@@ -384,6 +790,7 @@ Section: Calls
     in if list-length d.params /= list-length args then lw-fail st ("partial application " & n)
     else let la = lw-arg-regs st args 0 []
     in if la.fail /= "" then lw-fail la.st la.fail
+    else if lw-mentions d.body n then lw-inline-loop st la n d st.regs
     else let inner = lw-with-inlining (lw-with-env la.st (lw-param-env d.params la.regs 0 [])) ([n] & st.inlining)
     in let rbody = lower-expr inner d.body
     in lw-res (lw-with-inlining (lw-with-env rbody.st st.env) st.inlining) rbody.val
@@ -396,43 +803,399 @@ Section: Expressions
      is IrIntLit (v) (sp) -> lw-int-lit st v
      is IrName (n) (ty) (sp) -> lw-name st n
      is IrBinary (op) (x) (y) (ty) (sp) -> lw-binary st op x y
-     is IrIf (c) (x) (y) (ty) (sp) -> lw-if st c x y
-     is IrLet (n) (ty) (v) (body) (sp) -> lw-let st n v body
+     is IrIf (c) (x) (y) (ty) (sp) -> lw-if st lw-no-loop False c x y
+     is IrLet (n) (ty) (v) (body) (sp) -> lw-let st lw-no-loop False n v body
      is IrApply (f) (a) (ty) (sp) -> lw-apply st e
-     is IrAct (stmts) (ty) (sp) -> lw-stmts st stmts 0 LNone
+     is IrAct (stmts) (ty) (sp) -> lw-stmts st lw-no-loop False stmts 0 LNone st.regs []
      is otherwise -> lw-fail st "construct"
+
+Section: WMMA
+
+ The fragment layout is the PTX ISA's for mma.m16n8k16 (GspGpuStack.md,
+ "WMMA, the plan"): g = lane / 4, t = lane mod 4. Fragments live in fixed
+ registers above the lowering's pairs: accumulator slots 0..7 (two 8-column
+ halves of four f32), A slots 0..7 and B slots 0..7 (two registers a half).
+ A and B are row-major f16 and C f32,
+ each with a leading dimension in elements; the -shared forms address the
+ shared window, and a column-major B (-b-col-) holds rows k and k + 1 of a
+ column adjacent. Fragments are the same whatever the source layout, so
+ mma-rc is mma.
+
+  lw-ld : Boolean, Integer, Integer, Integer -> LOp
+  lw-ld (shared) (d) (addr) (w) = if shared then LoLdsN d addr w else LoLoadN d addr w
+
+  lw-st64 : Boolean, Integer, Integer -> LOp
+  lw-st64 (shared) (addr) (v) = if shared then LoStsN addr v 64 else LoStore64 addr v
+
+  lw-wmma-slot : IRExpr, Integer -> Integer
+  lw-wmma-slot (e) (count) =
+    when e
+     is IrIntLit (v) (sp) -> if v >= 0 & v < count then v else -1
+     is otherwise -> -1
+
+  lw-c-base : LState, Integer -> Integer
+  lw-c-base (st) (s) = st.frag.c0 + 8 * s
+
+  lw-a-base : LState, Integer -> Integer
+  lw-a-base (st) (s) = st.frag.a0 + 4 * s
+
+  lw-b-base : LState, Integer -> Integer
+  lw-b-base (st) (s) = st.frag.b0 + 4 * s
+
+  LUse = record {
+   c : Integer,
+   a : Integer,
+   b : Integer,
+   seen : List Text
+  }
+
+  lw-use-lit : IRExpr -> Integer
+  lw-use-lit (e) =
+    when e
+     is IrIntLit (v) (sp) -> v
+     is otherwise -> -1
+
+  lw-use-max : LUse, Integer, List IRExpr, Integer -> LUse
+  lw-use-max (u) (kind) (args) (i) =
+    if i >= list-length args then u
+    else let v = lw-use-lit (list-at args i)
+    in if kind == 0 then LUse { c = lw-imax u.c v, a = u.a, b = u.b, seen = u.seen }
+    else if kind == 1 then LUse { c = u.c, a = lw-imax u.a v, b = u.b, seen = u.seen }
+    else LUse { c = u.c, a = u.a, b = lw-imax u.b v, seen = u.seen }
+
+  lw-use-call : LUse, Text, List IRExpr, List IRDef -> LUse
+  lw-use-call (u) (n) (args) (defs) =
+    if n == "wmma-fill-f32" | n == "wmma-store-f32" | n == "wmma-store-f32-shared" | n == "wmma-load-c-f32-shared" then lw-use-max u 0 args 0
+    else if n == "wmma-load-a-f16" | n == "wmma-load-a-f16-shared" then lw-use-max u 1 args 0
+    else if n == "wmma-load-b-f16" | n == "wmma-load-b-f16-shared" | n == "wmma-load-b-col-f16-shared" then lw-use-max u 2 args 0
+    else if n == "wmma-mma-f32" | n == "wmma-mma-rc-f32" then lw-use-max (lw-use-max (lw-use-max u 0 args 0) 1 args 1) 2 args 2
+    else if lw-text-in u.seen n 0 then u
+    else let k = lw-find-def defs n 0
+    in if k < 0 then u
+    else lw-use-expr (LUse { c = u.c, a = u.a, b = u.b, seen = u.seen & [n] }) (list-at defs k).body defs
+
+  lw-use-args : LUse, List IRExpr, Integer, List IRDef -> LUse
+  lw-use-args (u) (args) (i) (defs) = if i >= list-length args then u else lw-use-args (lw-use-expr u (list-at args i) defs) args (i + 1) defs
+
+  lw-use-stmts : LUse, List IRActStmt, Integer, List IRDef -> LUse
+  lw-use-stmts (u) (stmts) (i) (defs) =
+    if i >= list-length stmts then u
+    else when list-at stmts i
+     is IrDoBind (m) (ty) (v) (sp) -> lw-use-stmts (lw-use-expr u v defs) stmts (i + 1) defs
+     is IrDoExec (v) (sp) -> lw-use-stmts (lw-use-expr u v defs) stmts (i + 1) defs
+
+  lw-use-expr : LUse, IRExpr, List IRDef -> LUse
+  lw-use-expr (u) (e) (defs) =
+    when e
+     is IrBinary (op) (x) (y) (ty) (sp) -> lw-use-expr (lw-use-expr u x defs) y defs
+     is IrIf (c) (x) (y) (ty) (sp) -> lw-use-expr (lw-use-expr (lw-use-expr u c defs) x defs) y defs
+     is IrLet (m) (ty) (v) (body) (sp) -> lw-use-expr (lw-use-expr u v defs) body defs
+     is IrAct (stmts) (ty) (sp) -> lw-use-stmts u stmts 0 defs
+     is IrApply (f) (a) (ty) (sp) -> lw-use-apply u e defs
+     is otherwise -> u
+
+  lw-use-apply : LUse, IRExpr, List IRDef -> LUse
+  lw-use-apply (u) (e) (defs) =
+    let chain = collect-apply-chain e []
+    in let ua = lw-use-args u chain.args 0 defs
+    in when chain.root
+     is IrName (n) (ty) (sp) -> lw-use-call ua n chain.args defs
+     is otherwise -> ua
+
+  lw-imax : Integer, Integer -> Integer
+  lw-imax (x) (y) = if x > y then x else y
+
+  lw-imin : Integer, Integer -> Integer
+  lw-imin (x) (y) = if x < y then x else y
+
+  lw-frag : List IRDef, IRDef -> LFrag
+  lw-frag (defs) (d) =
+    let u = lw-use-expr (LUse { c = -1, a = -1, b = -1, seen = [d.name] }) d.body defs
+    in let b0 = 248 - 4 * (lw-imin u.b 7 + 1)
+    in let a0 = b0 - 4 * (lw-imin u.a 7 + 1)
+    in LFrag { c0 = a0 - 8 * (lw-imin u.c 7 + 1), a0 = a0, b0 = b0 }
+
+ A WMMA call's temporaries (the lane, its address arithmetic, the halves it
+ packs) are dead once it has emitted, its result being in fragment registers:
+ the register cursor returns to where the call began, and its value is 0.
+
+  lw-wmma-scope : LState, LRes -> LRes
+  lw-wmma-scope (before) (r) =
+    if lw-is-fail r.val then r
+    else lw-int-lit (lw-state r.st r.st.code before.regs r.st.busy-preds r.st.env r.st.guard r.st.inlining) 0
+
+  lw-bad : List Integer, Integer -> Boolean
+  lw-bad (rs) (i) = if i >= list-length rs then False else if list-at rs i < 0 then True else lw-bad rs (i + 1)
+
+  LGt = record {
+   st : LState,
+   g : Integer,
+   t : Integer
+  }
+
+  lw-lane-gt : LState -> LGt
+  lw-lane-gt (st) =
+    let lane = lw-name-special st 0
+    in let g = lw-div-pairs lane.st (lw-int-reg lane.val) 2
+    in let fg = lw-shl64 g.st (lw-int-reg g.val) 2
+    in let t = lw-add64 fg.st (lw-int-reg lane.val) (lw-int-reg fg.val) 1
+    in LGt { st = t.st, g = lw-int-reg g.val, t = lw-int-reg t.val }
+
+  lw-addr-of : LState, Integer, Integer, Integer, Integer, Integer -> LRes
+  lw-addr-of (st) (addr) (ld) (row) (col) (shift) =
+    let m = lw-mul64 st row ld
+    in let s = lw-add64 m.st (lw-int-reg m.val) col 0
+    in let b = lw-shl64 s.st (lw-int-reg s.val) shift
+    in lw-add64 b.st addr (lw-int-reg b.val) 0
+
+  lw-plus-lit : LState, Integer, Integer -> LRes
+  lw-plus-lit (st) (a) (k) =
+    let c = lw-int-lit st k
+    in lw-add64 c.st a (lw-int-reg c.val) 0
+
+  lw-wmma-mem-args : LState, List IRExpr, Integer -> LArgs
+  lw-wmma-mem-args (st) (args) (slots) =
+    if list-length args /= 3 then LArgs { st = st, regs = [], fail = "wmma arity" }
+    else if lw-wmma-slot (list-at args 0) slots < 0 then LArgs { st = st, regs = [], fail = "wmma slot" }
+    else lw-arg-regs st [list-at args 1, list-at args 2] 0 []
+
+  lw-wmma-fill : LState, List IRExpr -> LRes
+  lw-wmma-fill (st) (args) =
+    let s = if list-length args == 1 then lw-wmma-slot (list-at args 0) 8 else -1
+    in if s < 0 then lw-fail st "wmma slot"
+    else lw-res (lw-fill-regs st (lw-c-base st s) 0) LNone
+
+  lw-fill-regs : LState, Integer, Integer -> LState
+  lw-fill-regs (st) (base) (i) = if i >= 8 then st else lw-fill-regs (lw-emit st (LoMovImm (base + i) 0)) base (i + 1)
+
+  lw-wmma-load-a : LState, List IRExpr, Boolean -> LRes
+  lw-wmma-load-a (st) (args) (shared) =
+    let la = lw-wmma-mem-args st args 8
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let addr = list-at la.regs 0
+    in let ld = list-at la.regs 1
+    in let gt = lw-lane-gt la.st
+    in let t2 = lw-shl64 gt.st gt.t 1
+    in let p0 = lw-addr-of t2.st addr ld gt.g (lw-int-reg t2.val) 1
+    in let rows = lw-shl64 p0.st ld 4
+    in let p1 = lw-add64 rows.st (lw-int-reg p0.val) (lw-int-reg rows.val) 0
+    in let p2 = lw-plus-lit p1.st (lw-int-reg p0.val) 16
+    in let p3 = lw-plus-lit p2.st (lw-int-reg p1.val) 16
+    in if lw-bad [gt.g, gt.t, lw-int-reg p0.val, lw-int-reg p1.val, lw-int-reg p2.val, lw-int-reg p3.val] 0 then lw-fail p3.st ("registers in " & list-at p3.st.inlining 0)
+    else let base = lw-a-base p3.st (lw-wmma-slot (list-at args 0) 8)
+    in lw-res (lw-load4 p3.st shared base (lw-int-reg p0.val) (lw-int-reg p1.val) (lw-int-reg p2.val) (lw-int-reg p3.val)) LNone
+
+  lw-load4 : LState, Boolean, Integer, Integer, Integer, Integer, Integer -> LState
+  lw-load4 (st) (shared) (base) (a0) (a1) (a2) (a3) =
+    let e0 = lw-emit st (lw-ld shared base a0 32)
+    in let e1 = lw-emit e0 (lw-ld shared (base + 1) a1 32)
+    in let e2 = lw-emit e1 (lw-ld shared (base + 2) a2 32)
+    in lw-emit e2 (lw-ld shared (base + 3) a3 32)
+
+  lw-wmma-load-b-col : LState, List IRExpr -> LRes
+  lw-wmma-load-b-col (st) (args) =
+    let la = lw-wmma-mem-args st args 8
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let addr = list-at la.regs 0
+    in let ld = list-at la.regs 1
+    in let gt = lw-lane-gt la.st
+    in let t2 = lw-shl64 gt.st gt.t 1
+    in let c0 = lw-addr-of t2.st addr ld gt.g (lw-int-reg t2.val) 1
+    in let c1 = lw-plus-lit c0.st (lw-int-reg c0.val) 16
+    in let cols = lw-shl64 c1.st ld 4
+    in let c2 = lw-add64 cols.st (lw-int-reg c0.val) (lw-int-reg cols.val) 0
+    in let c3 = lw-plus-lit c2.st (lw-int-reg c2.val) 16
+    in if lw-bad [gt.g, gt.t, lw-int-reg c0.val, lw-int-reg c1.val, lw-int-reg c2.val, lw-int-reg c3.val] 0 then lw-fail c3.st ("registers in " & list-at c3.st.inlining 0)
+    else let base = lw-b-base c3.st (lw-wmma-slot (list-at args 0) 8)
+    in lw-res (lw-load4 c3.st True base (lw-int-reg c0.val) (lw-int-reg c1.val) (lw-int-reg c2.val) (lw-int-reg c3.val)) LNone
+
+ A B register holds rows k and k + 1 of one column, which a row-major B keeps
+ a row apart: two 16-bit loads, packed low then high.
+
+  lw-pack-pair : LState, Boolean, Integer, Integer, Integer -> LRes
+  lw-pack-pair (st) (shared) (dst) (lo) (hi) =
+    let a = lw-pair st
+    in let b = lw-pair a.st
+    in if lw-bad [lw-int-reg a.val, lw-int-reg b.val] 0 then lw-fail b.st ("registers in " & list-at b.st.inlining 0)
+    else let e0 = lw-emit b.st (lw-ld shared (lw-int-reg a.val) lo 16)
+    in let e1 = lw-emit e0 (lw-ld shared (lw-int-reg b.val) hi 16)
+    in lw-res (lw-emit e1 (LoPack dst (lw-int-reg a.val) (lw-int-reg b.val))) LNone
+
+  lw-load-b-half : LState, Boolean, Integer, Integer, Integer, Integer -> LRes
+  lw-load-b-half (st) (shared) (dst) (q) (ld2) (ld16) =
+    let a01 = lw-add64 st q ld2 0
+    in let a10 = lw-add64 a01.st q ld16 0
+    in let a11 = lw-add64 a10.st (lw-int-reg a10.val) ld2 0
+    in if lw-bad [lw-int-reg a01.val, lw-int-reg a10.val, lw-int-reg a11.val] 0 then lw-fail a11.st ("registers in " & list-at a11.st.inlining 0)
+    else let k0 = lw-pack-pair a11.st shared dst q (lw-int-reg a01.val)
+    in if lw-is-fail k0.val then k0
+    else lw-pack-pair k0.st shared (dst + 1) (lw-int-reg a10.val) (lw-int-reg a11.val)
+
+  lw-wmma-load-b : LState, List IRExpr, Boolean -> LRes
+  lw-wmma-load-b (st) (args) (shared) =
+    let la = lw-wmma-mem-args st args 8
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let addr = list-at la.regs 0
+    in let ld = list-at la.regs 1
+    in let gt = lw-lane-gt la.st
+    in let t2 = lw-shl64 gt.st gt.t 1
+    in let q0 = lw-addr-of t2.st addr ld (lw-int-reg t2.val) gt.g 1
+    in let q1 = lw-plus-lit q0.st (lw-int-reg q0.val) 16
+    in let ld2 = lw-shl64 q1.st ld 1
+    in let ld16 = lw-shl64 ld2.st ld 4
+    in if lw-bad [gt.g, gt.t, lw-int-reg q0.val, lw-int-reg q1.val, lw-int-reg ld2.val, lw-int-reg ld16.val] 0 then lw-fail ld16.st ("registers in " & list-at ld16.st.inlining 0)
+    else let base = lw-b-base ld16.st (lw-wmma-slot (list-at args 0) 8)
+    in let h0 = lw-load-b-half ld16.st shared base (lw-int-reg q0.val) (lw-int-reg ld2.val) (lw-int-reg ld16.val)
+    in if lw-is-fail h0.val then h0
+    else let h1 = lw-load-b-half h0.st shared (base + 2) (lw-int-reg q1.val) (lw-int-reg ld2.val) (lw-int-reg ld16.val)
+    in if lw-is-fail h1.val then h1
+    else lw-res h1.st LNone
+
+  lw-wmma-mma : LState, List IRExpr -> LRes
+  lw-wmma-mma (st) (args) =
+    if list-length args /= 3 then lw-fail st "wmma arity"
+    else let c = lw-wmma-slot (list-at args 0) 8
+    in let a = lw-wmma-slot (list-at args 1) 8
+    in let b = lw-wmma-slot (list-at args 2) 8
+    in if c < 0 | a < 0 | b < 0 then lw-fail st "wmma slot"
+    else let e0 = lw-emit st (LoHmma (lw-c-base st c) (lw-a-base st a) (lw-b-base st b))
+    in lw-res (lw-emit e0 (LoHmma (lw-c-base st c + 4) (lw-a-base st a) (lw-b-base st b + 2))) LNone
+
+  lw-wmma-store : LState, List IRExpr, Boolean -> LRes
+  lw-wmma-store (st) (args) (shared) = lw-wmma-c st args shared False
+
+  lw-wmma-load-c : LState, List IRExpr -> LRes
+  lw-wmma-load-c (st) (args) = lw-wmma-c st args True True
+
+ The accumulator's addresses serve its store and its load from shared: per
+ half, rows g and g + 8 at columns 2t and 2t + 1, one 64-bit access a pair.
+
+  lw-c-pair : Boolean, Boolean, Integer, Integer -> LOp
+  lw-c-pair (shared) (load) (addr) (v) = if load then LoLdsN v addr 64 else lw-st64 shared addr v
+
+  lw-wmma-c : LState, List IRExpr, Boolean, Boolean -> LRes
+  lw-wmma-c (st) (args) (shared) (load) =
+    let la = lw-wmma-mem-args st args 8
+    in if la.fail /= "" then lw-fail la.st la.fail
+    else let addr = list-at la.regs 0
+    in let ld = list-at la.regs 1
+    in let gt = lw-lane-gt la.st
+    in let t2 = lw-shl64 gt.st gt.t 1
+    in let r0 = lw-addr-of t2.st addr ld gt.g (lw-int-reg t2.val) 2
+    in let rows = lw-shl64 r0.st ld 5
+    in let r1 = lw-add64 rows.st (lw-int-reg r0.val) (lw-int-reg rows.val) 0
+    in let r2 = lw-plus-lit r1.st (lw-int-reg r0.val) 32
+    in let r3 = lw-plus-lit r2.st (lw-int-reg r1.val) 32
+    in if lw-bad [gt.g, gt.t, lw-int-reg r0.val, lw-int-reg r1.val, lw-int-reg r2.val, lw-int-reg r3.val] 0 then lw-fail r3.st ("registers in " & list-at r3.st.inlining 0)
+    else let base = lw-c-base r3.st (lw-wmma-slot (list-at args 0) 8)
+    in let e0 = lw-emit r3.st (lw-c-pair shared load (lw-int-reg r0.val) base)
+    in let e1 = lw-emit e0 (lw-c-pair shared load (lw-int-reg r1.val) (base + 2))
+    in let e2 = lw-emit e1 (lw-c-pair shared load (lw-int-reg r2.val) (base + 4))
+    in lw-res (lw-emit e2 (lw-c-pair shared load (lw-int-reg r3.val) (base + 6))) LNone
 
 Section: Kernels
 
   lw-params : LState, List IRParam, Integer -> LState
   lw-params (st) (ps) (i) =
     if i >= list-length ps then st
-    else let r = st.next-reg
-    in let s1 = lw-emit (lw-emit (lw-bump-reg st) (SMov r (SrcCb 0 (320 + 8 * i)))) (SMov (r + 1) (SrcCb 0 (324 + 8 * i)))
+    else let p = lw-pair st
+    in let r = lw-int-reg p.val
+    in let s1 = lw-emit (lw-emit p.st (LoMovCb r (320 + 8 * i))) (LoMovCb (r + 1) (324 + 8 * i))
     in lw-params (lw-bind s1 (list-at ps i).name r) ps (i + 1)
 
   KernelOut = record {
-   insns : List SassInsn,
+   insns : List LInsn,
    refusal : Text
   }
 
-  lw-code-collect : ConsList SassInsn, List SassInsn -> List SassInsn
+  lw-code-collect : ConsList LInsn, List LInsn -> List LInsn
   lw-code-collect (code) (acc) =
     when code
      is Nil -> acc
      is Cons (head) (tail) -> lw-code-collect tail (list-push acc head)
 
-  lw-code-list : ConsList SassInsn -> List SassInsn
+  lw-code-list : ConsList LInsn -> List LInsn
   lw-code-list (code) = lw-code-collect (cl-reverse code) []
+
+  lw-param-regs : Integer, Integer, List Integer -> List Integer
+  lw-param-regs (n) (i) (acc) = if i >= n then acc else lw-param-regs n (i + 1) (acc & [2 * i])
 
   lw-kernel : List IRDef, IRDef -> KernelOut
   lw-kernel (defs) (d) =
-    let st0 = LState { code = Nil, next-reg = 0, next-pred = 0, env = [], guard = 7, inlining = [d.name], defs = defs }
-    in let r = lower-expr (lw-params st0 d.params 0) d.body
+    let st0 = LState { code = Nil, regs = lw-regs-none, busy-preds = 0, env = [], guard = 7, inlining = [d.name], defs = defs, labels = 0, frag = lw-frag defs d }
+    in let entry = lw-params st0 d.params 0
+    in let lp = LLoop { name = d.name, params = lw-param-regs (list-length d.params) 0 [], label = entry.labels }
+    in let r = lw-tail (lw-with-label entry) lp d.body
     in let s = r.st
     in when r.val
      is LFail (why) -> KernelOut { insns = [], refusal = why }
-     is otherwise -> KernelOut { insns = lw-code-list (Cons (sass-always SExit) s.code), refusal = "" }
+     is otherwise -> KernelOut { insns = lw-code-list (Cons (LInsn { guard = 7, op = LoExit }) s.code), refusal = "" }
+
+Section: Selection
+
+  s52-one : List SassInsn, Integer, SassBody -> List SassInsn
+  s52-one (acc) (g) (b) = list-push acc (sass-when g 0 b)
+
+  s52-op : List SassInsn, LInsn -> List SassInsn
+  s52-op (acc) (i) =
+    let g = i.guard
+    in when i.op
+     is LoMovImm (r) (v) -> s52-one acc g (SMov32i r v)
+     is LoMovReg (r) (s) -> s52-one acc g (SMov r (SrcReg s))
+     is LoMovCb (r) (off) -> s52-one acc g (SMov r (SrcCb 0 off))
+     is LoSys (r) (id) -> s52-one acc g (SS2r r id)
+     is LoAdd64 (d) (a) (b) (neg) (carry) -> s52-one (s52-one acc g (SIaddc d a (SrcReg b) (1 + 8 * neg))) g (SIaddc (d + 1) (a + 1) (SrcReg (b + 1)) (2 + 8 * neg))
+     is LoShl64 (d) (a) (k) -> s52-one (s52-one acc g (SShf 0 d 255 (SrcImm k) a 0 3 0)) g (SShf 0 (d + 1) a (SrcImm k) (a + 1) 0 3 0)
+     is LoMul64 (d) (a) (b) -> acc
+     is LoDivPow2 (d) (t) (a) (k) (carry) -> acc
+     is LoCmp64 (q) (c) (a) (b) (outer) -> s52-one (s52-one acc g (SIaddc 255 a (SrcReg b) 9)) g (SIsetpc q c 0 1 (a + 1) (SrcReg (b + 1)) 0 outer 0)
+     is LoLoad64 (d) (addr) -> s52-one acc g (SLdg d addr 0 64)
+     is LoStore64 (addr) (v) -> s52-one acc g (SStg addr 0 v 64)
+     is LoLoadN (d) (addr) (w) -> acc
+     is LoStoreN (addr) (v) (w) -> acc
+     is LoLdsN (d) (addr) (w) -> acc
+     is LoStsN (addr) (v) (w) -> acc
+     is LoBar -> acc
+     is LoPack (d) (lo) (hi) -> acc
+     is LoHmma (cd) (a) (b) -> acc
+     is LoFop (k) (d) (a) (b) -> acc
+     is LoLdgsts (d) (s) -> acc
+     is LoCommit -> acc
+     is LoDepbar (n) -> acc
+     is LoWarpsync -> acc
+     is LoLabel (l) -> acc
+     is LoBra (l) (name) -> acc
+     is LoExit -> s52-one acc g SExit
+
+ A 64-bit multiply other than by a power of two has no SM 5.2 form here: built
+ from XMAD it could not be graded for what it computes before stage 4.
+
+  s52-refusal : List LInsn, Integer -> Text
+  s52-refusal (ops) (k) =
+    if k >= list-length ops then ""
+    else when (list-at ops k).op
+     is LoMul64 (d) (a) (b) -> "multiply"
+     is LoDivPow2 (d) (t) (a) (j) (carry) -> "divide"
+     is LoBra (l) (name) -> "recursion " & name
+     is LoLoadN (d) (addr) (w) -> "narrow memory"
+     is LoStoreN (addr) (v) (w) -> "narrow memory"
+     is LoLdsN (d) (addr) (w) -> "shared memory"
+     is LoStsN (addr) (v) (w) -> "shared memory"
+     is LoBar -> "shared memory"
+     is LoPack (d) (lo) (hi) -> "wmma"
+     is LoHmma (cd) (a) (b) -> "wmma"
+     is LoFop (j) (d) (a) (b) -> "float"
+     is LoLdgsts (d) (s) -> "async copy"
+     is LoCommit -> "async copy"
+     is LoDepbar (n) -> "async copy"
+     is LoWarpsync -> "warp sync"
+     is otherwise -> s52-refusal ops (k + 1)
+
+  s52-run : List LInsn, Integer, List SassInsn -> List SassInsn
+  s52-run (ops) (k) (acc) = if k >= list-length ops then acc else s52-run ops (k + 1) (s52-op acc (list-at ops k))
+
+  sass52-select : List LInsn -> List SassInsn
+  sass52-select (ops) = s52-run ops 0 []
 
 Section: Listing
 
@@ -442,32 +1205,36 @@ Section: Listing
   sass-listing-line : CtrlCode, SassInsn -> Text
   sass-listing-line (c) (i) = "I " & sass-ctrl-text c & " " & sass-word-hex (sass-encode i) & " " & sass-insn-text i & "\n"
 
-  sass-listing-groups : List SassInsn, List CtrlCode, Integer, Text -> Text
+  sass-listing-groups : List SassInsn, List CtrlCode, Integer, List Text -> List Text
   sass-listing-groups (insns) (codes) (k) (acc) =
     if 3 * k >= list-length insns then acc
     else let c0 = list-at codes (3 * k)
     in let c1 = list-at codes (3 * k + 1)
     in let c2 = list-at codes (3 * k + 2)
-    in let head = "C " & sass-word-hex (sass-ctrl-word c0 c1 c2) & "\n"
-    in let body = sass-listing-line c0 (list-at insns (3 * k)) & sass-listing-line c1 (list-at insns (3 * k + 1)) & sass-listing-line c2 (list-at insns (3 * k + 2))
-    in sass-listing-groups insns codes (k + 1) (acc & head & body)
+    in let head = list-push acc ("C " & sass-word-hex (sass-ctrl-word c0 c1 c2) & "\n")
+    in let l0 = list-push head (sass-listing-line c0 (list-at insns (3 * k)))
+    in let l1 = list-push l0 (sass-listing-line c1 (list-at insns (3 * k + 1)))
+    in sass-listing-groups insns codes (k + 1) (list-push l1 (sass-listing-line c2 (list-at insns (3 * k + 2))))
 
   sass-listing : Text, List SassInsn -> Text
   sass-listing (name) (raw) =
     let insns = sass-pad raw
-    in ".kernel " & name & "\n" & sass-listing-groups insns (sass-schedule insns) 0 ""
+    in text-concat-list (sass-listing-groups insns (sass-schedule insns) 0 (list-push [] (".kernel " & name & "\n")))
 
   sass-is-kernel : Text -> Boolean
-  sass-is-kernel (n) = if text-length n < 4 then False else substring n 0 4 == "gpu-"
+  sass-is-kernel (n) =
+    if text-length n >= 4 & substring n 0 4 == "gpu-" then True
+    else text-length n >= 7 & substring n 0 7 == "kernel-"
 
-  sass-emit-defs : List IRDef, Integer, Text -> Text
+  sass-emit-defs : List IRDef, Integer, List Text -> List Text
   sass-emit-defs (defs) (i) (acc) =
     if i >= list-length defs then acc
     else let d = list-at defs i
     in if sass-is-kernel d.name == False then sass-emit-defs defs (i + 1) acc
     else let k = lw-kernel defs d
-    in let out = if k.refusal /= "" then "REFUSED " & d.name & ": " & k.refusal & "\n" else sass-listing d.name k.insns
-    in sass-emit-defs defs (i + 1) (acc & out)
+    in let why = if k.refusal /= "" then k.refusal else s52-refusal k.insns 0
+    in let out = if why /= "" then "REFUSED " & d.name & ": " & why & "\n" else sass-listing d.name (sass52-select k.insns)
+    in sass-emit-defs defs (i + 1) (list-push acc out)
 
   emit-sass-chapter : IRChapter -> Text
-  emit-sass-chapter (ch) = sass-emit-defs ch.defs 0 ""
+  emit-sass-chapter (ch) = text-concat-list (sass-emit-defs ch.defs 0 [])

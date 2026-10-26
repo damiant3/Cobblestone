@@ -1,0 +1,42 @@
+Chapter: BvtViewRows
+  cites Uoaix chapter GameClientView
+  cites Uoaix chapter BvtCheck
+
+  bvr-take : GameClientView, Integer, Integer -> Integer
+  bvr-take (view) (slot) (stop) = if slot >= stop then 0 else let held = gcv-take view slot in (if held > 0 then 1 else 0) + bvr-take view (slot + 1) stop
+  bvr-drop : GameClientView, Integer, Integer -> Integer
+  bvr-drop (view) (slot) (stop) = if slot >= stop then 0 else let dropped = gcv-drop view slot in bvr-drop view (slot + 1) stop
+  bvr-sparse : Integer -> Boolean
+  bvr-sparse (unused) = when gcv-new 4096 18 False 0 0
+    is Err (_) -> False
+    is Ok (view) -> gcv-capacity view == 4096 & list-length view.rows == gcv-pool-rows & view.free-count == gcv-pool-rows & not (gcv-pool-due view)
+  bvr-blank : Integer -> Boolean
+  bvr-blank (unused) = when gcv-new 512 18 False 0 0
+    is Err (_) -> False
+    is Ok (view) -> let held = gcv-take view 300
+      in let row = gcv-row view held
+      in let dirty = __record-set row.object "serial" 77
+      in let turned = __record-set row "direction" 2
+      in let listed = __record-set row "listed" True
+      in let same = gcv-take view 300 == held & gcv-seen-serial view 300 == 77
+      in let dropped = gcv-drop view 300
+      in let gone = gcv-row-at view 300 == 0 & gcv-seen-serial view 300 == 0 & view.free-count == gcv-pool-rows
+      in let again = gcv-row view (gcv-take view 7)
+      in same & gone & again.object.serial == 0 & again.direction == 4 & again.notoriety == 3 & not again.listed
+  bvr-pool : Integer -> List Integer
+  bvr-pool (unused) = when gcv-new 4096 18 False 0 0
+    is Err (_) -> [-1]
+    is Ok (view) -> let taken = bvr-take view 0 (gcv-pool-rows + 10)
+      in let due = if gcv-pool-due view then 1 else 0
+      in let grown = gcv-pool-grow view
+      in let more = bvr-take view (gcv-pool-rows + 10) (gcv-pool-rows + 20)
+      in let dropped = bvr-drop view 0 (gcv-pool-rows + 20)
+      in [taken, due, list-length view.rows, more, view.free-count]
+  bvt-view-rows : Integer -> [Console] Integer
+  bvt-view-rows (unused) = act
+    p <- bvr-pool 0
+    a <- bvt-check "a 4096-slot client view holds a pool of rows, not a row per slot, and is not due to grow (UOAIX-271)" (bvr-sparse 0)
+    b <- bvt-check "a slot's row is taken once, kept until dropped, returned to the pool, and a row taken again is blank" (bvr-blank 0)
+    c <- bvt-check ("an empty pool answers no row, is due, and a growth doubles it (taken, due, rows, after growth, free: " & show (list-at p 0) & " " & show (list-at p 1) & " " & show (list-at p 2) & " " & show (list-at p 3) & " " & show (list-at p 4) & ")") (list-length p == 5 & list-at p 0 == gcv-pool-rows & list-at p 1 == 1 & list-at p 2 == 2 * gcv-pool-rows & list-at p 3 == 10 & list-at p 4 == 2 * gcv-pool-rows)
+    a + b + c
+  end

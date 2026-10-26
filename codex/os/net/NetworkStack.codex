@@ -70,7 +70,8 @@ Section: Network Session
     close-timer : Integer,
     now-ticks : Integer,
     srtt : Integer,
-    rttvar : Integer
+    rttvar : Integer,
+    isn-chosen : Boolean
   }
 
   RexmitSeg = record {
@@ -80,8 +81,20 @@ Section: Network Session
     rx-resent : Boolean
   }
 
+ `net-session-new` opens with an unpredictable initial sequence number (`net-isn`),
+ whatever `initial-seq` says; `net-session-new-at` keeps `initial-seq`, for a test
+ that must choose the number (a sequence wrap).
+
   net-session-new : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> NetSession
   net-session-new (local-mac) (local-ip) (gateway-ip) (local-port) (remote-port) (remote-ip) (initial-seq) =
+    net-session-make local-mac local-ip gateway-ip local-port remote-port remote-ip initial-seq False
+
+  net-session-new-at : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> NetSession
+  net-session-new-at (local-mac) (local-ip) (gateway-ip) (local-port) (remote-port) (remote-ip) (initial-seq) =
+    net-session-make local-mac local-ip gateway-ip local-port remote-port remote-ip initial-seq True
+
+  net-session-make : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer, Boolean -> NetSession
+  net-session-make (local-mac) (local-ip) (gateway-ip) (local-port) (remote-port) (remote-ip) (initial-seq) (chosen) =
     NetSession {
       local-mac = local-mac,
       local-ip = local-ip,
@@ -95,7 +108,8 @@ Section: Network Session
       close-timer = 0,
       now-ticks = 0,
       srtt = 0,
-      rttvar = 0
+      rttvar = 0,
+      isn-chosen = chosen
     }
 
 Section: Frame Wrapping
@@ -162,7 +176,8 @@ Section: Session Operations
     close-timer = s.close-timer,
     now-ticks = s.now-ticks,
     srtt = s.srtt,
-    rttvar = s.rttvar
+    rttvar = s.rttvar,
+    isn-chosen = s.isn-chosen
   }
 
   set-arp : NetSession, ArpCache -> NetSession
@@ -179,7 +194,8 @@ Section: Session Operations
     close-timer = s.close-timer,
     now-ticks = s.now-ticks,
     srtt = s.srtt,
-    rttvar = s.rttvar
+    rttvar = s.rttvar,
+    isn-chosen = s.isn-chosen
   }
 
   set-outbox : NetSession, List (List Integer) -> NetSession
@@ -196,7 +212,8 @@ Section: Session Operations
     close-timer = s.close-timer,
     now-ticks = s.now-ticks,
     srtt = s.srtt,
-    rttvar = s.rttvar
+    rttvar = s.rttvar,
+    isn-chosen = s.isn-chosen
   }
 
 Section: Reliability Timers
@@ -251,7 +268,8 @@ Section: Reliability Timers
     close-timer = s.close-timer,
     now-ticks = s.now-ticks,
     srtt = sr,
-    rttvar = rv
+    rttvar = rv,
+    isn-chosen = s.isn-chosen
   }
 
   set-now : NetSession, Integer -> NetSession
@@ -268,7 +286,8 @@ Section: Reliability Timers
     close-timer = s.close-timer,
     now-ticks = n,
     srtt = s.srtt,
-    rttvar = s.rttvar
+    rttvar = s.rttvar,
+    isn-chosen = s.isn-chosen
   }
 
  A sample of zero is a round trip that completed inside one tick, not an
@@ -347,7 +366,8 @@ Section: Reliability Timers
     close-timer = s.close-timer,
     now-ticks = s.now-ticks,
     srtt = s.srtt,
-    rttvar = s.rttvar
+    rttvar = s.rttvar,
+    isn-chosen = s.isn-chosen
   }
 
   set-close-timer : NetSession, Integer -> NetSession
@@ -364,7 +384,8 @@ Section: Reliability Timers
     close-timer = t,
     now-ticks = s.now-ticks,
     srtt = s.srtt,
-    rttvar = s.rttvar
+    rttvar = s.rttvar,
+    isn-chosen = s.isn-chosen
   }
 
  The queue is bounded because there is no collector and the peer decides how
@@ -454,9 +475,41 @@ Section: Reliability Timers
         else net-fresh-listen sess
       is otherwise -> net-fresh-listen sess
 
+ RFC 6528: an initial sequence number a third party cannot predict, chosen when a
+ connection opens (here, and when a SYN reaches a listener) rather than taken from
+ the constructor's argument. The clock term moves successive numbers forward; the
+ rest is a hardware random word mixed with the connection's addresses and ports.
+ With no hardware word (the source answers 0 or -1) the clock is the whole key, which
+ is predictable, as nothing else on the box is secret. Only xor and shifts mix, as
+ they cannot overflow.
+
+  net-isn : List Integer, Integer, List Integer, Integer -> Integer
+  net-isn (lip) (lport) (rip) (rport) =
+    let w = __hardware-random-word
+    in let key = if w == 0 | w == 0 - 1 then get-ticks else w
+    in let tuple = bit-xor (net-ip-word lip * 65536 + lport) (bit-shl (net-ip-word rip * 65536 + rport) 13)
+    in tcp-seq-wrap (get-ticks * 4 + bit-and (net-isn-mix (net-isn-mix (bit-xor key tuple))) #FFFFFFFF)
+
+  net-isn-mix : Integer -> Integer
+  net-isn-mix (x) =
+    let a = bit-xor x (bit-shl x 13)
+    in let b = bit-xor a (bit-shru a 7)
+    in bit-xor b (bit-shl b 17)
+
+  net-ip-word : List Integer -> Integer
+  net-ip-word (ip) =
+    if list-length ip < 4 then 0
+    else ((list-at ip 0 * 256 + list-at ip 1) * 256 + list-at ip 2) * 256 + list-at ip 3
+
+  net-with-isn : NetSession, List Integer, Integer -> NetSession
+  net-with-isn (sess) (rip) (rport) =
+    if sess.isn-chosen then sess
+    else set-conn sess (set-send-next (sess.conn) (net-isn (sess.local-ip) ((sess.conn).local-port) rip rport))
+
   net-connect : NetSession -> NetResult
-  net-connect (sess) =
-    let step = tcp-step (sess.conn) EvConnect
+  net-connect (fresh) =
+    let sess = net-with-isn fresh ((fresh.conn).remote-ip) ((fresh.conn).remote-port)
+    in let step = tcp-step (sess.conn) EvConnect
     in let s1 = set-conn sess (step.conn)
     in let frame = when (step.action)
       is ActSend (seg) -> [wrap-tcp-in-ip-eth s1 seg (resolve-dst-mac s1)]
@@ -661,26 +714,53 @@ Section: Inbound Frame Processing
     else if (sess.conn).remote-port == 0 then True
     else seg.src-port == (sess.conn).remote-port
 
-  net-in-established : NetSession -> Boolean
-  net-in-established (sess) = when ((sess.conn).state)
+ A connection is its four numbers: once the peer's port is known, a segment from
+ another address with the same ports is not this connection's, however its
+ sequence numbers read.
+
+  net-from-other-host : NetSession, List Integer -> Boolean
+  net-from-other-host (sess) (src) =
+    if (sess.conn).remote-port == 0 then False
+    else ip-equal ((sess.conn).remote-ip) src == False
+
+  net-dst-is-local : NetSession, List Integer, Integer -> Boolean
+  net-dst-is-local (sess) (pkt) (off) =
+    list-at pkt (off + 16) == list-at (sess.local-ip) 0
+    & list-at pkt (off + 17) == list-at (sess.local-ip) 1
+    & list-at pkt (off + 18) == list-at (sess.local-ip) 2
+    & list-at pkt (off + 19) == list-at (sess.local-ip) 3
+
+  net-accepts-data : NetSession -> Boolean
+  net-accepts-data (sess) = when ((sess.conn).state)
     is TcpEstablished -> True
+    is TcpFinWait1 -> True
+    is TcpFinWait2 -> True
     is otherwise -> False
 
- The RFC 793 acceptability test: a data segment is in the receive window unless it
- is entirely old (every byte already delivered, so `seq + len <= recv-next` -- a
- duplicate a lossy peer retransmitted after losing our ACK) or it starts beyond
- the window we advertised (`seq >= recv-next + window`). Everything else overlaps
- the window and is delivered; the byte stream is reassembled above by payload
- order, so a forward seq gap within the window is not rejected here.
+ Nothing here holds an out-of-order segment, and the byte stream above is the
+ payloads in arrival order, so a data segment is accepted only when it covers
+ recv-next: one starting past it (a gap) would be delivered as if the missing
+ bytes were not missing, and one wholly before it is a duplicate. A segment that
+ starts before recv-next and runs past it is trimmed to start there, so the bytes
+ already delivered are not delivered twice.
 
   net-seg-acceptable : NetSession, TcpSegment -> Boolean
   net-seg-acceptable (sess) (seg) =
     let rn = (sess.conn).recv-next
-    in let win = (sess.conn).send-window
     in let seg-end = tcp-seq-wrap (seg.seq-num + tcp-seg-payload-len seg)
-    in if tcp-seq-le seg-end rn then False
-    else if tcp-seq-ge (seg.seq-num) (tcp-seq-wrap (rn + win)) then False
-    else True
+    in if tcp-seq-lt rn (seg.seq-num) then False
+    else tcp-seq-lt rn seg-end
+
+  net-seg-trim : NetSession, TcpSegment -> TcpSegment
+  net-seg-trim (sess) (seg) =
+    let skip = tcp-seq-diff ((sess.conn).recv-next) (seg.seq-num)
+    in if skip <= 0 then seg
+    else if tcp-seg-payload-len seg <= skip then seg
+    else TcpSegment {
+      src-port = seg.src-port, dst-port = seg.dst-port,
+      seq-num = (sess.conn).recv-next, ack-num = seg.ack-num, flags = seg.flags, window = seg.window,
+      payload-buf = seg.payload-buf, payload-off = seg.payload-off + skip, payload-stop = seg.payload-stop
+    }
 
   net-dup-ack : NetSession -> NetResult
   net-dup-ack (sess) =
@@ -699,7 +779,8 @@ Section: Inbound Frame Processing
  RFC 1122 4.2.3.2 requires: the sequence and port numbers an ACK would quote
  are drawn from the bytes just found untrustworthy. The peer's retransmit
  timer is what recovers it. The named output exists so a caller can see the
- refusal happen, the way not-for-this-port already can.
+ refusal happen, the way not-for-this-port already can. RFC 1122 3.3.6: a datagram
+ addressed to another host is discarded (not-for-this-host).
 
   net-process-ip : NetSession, List Integer -> NetResult
   net-process-ip (sess) (ip-pkt) = net-process-ip-at sess ip-pkt 0
@@ -711,6 +792,8 @@ Section: Inbound Frame Processing
   net-process-ip-within (sess) (pkt) (off) (stop) =
     if ip-length-valid-within pkt off stop == False then
       NetResult { session = sess, output = "bad-ip-length", data = [], data-off = 0, data-stop = 0 }
+    else if ip-header-shape-valid-within pkt off stop == False then
+      NetResult { session = sess, output = "bad-ip-header", data = [], data-off = 0, data-stop = 0 }
     else if ip-header-valid-within pkt off stop == False then
       NetResult {
         session = sess,
@@ -723,7 +806,9 @@ Section: Inbound Frame Processing
     in if proto == ip-proto-tcp then
       let tcp-off = off + ip-header-size
       in let tcp-stop = off + ip-total-length-at pkt off
-      in if tcp-checksum-valid-at pkt tcp-off tcp-stop (ip-src-at pkt off) (ip-dst-at pkt off) == False then
+      in if net-dst-is-local sess pkt off == False then
+        NetResult { session = sess, output = "not-for-this-host", data = [], data-off = 0, data-stop = 0 }
+      else if tcp-checksum-valid-at pkt tcp-off tcp-stop (ip-src-at pkt off) (ip-dst-at pkt off) == False then
         NetResult {
           session = sess,
           output = "bad-tcp-checksum",
@@ -731,6 +816,8 @@ Section: Inbound Frame Processing
           data-off = 0,
           data-stop = 0
         }
+      else if tcp-header-length-valid-at pkt tcp-off tcp-stop == False then
+        NetResult { session = sess, output = "bad-tcp-offset", data = [], data-off = 0, data-stop = 0 }
       else let seg = tcp-parse-at pkt tcp-off tcp-stop
       in if net-session-owns-segment sess seg == False then
         NetResult {
@@ -740,10 +827,16 @@ Section: Inbound Frame Processing
           data-off = 0,
           data-stop = 0
         }
-      else if net-in-established sess & tcp-seg-payload-len seg > 0 & net-seg-acceptable sess seg == False
+      else if net-from-other-host sess (ip-src-at pkt off) then
+        NetResult { session = sess, output = "not-from-peer", data = [], data-off = 0, data-stop = 0 }
+      else if net-accepts-data sess & tcp-seg-payload-len seg > 0 & net-seg-acceptable sess seg == False
         then net-dup-ack sess
-      else let r = net-receive-segment sess seg
-      in let updated = when (r.session).conn.state
+      else let fresh = when ((sess.conn).state)
+        is TcpListening -> True
+        is otherwise -> False
+      in let opening = if fresh & tcp-has-flag seg tcp-flag-syn then net-with-isn sess (ip-src-at pkt off) (seg.src-port) else sess
+      in let r = net-receive-segment opening (if net-accepts-data sess then net-seg-trim sess seg else seg)
+      in let updated = if fresh == False then r else when (r.session).conn.state
         is TcpSynReceived -> NetResult {
           session = set-conn (r.session) (set-remote ((r.session).conn) ((r.session).conn.remote-port) (ip-src-at pkt off)),
           output = r.output,

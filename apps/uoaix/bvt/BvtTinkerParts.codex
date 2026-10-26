@@ -1,0 +1,94 @@
+Chapter: BvtTinkerParts
+  cites Uoaix chapter BritainCatalog
+  cites Uoaix chapter GameCraftState
+  cites Uoaix chapter CraftGump
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter EconomyProduction
+  cites Uoaix chapter EconomyCatalog
+  cites Uoaix chapter EconomyMoney
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter GameVendorBuys
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-53: the 1998 tinker's parts (catalog 211 to 219). Bits: 1 the catalog closes with the parts named in order, 2 the
+ Tinkering menu lists them under Wooden Items, Parts and Multi-component Items and the saw's menu does not, 4 a tinker
+ holding 6 iron ingots, 10 boards and a hinge makes a clock and a sextant through every assembly and keeps none of the
+ parts, 8 a clock with no clock parts and an axle with no tinker's tools are refused, 16 the tinker and the provisioner buy them back at a bid and know them by art.
+  tkp-names : List Text = ["axle", "gears", "springs", "clock frame", "axle with gears", "clock parts", "sextant parts", "clock", "sextant"]
+  tkp-named : EgCatalog, Integer -> Boolean
+  tkp-named (c) (k) = if k >= list-length tkp-names then True
+    else list-length c.items >= bb-axle + k & (list-at c.items (bb-axle + k - 1)).name == list-at tkp-names k & tkp-named c (k + 1)
+  tkp-items-of : EpWorld, List Integer, Integer, List Integer -> List Integer
+  tkp-items-of (w) (ids) (i) (out) = if i >= list-length ids then out else tkp-items-of w ids (i + 1) (out & [(list-at w.catalog.recipes (list-at ids i - 1)).item])
+  tkp-has : List Integer, Integer, Integer -> Boolean
+  tkp-has (xs) (item) (i) = if i >= list-length xs then False else if list-at xs i == item then True else tkp-has xs item (i + 1)
+  tkp-all : List Integer, Integer -> Boolean
+  tkp-all (xs) (item) = if item > bb-sextant then True else if not (tkp-has xs item 0) then False else tkp-all xs (item + 1)
+  tkp-none : List Integer, Integer -> Boolean
+  tkp-none (xs) (item) = if item > bb-sextant then True else if tkp-has xs item 0 then False else tkp-none xs (item + 1)
+  tkp-menu : Integer -> Integer
+  tkp-menu (unused) = when bb-economy 0
+    is Err (_) -> 0
+    is Ok (x) -> let tinker = tkp-items-of x.world (gcr-recipes x.world 4) 0 []
+      in let saw = tkp-items-of x.world (gcr-recipes x.world 3) 0 []
+      in let cats = crg-category 4 bb-axle == 0 & crg-category 4 bb-clock-frame == 0 & crg-category 4 bb-gears == 2 & crg-category 4 bb-springs == 2
+        & crg-category 4 bb-axle-gears == 6 & crg-category 4 bb-sextant == 6 & gcr-graphic bb-clock == #104B & gcr-graphic bb-sextant == #1057
+      in if tkp-all tinker bb-axle & tkp-none saw bb-axle & cats then 2 else 0
+  tkp-make : EpWorld, Integer, Integer, Integer -> Integer
+  tkp-make (w) (actor) (bench) (item) = ep-craft w actor (gcr-recipe-of w item 0) bench
+  tkp-chain : EpWorld, Integer, Integer -> Integer
+  tkp-chain (w) (actor) (bench) = let p = ep-actor w actor
+    in let a = tkp-make w actor bench bb-axle
+    in let b = tkp-make w actor bench bb-gears
+    in let c = tkp-make w actor bench bb-axle-gears
+    in let d = tkp-make w actor bench bb-springs
+    in let e = tkp-make w actor bench bb-clock-parts
+    in let f = tkp-make w actor bench bb-clock-frame
+    in let g = tkp-make w actor bench bb-clock
+    in let h = tkp-make w actor bench bb-axle
+    in let i = tkp-make w actor bench bb-gears
+    in let j = tkp-make w actor bench bb-axle-gears
+    in let k = tkp-make w actor bench bb-sextant-parts
+    in let l = tkp-make w actor bench bb-sextant
+    in let made = ep-at p.stock bb-clock == 1 & ep-at p.stock bb-sextant == 1
+    in let spent = ep-at p.stock bb-axle == 0 & ep-at p.stock bb-gears == 0 & ep-at p.stock bb-axle-gears == 0 & ep-at p.stock bb-springs == 0
+      & ep-at p.stock bb-clock-parts == 0 & ep-at p.stock bb-clock-frame == 0 & ep-at p.stock bb-sextant-parts == 0 & ep-at p.stock 148 == 0
+      & ep-at p.stock 31 == 0 & ep-at p.stock 38 == 0
+    in if made & spent then 4 else 0
+  tkp-refused : EpWorld, Integer, Integer -> Integer
+  tkp-refused (w) (actor) (bench) = let p = ep-actor w actor
+    in let clock = tkp-make w actor bench bb-clock
+    in let frame = ep-at p.stock bb-clock-frame
+    in let untooled = ep-set p.stock 42 0
+    in let axle = tkp-make w actor bench bb-axle
+    in if clock == 0 - 1 & frame == 1 & axle == 0 - 1 & ep-at p.stock bb-axle == 0 then 8 else 0
+  tkp-tinker : Boolean -> Integer
+  tkp-tinker (chain) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (_) -> 0
+    is Ok (w) -> let actor = ep-admit w (em-open w.money 2 1053) 100
+      in if actor < 1 then 0
+      else let p = ep-actor w actor
+      in let bench = ep-station w actor 9 100
+      in let skilled = ep-set p.skills 8 1000
+      in let tool = ep-set p.stock 42 1
+      in let worn = ep-set p.wear 42 1000
+      in if chain then (let iron = ep-set p.stock 31 6 in let boards = ep-set p.stock 38 10 in let hinge = ep-set p.stock 148 1 in tkp-chain w actor bench)
+      else (let frame = ep-set p.stock bb-clock-frame 1 in let boards = ep-set p.stock 38 2 in tkp-refused w actor bench)
+  tkp-arts : List Integer = [#105B, #1053, #105D, #104D, #1051, #104F, #1059, #104B]
+  tkp-arted : Integer -> Boolean
+  tkp-arted (k) = if k >= list-length tkp-arts then True else gvb-item-of (list-at tkp-arts k) == bb-axle + k & tkp-arted (k + 1)
+  tkp-vendor : Integer -> Integer
+  tkp-vendor (unused) = when ep-new (bb-catalog 0) (em-new 0)
+    is Err (_) -> 0
+    is Ok (w) -> let buys = gvb-goods 6 bb-axle & gvb-goods 6 bb-sextant & gvb-goods 6 148 & gvb-goods 0 bb-clock & not (gvb-goods 1 bb-clock) & not (gvb-goods 6 210) & not (gvb-goods 6 220)
+      in let arts = tkp-arted 0 & gvb-item-of #1055 == 148 & gvb-item-of #1057 == 0
+      in let bids = gvb-bid w 6 bb-gears > 0 & gvb-bid w 6 bb-clock > gvb-bid w 6 bb-gears & gvb-bid w 0 bb-sextant > 0 & gvb-bid w 1 bb-clock == 0
+      in if buys & arts & bids then 16 else 0
+  bvt-tinker-parts : Integer -> [Console] Integer
+  bvt-tinker-parts (unused) = let c = bb-catalog 0
+    in let closes = if eg-validate c == 0 & tkp-named c 0 then 1 else 0
+    in let code = closes + tkp-menu 0 + tkp-tinker True + tkp-tinker False + tkp-vendor 0
+    in act
+      a <- bvt-check ("the 1998 tinker's parts: the catalog closes over items 211 to 219, the Tinkering menu lists them, a tinker makes a clock and a sextant through every assembly, a missing part or tool refuses, and the tinker and provisioner buy them back (UOAIX-53, code " & show code & ")") (code == 31)
+      a
+    end

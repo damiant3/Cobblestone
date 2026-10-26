@@ -175,7 +175,7 @@ AgentGrid is not managing this workspace -- skip.
 
 **A `*-merge-down-directive-*.json` file in your inbox is an order, and it
 is the first thing you do after this step** (Damian, 2026-09-02):
-`build/merge-down-all.ps1` ran while you were down and could not bring
+`tools/agents/merge-down-all.ps1` ran while you were down and could not bring
 your stream to main, so you are behind on rulings and registers by
 everything since the `head` it names. Merge down (`p4 merge -S
 //Codex/XXX -r; p4 resolve -am; submit`, or the shelve-first dance in
@@ -188,9 +188,10 @@ Before Step 9, write `<coordinationDir>\status.json` with your live state:
 `state` (`Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`), `task`
 (the unit you are on and its current step, or what you are waiting on),
 `claim` (the files or subsystems you hold), and `context` (your context
-used, whole-number percent, measured by `build/measure-context.ps1 -Lane XXX -Percent`, the one formula;
+used, whole-number percent, measured by `tools/agents/measure-context.ps1 -Lane XXX -Percent`, the one formula;
 required on every write, because a lane that runs to 100% unseen goes
-deaf; at 75 you run `/handoff` yourself). Then rewrite
+deaf; past 75 you start no new large unit and run `/handoff` once the one in
+hand lands: 75 is a start threshold, not an end one, Damian 2026-10-24). Then rewrite
 it at every change of state for the rest of the session: taken, gating,
 waiting on the box or the token, landed, handed off. A `status.json` still carrying
 the previous session's handoff text is what the fleet dashboard showed

@@ -1,0 +1,89 @@
+Chapter: NvGspQueue
+  cites Kernel chapter NvGspMsg
+
+ The GSP-RM queue transport as tinygrad runs it (tinygrad/runtime/support/
+ nv/ip.py, NVRpcQueue at c3aec477): msgSize-byte slots, msgCount of them.
+
+ _send_rpc_record writes a record at write pointer x slot size; what does
+ not fit before the ring's end goes to its start; the write pointer moves
+ by the record's slots modulo the slot count. send_rpc cuts a payload into
+ records of at most 16 x slot size - 48 - 32 bytes, the first carrying the
+ function and the rest NV_VGPU_MSG_FUNCTION_CONTINUATION_RECORD (71), one
+ sequence number each; an empty payload is one record.
+
+ read_resp walks the status ring from the read pointer to the write
+ pointer: the rpc_message_header_v sits at +0x30 of the record's first slot
+ (length at +8, function at +12, rpc_result at +16) and the payload at
+ +0x50 for length bytes, cut at the ring's end as a slice is (never
+ wrapped). The read pointer moves by length rounded up to slots, modulo the
+ slot count; a record whose rpc_result is not zero stops the walk after the
+ pointer has moved past it. A length that moves the pointer by no slot
+ would walk forever there; here the walk refuses it.
+
+Section: Writing
+
+  GspSeg = record {
+   off : Integer,
+   bytes : List Integer
+  }
+
+  GspSend = record {
+   segs : List GspSeg,
+   wp : Integer,
+   seq : Integer
+  }
+
+  gsp-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  gsp-slice (bs) (i) (stop) (acc) = if i >= stop | i >= list-length bs then acc else gsp-slice bs (i + 1) stop (list-push acc (list-at bs i))
+
+  gsp-queue-put : Integer, Integer, Integer, List Integer -> GspSend
+  gsp-queue-put (wp) (slot) (count) (rec) =
+    let off = wp * slot
+    in let first = if list-length rec < slot * count - off then list-length rec else slot * count - off
+    in let head = [GspSeg { off = off, bytes = gsp-slice rec 0 first [] }]
+    in let segs = if first < list-length rec then head & [GspSeg { off = 0, bytes = gsp-slice rec first (list-length rec) [] }] else head
+    in GspSend { segs = segs, wp = int-mod (wp + list-length rec / slot) count, seq = 0 }
+
+  gsp-send-more : GspSend, Integer, Integer, List Integer, Integer, Integer -> GspSend
+  gsp-send-more (s) (slot) (count) (payload) (off) (most) =
+    if off >= list-length payload then s
+    else let p = gsp-queue-put s.wp slot count (nv-gsp-record 71 (gsp-slice payload off (off + most) []) s.seq slot)
+    in gsp-send-more (GspSend { segs = s.segs & p.segs, wp = p.wp, seq = s.seq + 1 }) slot count payload (off + most) most
+
+  nv-gsp-send-rpc : Integer, Integer, Integer, Integer, Integer, List Integer -> GspSend
+  nv-gsp-send-rpc (wp) (seq) (slot) (count) (func) (payload) =
+    let most = slot * 16 - 80
+    in let p = gsp-queue-put wp slot count (nv-gsp-record func (gsp-slice payload 0 most []) seq slot)
+    in gsp-send-more (GspSend { segs = p.segs, wp = p.wp, seq = seq + 1 }) slot count payload most most
+
+Section: Reading
+
+  GspResp = record {
+   func : Integer,
+   payload : List Integer
+  }
+
+  GspRead = record {
+   resps : List GspResp,
+   rp : Integer,
+   failed : Boolean,
+   refused : Boolean
+  }
+
+  gsp-u32-at : List Integer, Integer -> Integer
+  gsp-u32-at (bs) (i) = gsp-word-at bs i 3 0
+
+  gsp-read-from : List Integer, Integer, Integer, Integer, Integer, List GspResp, Integer -> GspRead
+  gsp-read-from (ring) (rp) (wp) (slot) (count) (acc) (fuel) =
+    if rp == wp then GspRead { resps = acc, rp = rp, failed = False, refused = False }
+    else if fuel <= 0 then GspRead { resps = acc, rp = rp, failed = False, refused = True }
+    else let off = rp * slot
+    in let len = gsp-u32-at ring (off + 56)
+    in let step = (len + slot - 1) / slot
+    in if step == 0 then GspRead { resps = acc, rp = rp, failed = False, refused = True }
+    else let next = int-mod (rp + step) count
+    in if gsp-u32-at ring (off + 64) /= 0 then GspRead { resps = acc, rp = next, failed = True, refused = False }
+    else gsp-read-from ring next wp slot count (list-push acc (GspResp { func = gsp-u32-at ring (off + 60), payload = gsp-slice ring (off + 80) (off + 80 + len) [] })) (fuel - 1)
+
+  nv-gsp-read : List Integer, Integer, Integer, Integer, Integer -> GspRead
+  nv-gsp-read (ring) (rp) (wp) (slot) (count) = gsp-read-from ring rp wp slot count [] count

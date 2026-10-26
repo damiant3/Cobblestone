@@ -265,11 +265,11 @@ function ConvertFrom-CceBytes([byte[]]$Bytes) {
 
 
 # Symbol resolution.
-#
+# 
 # A CDX carries its own symbol map -- a MAP1 block the emitter writes into the
 # data segment -- and that is the map these functions read. The text sidecar
 # (seed/Codex.map) is a fallback and an explicit override, never the default.
-#
+# 
 # The reason is drift, and it is not hypothetical. A compiler build does emit a
 # map (every CDX compile has since main 15088) and the build now carries it to
 # build/output/Sut.map, but NOTHING installs it over seed/Codex.map except one
@@ -280,11 +280,11 @@ function ConvertFrom-CceBytes([byte[]]$Bytes) {
 # placed a crash in `sorted-builtin-names` when the faulting function was
 # `find-effect-op-addr`, a different function entirely, and cost an hour. The
 # sidecar's mtime was seven hours behind the seed's.
-#
+# 
 # An embedded map cannot drift from the binary it describes, because it ships
 # inside it. That is the whole fix: not "remember to refresh the map", but a map
 # with no opportunity to be stale.
-#
+# 
 # MAP1 layout (little-endian), as written by the emitter and read by
 # apps/works/DevDebugger.codex:
 #   +0  magic "MAP1" (le32 826361677)
@@ -716,7 +716,7 @@ function Start-VmRun {
     # QEMU needs two things pre-boot that codex-vm does for the guest, and
     # both track the ACCELERATOR, not the host OS. Measured on Windows
     # 2026-08-13, seed 9B84FA86, qemu 11.0.0, boot to READY on the ctrl serial:
-    #
+    # 
     #   accel  -cpu max  0xfe8 loader   boots
     #   whpx   no        no             no     <- what this path shipped before
     #   whpx   yes       yes            no
@@ -724,17 +724,17 @@ function Start-VmRun {
     #   tcg    no        no             no
     #   tcg    no        yes            no
     #   tcg    yes       yes            YES
-    #
+    # 
     # The 0xFE8 cell is the guest RAM size ("dynamic RSP", ram-size-addr in
     # Emit/X86_64Boot.codex); without it the boot stub computes RSP from
     # zeroed memory and triple-faults before the first serial byte. Every
     # accelerator needs it. (data-len=4 not 8: QEMU's generic loader asserts
     # data_len < 8, and -m stays under 4 GB.)
-    #
+    # 
     # -cpu max is required under TCG, whose default qemu64 model lacks
     # features the seed uses, and is FATAL under WHPX. WHPX takes -cpu host:
     # its default model has no RDRAND, so the guest prints 'no entropy'.
-    #
+    # 
     # kernel-irqchip=off is what WHPX needs. Under KVM the userspace-APIC
     # path it forces is deprecated and the guest dies before READY, while
     # the in-kernel irqchip boots clean -- so drop the flag exactly there.
@@ -845,11 +845,11 @@ function Read-DebugconBytes {
 # to the data serial once the guest says READY, and everything the guest
 # answers -- log lines, SIZE:<n>, the binary, the MAP/PROF/HEAP trailer --
 # lands byte-for-byte in OutputFile.
-#
+# 
 # The read stops when the SIZE payload is complete plus a short trailer
 # drain, not on idle alone: the guest stays running after a compile, so a
 # purely idle-based read always pays the full idle timeout.
-#
+# 
 # Returns $true when OutputFile holds a complete answer, INCLUDING a
 # compiler error report or crash dump -- those are the caller's to judge,
 # exactly as they are when codex-vm writes the file. $false means boot
@@ -1003,7 +1003,7 @@ function Invoke-VmCompileFallback {
 # plug could run without codex-vm; eight hardcoded the path and ten read
 # $script:CodexVmBin while skipping $script:UseCodexVm, which LOOKS like
 # consulting the config.
-#
+# 
 # The QEMU arm is Start-VmRun's measured boot recipe minus its ctrl/data
 # sockets: the 0xfe8 loader cell carries guest RAM size, -cpu max is required
 # under TCG and fatal under WHPX, kernel-irqchip=off is WHPX's and not KVM's,
@@ -1011,7 +1011,7 @@ function Invoke-VmCompileFallback {
 # expect. A plug dials 127.0.0.1 through gateway 10.0.2.2 and QEMU's user
 # networking carries that unchanged, which was measured rather than reasoned:
 # the reasoning said SLIRP would drop it and the reasoning was wrong.
-#
+# 
 # THIS DOES NOT SERVE A PLUG THAT PRELOADS ITS INPUT. codex-vm's -input is a
 # ring buffer filled before boot and QEMU has no such flag; the eleven runners
 # that pass -input need the live-serial route Invoke-VmCompileFallback takes,
@@ -1058,7 +1058,7 @@ function Start-PlugVm {
 # The OTHER plug shape: no TCP at all, the whole exchange on ONE serial wire.
 # codex-vm spells it -input (a ring filled before boot) and -output (dumped at
 # exit); eleven runners use it and none could run without codex-vm.
-#
+# 
 # QEMU HAS NO -input, and the flag that looks like it is a trap: QEMU 11.1.0
 # does carry -chardev file,input-path= and REFUSES it on Windows with
 # 'input-path not supported on Windows'. The route that works on every host is
@@ -1067,10 +1067,10 @@ function Start-PlugVm {
 # answer back off the same wire. server=on,wait=on holds the guest at reset
 # until we have connected, which is what makes a preloaded ring and a live
 # socket interchangeable from the guest's side.
-#
+# 
 # The port comes from Get-VmPort, never a literal: a fixed port silently
 # reports another agent's run as yours (L-SHARED).
-#
+# 
 # Proven byte-identical against the codex-vm arm on wasm/hello, 69,368 chars
 # sha CB709BEB, after the runner's own HEAP/WD/STACK/PM filter.
 function Invoke-PlugVmFileSerial {

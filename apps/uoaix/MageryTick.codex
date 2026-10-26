@@ -85,6 +85,11 @@ Chapter: MageryTick
     in let packet = mgp-target cursor (mgd-ground-cursor actor.spell)
     in let flags = list-set-at packet 6 (if mgd-ground-cursor actor.spell then 0 else if mgd-harmful actor.spell then 1 else if mgd-beneficial actor.spell then 2 else 0)
     in act Ok [packet] end
+ A player's mana point waits for that player's own pulse, as an Invisibility's expiry does, so the mana update (0xA2)
+ reaches its client: a point taken in another session's pulse raised the mana with no update, and the bar stood still
+ (Damian, 2026-10-20: "british's mana pool does not appear to be recovering/correct").
+  mgt-regen-now : MgActor, Integer, Boolean -> Boolean
+  mgt-regen-now (actor) (tick) (elsewhere) = actor.mana < mgs-stat actor 2 & actor.regen <= tick & not elsewhere
   mgt-one : Magery, GameShard, GameInput, MgActor -> [Device.Block] Result (List (List Integer)) Text
   mgt-one (magic) (shard) (input) (actor) = when world-get shard.world actor.serial
     is Err (_) -> let removed = mgs-untrack magic actor in act Ok [] end
@@ -97,7 +102,7 @@ Chapter: MageryTick
       in let protection = if actor.protected-until == 0 | actor.protected-until > magic.tick then 0
         else let a = __record-set actor "protected-until" 0
         in let b = __record-set actor "protection" 0 in mgs-touch magic
-      in let regen = actor.mana < mgs-stat actor 2 & actor.regen <= magic.tick
+      in let regen = mgt-regen-now actor magic.tick (cb-slot shard actor.serial 0 >= 0 & actor.serial /= input.session.serial)
       in let restored = if not regen then 0 else let a = __record-set actor "mana" (actor.mana + 1)
         in let b = __record-set actor "regen" (if actor.mana == mgs-stat actor 2 then 0 else magic.tick + mgr-regen-due magic shard actor)
         in mgs-touch magic

@@ -17,6 +17,10 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
   defining a name; a duplicate is CDX3001 for the whole unit. The generated unit carries the text of every chapter it cites as it stood when generated: regenerate it after any edit, or the run grades the old code (red, 2026-10-09).
 - A chapter that compiles inside the server can still call names it does not cite, resolved through another chapter's
   cites; a smaller unit then fails CDX3002 (L-SUBSET). Cite the chapter that defines what you call.
+- A change under `apps/uoaix/assist` lands with `test-assist.ps1` green and the coverage of every file it touched
+  measured by `cover-assist.ps1`, each in a fresh `pwsh` (the Assist's own suites on a virtual clock and a fake shard:
+  no server, no guest, nothing of root's testing) (`docs/Designs/Active/Apps/AssistTesting.md`; Damian,
+  2026-10-22: "I WANT FULL TEST COVERAGE. I WANT EVER BOUNDARY TESTED.").
 - Say in the landing line whether the change needs a fresh world (any catalog item, codec or save-format change).
 - A fix or feature adds its positive and negative `bvt/` case (written and compiled, run by root) and its CL names the
   live call site that runs it in the booted server (L-UNCALLED).
@@ -46,11 +50,19 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
 
 ## Rulings that bind this project
 
+- red is the UOAIX server lane (Damian, 2026-10-20: "use red for any bugfixes, or ongoing work on uoaix server").
+  Root routes every server bug and every open server unit to red; the Assist stays with blu.
+- The Lord's secretary (UOAIX-274) books appointments herself, only for a reason tied to a live world condition
+  (Damian, 2026-10-20: "the appointment should be allowed automatically, not require british. reasons are like
+  reporting town news, mayorial issues, etc. reasons like "i am bored" not."; "we may come up with a canned set of them
+  now, future plans involve linking the shard npcs to a LLM that can do proper analysis of the request. for now, lets
+  kiss").
 - **L-FUTILITY, FIRST OF ALL (`docs/PM/Active/Stories/LESSONS.md`): NEVER REPEAT ANYTHING THAT DID NOT GET A PROPER ANSWER
   THE FIRST TIME.** No line said twice, no NPC asked twice, no cast, lift, use or drop sent again after silence or a
   refusal, no loop moving to the next target to ask the same thing; only a repeat the answer itself asks for ("You must
   wait", a fizzle). The Assist enforces it at `GameLink.Say` and `AskNear` (`assist/assist-plan.md` rule 1); every agent
   and every bot or script that talks to a server obeys it (Damian, 2026-10-17: "ENSURE EVERYONE OBEYS THIS RULE").
+- Every message and every world walk is bounded to a small region (Damian, 2026-10-18: "we need to keep the quadratic situation of message to everyone bounded as much as possible to small regions. like that's the only thing that makes mmo work"). Root's reading: a change reaches only the sessions whose view holds it, never a broadcast to every session; world state (flora, colliders, spawns) is walked once per world tick, never once per session; a cost of sessions times world size is a defect.
 - Worlds are disposable: a format change boots a fresh world; no migrations, no old-version readers, no durability
   tests (Damian, 2026-10-07: "we don't need save durability its wasted code and testing").
 - A save never refuses: a check logs and the bytes are written; only a disk write failure fails a save (Damian,
@@ -65,6 +77,9 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
 - The 1998 skill system replaces the 2026-10-06 gain curve (Damian, 2026-10-12: "ok well, we need all this in uoaix, write the doc.  we do the code later when i have tokens."): `docs/Designs/Active/Apps/Uoaix1998Skills.md`, UOAIX-242. No skills economy (Damian, 2026-10-12: "i don't like the skills economy feature at all, it made the game suck"); every check below 50.0 gains ("skill gain below 50 should always be fairly easy"); every repair lowers max durability, scaled to the max ("a 255 durabilty item loses 5 and a 127 loses 3"); "powders need demand". The design's table D1 to D6 holds the rules (Damian, 2026-10-12, "yeah that's fine": root's readings stand and the pace constant is 1000).
 - A town's bank is a resource store for crafting (Damian, 2026-10-13: "i think all resource use in a city or town with a bank should use that bank as an optional resource location. i dont want players to be tediously running around for 1 board or an ingot"). Then: "but every bank is its own bank. it is not a shared bank." and "so every shop that links to a bank links to specific bank", and "the bank in serpents hold doesn't see the stuff in brit east, and brit east doesn't see brit west". Root's reading: every bank building (Britain's east and west banks apart) keeps its own box per character; every shop and craft station is linked to one bank, its nearest; each town's bank keeps its own box per character (a banker opens that town's box, not one box shared by every bank), and a craft in a town with a bank takes the materials it lacks from the crafter's box at that town's bank, after the pack.
 - Playable path first: work a player can reach in the real client this week beats a native core nobody can reach.
+- On uo1998, gold inside a bag in the bank box is savings: "any gold in bags in the bank are savings and are not to be
+  touched by any agent" (Damian, 2026-10-20). Only the box's top-level gold piles are taken from (`BankTake`), and only
+  when the pack holds no sewing kits and no materials to sew.
 - Houses come from deeds, not grants (Damian, 2026-10-17: "remove the stuff about king land grants and building parties
   and just go back to the deed system for now. we can revisit that mechanic at a future time."). Root's reading: a
   player buys a house deed from a vendor, double-clicks it and targets the ground, and the house stands at once (the
@@ -79,11 +94,13 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
 
 | Subject | Read |
 |---|---|
+| Any C# of the Assist (`assist/*.cs`) | `assist/assist-csharp.md` (the guidelines, from `old/` and `.editorconfig`), `docs/Designs/Active/Apps/AssistStructure.md` (the class-design campaign: which code has moved and how) |
 | Shops, premises, new trades | `BritainShops.md` ("Premises for new trades"), `EconomyCatalog.md`, `ItemOrigins.md`; every site a new shop touches is in the bowyer's and the cobbler's CLs (`p4 describe` main 41385, 41434) |
 | Caps and table growth | `ServerLimits.md`, `docs/Designs/Done/Apps/UoaixDynamicTables.md` |
 | Launch, supervisor, testing mode | `CompositeGame.md` |
 | Wire packets | `ProtocolFacts.md`, `GameDispatch.md` |
 | Saves and codecs | `WorldPersistence.md`, the codec's own `*Codec.md` |
+| How uo1998 behaves (the Assist; 1998 rules for vendors, prices, skills, crafts, regions) | OUO, [github.com/draxinar/ouo](https://github.com/draxinar/ouo) (MIT): the C translation of the 1998 UoDemo server that uo1998 is based on; its game data and wombat scripts, [github.com/draxinar/rundir](https://github.com/draxinar/rundir). Local clones: `D:\Projects\uo-reference\ouo`, `D:\Projects\uo-reference\rundir` |
 | Town network, its corpus or weights | `TownNetworkHill.md`, `TownNetworkLive.md`: a change to the corpus (`TownNetworkOutcomes`), the frame or the EconomyClock fixture changes the training data, so it needs a retrain (`train-town-network.ps1`, GPU, about 20 s) and `proofs/TownNetworkHillModelProof` re-pinned to the receipt's scores |
 
 ## Pitfalls that cost sessions
@@ -100,7 +117,8 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
 - The load-fault line (`LOAD SECTION REFUSED`) prints at the first commit, about 60 s after boot: a boot stopped at
   `READY` cannot show it, so grade a restore after the first `WORLD COMMITTED`.
 - `list-push`, `list-set-at` and `__record-set` write through the caller's pointer (L-ALIAS).
-- `above`, `bounded` and `between` are keywords: `let above = ...` fails CDX1023 "Expected 'in' after let bindings" at the name, and `is Ok (between)` fails CDX1060.
+- `above`, `bounded`, `between`, `quotes` and `revised` are keywords: `let above = ...` fails CDX1023 "Expected 'in' after let bindings" at the name, `is Ok (between)` fails CDX1060, a record field `quotes` fails CDX1024, and `revised <- ...` in an act block fails CDX2000.
+- `build/compile.ps1` prints `True` on stdout whether or not the compile succeeded: read its exit code (4 on CODEGEN errors) or the `.cdx` and the log's `CODEGEN-` line, never the redirected stdout.
 - Nothing runs `proofs/`, so a format or table change leaves them uncompilable or aimed at old offsets for days
   (2026-10-09: GameVendorCodecProof named a deleted table, TownGovernmentCodecProof corrupted v1 offsets of a v2
   image). Compile every proof that cites the chapter you change, and fix what no longer compiles in the same landing.
@@ -155,6 +173,10 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
   wall time (an encode-us of 1.5 s is 50 ms real). Compare timings only between runs at the same scale.
 - Grade a fresh-world trial at game hour 36 or later: new workers hold no coin until the first payroll (about hour 32),
   and shops are closed from hour 20 to 7, so a worker idle at hour 18 is not yet a fault.
+- A trial is four steps, all from the workspace root: `build/compile.ps1 -Src apps/uoaix/CompositeGameServer.codex -Out <dir>\server.cdx -Log <dir>\server.compile.log -Kernel seed\Codex.cdx`; `apps/uoaix/import-decoration.ps1 -ClientRoot D:/Games/UO1998com-Client1 -OutFile <dir>\britannia.dwd`; `apps/uoaix/install-map-cache.ps1 -ClientRoot D:/Games/UO1998com-Client1 -WorldDisk <dir>\world.disk -DecorationFile <dir>\britannia.dwd -FloraFile $env:LOCALAPPDATA\uoaix-bvt\flora\flora.flr` (add `-MultiDir` from `build-multis.ps1` for cut designs to collide); then `apps/uoaix/proofs/soak-bots.ps1 -Artifact ... -World ... -CompressionSource <Compression.cs, hash-checked> -OutDir <dir>\soak -Bots 4 -Minutes 25 -ClockScale 30 -Open -Only gm,walk,vendor,harvest`.
+- Every soak listens on the same port (22360, derived in `soak-bots.ps1` line 26), so two soaks cannot run at once: the second refuses "Port 22360 is held". Queue a soak behind the running one (`Wait-Process` on its pid).
+- Never run `start-composite-game.ps1` as `& pwsh ... *> file`: the detached guest inherits the output pipe and the caller waits forever after READY. Launch it with `Start-Process -RedirectStandardOutput`, or read READY from its log.
+- A soak bot dropped with "Write ... aborted by the software in your host machine" was closed by the server or by the NAT, not by the bot: grep the trial's `server.log` for `REFUSE` (a refusal closes the link and names its reason, such as `game response exceeds transmit budget`) and `LINK CLOSE` for its serial, and `guest.stderr` for `NAT FREE` (site 8815 is the 5 s half-closed reap after a guest FIN), before reading the soak's GM attribution.
 - Copy a trial's `server.log` before stopping its guest: a log once read back 0 bytes after the guest was killed.
 - A city's walk map is client statics only (`wmc-fill`); doors and every other decoration collider are laid only on
   Britain's map (`cg-town-doors`), so a city doorway is an open gap and a city route failure is never a closed door. A
@@ -166,5 +188,29 @@ Read in full before your first edit under `apps/uoaix/` (init Step 4c). UOAIX is
 - `WorldSpawnData`, `CreatureSoundData`, `CreatureCarveData` and `WorldSpawnIntData` are all written by `import-world-spawns.ps1`; change a spawn region, theme or rule in the importer (`$regionOverrides`, `$regionThemes`), regenerate, and read the diff of every output: a hand edit to a generated file is lost at the next import (42760 dropped the carve shearing rule this way).
 - A packet told to another player (`cg-tell`, the event ring `ce-add-to`) is dropped without a word when it is longer than a ring row (`ce-bytes`, 16 KiB): a gump told to the other seat that outgrows it arrives as nothing, only its message line shows (UOAIX-230, the 512-byte rows dropped every card gump).
 - PowerShell names are case-blind: in a `proofs/soak-bots.ps1` step, a local `$c` overwrites the bot `$C` and the next `Send-Plain $C` throws (fester step 68, found by val and reek in a soak). Name step locals apart from the step's parameters by more than case.
+- An `ImmutableArray<T>` handed to an `object` or `params object[]` parameter arrives as one boxed item where an array
+  was spread into the items, and it compiles: the Bag Organizer's shapes showed the type's name (2026-10-24). Pass
+  `.ToArray()` (`FixedLists`, `Collections.cs`).
+- The Assist's references hold no `System.Linq`: `ImmutableArray<T>.ToArray()` and other LINQ extensions do not compile there; copy with `CopyTo`. Nor `System.Memory`: `AsSpan` does not compile, `new Span<T>(array, start, length)` does. `Add-Type` fails on any warning (a nullable one included), and its errors arrive one at a time.
+- A suite's `f.Notes` keeps only the latest notes: a three-hour world case's failure message shows its end, never its start. To read how a run began, snapshot the notes partway through in a scratch copy of the case.
 - The UOAIX Assist (`apps/uoaix/assist`) is C# that `assist.ps1` compiles with one `Add-Type -Path` line at start-up, so a compile error shows only when the relay starts. Check a change by running that line alone in a fresh `pwsh` and reading for `error CS`; a check that prints a success word after `Add-Type` prints it even when the compile failed (root submitted a broken assist that way, main 44453, fixed 44455). Its references hold no `System.Text.RegularExpressions` and no `System.Diagnostics.Process`.
-- The uo1998 relay and its client: `Start-Process pwsh -ArgumentList '-NoExit','-NoProfile','-File','<workspace>\apps\uoaix\assist\assist.ps1','-LoginServer','login.uo1998.com,5000','-ListenPort','2650','-LogDir','D:\Projects\Cobblestone-root\build-output\uoaix\assist'`, wait for 2650 to listen, then `Start-Process D:\Games\UO1998com-Assist\CLIENT.EXE -WorkingDirectory D:\Games\UO1998com-Assist` (its `LOGIN.CFG` names 127.0.0.1,2650). The control port is 2651 (one command a line, one answer line each); settings, the atlas, trades, the tailoring book and the circuit record are `%LOCALAPPDATA%\uoaix-assist\*-login.uo1998.com-5000.*` and `settings-2650.txt`. A relay restart logs Damian out; he logs in again. The tailoring circuit and its commands: `assist/tailoring-circuit.md`. `<workspace>` is one holding main 45212 or later (L-FUTILITY, bank-box travel): blu's does; `D:\Games\UO1998com-Assist\launch-assist.ps1` runs root's copy, which has them only once root has synced past 45212, and passes no `-LogDir`.
+- `assist.ps1`'s `Add-Type` line is not the only compiler of the Assist's sources: `packet-proxy.ps1` compiles
+  `assist/UoWire.cs` beside its own source, outside the suites. A change to `UoWire.cs` is checked by compiling the
+  proxy too (main 48524 to 48530 left it failing CS1529).
+- The Assist's suites never build `AssistWindow`: a window change that compiles and passes `test-assist.ps1` can still
+  throw in the window's constructor, which kills the relay right after its `LISTEN` line (main 48096: an action added
+  with `AddAction` but not to `Actions` and `DefaultKeys`). After a bounce, check the relay's PID is still alive and
+  listening some seconds later before saying it is up; the cause is in the Application event log (event 1026).
+- `GameLink.ClientPacket` is raised after the client's packet has gone to the server, so the server's answer can be handled before it: a handler that must know what the client asked before the answer comes records it in the `HoldClient` chain (returning false) instead, as the vendor catalogue does (`VendorCatalogClient`; the suites' fake shard answered first 1 run in 2 under coverage).
+- Every background loop of the Assist ends on `shutdown` (`AssistFeatures.Shutdown`): under the suites' virtual clock a
+  loop left sleeping after its case has no actor to wait for, every sleep returns at once, and it spins. `LookLoop`'s
+  `while (true)` left one core spinning per case, and the collect cases late in the run hung at random (2026-10-22).
+- The Assist's circuit is run whole in `tests/HomespunWorldTests.cs` and `tests/HomespunTownsTests.cs` (a fake world: house, shops by rune, tailors that buy, sell and restock, mana, a bank, home sewing). A change to the circuit's control flow adds a start there and a bound on recalls, asks and stalls; a fix tested only through a pure decision function let two live loops through on 2026-10-24. The suites share one data folder and every case starts its virtual clock at the same hour, so a world case empties the offer, attempt, circuit and restock records first (`HomespunWorldTests.ClearRecords`), or an earlier case's refusals read as a moment ago.
+- The walk planner is tested over a client map of the test's own (`tests/TestMap.cs`: grass, water and walls written as
+  MAP0/STAIDX0/STATICS0/TILEDATA and installed as `UoArt.Folder`); a planner change keeps `tests/PlannerTests.cs` green,
+  its pinned costs included.
+- An Assist auto-tune sample must be the task's own: the player's refused lift raised `lift-settle` 450 to 5350 ms, and round zero's hand menu picks counted as the server's sew time (2026-10-21). Time a sample from the task's own last action, and skip it when the player acted in between.
+- A house door barks its lock lines over the player as the player's own line (serial the player's, hue 0x5A: "You quickly unlock, use, and relock the door.", "That is locked, but is usable from the inside."), and `Heard.Answers` drops the player's lines: read them from `Heard.Lines` (the key was turned twice at every entry and exit until 2026-10-24).
+- uo1998's scripts refuse an action with a bark over the player's own head (`barkToHued(user, user, 0x22, ...)`): a 0x1C from the player's serial in hue 0x22, beside the spell's words in hue 0x5A. `AssistState` records the bark as the server's line; a reader of `JournalSince` sees it prefixed with the player's name ("Kwik: Your hands must be free to cast spells.").
+- In the Assist, a login sets the loops' `stop` flag, so a helper shared by loops and circuits that tests `stop` returns at once inside a circuit: the smithing build's result (CraftResult), the smelt's (SmeltResult) and the scrap drop (DropScraps) each failed this way on 2026-10-18. A circuit's code tests `circuitStop`; a shared helper tests the flag of the thread running it.
+- The uo1998 relay and its client: `Start-Process pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-File','<workspace>\apps\uoaix\assist\assist.ps1','-LoginServer','login.uo1998.com,5000','-ListenPort','2650','-LogDir','D:\Projects\Cobblestone-root\build-output\uoaix\assist'` (headless, Damian 2026-10-19; blu and reek both bounce it, only on Damian's word, and each tells the other, and blu watches its log), wait for 2650 to listen, then, only when no client is running, `Start-Process D:\Games\UO1998com-Assist\CLIENT.EXE -WorkingDirectory D:\Games\UO1998com-Assist` (its `LOGIN.CFG` names 127.0.0.1,2650). A bounce is the relay alone: stop its PID, start it by the line above with `-WindowStyle Hidden` kept, and leave Damian's client to log in again. The control port is 2651 (one command a line, one answer line each); settings, the atlas, trades, the tailoring book and the circuit record are `%LOCALAPPDATA%\uoaix-assist\*-login.uo1998.com-5000.*` and `settings-2650.txt`. A relay restart logs Damian out; he logs in again. The tailoring circuit and its commands: `assist/tailoring-circuit.md`. `<workspace>` is one holding main 45212 or later (L-FUTILITY, bank-box travel): blu's does; `D:\Games\UO1998com-Assist\launch-assist.ps1` runs root's copy, which has them only once root has synced past 45212, and passes no `-LogDir`.

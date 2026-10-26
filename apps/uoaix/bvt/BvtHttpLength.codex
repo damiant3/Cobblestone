@@ -1,0 +1,23 @@
+Chapter: BvtHttpLength
+  cites Net chapter WebServer
+  cites Works chapter Http
+  cites Uoaix chapter BvtCheck
+
+ The admin port's HTTP framing reads Content-Length before any key is checked: a 20-digit length multiplied past the
+ Integer range, and an overflowing multiply traps, so one unauthenticated request halted the shard (val, UOAIX audit
+ 2026-10-18). A length past the receive buffer now only never completes.
+  bhl-request : Text, List Integer -> List Integer
+  bhl-request (length) (body) = http-text-to-ascii "POST /admin HTTP/1.1" & [13, 10] & http-text-to-ascii ("Content-Length: " & length) & [13, 10, 13, 10] & body
+  bhl-total : Text, List Integer -> Integer
+  bhl-total (length) (body) = let bytes = bhl-request length body in wb-request-total bytes (list-length bytes)
+  bvt-http-length : Integer -> [Console] Integer
+  bvt-http-length (unused) = let whole = bhl-request "3" [97, 98, 99]
+    in let fits = bhl-total "3" [97, 98, 99] == list-length whole
+    in let short = bhl-total "4" [97, 98, 99] == -1
+    in let huge = bhl-total "99999999999999999999" [97, 98, 99] == -1
+    in let wide = bhl-total "999999999999999999999999999999999999999999" [] == -1
+    in act
+    a <- bvt-check "a request whose Content-Length its body meets is framed whole, and one a byte short waits" (fits & short)
+    b <- bvt-check "a 20-digit and a 42-digit Content-Length are a request that never completes, not a trap" (huge & wide)
+    a + b
+  end

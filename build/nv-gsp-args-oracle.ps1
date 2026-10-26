@@ -18,6 +18,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $commit = 'c3aec477b99d9bb87c54d91897cf60acd3f17441'
 if (-not (Test-Path -PathType Leaf $Python)) { Write-Host "MISSING: $Python"; exit 2 }
+if ((Test-Path -PathType Container $TinygradDir) -and -not (& git -C $TinygradDir rev-parse --verify --quiet HEAD 2>$null)) { Write-Host "REFUSED: $TinygradDir exists but is not a usable git checkout (no HEAD); delete it and rerun to clone tinygrad at $commit"; exit 2 }
 if (-not (Test-Path -PathType Container $TinygradDir)) {
     & git clone --quiet --filter=blob:none --sparse https://github.com/tinygrad/tinygrad.git $TinygradDir 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Host 'tinygrad clone failed'; exit 2 }

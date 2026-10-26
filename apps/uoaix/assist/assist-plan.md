@@ -24,7 +24,7 @@ uo1998.com is a third-party server, so every rule here protects their server and
    A REFUSAL, AND NO LOOP MOVES TO THE NEXT TARGET TO ASK THE SAME THING. NO ANSWER IS AN ANSWER:
    THE CODE THAT ASKED STOPS AND SAYS WHY.** The only repeat is one the server's own answer asks
    for: "You must wait", a fizzle, a failed skill check, a vendor's "Let us go back to my shop"
-   (asked once more, at its home). `GameLink.Say` refuses the same line, whatever sent it, when it
+   (asked again at its home, `GoingHomeAsks` (3) asks in all while it keeps giving that answer). `GameLink.Say` refuses the same line, whatever sent it, when it
    got no proper answer within the last 120 s and the player has not moved 3 tiles; an answered line
    (a sale's "Brian sell" per 5 shirts) goes again. A vendor, banker or station that gives no proper
    answer stops the circuit and says why. (Damian, 2026-10-17, the third time: "if it didn't get a proper response the first
@@ -34,7 +34,7 @@ uo1998.com is a third-party server, so every rule here protects their server and
    lengths. No packet id, field value or length the client cannot produce.
 3. Pace is human pace. At most one injected action (use, target, lift, equip, attack) in flight.
    The next injected use goes out at the LATER of: the server's answer to the last one, and the
-   step's configured delay after it (1250 ms use to use for the mining round). A slow server
+   step's configured delay after it (mining: 2500 ms with one tool, 1250 ms use to use with two). A slow server
    stretches the round; nothing shortens it.
 4. A target response is sent only while the server has a target cursor open (0x6C from the
    server), and it answers that cursor's id. A cursor opened by an injected use belongs to the
@@ -48,16 +48,29 @@ uo1998.com is a third-party server, so every rule here protects their server and
 6. Nothing exploits the server. The assist is meant to do more than UOAssist on the CLIENT side
    (what it shows, records and automates), but what reaches the server is what a player at this
    client could send by hand: no speed changes, no packet the server would not get from a person, and no
-   reading of state the server did not send to this client. Movement is injected by the tailoring circuit
-   (stage 6) and the control port's `walk` and `flee`, one step at a time (Damian, 2026-10-17: "no i need you to
+   reading of state the server did not send to this client. Movement is injected by the circuits and the control
+   port's `walk` and `flee`, one step at a time (Damian, 2026-10-17: "no i need you to
    automate all this"), by `pace auto` unless set: a mount the stamina estimate holds rested runs, a tired one walks
    after a short rest and runs again once rested, and each refusal for fatigue rests longer (Damian, 2026-10-17: "when
    the horse is in a known rested state, run it if it helps ... if walking is still a problem, rest a bit longer");
    `pace walk|run` fixes it; a flee always runs; any step of the player's own ends the walk.
-7. The login password never reaches a log. The relay and `packet-proxy.ps1` mask it (0x80 bytes
-   31-60, 0x91 bytes 35-64).
+7. No password reaches a log. The relay masks every 30-byte password field (`GameLink.Masked`: 0x80 bytes
+   31-60, 0x91 and 0x5D bytes 35-64, 0x83 bytes 1-30), held packets included. `packet-proxy.ps1` masks the same
+   fields in every client packet, framed by `go-lengths`, and masks every byte after one it cannot frame.
 8. Logs are bounded: one file per session, rotated at 64 MB, the last 4 kept (R-COST). A recording ("Record me") is
-   also copied to `record-<port>-<time>.log` beside them, which rotation never deletes.
+   also copied to `record-<port>-<time>.log` beside them, which rotation never deletes, and a client crash leaves
+   `crash-<port>-<time>.log` (`client-crashes.md`).
+9. The control port answers only a local program that speaks its line protocol. Any web page can POST text/plain to
+   `127.0.0.1:<relay port + 1>` with no preflight, and each body line would run as a command (`say`, `move`,
+   `bank-take`, `circuit go`); `AssistRelay.Http` closes the connection at an HTTP
+   request or header line, before the body. Both listeners bind loopback only.
+10. Wire text never writes a line or a field of the Assist's own files. A name, label or speech line from a server
+    (another player's rune description, a vendor's name) is ASCII with control bytes kept, so CR, LF and tab are
+    replaced with spaces before a line-based file takes it (`AssistAtlas.Add`, `RunePlace`, `AssistTrips.Clean`,
+    `AssistFeatures.Clean` for `unknown-replies.txt` and `loot-<server>.txt`).
+11. A server stream is bounded: more undecoded bytes than a 65535-byte packet can take (`GameLink.MaxUnitBytes`)
+    passes raw and halts the assist, as an unframed packet does (rule 5). The state's items and ground items stop at
+    `AssistState.ItemKeep` serials each; a full item table is swept of items out of view before a new serial is refused.
 
 ## Where it runs
 
@@ -76,22 +89,22 @@ to the client and the server over TCP only; it does not inject into the client p
   `AssistRelay.Command`, each with its arguments in the comment above it.
   `GameLink.cs` is one game connection: both directions framed, client bytes re-encrypted, server
   packets re-encoded one a unit, and rules 1 to 5 enforced where packets are put in (rule 1 at `Say`).
-  `AssistState.cs` is what the server has told the client. `AssistFeatures.cs` is stage 4: the loop
-  menu with each delay's source, round-zero recording, rule-2 pacing, stop and wait lines, arm and
+  `AssistState.cs` is what the server has told the client. `AssistFeatures` (one partial class in
+  `AssistFeatures.<Section>.cs` files; its class design is `docs/Designs/Active/Apps/AssistStructure.md`) holds the loop
+  menu with each delay's source, round-zero recording, rule-3 pacing, stop and wait lines, arm and
   disarm, drinking, autopickup, counts, advice; control commands `loops`, `loop <name> [rounds N]
   [until-skill V] [until-line text]`, `stop`, `macro`, `arm`, `pickup on|off`, `reagents [add|remove
   hex]`, `counts`, `advice`, `notes`, `display [name on|off]`. What a server corrects (a delay, an
   advice threshold, the pickup reach) is kept per login server in
-  `%LOCALAPPDATA%\uoaix-assist\settings.txt` (`-Settings` names another file). A wait line doubles
-  the loop's delay and the doubled value is kept, so the first session on a new server can take
-  several refusals (Arms Lore on the shard: 1000 to 16000 ms against its 15000 ms lore wait).
-- `AssistWindow.cs` is stage 5: the window finds the client by the process that owns the client's
-  TCP connection to the relay, is owned by the client's window, docks to its right edge at its
-  height (WinEvent location hook), hides with it and undocks when it closes; panels Status, Loops,
-  Arm and disarm, Drinking, Reagent pickup, Resources, Skills, Advice and events, Display; F2 loop,
-  F3 arm/disarm, F4 pickup by default, each rebound on its panel, registered only while the
+  `%LOCALAPPDATA%\uoaix-assist\settings.txt` (`-Settings` names another file). A loop's wait lines
+  set its delay by the bisect in "Rulings of 2026-10-15" (Loop pacing, Delays).
+- `AssistWindow.cs` and its `AssistWindow.<Tab>.cs` parts are stage 5: the window finds the client by the process that owns the client's
+  TCP connection to the relay, docks to its right edge at its height (WinEvent location hook),
+  hides with it and undocks when it closes; its tabs and panels are "Rulings of 2026-10-15"; F2
+  loop, F3 arm/disarm, F4 pickup by default, each rebound on its panel, registered only while the
   client is the foreground window. `-NoWindow` runs headless; the control command `window`
-  reports the dock and `window snapshot <png>` draws the window off screen. `UoWire.cs` is the one host-side copy of the 1.25.32 wire (keystream,
+  reports the dock and `window snapshot <name>.png` draws the window off screen into the `reports` folder beside the
+  settings (only the file name is taken). `UoWire.cs` is the one host-side copy of the 1.25.32 wire (keystream,
   Huffman code, framing), shared with `packet-proxy.ps1`; the Codex copy in `LoginWire.codex`
   serves the shard. Both scripts read the Huffman codebook from `GameHuffman.codex` and the
   packet lengths from `go-lengths` in `GameOpcode.codex` (CLIENT.EXE's own table: 0 marks a
@@ -116,37 +129,26 @@ edit `D:\Games\UO1998com-Client2` either: it is Damian's second uo1998 client. C
 patched second-instance build (the same bytes as `D:\Games\UOAIX-Client2\CLIENT2.EXE`), so it
 runs beside a first client.
 
-## Stages
+## What it does
 
-Each stage is proved on the UOAIX shard first, on a world copy root boots for it, never against
-the live shard while Damian plays. A run that drives a client asks root for a GO, which root
-grants while Damian is idle. A client run is one AutoHotkey v2 script that waits on small
-partial-screen checks and re-checks that the client window is active before every click. A
-stage reaches uo1998 only when Damian runs it.
+The proof of a change is Damian playing with it in game (`uoaix-init.md`, "How work lands"); the Assist's own suites
+(`docs/Designs/Active/Apps/AssistTesting.md`) run before every landing.
 
 1. **Relay with redirect.** The client logs in through the relay. The relay rewrites the
    server's 0x8C (game server IP, port, 4-byte key) to 127.0.0.1 and its own port, remembers the
    real address by key, and connects the game connection (identified by its first 4 bytes, which
-   are that key) upstream to that address. Done when a scripted login and 10 minutes of walking
-   and item use on the shard pass through with the client in sync and both directions decoded;
-   then Damian logs in to uo1998 through it once and plays normally. That run also confirms the
-   uo1998 server speaks the same wire (decoded 0x8C, no Huffman DESYNC).
-2. **Framing and state.** Split both directions into whole packets with `go-lengths`. Track the
+   are that key) upstream to that address.
+2. **Framing and state.** Both directions split into whole packets with `go-lengths`. The state tracks the
    player serial, backpack and container contents (0x25, 0x3C), worn items (0x2E), skills
-   (0x3A), status (0x11), journal text (0x1C) and the open target cursor (0x6C). Done when a
-   session's state matches what the client shows.
-3. **Injection.** To the server: decrypt every client byte and re-encrypt it, with injected
-   packets placed only between whole client packets (rule 4). To the client: Huffman-encode
-   injected packets with the same codebook, only between whole server packets. Done when an
-   injected double-click (0x06) and its target (0x6C) mine one ore on the UOAIX shard and the
-   client stays in sync.
+   (0x3A), status (0x11), journal text (0x1C) and the open target cursor (0x6C).
+3. **Injection.** To the server: every client byte decrypted and re-encrypted, with injected
+   packets placed only between whole client packets. To the client: injected packets Huffman-encoded
+   with the same codebook, only between whole server packets.
 4. **Features, in Damian's order:**
    - **Mining macro.** F2 records round zero: the serials of the two items double-clicked and the
      tile each target cursor was answered with. Then it replays the rounds: double-click by
-     serial, wait for the server's target cursor, answer with the recorded tile, pace by rule 2,
-     a round count set in the window. Stops on F2 or any desync. The journal lines for an empty
-     spot or a broken tool on uo1998 are read from the relay log of Damian's first uo1998 mining
-     run and added as stop lines then; the shard's own lines are in the shard source.
+     serial, wait for the server's target cursor, answer with the recorded tile, pace by rule 3,
+     a round count set in the window. Stops on F2 or any desync.
    - **Skills and stats monitor, with advice.** Every skill's value and its gains this session,
      from 0x3A, and strength, dexterity and intelligence from 0x11. Damian, 2026-10-14: "then we
      should put in a skills / stats monitor that triggers for helpful advise like 'you can now
@@ -215,74 +217,55 @@ stage reaches uo1998 only when Damian runs it.
    the top-left corner; the strip to its right is empty. The assist window:
    - docks to the client window's right edge at the client's full height, follows it when it
      moves or resizes (a WinEvent location hook on the client's window), minimizes and restores
-     with it, and is owned by it so it stays directly above the client in z-order, not above
-     every other window;
-   - shows every feature as its own always-visible panel (macros, skills, arm/disarm, resource
-     counts, display options, the extra information), not tabs, and each panel shows its own
-     hotkey on its own control. There is no separate
-     key list tab: a key is rebound on the panel that uses it.
+     with it, and stays directly above the client in z-order, not above every other window (no
+     owner link; "Rulings of 2026-10-15", Window and Z-order);
+   - shows each feature as its own panel, and each panel shows its own hotkey on its own control.
+     There is no separate key list tab: a key is rebound on the panel that uses it. The panels sit
+     on the main tabs of "Rulings of 2026-10-15" (Info, Actions, Map, Shops and the rest).
    Hotkeys are active only while the client has focus.
 
-6. **The tailoring circuit** (design, wire facts, proven and open: `tailoring-circuit.md`) (Damian, 2026-10-17: "i want a simple safe loop of just tailoring in all safe spots in
-   town"; "yeah lets build it out"; he owns the account risk: uo1998 publishes no macro policy and no support, "as long
-   as they don't tell me to stop"). The loop starts at any tailor with 200 gold from the bank; buys shuttles of thread up
-   to about 100, buying a vendor out because "each time if they have sold out of thread, the next respawn gets more. all
-   the way to 999", restocks about every 15 minutes; weaves bolts and stacks them; sews shirts from all the cloth; sells
-   to a tailor at 27 gp, moving on to another tailor when one will not, Magincia first ("next time, try magincia
-   first"); banks the purse in the city it sold in ("frequent drop offs of gold is good idea"), every bank stack under
-   60,000. It travels from any bank by the bank box's rune for the city, read in place (runes never leave the bank,
-   "they are there because we don't want to lose them on accidental death or... murder"; "all the destinations we
-   need are right there in any bank"): no rune library and no trip back to Britain. Travel is Recall ("it sometimes fizzles but it works. be
-   persistent"), 30 of each recall reagent carried and refilled from the bank ("wherever you go, there is a bank").
-   Recall, speech ("vendor buy", "vendor sell", "bank"), buying, selling and walking are what a player sends by hand,
-   so the injectable set grows by steps (0x02), speech (0x03), the buy reply (0x3B) and the sell reply (0x9F). A vendor
-   is 3 tiles from the loom or the next vendor even inside one shop, so the circuit walks (rule 6's exception). The
-   relay numbers every step, the client's and the assist's, in one count, gives the client its own numbers back, and
-   draws the player anew (0x20) after assist steps. Walking routes around other characters: a step through one is
-   blocked without full stamina and costs a stamina penalty with it (Damian, 2026-10-17). A vendor is always addressed by name ("Morena buy"), never
-   "vendor buy": "otherwise other npc can intercept". A vendor trades only inside its small shop range; engaged away from
-   it, it teleports home or walks home slowly ("I am sorry, I do not have my wares here with me. Let us go back to my
-   shop."), so only that answer earns one more ask, made once the vendor stands still at home (rule 1).
-   Everything the circuit does is the packet itself, and every window or cursor it causes stays off the client: the
-   shop windows, a bag opened to read it, a spell's cursor ("lets just inject the right messages instead of user
-   emulation of clicks unless absolutely necessary"). A vendor hears its name from 3 tiles and not from 6 (Michelle and
-   Tracy, Britain, 2026-10-17), so the circuit walks to within 3 tiles of the vendor, in sight. A vendor can stand behind a
-   door ("tracy was behind a door, you have to learn to open those"): an unanswered vendor with a closed door near is
-   asked again after the door is double-clicked open. A vendor's stock is bought out
-   in one purchase ("maximizing the count in a single transaction is best"): Jannelle sold
-   10 thread at 3 gp, then her last 9 at 4 gp in a second purchase (2026-10-17). A sale takes at most 5 items ("you can
-   only sell 5 items at a time"), so the circuit sews up to a multiple of 5 before it sells ("if you have like 14 shirts
-   to sell, its better to make 1 more for the even 5"), and carries a remainder the cloth cannot round up to the next sale.
-   A banker hears "bank" through the bank's walls from a distance, so the circuit walks to the outside of the wall and
-   says it there ("its usual to just walk up to the bank wall and say bank there, rather than go inside").
-   Two sewing kits are carried, the spare bought from the tailor when one wears out ("i usually keep 2, in case for some
-   reason that particular vendor doesn't have one").
-   The circuit stops
-   and tells Damian when staff speak to or near the character, it is attacked, dies or disconnects, or the fail-safe
-   trips; it never answers anyone as him. Players are ignored ("players are annoying sometimes"); staff is a game master
-   or counselor, not a grandmaster: a name begun "GM " ("the custom was to name the char GM <whatever>"), a title of game
-   master, GM, counselor (or councilor), seer or admin, or the GM robe (0x204F in the 1.25 tile data) worn. Built in
-   steps, each tried with him watching:
-   1. speech, "<name> buy" for thread (the buy window answered by the assist, buying out up to a count and the gold
-      on hand), "<name> sell" at a floor price, "bank" with gold deposits under 60,000 a stack and reagent refills;
-   2. Recall to a rune, retried only on a fizzle, reagents checked first;
-   3. travel from the bank box (`travel <city>`, `BankRecall`);
-   4. the circuit itself: per vendor its restock time and thread stock from its buy lists, the weave, the sew and the
-      sale, the next stop by restock and demand, the bank at a purse size.
+6. **The circuits** (tailoring, Keep thread, buy, mining, smithing, lumber, feathers, reagents and the rest): their
+   decisions, the wire facts they stand on and their pieces are `tailoring-circuit.md`. They inject steps (0x02), speech
+   (0x03), the buy reply (0x3B) and the sell reply (0x9F), each what a player sends by hand; every window or cursor a
+   circuit causes stays off the client (Damian, 2026-10-17: "lets just inject the right messages instead of user
+   emulation of clicks unless absolutely necessary"). A circuit stops and tells Damian when staff speak to or near the
+   character, it is attacked, dies or disconnects, or the fail-safe trips; it never answers anyone as him. Players are
+   ignored ("players are annoying sometimes"); staff is a game master or counselor, not a grandmaster: a name begun
+   "GM " ("the custom was to name the char GM <whatever>"), a title of game master, GM, counselor (or councilor), seer
+   or admin, or the GM robe (0x204F in the 1.25 tile data) worn.
+
+7. **The circuit brain**: an expert or a neural brain decides each circuit step, the neural one a planner over
+   networks trained from Damian's recorded play; the toggle, the decision log and the stages are
+   `docs/Designs/Active/Apps/AssistCircuitBrain.md` (paused).
+
+8. **Bags and the house vendor** (Damian, 2026-10-19: "consolidate all the "bag" settings on the bags tab ... also put
+   in house vendor as a bag. then add a vendor tab, with features for setting prices, bag loadouts with pricing, and
+   layout helpers for like doing ascii art, layout flows, like organizing a bag of 10 things into cool shapes visually or
+   mechanically ridgid squares or pentagrams. like target bag, reorg contents into a shape").
+   - The Bags tab's table of every bag setting (`BagSettings`), each with where it is, its count, Set and Clear; a set
+     bag on the floor within 2 tiles opened once; the house vendor picked by target (`<server>house.vendor`).
+   - The Bags tab's Bag Organizer. Target a bag, pick a shape (rows-and-columns square,
+     circle, pentagram in one stroke, an ASCII picture typed in a box, one character a slot), and the bag's items are
+     moved into it inside the bag, one lift and drop (0x07, 0x08 with the bag-local x, y, `GameLink.DropAt`) at a time at
+     the busy pace (rule 3), over the box the items span, else the backpack gump's 44..142 x 65..140.
+   - The Vendor tab, holding the Bag pricer and the House vendor group. The priced bag is handed to
+     the house vendor item by item (unit price times amount) or whole (one price and a description), each price prompt
+     kept off the client and answered as the client answers it, each item's "Cost:" line checked against the price; the
+     vendor's stock read by one single click an item. The wire is at `AssistFeatures.VendedPrompt`.
 
 ## Retires
 
 `D:\Projects\uoaix-macros\Mining.ahk` (the screen-position version of the mining round, F2) once
 stage 4's mining macro works on uo1998.
 
-## Rulings of 2026-10-15 (Damian, testing on the shard), built on main
+## Rulings of 2026-10-15 (Damian, testing on the shard)
 
 - Window: "add expand/contract controls to each section", "for resources, lets make that formatted into 2 column groups
   wide, and with some small icon graphics from the game assets", "for skills show columns displayed and base, and
   change, since its not all gain here. and sorting with a click on the column header, right click desc", "all of the
   panels of the uoaix assist need to fit the screen with no full window scroll bars in any resolution" ("if it doesn't
   fit, just let it underflow the screen, but make it fit a properly sized screen"). Docking has no owner link: a
-  cross-process owner shares the client's hidden cursor (the Windows cursor vanished over the assist).
+  cross-process owner shares the client's hidden cursor, which hides the Windows cursor over the assist.
 - Client size: "i can't get the client exe to be the right size, the graphics renders tearing of fonts and stuff if
   its off by a pixel. can you make it so when assist runs it 'right sizes' and locates the window so it can be all seen
   on the window properly". At dock the client area is set to the largest whole multiple of 640x480 that leaves the
@@ -303,7 +286,7 @@ stage 4's mining macro works on uo1998.
   target). for others, it depends. ... if a loop is running and you get that error, back off to repeat rate and find one
   that works. start with a 5s assumption and program in a bisect." Root's reading: 12500 ms for Hiding, Detect Hidden,
   Arms Lore and Animal Lore; every other skill loop starts at 5000 ms and probes shorter; a "you must wait" line bisects
-  between the longest refused and the shortest working delay, kept per login server, and the fail-safe leaves a
+  between the longest refused and the shortest working delay (doubling while none has worked), kept per login server, and the fail-safe leaves a
   running loop's wait lines to the loop.
 - Resources: "group resources into subgroups: harvest, create, reagents, and combat", "and make the icons a touch
   bigger" (28 px).
@@ -317,8 +300,8 @@ stage 4's mining macro works on uo1998.
   failsafe, make it red. when the failsafe is bypassed, turn it back gray to start again. then also, when looping, be
   sure to wait the skill-appropriate default timeout before starting the actions." The first action waits the loop's
   delay in use for the server.
-- Delays: "the delay for mining is 2500 ... in uoassist exactly. never fails at that", "for shovel or pickaxe"; the
-  delay counts from the target. "it would be good to put the actual delays in there that can be shown and overridden,
+- Delays: "the delay for mining is 2500 ... in uoassist exactly. never fails at that", "for shovel or pickaxe" (one
+  tool; two pace 1250, Loop pacing above); the delay counts from the target. "it would be good to put the actual delays in there that can be shown and overridden,
   with a button to turn on or off auto-detect by bisect feature": the Loops panel's delay box and auto-detect checkbox
   (off: a wait line repeats at the same delay, 3 in a row stop the loop).
 - Skill notices: "do we have the cool green skill update notifications in uoassist? also they should not be green if it
@@ -356,7 +339,12 @@ stage 4's mining macro works on uo1998.
   beside the mill and is picked up), cotton or wool on a spinning wheel (1 spool a
   bale, about 5 s on uo1998), thread or yarn on a loom (1 spool a use; the bolt builds across uses). A wheel and a loom
   in reach take turns: "make it spin and weave at the same time if both are there". Every spool in the pack is used:
-  "if you start with some, be sure to use those too".
+  "if you start with some, be sure to use those too". Its "then tailor" box ("make weave have an option to auto tailor
+  when done", "using last tailor settings"): a weave the player started that ends by itself starts the last tailoring
+  loop on its last targets. The tailoring loop itself never weaves.
+- Last targets ("add a button for starting all loops using last targets"): every loop keeps its round zero's tools,
+  targets and menu picks for the relay's life; "Start the loop on its last targets" (F9) runs the selected loop from
+  round 1 on them.
 - Mount recovery: "i need to know when the mount is recovered". The assist estimates the mount's stamina from the
   server's regen and drain rules, anchored on the server's two horse fatigue lines, and says in green when a 75-stamina
   horse would be full (about 3 min 11 s at rest from 10%).
@@ -385,4 +373,4 @@ stage 4's mining macro works on uo1998.
 - "make the subgroups collapsable in resources", "make the group names and the items start on the same row to perserve
   vertical screen space".
 - Bank corners: "show the 8x8 corners for resource harvesting in the client somehow, like we did we runes for zones in
-  uoaix server": client-only recall runes on each 8x8 bank's first tile; the server never sees them.
+  uoaix server": client-only markers (gears, 0x1053, since 2026-10-18: "something small on screen not a rune") on each 8x8 bank's first tile; the server never sees them.

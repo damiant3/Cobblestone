@@ -17,7 +17,7 @@ Chapter: ActiveSkillsState
     next : Integer, cursor : Integer, skill : Integer, expires : Integer, bandage : Integer,
     patient : Integer, due : Integer, tracking : Integer, track-next : Integer, track-until : Integer,
     menu : Integer, category : Integer, choices : List Integer, choice-count : Integer, provoked : Integer,
-    tame : Integer, tame-step : Integer, tame-due : Integer, herd : Integer, lore-next : Integer }
+    tame : Integer, tame-step : Integer, tame-due : Integer, herd : Integer, lore-next : Integer, spare : Integer }
   ActiveSkills = record { vendor : GvWorld, items : GsiState, banks : GmbState, combat : GameCombat,
     actors : List AsActor, next-target : Integer, concealed : Integer, calm : Integer, picks : Integer, spirit : Integer, manifest : Integer, theft-hook : (Integer, Integer -> Integer) }
   as-actors : Integer, List AsActor -> List AsActor
@@ -26,7 +26,8 @@ Chapter: ActiveSkillsState
       hidden = False,
       next = 0, cursor = 0, skill = -1, expires = 0, bandage = 0, patient = 0, due = 0,
       tracking = 0, track-next = 0, track-until = 0, menu = 0, category = 0,
-      choices = gp-zeros (__list-with-capacity 32) 32, choice-count = 0, provoked = 0, tame = 0, tame-step = 0, tame-due = 0, herd = 0, lore-next = 0 }))
+      choices = gp-zeros (__list-with-capacity 32) 32, choice-count = 0, provoked = 0, tame = 0, tame-step = 0, tame-due = 0, herd = 0, lore-next = 0,
+      spare = sk-buffer 46 }))
   as-theft-none : Integer, Integer -> Integer
   as-theft-none (thief) (victim) = 0
   as-grow : ActiveSkills, Integer -> Integer
@@ -42,12 +43,17 @@ Chapter: ActiveSkillsState
       actors = as-actors 0 (__list-with-capacity 5), next-target = 1, concealed = sa-new 1 banks.items.world.capacity, calm = sa-new 8 banks.items.world.capacity,
       picks = sa-new 16 banks.items.world.capacity, spirit = sa-new 8 banks.items.world.capacity, manifest = sa-new 8 banks.items.world.capacity, theft-hook = as-theft-none })
  A session's ClassicSkills levels are the character's row in the shard's skill table, so every use and gain lands there.
+ A session with no row in the shard's skill table takes the actor's spare levels, cleared: a buffer made here lay above
+ the serving mark and dangled after the next compaction (L-BELOWMARK; red, UOAIX audit 2026-10-18).
+  as-levels-for : AsActor, Integer, Boolean -> Integer
+  as-levels-for (a) (row) (fresh) = if row /= 0 then (let bound = if a.skills.levels /= row then __record-set a.skills "levels" row else a.skills in row)
+    else if fresh then (let cleared = sk-clear a.spare 46 0 in let bound = __record-set a.skills "levels" a.spare in a.spare)
+    else a.skills.levels
   as-session : ActiveSkills, GameShard, GameInput, WorldObject, Integer -> AsActor
   as-session (s) (game) (input) (mobile) (slot) = let a = list-at s.actors slot
     in let row = gs-skill-row game mobile.serial
     in let fresh = a.serial /= mobile.serial
-    in let bound = if row /= 0 then (if a.skills.levels /= row then __record-set a.skills "levels" row else a.skills)
-      else if fresh then __record-set a.skills "levels" (sk-buffer 46) else a.skills
+    in let bound = as-levels-for a row fresh
     in let clear = if not fresh then 0 else let attempts = __record-set a.skills "attempts" 0
       in let hidden = as-reveal s a
       in let serial = __record-set a "serial" mobile.serial

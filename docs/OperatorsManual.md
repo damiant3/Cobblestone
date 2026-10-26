@@ -623,7 +623,8 @@ codex-vm -kernel file.cdx [options]
 | `-gop-max-mode <N>` | -- | Cap the GOP mode table's `MaxMode`. The UEFI GOP enumerates modes 0..2 (640x480, 800x600, 1024x768) plus, as mode 3, the `-gop-width x -gop-height` you set when it matches none of them, so a bed at 1600x900 is a firmware whose largest mode is what the display supports; `Mode->Mode` names the current one. `-gop-max-mode 1` is a firmware with nothing to enumerate, the fallback arm for a stub that picks the largest mode (`build/gop-mode-arm.ps1`). `QueryMode` answers into a scratch info block, not the current mode's; a mode past `MaxMode` is `EFI_INVALID_PARAMETER`; `SetMode` commits the framebuffer before it clears it (a runtime mode set from a headless boot faulted the HOST until it did). |
 | `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. At exit it prints `IO BY VP: vp=N port-exits=N io-lock-wait-ms=N` per processor; quote that for port-I/O contention, not the global `exits` count, which does not count an AP's work. |
 | `-no-avx` | off | A machine without XSAVE or AVX: CPUID leaf 0 stops at 1, leaf 1 ECX carries neither bit, and the partition's XSAVE property stays at WHP's default. Without it, on a host with both, the partition takes the host's XSAVE features and CPUID reports XSAVE, AVX and leaf 0Dh for XCR0 = 7 (`codex/test/cpuid-avx`, `cpuid-no-avx`). |
-| `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683`. Routine packet traces are disabled; set `CODEX_VM_NET_TRACE=1` to enable NAT TX hex, successful RX enqueue and forwarded-receive traces. Errors and final byte accounting remain enabled. Unbuffered packet tracing can dominate send latency when stderr is captured; keep tracing off for timing grades. |
+| `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). The host side listens on 127.0.0.1 only unless `-portfwd-any` is given. TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683`. Routine packet traces are disabled; set `CODEX_VM_NET_TRACE=1` to enable NAT TX hex, successful RX enqueue and forwarded-receive traces. Errors and final byte accounting remain enabled. Unbuffered packet tracing can dominate send latency when stderr is captured; keep tracing off for timing grades. |
+| `-portfwd-any` | off | Every `-portfwd` listens on all host interfaces instead of 127.0.0.1. Windows Firewall allows inbound codex-vm, so a forwarded port is then reachable from the network: only a hosted shard passes it (`start-composite-game.ps1 -Hosted`). |
 | `-natmap <guestdest:hostport>` | -- | Remap an OUTBOUND destination port (repeatable, max 16, TCP only). The opposite direction to `-portfwd`: when the guest dials `guestdest`, the NAT connects to the host on `hostport` instead of the port the guest asked for. Exists because a plug's port is compiled into it from `build/plug-ports.ps1`, so N copies of one plug all needed the same host listener and could not run at once. With this, each worker owns a private host port while running the same unmodified plug binary -- which is what lets `codex/plugs/recheck/sweep-all.ps1` go N-wide. Unmapped ports are untouched, so every existing invocation means what it always did. Example: `-natmap 9134:9250` |
 | `-debug` | off | Interactive debugger shell on breakpoints and single-step |
 | `-break <name>` | -- | Patch INT3 at named function entry (implies `-debug`, repeatable) |
@@ -1942,6 +1943,18 @@ grep reported `errors=0` for `codex/test/type-name-existence` while
 control in an investigation, which sent a real regression looking like a
 host-versus-guest divergence for an hour. Grep for `error CDX` or read the exit
 code, which is the number the script actually publishes.
+
+**`pwsh -File script.ps1 -Paths $array` binds only the array's first element.** A `[string[]]` parameter given an
+array across `-File` receives one string: a measurement over four relay logs read one and published counts with no
+refusal in them (blu 2026-10-22). Pass a directory or a joined string and split it inside the script, and print what
+the script read ("read N lines of X") before its result.
+
+**`$x = if (...) { $list }` enumerates the list, so a list of one pair becomes that pair.** The `if` statement's
+output goes through the pipeline: a `List[object]` holding `@(serial, name)` arrives in `$x` as the two-element
+pair itself, `foreach ($e in $x)` then walks a serial and a name, and under `Set-StrictMode` `$e[0]` throws
+"Unable to index into an object of type System.Int64" (the soak's graded prices step against a one-item vendor,
+2026-10-19). Wrap it, `$x = @(@(if (...) { $list }) | Where-Object { $null -ne $_ })`; the filter matters because
+`@($null)` has a count of one.
 
 **A one-letter helper can be a built-in alias.** `function R` in a session script loses to `R`, which is `Invoke-History`, so every call fails with "A positional parameter cannot be found" and a file written back afterwards is written UNCHANGED while the script reports nothing applied. `rd` is `Remove-Item` the same way (blu, 2026-10-17: a map-dump helper named `Rd` read nothing). Name helpers with a verb and a noun. A function that returns a byte array unrolls it into the pipeline unless it ends `return ,$b`.
 

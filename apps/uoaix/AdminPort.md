@@ -23,7 +23,9 @@ does not pretend that a clock or a deterministic mixer supplies entropy.
 is returned. Application commands require authenticated `POST /admin`.
 The [panel handshake](AdminPanel.md#browser-protocol) also supports an
 authenticated `POST /handshake` probe and nonce-range reservation.
-HTTP framing is supplied by the existing bounded WebServer mux. Authentication
+HTTP framing is supplied by the existing bounded WebServer mux; a Content-Length
+past 99999999 is a request that never completes, closed when the receive buffer
+fills. Authentication
 is per request, including on reused connections; a successful request never
 turns its connection into an unauthenticated shortcut.
 

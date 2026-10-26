@@ -178,6 +178,9 @@ function slide(g, d) {
 }
 {
   let bad = null, moves = 0, merges = 0, refused = 0, fours = 0, s = 9;
+  // The spawn's value against its cell: of the spawns made with an even
+  // number of empty cells, how many 4s landed on an odd-ranked empty cell.
+  let evenSpawns = 0, oddRankFours = 0;
   const rnd = k => { s = (s * 1103515245 + 12345) & 0x7fffffff; return (s >>> 16) % k; };
   for (let g = 0; g < 20 && !bad; g++) {
     let h = e.g2_new(g + 1);
@@ -203,6 +206,11 @@ function slide(g, d) {
         bad = `game ${g}: after ${d} the board is ${after}, the slide gives ${r.n} plus one new 2 or 4`; break;
       }
       if (after[diff[0]] === 4) fours++;
+      const empties = r.n.map((v, i) => i).filter(i => r.n[i] === 0);
+      if (empties.length % 2 === 0) {
+        evenSpawns++;
+        if (after[diff[0]] === 4 && empties.indexOf(diff[0]) % 2 === 1) oddRankFours++;
+      }
       if (e.g2_score(next) !== score + r.gained) { bad = `game ${g}: score ${e.g2_score(next)}, rules ${score + r.gained}`; break; }
       if (r.gained) merges++;
       const over = [0, 1, 2, 3].every(k => !slide(after, k).changed);
@@ -213,6 +221,14 @@ function slide(g, d) {
   ok('rules: every move of 20 games slides, merges, spawns and scores by the rules', bad === null, bad ?? `${moves} moves`);
   ok('rules: the games reached merges, refused moves and spawned 4s', merges > 0 && refused > 0 && fours > 0,
      `${merges} merging moves, ${refused} refusals, ${fours} fours`);
+  // Cirulli's 2048 spawns a 4 one time in ten (game_manager.js, addRandomTile:
+  // Math.random() < 0.9 ? 2 : 4). Every changed move spawns once, so the rate
+  // is fours over moves; a one-in-four rate over these thousands of spawns
+  // falls far outside the band, as does a 4 that never leaves even ranks.
+  ok('rules: a spawned tile is a 4 one time in ten', moves > 1000 && fours * 100 >= moves * 7 && fours * 100 <= moves * 13,
+     `${fours} fours in ${moves} spawns`);
+  ok('rules: a 4 lands on an odd-ranked empty cell when the empty count is even', evenSpawns > 500 && oddRankFours > 0,
+     `${oddRankFours} such fours in ${evenSpawns} spawns with an even empty count`);
   const once = slide([2, 2, 2, 2, 4, 4, 8, 0, 2, 2, 4, 0, 0, 0, 0, 0], 0).n.slice(0, 12);
   ok('control: the oracle merges each tile once, nearest the side first',
      JSON.stringify(once) === JSON.stringify([4, 4, 0, 0, 8, 8, 0, 0, 4, 4, 0, 0]), JSON.stringify(once));

@@ -61,7 +61,7 @@ param(
     [switch]$Library
 )
 
-#
+# 
 # Layout:
 #   Sector 0:     Protective MBR
 #   Sector 1:     GPT header
@@ -71,14 +71,14 @@ param(
 #     SOURCE.SRC             (compiler source, if provided)
 #   Top of medium: the Codex fact store partition
 #   Last 33 sectors: backup GPT (entry array, then header AT the last sector)
-#
+# 
 # The second partition is why a booted stick can remember anything. DiskFacts
 # addresses its sectors relative to a partition of type
 # C0DE1A11-FAC7-4C0D-9E75-C0DEC0DE5EED, and on a disk that carries a partition
 # table and no such partition it refuses to write at all -- because writing
 # where it used to write ate the GPT. An image with one partition therefore
 # produces a stick whose dev console reports "0 disk facts" forever.
-#
+# 
 # Usage: build-img.ps1 -PeInput <file.efi> -Out <file.img> [-Source <file>] [-TotalSectors 16384]
 
 Set-StrictMode -Version Latest
@@ -181,7 +181,7 @@ W64 ($gptOff + 24) 1           # MyLBA
 W64 ($gptOff + 32) ($TotalSectors - 1) # AlternateLBA
 # 128 ENTRIES AND FirstUsableLBA 34, BECAUSE ANYTHING ELSE INVITES WINDOWS TO
 # "REPAIR" THE TABLE, AND ITS REPAIR LEAVES THE DISK UNBOOTABLE.
-#
+# 
 # UEFI reserves a MINIMUM of 16,384 bytes for the partition entry array: 128
 # entries of 128 bytes, LBA 2 through 33, with FirstUsableLBA at 34. This
 
@@ -190,7 +190,7 @@ W64 ($gptOff + 32) ($TotalSectors - 1) # AlternateLBA
 # sectors -- LastUsableLBA is TotalSectors-34 immediately below -- so the image
 # was internally inconsistent: it reserved room for 128 entries at the back and
 # claimed 2 at the front.
-#
+# 
 # Measured 2026-07-29: Windows repairs that table on sight, and its repair is
 # not cosmetic. PartitionEntryLBA is moved to sit immediately below
 # FirstUsableLBA (2 -> 2047), LastUsableLBA is moved to sit immediately below
@@ -199,14 +199,14 @@ W64 ($gptOff + 32) ($TotalSectors - 1) # AlternateLBA
 # GPTs then fail validation, the good array is orphaned at LBA 2, and Windows
 # itself reports the disk as MBR. Firmware sees no partitions, which is the
 # "firmware never lists the stick" failure in HardwareSitting section 3b.
-#
+# 
 # The trigger is any partition-table re-read, and a raw write is one: AutoPlay
 # fires DURING the flash and the repair races the flasher, which is how
 # flash-usb's own fixup readback caught LBA 1 changing under it. Three
 # hypotheses were tested and killed first -- physical reinsertion, the
 # deterministic disk GUID, and disabling automount with mountvol /N -- so this
 # is what is left, and it is the one that matches what the repair changes.
-#
+# 
 # Rufus writes bootable sticks on this same Windows and they survive, which is
 # the existence proof that the behaviour is ours to avoid rather than Windows's
 # to be endured. Give it a conforming table and it has nothing to normalise.
@@ -531,14 +531,14 @@ foreach ($ef in $extraFiles) {
 }
 
 # The chapters as individual files, under their real names.
-#
+# 
 # THE OLD LAYOUT COULD NOT BE READ BACK BY ANYTHING. It put every chapter in a
 # flat SRC/ with the name mangled to 8.3 -- `X86_64CodeGen.codex` became
 # X86_64CO.COD -- and wrote SRC/INDEX.TXT to explain the mangling. disk-load-cite
 # asks the volume for `quire-to-dir <quire>` joined to `<Name>.codex`, so both
 # halves were wrong: wrong directory and wrong name. It never complained,
 # because that resolver drops a cite it cannot find without a word.
-#
+# 
 # Fat16.codex reads and writes VFAT long names now, so a chapter goes on under
 # its own name. The checksum, the alias and the record layout below are a
 # SECOND implementation of the format; the guest's reader is the first, and an

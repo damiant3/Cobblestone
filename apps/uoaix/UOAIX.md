@@ -959,7 +959,7 @@ Each stage is its own landing and is graded before the next starts.
 | D7 | The same bytes boot on the chosen host (R6: Vultr custom ISO; region, plan and date are Damian's) | none | a Vultr boot of the D4 ISO serves a 1.25 client |
 
 **Proposal: the launch record on a hosted shard (red, 2026-10-17; no code; joins R6).**
-The launch record (`CompositeLaunch.codex`: optional `LINKS`, `ADMIN` with the
+The launch record (`CompositeLaunch.codex`: optional `TICKET` (relay ticket seconds, 120 by default), `LINKS`, `ADMIN` with the
 four role keys and epoch, `NET`, then the mode line) is read once, first in
 `opening`, from the serial ring. Measured on the D4 ISO's BIOS entry under QEMU
 TCG: the guest reaches that read 0.63 s after the serial connects, and a record

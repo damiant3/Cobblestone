@@ -1,0 +1,245 @@
+Chapter: CompileServer
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter NetCompact
+  cites Net chapter TcpTransport
+  cites Works chapter Http
+  cites Works chapter WebRoute
+  cites Foreword chapter CCE
+
+ 64 files and 64 MiB of content are deliberate content caps; the page this
+ serves is 17,226,311 bytes (2026-10-18).
+
+Section: Site
+
+  SiteFile = record {
+    path : List Integer,
+    ctype : Text,
+    buf : Integer,
+    len : Integer
+  }
+
+  Site = record {
+    files : List SiteFile,
+    bytes : Integer,
+    why : Text
+  }
+
+  cs-magic : List Integer = [67, 68, 88, 83, 73, 84, 69, 49]
+  cs-max-files : Integer = 64
+  cs-max-bytes : Integer = 67108864
+  cs-entry-size : Integer = 128
+  cs-sector : Integer = 512
+
+  cs-refuse : Text -> Site
+  cs-refuse (why) = Site { files = [], bytes = 0, why = why }
+
+  cs-u32 : Integer, Integer -> Integer
+  cs-u32 (buf) (off) =
+    peek-byte buf off + peek-byte buf (off + 1) * 256 + peek-byte buf (off + 2) * 65536 + peek-byte buf (off + 3) * 16777216
+
+  cs-magic-ok : Integer, Integer -> Boolean
+  cs-magic-ok (buf) (i) =
+    if i >= 8 then True
+    else if peek-byte buf i /= list-at cs-magic i then False
+    else cs-magic-ok buf (i + 1)
+
+  cs-field : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cs-field (buf) (off) (i) (cap) (acc) =
+    if i >= cap then acc
+    else if peek-byte buf (off + i) == 0 then acc
+    else cs-field buf off (i + 1) cap (list-push acc (peek-byte buf (off + i)))
+
+  cs-printable : List Integer, Integer, Integer -> Boolean
+  cs-printable (bs) (low) (i) =
+    if i >= list-length bs then True
+    else if list-at bs i < low then False
+    else if list-at bs i > 126 then False
+    else cs-printable bs low (i + 1)
+
+  cs-sectors : Integer -> Integer
+  cs-sectors (len) = (len + cs-sector - 1) / cs-sector
+
+  cs-copy : Integer, Integer, Integer, Integer -> Integer
+  cs-copy (src) (dst) (off) (i) =
+    if i >= cs-sector then 0
+    else let w = poke-byte dst (off + i) (peek-byte src i)
+    in cs-copy src dst off (i + 1)
+
+  cs-read : Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  cs-read (start) (count) (dst) (i) =
+    if i >= count then act dst end
+    else let hp = __heap-save
+    in act
+      sec <- block-read-sector (start + i)
+      let c = cs-copy sec dst (i * cs-sector) 0
+      in let back = __heap-restore hp
+      in cs-read start count dst (i + 1)
+    end
+
+  cs-entry : Integer, Integer, Integer, Integer -> Site
+  cs-entry (head) (i) (first) (disk) =
+    let off = 16 + i * cs-entry-size
+    in let path = cs-field head off 0 64 []
+    in let ctype = cs-field head (off + 64) 0 32 []
+    in let start = cs-u32 head (off + 96)
+    in let len = cs-u32 head (off + 100)
+    in if list-length path == 0 then cs-refuse ("entry " & show i & ": empty path")
+    else if list-at path 0 /= 47 then cs-refuse ("entry " & show i & ": path not absolute")
+    else if cs-printable path 33 0 == False then cs-refuse ("entry " & show i & ": path not printable")
+    else if list-length ctype == 0 then cs-refuse ("entry " & show i & ": empty content type")
+    else if cs-printable ctype 32 0 == False then cs-refuse ("entry " & show i & ": content type not printable")
+    else if start < first then cs-refuse ("entry " & show i & ": starts inside the header")
+    else if start + cs-sectors len > disk then cs-refuse ("entry " & show i & ": runs past the disk")
+    else Site { files = [SiteFile { path = path, ctype = bytes-to-text ctype 0 (list-length ctype) "", buf = start, len = len }], bytes = len, why = "" }
+
+  cs-seen : List SiteFile, SiteFile, Integer -> Boolean
+  cs-seen (acc) (f) (j) =
+    if j >= list-length acc then False
+    else if (list-at acc j).buf == f.buf & (list-at acc j).len == f.len then True
+    else cs-seen acc f (j + 1)
+
+  cs-entries : Integer, Integer, Integer, Integer, Integer, List SiteFile, Integer -> Site
+  cs-entries (head) (i) (n) (first) (disk) (acc) (total) =
+    if i >= n then Site { files = acc, bytes = total, why = "" }
+    else let e = cs-entry head i first disk
+    in if e.why /= "" then e
+    else let f = list-at (e.files) 0
+    in let added = if cs-seen acc f 0 then 0 else e.bytes
+    in if total + added > cs-max-bytes then cs-refuse "content past the 64 MiB cap"
+    else cs-entries head (i + 1) n first disk (list-push acc f) (total + added)
+
+  cs-loaded : List SiteFile, List SiteFile, SiteFile, Integer -> Integer
+  cs-loaded (fs) (acc) (f) (j) =
+    if j >= list-length acc then 0 - 1
+    else if (list-at fs j).buf == f.buf & (list-at fs j).len == f.len then (list-at acc j).buf
+    else cs-loaded fs acc f (j + 1)
+
+  cs-load-files : List SiteFile, Integer, List SiteFile -> [Device.Block] List SiteFile
+  cs-load-files (fs) (i) (acc) =
+    if i >= list-length fs then act acc end
+    else let f = list-at fs i
+    in let n = cs-sectors (f.len)
+    in let shared = cs-loaded fs acc f 0
+    in act
+      buf <- if shared >= 0 then act shared end else cs-read (f.buf) n (alloc-bytes (if n == 0 then 1 else n * cs-sector)) 0
+      cs-load-files fs (i + 1) (list-push acc (SiteFile { path = f.path, ctype = f.ctype, buf = buf, len = f.len }))
+    end
+
+  cs-load : [Device.Block] Site
+  cs-load = act
+    disk <- block-sector-count
+    if disk < 1 then cs-refuse "no disk"
+    else act
+      first <- cs-read 0 1 (alloc-bytes cs-sector) 0
+      let count = cs-u32 first 8
+      in let hsec = cs-u32 first 12
+      in if cs-magic-ok first 0 == False then cs-refuse "not a CDXSITE1 disk"
+      else if count < 1 then cs-refuse "no files"
+      else if count > cs-max-files then cs-refuse "more than 64 files"
+      else if hsec * cs-sector < 16 + count * cs-entry-size then cs-refuse "header shorter than its entries"
+      else if hsec > disk then cs-refuse "header runs past the disk"
+      else act
+        head <- cs-read 0 hsec (alloc-bytes (hsec * cs-sector)) 0
+        let site = cs-entries head 0 count hsec disk [] 0
+        in if site.why /= "" then site
+        else act
+          files <- cs-load-files (site.files) 0 []
+          Site { files = files, bytes = site.bytes, why = "" }
+        end
+      end
+    end
+  end
+
+Section: Routes
+
+  cs-path-stop : List Integer, Integer -> Integer
+  cs-path-stop (bs) (i) =
+    if i >= list-length bs then i
+    else if list-at bs i == 63 then i
+    else if list-at bs i == 35 then i
+    else cs-path-stop bs (i + 1)
+
+  cs-request-path : Text -> List Integer
+  cs-request-path (p) =
+    let bs = text-to-unicode-bytes p
+    in let stop = cs-path-stop bs 0
+    in if stop == 1 then (if list-at bs 0 == 47 then [47, 105, 110, 100, 101, 120, 46, 104, 116, 109, 108] else transport-slice bs 0 stop)
+    else transport-slice bs 0 stop
+
+  cs-same : List Integer, List Integer, Integer -> Boolean
+  cs-same (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else cs-same a b (i + 1)
+
+  cs-find : Site, List Integer, Integer -> Integer
+  cs-find (site) (path) (i) =
+    if i >= list-length (site.files) then 0 - 1
+    else let f = list-at (site.files) i
+    in if list-length (f.path) == list-length path & cs-same (f.path) path 0 then i
+    else cs-find site path (i + 1)
+
+  cs-route : Site, HttpRequest -> HttpResponse
+  cs-route (site) (req) =
+    if req.method /= "GET" then HttpResponse { status = "405 Method Not Allowed", content-type = "text/plain", body = "GET only" }
+    else let k = cs-find site (cs-request-path (req.path)) 0
+    in if k < 0 then http-not-found
+    else HttpResponse { status = http-200, content-type = (list-at (site.files) k).ctype, body = "" }
+
+Section: Sending
+
+ One segment's bytes at a time from the file's buffer, compacting the
+ transport into its arena between segments, therefore a 17 MB response holds
+ one segment's list and at most one arena of garbage.
+
+  cs-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  cs-bytes (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else cs-bytes buf (i + 1) stop (list-push acc (peek-byte buf i))
+
+  cs-send-body : TcpTransportState, SiteFile, Integer, Integer, Integer -> [Network.Read, Network.Write] NetSendResult
+  cs-send-body (ts) (f) (off) (mark) (sent) =
+    if off >= f.len then NetSendResult { ns-transport = ts, ns-sent = sent, ns-complete = True }
+    else let stop = if off + net-mss > f.len then f.len else off + net-mss
+    in let chunk = cs-bytes (f.buf) off stop (__list-with-capacity (stop - off))
+    in act
+      r <- net-io-send-chunk-checked ts chunk 0 (stop - off)
+      if r.ns-complete == False then NetSendResult { ns-transport = r.ns-transport, ns-sent = sent + r.ns-sent, ns-complete = False }
+      else cs-send-body (transport-compact-past (r.ns-transport) mark) f stop mark (sent + (stop - off))
+    end
+
+  cs-send-file : TcpTransportState, SiteFile -> [Network.Read, Network.Write] NetSendResult
+  cs-send-file (ts) (f) =
+    let head = http-encode-binary (HttpBinaryResponse { status = http-200, content-type = f.ctype, body-bytes = [], body-length = f.len })
+    in act
+      h <- net-io-send-chunk-checked ts head 0 (list-length head)
+      if h.ns-complete == False then h
+      else let armed = transport-arenas (h.ns-transport)
+      in cs-send-body armed f 0 __heap-save (list-length head)
+    end
+
+  cs-send : Site, TcpTransportState, HttpRequest, HttpResponse -> [Network.Read, Network.Write] NetSendResult
+  cs-send (site) (ts) (req) (resp) =
+    if resp.status /= http-200 then web-send-http-result ts resp
+    else let k = cs-find site (cs-request-path (req.path)) 0
+    in if k < 0 then web-send-http-result ts resp
+    else cs-send-file ts (list-at (site.files) k)
+
+Section: Entry
+
+  cs-port : Integer = 8080
+
+  opening : [Console, Device.Block, Network.Read, Network.Write] Integer = act
+    site <- cs-load
+    if site.why /= "" then act
+      print-line-uni ("[compile-server] site refused: " & site.why)
+      1
+    end
+    else act
+      print-line-uni ("[compile-server] " & show (list-length (site.files)) & " files, " & show (site.bytes) & " bytes; listening on " & show cs-port)
+      web-serve-concurrent-with (cs-send site) (cs-route site) web-observe-none cs-port
+    end
+  end
+
+Page 1

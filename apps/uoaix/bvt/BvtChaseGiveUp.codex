@@ -1,0 +1,58 @@
+Chapter: BvtChaseGiveUp
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtGuardWard
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-267 (trial-47739: guards trailed a moving foe for the whole run): a guard at war with a hunting creature 4 tiles
+ off. Bits: 1 a chase step under cg-chase-give-up counts it and keeps the fight; 2 a step at cg-chase-give-up drops the
+ fight and clears the count; 4 a foe within a tile clears the count and keeps the fight. 7 is all, negative when the
+ scene cannot be built.
+  bcg-hunt-profile : List WsProfile, Integer -> Integer
+  bcg-hunt-profile (ps) (i) = if i >= list-length ps then 0 - 1
+    else if (list-at ps i).ai == 2 | (list-at ps i).ai == 11 then i else bcg-hunt-profile ps (i + 1)
+  bcg-arm : CompositeGame, Integer, Integer -> Integer
+  bcg-arm (owner) (guard) (foe) = when cb-ensure owner.combat owner.checkpoint.game guard
+    is Err (_) -> 0 - 1
+    is Ok (a) -> let w = __record-set a "war" True in let t = __record-set a "target" foe in 0
+  bcg-target : CompositeGame, Integer -> Integer
+  bcg-target (owner) (guard) = let at = world-slot owner.checkpoint.game.world guard
+    in if at < 0 then 0 - 1 else (list-at owner.combat.actors at).target
+  bcg-checks : Integer -> Integer
+  bcg-checks (unused) = when bwd-founded 0
+    is Err (_) -> 0 - 1
+    is Ok (owner) -> let attached = when owner.spawns is Just (_) -> Ok 0 is None -> cg-spawn-attach owner
+      in when owner.civic
+      is None -> 0 - 2
+      is Just (c) -> when owner.town-map
+        is None -> 0 - 2
+        is Just (britain) -> when owner.spawns
+          is None -> 0 - 2
+          is Just (s) -> if list-length c.guards < 1 then 0 - 2
+            else let p = list-at c.guards 0
+            in let profile = bcg-hunt-profile s.catalog.profiles 0
+            in if profile < 0 then 0 - 3
+            else when gws-summon s owner.checkpoint.game profile 1504 1700 0 0 (s.combat.tick + gws-forever)
+              is Err (_) -> 0 - 3
+              is Ok (foe) -> let placed = bgk-move owner p.serial 1500 1700
+                in let seconds = c.town.now + 100000
+                in if placed /= 1 | bcg-arm owner p.serial foe < 0 then 0 - 4
+                else let some = __record-set p "chase" 3 in let free = __record-set p "next-step" 0
+                in let s1 = cg-chase-step owner c s britain p seconds
+                in let counted = p.chase == 4 & bcg-target owner p.serial == foe
+                in let back = bgk-move owner p.serial 1500 1700
+                in let spent = __record-set p "chase" cg-chase-give-up
+                in let s2 = cg-chase-step owner c s britain p seconds
+                in let dropped = p.chase == 0 & bcg-target owner p.serial == 0
+                in let rearmed = bcg-arm owner p.serial foe
+                in let near = bgk-move owner foe 1501 1700
+                in let some2 = __record-set p "chase" 5
+                in let s3 = cg-chase-step owner c s britain p seconds
+                in let closed = p.chase == 0 & bcg-target owner p.serial == foe
+                in (if counted then 1 else 0) + (if dropped then 2 else 0) + (if closed then 4 else 0)
+  bvt-chase-give-up : Integer -> [Console] Integer
+  bvt-chase-give-up (unused) = act
+    n <- bcg-checks 0
+    a <- bvt-check ("UOAIX-267 a chasing guard that has not closed in cg-chase-give-up steps drops the fight, and closing to a tile clears the count (code " & show n & ")") (n == 7)
+    a
+  end

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$MaxasDir = (Join-Path $env:TEMP 'sass-ctrl-oracle\maxas'),
+    [string]$MaxasDir = (Join-Path $PSScriptRoot '..\build-output\maxas'),
     [string]$Perl = 'C:\Program Files\Git\usr\bin\perl.exe'
 )
 

@@ -10,6 +10,7 @@ Chapter: CompositeGatherer
   cites Uoaix chapter TownRoutes
   cites Uoaix chapter TownLiveShow
   cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter Teleporters
 
  Saved-path stepping follows TownLive's port of Source-X CCharNPCAct.cpp
  NPC_WalkToPoint, Apache-2.0; Sphere-LICENSE.txt.
@@ -18,7 +19,8 @@ Chapter: CompositeGatherer
     leg : Integer, via : Integer, visit : Integer, trips : Integer, blocked : Integer,
     pack : Integer, lot : Integer, made : Integer, sold : Integer, refused : Integer, funds : Integer, refusals : Integer, crowned : Integer, missed : Integer,
     walk : RteWalk, smelt-x : Integer, smelt-y : Integer, trade : CgTrade, reported : Integer, swings : Integer, face : Integer,
-    say : Integer, say-item : Integer, say-price : Integer, idle : Integer, door : BbSpot, tool-tried : Integer, city : CgCity }
+    say : Integer, say-item : Integer, say-price : Integer, idle : Integer, door : BbSpot, tool-tried : Integer, city : CgCity,
+    tp : Integer, hop : Integer }
   CgTrade = record { raw : Integer, product : Integer, buyer : Integer, tool : Integer, art : Integer,
     station : BbSpot, region : BbShop, look : Integer, input : Integer }
  A worker's city (Cities index): its inn, houses, work grounds, the place offset of its economy places, the vendor serving
@@ -260,7 +262,7 @@ Chapter: CompositeGatherer
     CgGatherer { city = city, trade = cgg-trade-in city (g.place - city.place-base), gatherer = g, serial = serial, home = home, node = node, shop = BbSpot { x = 0, y = 0, z = 0 },
       leg = leg, via = via, visit = visit, trips = trips, blocked = 0, pack = 0, lot = 0, made = 0, sold = 0, refused = 0, funds = 0, refusals = 0, crowned = 0, missed = 0,
       walk = rte-walk 0, smelt-x = 0, smelt-y = 0, reported = -1, swings = 0, face = -1, say = 0, say-item = 0, say-price = 0, idle = 0,
-      door = BbSpot { x = 0, y = 0, z = 0 }, tool-tried = 0 }
+      door = BbSpot { x = 0, y = 0, z = 0 }, tool-tried = 0, tp = 0, hop = 0 - 1 }
   cgg-bed : TownLive, BbSpot, Integer -> Boolean
   cgg-bed (t) (spot) (i) = if i == t.count then False
     else let home = (list-at t.residents i).home
@@ -467,7 +469,7 @@ Chapter: CompositeGatherer
         in let c = __record-set s "y" spot.y
         in let from = WorldObject { serial = 0, kind = 1, x = t.entrance.x, y = t.entrance.y, z = t.entrance.z,
           graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
-        in if rte-plan t.nav t.vendors.game.world map doors from spot.x spot.y spot.z >= 0
+        in if rte-plan-at 2 t.nav t.vendors.game.world map doors from spot.x spot.y spot.z >= 0
           then Ok (BbShop { title = "Fishing", premises = "Britain shore", x1 = spot.x, y1 = spot.y, x2 = spot.x, y2 = spot.y })
         else cgg-shore-cell city t map doors row (col + 1) s
   cgg-new-in : CgCity, TownLive, WalkMap, Integer, Integer, Integer, Integer, BbShop -> Result CgGatherer Text
@@ -516,7 +518,7 @@ Chapter: CompositeGatherer
                   in let bound = __record-set c "pack" pack in Ok c
 
   cgg-reset : CgGatherer -> Integer
-  cgg-reset (c) = rte-drop c.walk
+  cgg-reset (c) = let unhop = __record-set c "hop" (0 - 1) in rte-drop c.walk
  A worker remarks on one event in odds (tls-say kinds; 5 is the cotton prick, always said). The remark lives for one
  step: cgg-step clears it and cg-miner-show speaks it to the player in range.
   cgg-say : CgGatherer, Integer, Integer, Integer, Integer -> Integer
@@ -682,7 +684,7 @@ Chapter: CompositeGatherer
   cgg-plans : TownLive, WalkMap, Maybe WdState, BbSpot, BbSpot -> Boolean
   cgg-plans (t) (map) (doors) (a) (b) = let from = WorldObject { serial = 0, kind = 1, x = a.x, y = a.y, z = a.z,
       graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
-    in rte-plan t.nav t.vendors.game.world map doors from b.x b.y b.z >= 0
+    in rte-plan-at-budget 3 t.nav t.vendors.game.world map doors from b.x b.y b.z rte-probe-budget >= 0
   cgg-rock-try : BbSpot, TownLive, WalkMap, Maybe WdState, Integer, Integer, Integer -> Result BbSpot Text
   cgg-rock-try (o) (t) (map) (doors) (n) (total) (left) = if left <= 0 then Err "no reachable rock face"
     else when cgg-rock-nth-at o t.vendors.game.world map (int-mod n total)
@@ -694,18 +696,22 @@ Chapter: CompositeGatherer
     else when cgg-rock-nth-at o t.vendors.game.world map (int-mod n total)
       is Err (e) -> if best-len < 0 then Err e else Ok best
       is Ok (spot) -> let walker = WorldObject { serial = 0, kind = 1, x = from.x, y = from.y, z = from.z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
-        in let id = if cgg-reaches t map doors spot then rte-plan t.nav t.vendors.game.world map doors walker spot.x spot.y spot.z else 0 - 1
+        in let id = if cgg-reaches t map doors spot then rte-plan-at-budget 4 t.nav t.vendors.game.world map doors walker spot.x spot.y spot.z rte-probe-budget else 0 - 1
         in let len = if id < 0 then 0 - 1 else rte-key t.nav id 6
         in if len >= 0 & (best-len < 0 | len < best-len) then cgg-rock-best o t map doors from (n + 1) total (left - 1) len spot
         else cgg-rock-best o t map doors from (n + 1) total (left - 1) best-len best
  With no face on the map (a cache without mountain marks) a spent miner falls back to the strip, wrapping its offset.
+ Each failed search moves the next one past the faces it tried (L-FUTILITY): with the trips alone as the offset, trial
+ 46700's gatherer asked the same four unreachable faces every step from game hour 71 (blocked 64 to 352).
+  cgg-rock-start : CgGatherer -> Integer
+  cgg-rock-start (c) = c.trips + cgg-kind c - cgg-place + c.blocked * cgg-rock-plans
   cgg-rock-spot : CgGatherer, TownLive, WalkMap, Maybe WdState -> Result BbSpot Text
   cgg-rock-spot (c) (t) (map) (doors) = let w = t.vendors.game.world
     in let mark = __heap-save
     in let total = cgg-rock-count-at c.city.rock w map
     in let restored = __heap-restore mark
     in let from = when world-get w c.serial is Err (_) -> t.entrance is Ok (m) -> BbSpot { x = m.x, y = m.y, z = m.z }
-    in if total > 0 then cgg-rock-best c.city.rock t map doors from (c.trips + cgg-kind c - cgg-place) total cgg-rock-plans (0 - 1) from
+    in if total > 0 then cgg-rock-best c.city.rock t map doors from (cgg-rock-start c) total cgg-rock-plans (0 - 1) from
     else if cgg-ready c then Err "no rock face"
     else let r = c.city.ore
     in bb-placement w map r (int-mod (c.trips + c.blocked + 1) ((r.x2 - r.x1 + 1) * (r.y2 - r.y1 + 1)))
@@ -761,16 +767,58 @@ Chapter: CompositeGatherer
       is Err (_) -> cgg-beside t mobile map spot (d + 1)
       is Ok (z) -> if cgg-taken t mobile x y z then cgg-beside t mobile map spot (d + 1) else BbSpot { x = x, y = y, z = z }
   cgg-move : CgGatherer, TownLive, WorldObject, WalkMap, Maybe WdState -> Result (List (List Integer)) Text
-  cgg-move (c) (t) (mobile) (map) (doors) = let target = cgg-goal c t mobile map
+  cgg-move (c) (t) (mobile) (map) (doors) = if c.hop >= 0 & mobile.x == tp-at c.tp c.hop 0 & mobile.y == tp-at c.tp c.hop 1 then cgg-carry c t mobile
+    else let target = if c.hop >= 0 then cgg-hop-spot c.tp c.hop else cgg-goal c t mobile map
     in let way = cgg-way c t
     in let door = max (walk-abs (mobile.x - way.x)) (walk-abs (mobile.y - way.y)) <= 1
-    in if tl-at mobile target | (c.via == 1 & door) | (c.via /= 1 & c.leg == 3 & (cgg-indoors c.city c.home mobile | door)) then
+    in if c.hop < 0 & (tl-at mobile target | (c.via == 1 & door) | (c.via /= 1 & c.leg == 3 & (cgg-indoors c.city c.home mobile | door))) then
       if c.via == 1 then let arrived = __record-set c "via" 0 in let cleared = cgg-reset c in cgg-calm c
       else cgg-arrive c t
-    else when rte-toward t.nav t.vendors.game map doors c.walk mobile target.x target.y target.z
+    else let rested = c.walk.rest
+    in when rte-toward t.nav t.vendors.game map doors c.walk mobile target.x target.y target.z
       is Err (e) -> Err e
       is Ok (packets) -> if cgg-gives-up c then cgg-depart c t 3
-        else if c.walk.route < 0 then cgg-sidestep c t mobile map doors else Ok packets
+        else if c.walk.route < 0 then (let picked = if rested == 0 then cgg-hop-pick c mobile map target else 0 - 1
+          in if picked >= 0 then cgg-calm c else cgg-sidestep c t mobile map doors)
+        else Ok packets
+ A city map holds no doors and plans with its whole window, so a failed plan there is sealed; the second failure in a
+ row gives a refusal or a crowd at the goal one retry before the hop.
+  cgg-hop-fails : Integer = 2
+  cgg-cheb : Integer, Integer, Integer, Integer -> Integer
+  cgg-cheb (ax) (ay) (bx) (by) = max (walk-abs (ax - bx)) (walk-abs (ay - by))
+  cgg-pick-via : Integer, WalkMap, Integer, Integer, BbSpot, Integer, Integer, Integer -> Integer
+  cgg-pick-via (tp) (map) (x) (y) (target) (i) (best) (best-d) = if tp == 0 | i >= tpd-count then best
+    else let sx = tp-at tp i 0
+    in let sy = tp-at tp i 1
+    in let usable = walk-cell map sx sy >= 0 & walk-cell map (tp-at tp i 3) (tp-at tp i 4) >= 0
+      & cgg-cheb (tp-at tp i 3) (tp-at tp i 4) target.x target.y < cgg-cheb x y target.x target.y
+    in let d = cgg-cheb x y sx sy
+    in if usable & (best < 0 | d < best-d) then cgg-pick-via tp map x y target (i + 1) i d else cgg-pick-via tp map x y target (i + 1) best best-d
+  cgg-hop-spot : Integer, Integer -> BbSpot
+  cgg-hop-spot (tp) (i) = BbSpot { x = tp-at tp i 0, y = tp-at tp i 1, z = tp-at tp i 2 }
+  cgg-hop-land : Integer, Integer -> BbSpot
+  cgg-hop-land (tp) (i) = BbSpot { x = tp-at tp i 3, y = tp-at tp i 4, z = tp-at tp i 5 }
+  cgg-hop-pick : CgGatherer, WorldObject, WalkMap, BbSpot -> Integer
+  cgg-hop-pick (c) (mobile) (map) (target) = if c.tp == 0 | c.hop >= 0 | c.walk.fails < cgg-hop-fails then 0 - 1
+    else let i = cgg-pick-via c.tp map mobile.x mobile.y target 0 (0 - 1) 0
+    in if i < 0 then i else let set = __record-set c "hop" i in i
+  cgg-carry : CgGatherer, TownLive, WorldObject -> Result (List (List Integer)) Text
+  cgg-carry (c) (t) (mobile) = let land = cgg-hop-land c.tp c.hop
+    in let moved = WorldObject { serial = mobile.serial, kind = 1, x = land.x, y = land.y, z = land.z,
+      graphic = mobile.graphic, hue = mobile.hue, container = 0, amount = 1, health = mobile.health }
+    in let cleared = cgg-reset c
+    in let calmed = cgg-calm c
+    in when world-update t.vendors.game.world moved
+      is Err (e) -> Err e
+      is Ok (_) -> let touched = world-touch t.vendors.game.world in Ok []
+  cgg-hop-reaches : TownLive, WalkMap, Integer, BbSpot, BbSpot -> Boolean
+  cgg-hop-reaches (t) (map) (tp) (a) (b) = if cgg-plans t map None a b then True
+    else let i = cgg-pick-via tp map a.x a.y b 0 (0 - 1) 0
+    in if i < 0 then False
+    else if not (cgg-plans-to t map a (cgg-hop-spot tp i)) then False
+    else cgg-plans-to t map (cgg-hop-land tp i) b
+  cgg-plans-to : TownLive, WalkMap, BbSpot, BbSpot -> Boolean
+  cgg-plans-to (t) (map) (a) (b) = if a.x == b.x & a.y == b.y then True else cgg-plans t map None a b
  A worker bound out, or to a shop, a forge or a seller (legs 4, 6, 8 and 10; UOAIX-260: the Jhelom herb farmer's sale
  walk sidestepped for 142 hours), whose plan has failed cgg-give-up-fails times running (rte-pace's slowest, 64 steps a
  plan) turns home; arriving counts the trip, so a rock worker's next trip scans another face. A worker at home whose plans to its

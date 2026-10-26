@@ -177,7 +177,7 @@ $runSlow  = $Slow.IsPresent  -or $tiers.Contains('slow')
 # A bare invocation runs the language tier: the battery's subject is the
 # compiler. An explicit tier list is taken at its word -- `-Tier oracles`
 # alone runs the collections and no tests.
-#
+# 
 # -Battery counts as an explicit selection, so it SUPPRESSES this default
 # instead of adding to it. Measured the hard way 2026-09-07: without this
 # clause `-Battery board` ran the whole lang tier, because lang had already
@@ -249,7 +249,7 @@ if ($Battery.Count -gt 0) {
         # whole scheme exists to avoid, so a battery with no corpus says so
         # rather than passing (L-BAILVALUE). Only `plugs` is in that position
         # now: nothing under codex/test cites a plug.
-        #
+        # 
         # `compiler` WAS refused here in the words "nothing under codex\test
         # cites the compiler", which is true about cites and false about blast
         # radius: a chapter reaches the compiler through builtins, and a
@@ -1329,7 +1329,7 @@ function Get-FailHint {
         # Read-LogShared is defined INSIDE $runWorker and is not in scope here,
         # so this reads the two files directly. Same text either way: the worker
         # only needs the sharing retry because it reads while other jobs write.
-        #
+        # 
         # A bare length difference does NOT prove truncation -- most ordinary
         # wrong-output reds differ in length too, so reporting every one of them
         # as SHORT would train the reader to ignore the word. A STRICT PREFIX

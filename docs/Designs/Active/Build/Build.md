@@ -192,6 +192,15 @@ Zig is a thin shared-library call; PE assembles a different chapter set.
 Do not merge tools merely because names resemble each other: boards-test is
 the MMIO battery and test-boards is the Renode path.
 
+The first family moved is the Perforce and fleet utilities: `measure-context`,
+`merge-down-all`, `p4-stale-check`, `p4-metal-diffs` and `p4-purify` live
+under `tools/agents/`, catalog IDs `agents.<name>`, disposition
+`repository-tool`. `build/measure-context.ps1`, `build/merge-down-all.ps1` and
+`build/p4-stale-check.ps1` are forwarding entries that resolve the
+implementation by catalog ID and pass arguments and exit code through; each
+one's catalog entry states its removal condition. `p4-stale-check`'s is the
+gate generator `codex/build/BuildScript.codex` calling the catalog path.
+
 ### Native closure and boundaries
 
 Reuse VmCompile, VmSweep, VmPingpong, the citable compiler, DiskTestRunner,
@@ -201,11 +210,14 @@ handles Foreword-only cites; the canonical host path uses compiler-order.txt
 and the wider quire/manifest contract. DiskTestRunner compiles files without
 cite resolution. CompilerDriver.self-compile-plan returns success=False.
 
-VmCompile replaces non-ASCII input with '?', accepts SIZE output without
-checking extracted length, fixes guest memory at 256 MiB, and uses its SIZE
-parser for TEXT even though the compiler streams TEXT without a SIZE frame.
-VmSweep grades output without inspecting run status. Add discriminating controls
-before adopting these chapters. VmPingpong already sequences compiler stages;
+VmCompile sends the source as UTF-8, takes a binary only from a `SIZE:` line
+that starts a line and is followed by the whole declared payload, parses TEXT
+the way `build.ps1` `Invoke-BuildText` does, refuses on `CODEGEN-HALTED`,
+`CODEGEN-ERRORS` or `!EXC`, and carries the guest's diagnostic lines in
+`vcr-log`; VmSweep grades a run that did not halt as `FailCrashed`. The pure
+half is graded by `codex/test/apps/vm-compile-framing`. Still open: guest
+memory is 256 MiB, and `DevHypervisor`'s ceiling `guest-max-mb` is 1024 MiB
+(one EPT table of 2 MiB pages), below the 2 GiB compiler contract. VmPingpong already sequences compiler stages;
 no replacement orchestration algorithm is implied by this scope.
 
 The later native execution unit must resolve the VMX/test-bed conflict:
@@ -218,6 +230,7 @@ status and a successful following control.
 
 The full closure sequence is catalog, executable actions, first family move,
 native compile-only parity, verified native execution, and OS-owned self-rebuild.
+The first three are in place; native compile-only parity is the next stage.
 The final OS loop must execute tests and successive compiler stages, compare
 stages 2 and 3, sign, self-verify and install with recovery, without PowerShell
 making semantic decisions. Independent foreign oracles and DDC retain their

@@ -31,17 +31,43 @@ Chapter: ShardTx
     else let written = poke-byte buffer i (list-at bytes i)
     in stx-copy buffer bytes (i + 1)
 
+ A response queued while an earlier one is still draining goes behind its unsent bytes, which move to the front of the
+ buffer first, so a client that reads slowly is not dropped for its next answer (root ruling 2026-10-20: a link never
+ closes for size). Answers the bytes queued.
+  stx-move : Integer, Integer, Integer, Integer -> Integer
+  stx-move (buffer) (from) (count) (i) = if i >= count then count
+    else let moved = poke-byte buffer i (peek-byte buffer (from + i)) in stx-move buffer from count (i + 1)
+  stx-copy-at : Integer, Integer, List Integer, Integer -> Integer
+  stx-copy-at (buffer) (at) (bytes) (i) = if i >= list-length bytes then i
+    else let written = poke-byte buffer (at + i) (list-at bytes i) in stx-copy-at buffer at bytes (i + 1)
   stx-enqueue : ShardTx, List Integer -> Result Integer Text
   stx-enqueue (queue) (bytes) =
     if not (stx-valid queue) then Err "shard transmit state invalid"
-    else if queue.offset /= queue.used then Err "shard transmit response still pending"
-    else if list-length bytes > queue.capacity then Err "shard transmit response exceeds capacity"
+    else let rest = queue.used - queue.offset
+    in if rest + list-length bytes > queue.capacity then Err "shard transmit response exceeds capacity"
     else if not (stx-bytes-valid bytes 0) then Err "shard transmit input is not bytes"
-    else let copied = stx-copy queue.buffer bytes 0
-    in let used = __record-set queue "used" copied
+    else let moved = if queue.offset > 0 & rest > 0 then stx-move queue.buffer queue.offset rest 0 else 0
+    in let copied = stx-copy-at queue.buffer rest bytes 0
+    in let used = __record-set queue "used" (rest + copied)
     in let reset = __record-set queue "offset" 0
     in Ok copied
 
+  stx-clear : ShardTx -> Integer
+  stx-clear (queue) = let used = __record-set queue "used" 0 in let offset = __record-set queue "offset" 0 in 0
+ A drained queue takes as much of a spill's unsent bytes as it holds; a spill emptied this way starts over. Answers
+ the bytes moved.
+  stx-refill : ShardTx, ShardTx -> Integer
+  stx-refill (queue) (spill) = if queue.offset /= queue.used | spill.offset == spill.used then 0
+    else let count = min queue.capacity (spill.used - spill.offset)
+    in let moved = stx-take queue.buffer spill.buffer spill.offset count 0
+    in let used = __record-set queue "used" count
+    in let reset = __record-set queue "offset" 0
+    in let taken = __record-set spill "offset" (spill.offset + count)
+    in let emptied = if spill.offset == spill.used then stx-clear spill else 0
+    in count
+  stx-take : Integer, Integer, Integer, Integer, Integer -> Integer
+  stx-take (to) (from) (at) (count) (i) = if i >= count then count
+    else let moved = poke-byte to i (peek-byte from (at + i)) in stx-take to from at count (i + 1)
   stx-step : ShardTx, TcpTransportState -> Result ShardTxStep Text
   stx-step (queue) (transport) =
     if not (stx-valid queue) then Err "shard transmit state invalid"

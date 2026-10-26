@@ -38,7 +38,8 @@ Chapter: CraftGump
     else if craft == 2 then (if item == 72 | item == 73 then 1 else if item >= 121 & item <= 124 then 3 else 2)
     else if craft == 3 | (craft >= 7 & craft <= 9) then (if item == 47 | (item >= 128 & item <= 133) then 1 else if item >= 134 & item <= 138 then 2 else if item == 48 | item == 77 then 3
       else if item >= 139 & item <= 142 then 5 else if item == 143 then 6 else if item == 144 | item == 145 | item == 147 then 7 else if item == 146 then 9 else 0)
-    else if craft == 4 then (if item == 42 | item == 74 then 1 else if item == 39 | item == 148 then 2 else 4)
+    else if craft == 4 then (if item == 42 | item == 74 then 1 else if item == 39 | item == 148 | item == 212 | item == 213 then 2
+      else if item == 211 | item == 214 then 0 else if item >= 215 & item <= 219 then 6 else 4)
     else if craft == 5 then (if item == 34 then 2 else if item == 50 then 3 else 1)
     else if craft == 6 then (if item == 49 then 1 else if item == 48 then 2 else 0) else 0
   crg-ucs2 : List Integer, Text, Integer -> List Integer
@@ -52,10 +53,18 @@ Chapter: CraftGump
  The categories that hold an item, in label order.
   crg-used : List Integer, Integer, Integer, List Integer -> List Integer
   crg-used (cats) (count) (k) (out) = if k >= count then out else crg-used cats count (k + 1) (if crg-has cats k 0 then out & [k] else out)
-  crg-left : List Text, List Integer, Integer, Text, List Text -> Text
-  crg-left (labels) (used) (j) (layout) (texts) = if j >= list-length used then layout
+  crg-left : List Text, List Integer, Integer, Text, List Text, Integer -> Text
+  crg-left (labels) (used) (j) (layout) (texts) (first) = if j >= list-length used then layout
     else let y = 104 + 20 * j
-    in crg-left labels used (j + 1) (layout & "{ button 52 " & show y & " 2117 2118 0 " & show (j + 1) & " 0 }{ text 72 " & show (y - 2) & " 0 " & show (list-length texts + j) & " }") texts
+    in crg-left labels used (j + 1) (layout & "{ button 52 " & show y & " 2117 2118 0 " & show (crg-page-of j first (list-length used)) & " 0 }{ text 72 " & show (y - 2) & " 0 " & show (list-length texts + j) & " }") texts first
+ The client opens a gump at page 1, so the category of the item made last is page 1 and the others follow it in turn
+ (Damian, 2026-10-20: the tinker menu went back to its first category after every build).
+  crg-page-of : Integer, Integer, Integer -> Integer
+  crg-page-of (j) (first) (n) = if n < 1 then j + 1 else int-mod (j - first + n) n + 1
+  crg-rotate : List Integer, Integer, Integer, List Integer -> List Integer
+  crg-rotate (used) (first) (i) (out) = if i >= list-length used then out else crg-rotate used first (i + 1) (out & [list-at used (int-mod (first + i) (list-length used))])
+  crg-at : List Integer, Integer, Integer -> Integer
+  crg-at (xs) (x) (i) = if i >= list-length xs then 0 - 1 else if list-at xs i == x then i else crg-at xs x (i + 1)
   crg-left-texts : List Text, List Integer, Integer, List Text -> List Text
   crg-left-texts (labels) (used) (j) (out) = if j >= list-length used then out else crg-left-texts labels used (j + 1) (out & [list-at labels (list-at used j)])
  One page a category: a round button answering the item's id (its place in the menu, from 1, unless the menu gives
@@ -80,15 +89,19 @@ Chapter: CraftGump
   crg-count : Integer, Integer, List Integer -> List Integer
   crg-count (n) (i) (out) = if i > n then out else crg-count n (i + 1) (out & [i])
   crg-gump-ids : Integer, Integer, Text, List Text, List Text, List Integer, List Integer, Text, Boolean -> List Integer
-  crg-gump-ids (serial) (context) (title) (labels) (names) (cats) (ids) (status) (lastable) =
+  crg-gump-ids (serial) (context) (title) (labels) (names) (cats) (ids) (status) (lastable) = crg-gump-last serial context title labels names cats ids status lastable 0
+  crg-gump-last : Integer, Integer, Text, List Text, List Text, List Integer, List Integer, Text, Boolean, Integer -> List Integer
+  crg-gump-last (serial) (context) (title) (labels) (names) (cats) (ids) (status) (lastable) (last) =
     let used = crg-used cats (list-length labels) 0 []
+    in let at = crg-at ids last 0
+    in let first = if at < 0 then 0 else max 0 (crg-at used (list-at cats at) 0)
     in let head-texts = [title & " Menu", "CATEGORIES", "SELECTIONS", (if status == "" then " " else status), "MAKE LAST", "EXIT", "REPAIR"]
     in let head = "{ page 0 }{ resizepic 0 0 2600 530 440 }{ text 200 52 0 0 }{ text 52 80 0 1 }{ text 250 80 0 2 }{ text 52 360 0 3 }"
       & (if lastable then "{ button 52 384 2117 2118 1 0 " & show crg-make-last & " }{ text 72 382 0 4 }" else "") & "{ button 400 384 2117 2118 1 0 0 }{ text 420 382 0 5 }"
       & (if crg-repairs labels then "{ button 226 384 2117 2118 1 0 " & show crg-repair & " }{ text 246 382 0 6 }" else "")
-    in let left = crg-left labels used 0 head head-texts
+    in let left = crg-left labels used 0 head head-texts first
     in let texts = crg-left-texts labels used 0 head-texts
-    in let built = crg-pages names cats ids used 0 left texts
+    in let built = crg-pages names cats ids (crg-rotate used first 0 []) 0 left texts
     in let layout = list-at built 0
     in let lines = crg-rest built 1 []
     in let start = gp-put16 (gp-put32 (gp-put32 (gp-put32 (gp-put32 ((gp-start #B0) & [0, 0]) serial) (crg-tag + context)) 60) 20) (text-length layout + 1)

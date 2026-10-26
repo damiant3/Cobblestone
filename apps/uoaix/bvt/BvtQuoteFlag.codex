@@ -1,0 +1,46 @@
+Chapter: BvtQuoteFlag
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter GameVendor
+  cites Uoaix chapter GameVendorState
+  cites Uoaix chapter GameHarvestProduction
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ Every economy step wipes the open quotes (gh-invalidate-quotes), so a walk of every player there costs players times
+ the economy; the walk runs only while a quote has opened since the last wipe.
+  bqf-made : Result Integer Text -> Integer
+  bqf-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bqf-vendor : GvWorld -> Integer
+  bqf-vendor (v) =
+    let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 1000) 100
+    in let npc = bqf-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bqf-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bqf-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bqf-made (world-create v.game.world (gs-item npc #0E75 0))
+    in gv-add-vendor v npc actor stock extra buys
+  bvt-quote-flag : Integer -> [Console] Integer
+  bvt-quote-flag (unused) = when gs-new 0
+    is Err (e) -> bvt-check ("quote flag fixture shard: " & e) False
+    is Ok (shard) -> when bb-economy 0
+      is Err (e) -> bvt-check ("quote flag fixture economy: " & e) False
+      is Ok (x) -> act
+        v <- gv-new shard x
+        added <- bqf-vendor v
+        keeper <- list-at v.vendors 0
+        who <- bqf-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+        pack <- bqf-made (world-create v.game.world (gs-item who #0E75 0))
+        bound <- gv-add-player v who 1 pack
+        p <- list-at v.players 0
+        planted <- __record-set p "vendor" 77
+        idle <- gh-invalidate-quotes v 0
+        kept <- p.vendor == 77 & v.quoting == 0
+        reset <- __record-set p "vendor" 0
+        requoted <- gv-requote v p keeper 1 7 100
+        raised <- v.quoting == 1 & p.vendor == keeper.serial
+        wiped <- gh-invalidate-quotes v 0
+        cleared <- p.vendor == 0 & p.side == 0 & p.expires == 0 & v.quoting == 0
+        a <- bvt-check "with no quote opened since the last wipe, a wipe walks no player: a planted vendor stays" (added == 0 & bound >= 0 & kept)
+        b <- bvt-check "a requote raises the flag, and the next wipe clears the quote and the flag" (raised & cleared)
+        a + b
+      end

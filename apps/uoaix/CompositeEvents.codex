@@ -1,13 +1,14 @@
 Chapter: CompositeEvents
   cites Uoaix chapter GamePackets
   cites Foreword chapter Random
+  cites Kernel chapter Hpet
 
  A bounded ring of recent speech and combat packets that every other connection's pulse delivers once,
  in range, or to one listener alone. Packet bytes are copied into buffers allocated with the ring, because
  a callback's own allocations lie above the serving loop's scratch mark. Volatile: a restart empties it.
  1024 rows hold a pulse's swings, health and deaths for 32 game links between one connection's pulses.
   CeEvent = record { sequence : Integer, serial : Integer, also : Integer, only : Integer, x : Integer, y : Integer,
-    buffer : Integer, length : Integer, ghost : Boolean }
+    buffer : Integer, length : Integer, ghost : Boolean, at : Integer }
   CeRing = record { events : List CeEvent, next : Integer }
   ce-limit : Integer = 1024
   ce-range : Integer = 18
@@ -18,7 +19,7 @@ Chapter: CompositeEvents
   ce-rows : Integer, List CeEvent -> List CeEvent
   ce-rows (i) (xs) = if i == ce-limit then xs
     else ce-rows (i + 1) (list-push xs (CeEvent { sequence = 0, serial = 0, also = 0, only = 0, x = 0, y = 0,
-      buffer = alloc-bytes ce-bytes, length = 0, ghost = False }))
+      buffer = alloc-bytes ce-bytes, length = 0, ghost = False, at = 0 }))
   ce-new : Integer -> CeRing
   ce-new (unused) = CeRing { events = ce-rows 0 (__list-with-capacity ce-limit), next = 1 }
   ce-copy : Integer, List Integer, Integer -> Integer
@@ -38,7 +39,23 @@ Chapter: CompositeEvents
     in let c = __record-set row "x" x
     in let d = __record-set row "y" y
     in let e = __record-set row "length" (list-length packet)
+    in let stamped = __record-set row "at" hpet-ticks
     in let f = __record-set ring "next" (ring.next + 1) in 1
+ UOAIX-230: the hpet time of the oldest card table gump (0xB0, gump id CARD) told to one listener and not yet heard, from
+ sequence s on, or best (-1 for none); a pulse logs its age so a late relay is placed in the server or past it.
+  ce-card-oldest : CeRing, Integer, Integer, Integer -> Integer
+  ce-card-oldest (ring) (listener) (s) (best) = if s >= ring.next then best
+    else let row = list-at ring.events (int-mod s (list-length ring.events))
+    in let card = row.sequence == s & row.only == listener & row.length > 10 & peek-byte row.buffer 0 == #B0
+      & peek-byte row.buffer 7 == #43 & peek-byte row.buffer 8 == #41 & peek-byte row.buffer 9 == #52 & peek-byte row.buffer 10 == #44
+    in ce-card-oldest ring listener (s + 1) (if card & (best < 0 | row.at < best) then row.at else best)
+ A listener more than ce-horizon rows behind (a client the server could not write to for a while) skips the ambient
+ rows, which are stale speech and combat lines, and keeps the rows told to it alone; the view stage resends what is in
+ sight, so nothing of the world's state is lost. Catching up on a whole ring at once outgrew a link's transmit buffer and
+ closed the link (trial-46810: a soak bot left unread, its pulse 13,461 s of guest time behind).
+  ce-horizon : Integer = 256
+  ce-behind : CeRing, Integer -> Boolean
+  ce-behind (ring) (heard) = ring.next - 1 - heard > ce-horizon
   ce-near : CeEvent, Integer, Integer -> Boolean
   ce-near (event) (x) (y) = event.x >= x - ce-range & event.x <= x + ce-range & event.y >= y - ce-range & event.y <= y + ce-range
  A ghost's words enter the ring clear and marked; a listener who is not dead and holds no Spirit Speak (UOX3 spiritspeak.js
@@ -51,6 +68,8 @@ Chapter: CompositeEvents
  unrevealed ghost) is asked of a ghost's own words only: a combat notice's serial is the pulsing player, not its source.
   ce-pending : CeRing, Integer, (Integer -> Boolean), (Integer -> Boolean), Boolean, Integer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
   ce-pending (ring) (listener) (quiet) (unseen) (clear) (x) (y) (heard) (i) (acc) = if i >= list-length ring.events then acc
+    else if i == 0 & ring.next - 1 - heard < list-length ring.events & (heard + 1 >= ring.next | (list-at ring.events (int-mod (heard + 1) (list-length ring.events))).sequence == heard + 1)
+      then ce-pending ring listener quiet unseen clear x y heard (list-length ring.events - max 0 (ring.next - 1 - heard)) acc
     else let event = list-at ring.events (int-mod (ring.next + i) (list-length ring.events))
     in let wanted = event.sequence > heard & (if event.only /= 0 then event.only == listener
       else event.serial /= listener & event.also /= listener & ce-near event x y & not (quiet event.serial)

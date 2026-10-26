@@ -163,8 +163,8 @@ Chapter: CompositeCodec
  keepers' leisure (UOAIX-222) has nineteen; it reads as every keeper rested and at the starting happiness. One written before the city guards (UOAIX-217) has twenty; it reads as none, founded at boot. One written before the city
  workers (UOAIX-217 W2) has twenty-one; it reads as none, founded at boot. One written before the housing (UOAIX-236) has twenty-two;
  it reads as every house for sale and no bids. One written before durability (UOAIX-238) has twenty-three; it reads
- as every item full.
-  cc-section-count : Integer = 24
+ as every item full. One written before the incidents (UOAIX-275) has twenty-four; it reads as no open incident.
+  cc-section-count : Integer = 25
   cc-pick-slots : List Integer, List Integer, Integer, List Integer -> List Integer
   cc-pick-slots (kept) (actual) (i) (out) = if i == list-length actual then out
     else cc-pick-slots kept actual (i + 1) (out & [cc-slot-for kept actual i])
@@ -241,7 +241,8 @@ Chapter: CompositeCodec
     in let workers-tail = cw-tail-size owner.city-workers owner.city-held
     in let housing-tail = hs-tail-size owner.housing
     in let durability-tail = id-tail-size owner.durability owner.items.world
-    in let slots = cc-pick-slots (cc-kept-slots previous previous-size) [currency-bytes, vendor-tail, accounts-tail, law-tail, gov-tail, town-tail, harvest-tail, spawn-tail, construction-tail, help-tail, board-tail, known-tail, gone-tail, speech-tail, hunter-tail, plays-tail, decor-tail, pins-tail, books-tail, leisure-tail, guards-tail, workers-tail, housing-tail, durability-tail] 0 []
+    in let incident-tail = cg-incident-tail-size owner
+    in let slots = cc-pick-slots (cc-kept-slots previous previous-size) [currency-bytes, vendor-tail, accounts-tail, law-tail, gov-tail, town-tail, harvest-tail, spawn-tail, construction-tail, help-tail, board-tail, known-tail, gone-tail, speech-tail, hunter-tail, plays-tail, decor-tail, pins-tail, books-tail, leisure-tail, guards-tail, workers-tail, housing-tail, durability-tail, incident-tail] 0 []
     in let size = cc-size count + cc-slots-bytes slots 0
     in let t1 = cc-stamp timing 1
     in if count < 64 | count > world-max-objects | capacity < size | sequence < 0 | tick < 0 then Err "composite checkpoint budget invalid"
@@ -292,6 +293,7 @@ Chapter: CompositeCodec
     in let city-worked = cw-write-tail owner.city-workers owner.checkpoint.game.world owner.city-held (buf + cc-section-walk (cc-size count) slots 0 21)
     in let housed = hs-write-tail owner.housing (buf + cc-section-walk (cc-size count) slots 0 22)
     in let worn = id-write-tail owner.durability owner.items.world (buf + cc-section-walk (cc-size count) slots 0 23)
+    in let mourned = cg-incident-write-tail owner (buf + cc-section-walk (cc-size count) slots 0 24)
     in let vendor-size = when vendored is Err (_) -> 1 is Ok (n) -> n
     in let f-vendor = cc-fault "vendor" vendored
     in let t5 = cc-stamp timing 5
@@ -576,7 +578,13 @@ Chapter: CompositeCodec
         is Err (e) -> Err e
         is Ok (worked) -> when cc-tolerate "housing" worked (cc-read-housing worked buf)
           is Err (e) -> Err e
-          is Ok (housed) -> cc-tolerate "durability" housed (cc-read-durability housed buf)
+          is Ok (housed) -> when cc-tolerate "durability" housed (cc-read-durability housed buf)
+            is Err (e) -> Err e
+            is Ok (worn) -> cc-tolerate "incidents" worn (cc-read-incidents worn buf)
+  cc-read-incidents : CompositeGame, Integer -> Result CompositeGame Text
+  cc-read-incidents (owner) (buf) = let at = cc-tail-at buf 23
+    in if at < 0 then Ok owner
+    else if cg-incident-read-tail owner (buf + at) (cc-tail-room buf 23) < 0 then Err "composite incident tail invalid" else Ok owner
   cc-read-durability : CompositeGame, Integer -> Result CompositeGame Text
   cc-read-durability (owner) (buf) = let at = cc-tail-at buf 22
     in if at < 0 then Ok owner

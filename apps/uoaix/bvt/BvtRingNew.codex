@@ -1,0 +1,24 @@
+Chapter: BvtRingNew
+  cites Uoaix chapter CompositeEvents
+  cites Uoaix chapter BvtCheck
+
+ Every connection's pulse asks the event ring for what it has not heard; the ask reads the rows newer than heard, not
+ all 1024, unless the row after heard does not hold its sequence (the ring grew under it), when it reads them all.
+  bri-add : CeRing, Integer -> Integer
+  bri-add (ring) (n) = if n == 0 then 0 else let a = ce-add ring 7 1000 1000 [28, 0, 5, 1, 2] in bri-add ring (n - 1)
+  bvt-ring-new : Integer -> [Console] Integer
+  bvt-ring-new (unused) = let ring = ce-new 0
+    in let added = bri-add ring 1500
+    in let fresh = ce-pending ring 9 (\s -> False) (\s -> False) True 1000 1000 1400 0 []
+    in let stale = list-at ring.events (int-mod 1000 (list-length ring.events))
+    in let forged = __record-set stale "sequence" 99999
+    in let skipped = ce-pending ring 9 (\s -> False) (\s -> False) True 1000 1000 1400 0 []
+    in let after = list-at ring.events (int-mod 1401 (list-length ring.events))
+    in let moved = __record-set after "sequence" 0
+    in let full = ce-pending ring 9 (\s -> False) (\s -> False) True 1000 1000 1400 0 []
+    in act
+      a <- bvt-check "a listener hears the 100 events past its last, in a wrapped ring" (list-length fresh == 100)
+      b <- bvt-check "the ask reads only the rows newer than heard: an older row forged past heard is not read" (list-length skipped == 100)
+      c <- bvt-check "a ring whose next row does not hold its sequence is read whole, so a grown ring loses nothing" (list-length full == 100)
+      a + b + c
+    end

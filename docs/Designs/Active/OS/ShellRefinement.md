@@ -1519,26 +1519,25 @@ that entry alone; and killing the reusing pane restores the SPAN BASE, which
 hands back the hole exactly rather than the address the reusing pane's own
 bytes began at. A released span is picked again, which is the control line.
 
-**`desk-marks-remark` was the defect, and the corruption half is now
-guarded.** An entry a pane reused carries the span base, and remark used to
-write the caller's current frontier over it: with 4,096 bytes allocated
-since the open, the extent went from 8,224 to -4,096, and the entry then
-named a range that was not the pane's, so a later reclaim of that entry
-would restore the heap to the remarked address and never return the bytes
-below it. Remark now refuses a mark at or above the next entry's or below
-the previous entry's, and answers which branch ran: **1 wrote, 0 no live
-entry, -1 refused**, because both refusals write nothing and a caller cannot
-otherwise tell a refusal from a write (L-BAILVALUE).
-
-**The residue is open and is WORKS-67.** A refused remark leaves the entry
-naming an address the pane's state has left, which is WORKS-59's failure in
-the other direction, so the guard makes the combination safe to discover
-rather than correct. A reusing pane that moves its state has nowhere
-legitimate to record the move, and giving it one needs a bit the 8-byte
-entry does not have. Nothing reaches this at head: the only remarking pane
-is the Browser, the Browser is never given a hole, and its live entry is
-therefore always the top one, which is the shape `codex/test/desk-reuse`
-carries as its control.
+**`desk-marks-remark` keeps the marks ascending, and a buried pane's moved
+state gets an entry of its own.** An entry a pane reused carries the span
+base, and writing the caller's frontier over it would make the extent
+negative and a later reclaim return the wrong range. So remark writes a mark
+only between the entries either side of it; a mark below the entry beneath
+is refused; and a pane whose entry is buried and whose state has moved to
+the frontier pushes a SECOND entry naming itself there, so a close of a pane
+above restores no lower than the moved state (WORKS-59). The answers are
+**1 wrote, 2 pushed the second entry, 0 no live entry, -1 refused** (below
+the entry beneath, between two entries, or a full stack of 8), because a
+caller cannot otherwise tell a refusal from a write (L-BAILVALUE). A close
+kills every entry naming the pane. `codex/test/desk-reuse` grades the second
+entry, the kill of both, and the two controls: a mark below the entry
+beneath is still refused, and an ordinary remark on the top entry still
+writes. The only remarking pane is the Browser, and it is NOT given a hole (root,
+2026-10-20, L-LESS): its `-open` (`gbr-new`) allocates 4,960 bytes at every
+box size measured (800x600, 1200x700, 1500x800), so a hole would save 5 KB an
+open, and its weight is paint and step state at the frontier, which the first
+sizing rule above keeps out of a hole.
 
 **A Files directory change retains the two navigation lists and the entered
 name, not a listing** (S5a): the count walk is bracketed and the paint after

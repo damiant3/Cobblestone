@@ -1,0 +1,104 @@
+Chapter: WindInnRouteProof
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter Cities
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter WorldRecords
+
+ UOAIX-266: trial-45619 night 4, two Wind keepers planned no route to the inn (147 sealed 28 tiles off, 153 out of
+ budget 1 tile off). This loads Wind's window the way the server does (CityForestRouteProof's pattern, ct-table
+ index 4) and plans from each Wind shop's placement tile to the Wind Inn's, printing the answer, why the search ended
+ and the nearest tile it reached. Run: build/test-run.ps1 -DiskFile <a disk install-map-cache.ps1 wrote>.
+  wir-say : Text, Integer -> [Console] Integer
+  wir-say (line) (code) = act
+    said <- print-line-uni line
+    code
+  end
+  wir-plan : TlPath, WorldTable, WalkMap, BbSpot, BbSpot -> Integer
+  wir-plan (nav) (world) (map) (a) (b) = rte-plan nav world map None (WorldObject { serial = 0, kind = 1, x = a.x, y = a.y, z = a.z,
+    graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) b.x b.y b.z
+  wir-shop : TlPath, WorldTable, WalkMap, BbSpot, List BbShop, Integer -> [Console] Integer
+  wir-shop (nav) (world) (map) (inn) (shops) (i) = if i >= list-length shops then 0
+    else act
+      s <- list-at shops i
+      line <- when bb-placement world map s 0
+        is Err (e) -> "WIND " & s.premises & ": no clear tile: " & e
+        is Ok (spot) -> let r = wir-plan nav world map spot inn
+          in "WIND " & s.premises & " from " & show spot.x & "," & show spot.y & "," & show spot.z & " route=" & show r
+            & " ended=" & show nav.ended & " near=" & (if nav.near < 0 then "none" else show (map.x + int-mod nav.near nav.width) & "," & show (map.y + nav.near / nav.width))
+      said <- print-line-uni line
+      rest <- wir-shop nav world map inn shops (i + 1)
+      rest
+    end
+  wir-goal : TlPath, WorldTable, WalkMap, BbShop, List BbShop, Integer, Integer -> [Console] Integer
+  wir-goal (nav) (world) (map) (inn) (shops) (index) (i) = if i >= list-length shops then 0
+    else act
+      s <- list-at shops i
+      line <- when bb-placement world map s 0
+        is Err (e) -> "GOAL " & show index & " " & s.premises & ": no clear tile: " & e
+        is Ok (spot) -> when bb-placement world map inn index
+          is Err (e) -> "GOAL " & show index & ": no inn tile: " & e
+          is Ok (goal) -> let r = wir-plan nav world map spot goal
+            in "GOAL " & show index & " " & show goal.x & "," & show goal.y & "," & show goal.z & " from " & s.premises & " route=" & show r
+              & " ended=" & show nav.ended & " near=" & (if nav.near < 0 then "none" else show (map.x + int-mod nav.near nav.width) & "," & show (map.y + nav.near / nav.width))
+      said <- print-line-uni line
+      rest <- wir-goal nav world map inn shops index (i + 1)
+      rest
+    end
+  wir-sweep : TlPath, WorldTable, WalkMap, BbSpot, BbShop, Integer -> [Console] Integer
+  wir-sweep (nav) (world) (map) (from) (inn) (index) = if index >= 110 then 0
+    else act
+      line <- when bb-placement world map inn index
+        is Err (e) -> "SWEEP " & show index & ": " & e
+        is Ok (goal) -> let r = wir-plan nav world map from goal
+          in "SWEEP " & show index & " " & show goal.x & "," & show goal.y & "," & show goal.z & " route=" & show r & " ended=" & show nav.ended
+            & " near=" & (if nav.near < 0 then "none" else show (map.x + int-mod nav.near nav.width) & "," & show (map.y + nav.near / nav.width))
+      said <- print-line-uni line
+      rest <- wir-sweep nav world map from inn (index + 1)
+      rest
+    end
+  opening : [Console, Device.Block] Integer = act
+    opened <- wmc-open UoIde
+    when opened
+      is Err (e) -> wir-say ("FAIL map cache: " & e) 1
+      is Ok (cache) -> act
+        data <- wmc-decoration cache
+        when data
+          is Err (e) -> wir-say ("FAIL decoration: " & e) 1
+          is Ok (installed) -> when world-new 64
+            is Err (e) -> wir-say ("FAIL world: " & e) 1
+            is Ok (world) -> act
+              c <- list-at (ct-table 0) 4
+              counted <- wmc-window-colliders cache (ct-x c) (ct-y c) (ct-width c) (ct-height c) installed
+              when counted
+                is Err (e) -> wir-say ("FAIL Wind window: " & e) 1
+                is Ok (colliders) -> when walk-map-sized (ct-x c) (ct-y c) (ct-width c) (ct-height c) (max 1 colliders)
+                  is Err (e) -> wir-say ("FAIL Wind map: " & e) 1
+                  is Ok (map) -> act
+                    filled <- wmc-fill cache map 0
+                    when filled
+                      is Err (e) -> wir-say ("FAIL Wind fill: " & e) 1
+                      is Ok (_) -> act
+                        nav <- tl-path-new map
+                        shops <- ct-shops-wind 0
+                        when bb-placement world map (list-at shops 4) 0
+                          is Err (e) -> wir-say ("FAIL the Wind Inn has no clear tile: " & e) 1
+                          is Ok (inn) -> act
+                            said <- print-line-uni ("WIND inn tile " & show inn.x & "," & show inn.y & "," & show inn.z & " map " & show map.x & "," & show map.y)
+                            done <- wir-shop nav world map inn shops 0
+                            g37 <- wir-goal nav world map (list-at shops 4) shops 37 0
+                            g43 <- wir-goal nav world map (list-at shops 4) shops 43 0
+                            swept <- when bb-placement world map (list-at shops 0) 0
+                              is Err (_) -> wir-say "SWEEP no start" 0
+                              is Ok (from) -> wir-sweep nav world map from (list-at shops 4) 0
+                            said2 <- print-line-uni "WIND done"
+                            0
+                          end
+                      end
+                  end
+              end
+            end
+  end

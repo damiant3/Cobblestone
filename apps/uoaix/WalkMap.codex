@@ -6,7 +6,7 @@ Chapter: WalkMap
  Each cell owns24 land bytes and a bounded collider stride. Legacy loaders
  admit eight colliders; installed-cache pages admit their measured maximum.
 
-  WalkMap = record { x : Integer, y : Integer, width : Integer, height : Integer, land : Integer, solids : Integer, stride : Integer }
+  WalkMap = record { x : Integer, y : Integer, width : Integer, height : Integer, land : Integer, solids : Integer, stride : Integer, refused : Integer }
 
   walk-zero : Integer, Integer, Integer, Integer, Integer -> Integer
   walk-zero (land) (solids) (i) (count) (stride) =
@@ -27,7 +27,7 @@ Chapter: WalkMap
     in let stride = 8 + colliders * 24
     in let solids = alloc-bytes (width * height * stride)
     in let clear = walk-zero land solids 0 (width * height) stride
-    in Ok (WalkMap { x = x, y = y, width = width, height = height, land = land, solids = solids, stride = stride })
+    in Ok (WalkMap { x = x, y = y, width = width, height = height, land = land, solids = solids, stride = stride, refused = 0 })
 
   walk-cell : WalkMap, Integer, Integer -> Integer
   walk-cell (map) (x) (y) =
@@ -62,13 +62,40 @@ Chapter: WalkMap
     in if cell < 0 then Err "solid outside walk window"
     else if z < -128 | z > 127 | height < 0 | height > 255 | flags < 0 | flags > 4294967295 then Err "invalid solid fields"
     else let count = peek-qword map.solids (cell * map.stride)
-    in if count >= (map.stride - 8) / 24 then Err "walk collider budget"
+    in if count >= (map.stride - 8) / 24 then (let counted = __record-set map "refused" (map.refused + 1) in Err "walk collider budget")
     else let at = cell * map.stride + 8 + count * 24
     in let a = poke-qword map.solids at z
     in let b = poke-qword map.solids (at + 8) height
     in let c = poke-qword map.solids (at + 16) flags
     in let added = poke-qword map.solids (cell * map.stride) (count + 1)
     in Ok count
+ A full cell's refusal is counted on the map (L-REFUSED: the colliders of houses, multis, planted trees and flora are laid
+ by walks that retry each world tick), and the composite grows a map with refusals at its growth point, where an
+ allocation is permanent (UoaixDynamicTables.md, "Where a page comes from"): walk-room more colliders a cell, up to
+ walk-most, the bound one player's pile on a tile keeps. A grow copies every cell, width * height * stride bytes.
+  walk-room : Integer = 8
+  walk-most : Integer = 256
+  walk-due : WalkMap -> Boolean
+  walk-due (map) = map.refused > 0 & map.stride > 8 & (map.stride - 8) / 24 < walk-most
+  walk-next-bytes : WalkMap -> Integer
+  walk-next-bytes (map) = map.width * map.height * (8 + min walk-most ((map.stride - 8) / 24 + walk-room) * 24)
+  walk-grow : WalkMap -> Integer
+  walk-grow (map) = if not (walk-due map) then 0
+    else let cells = map.width * map.height
+    in let stride = 8 + min walk-most ((map.stride - 8) / 24 + walk-room) * 24
+    in let solids = alloc-bytes (cells * stride)
+    in let copied = walk-copy-cells map.solids map.stride solids stride 0 cells
+    in let a = __record-set map "solids" solids
+    in let b = __record-set map "stride" stride
+    in let c = __record-set map "refused" 0 in (stride - 8) / 24
+  walk-copy-cells : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  walk-copy-cells (from) (old) (to) (stride) (i) (cells) = if i >= cells then 0
+    else let n = peek-qword from (i * old)
+    in let copied = walk-copy-qwords (from + i * old) (to + i * stride) 0 (1 + n * 3)
+    in walk-copy-cells from old to stride (i + 1) cells
+  walk-copy-qwords : Integer, Integer, Integer, Integer -> Integer
+  walk-copy-qwords (from) (to) (k) (n) = if k >= n then 0
+    else let a = poke-qword to (k * 8) (peek-qword from (k * 8)) in walk-copy-qwords from to (k + 1) n
 
  Seats are SphereServer Source-X CItemBase::IsID_Chair, Apache-2.0
  (apps/uoaix/Sphere-LICENSE.txt): a chair never blocks and has no height,
@@ -177,6 +204,18 @@ Chapter: WalkMap
     in let usable = bit-and flags 512 /= 0 & bit-and flags 192 == 0 & reachable & z <= 127
       & z > best & walk-clear map cell z 0
     in walk-surfaces map cell max-z (i + 1) (if usable then z else best)
+
+  walk-buried : WalkMap, Integer, Integer, Integer, Integer -> Boolean
+  walk-buried (map) (cell) (ground) (z) (i) =
+    if i >= peek-qword map.solids (cell * map.stride) then False
+    else let at = cell * map.stride + 8 + i * 24
+    in let base = peek-qword map.solids at
+    in let height = peek-qword map.solids (at + 8)
+    in let flags = peek-qword map.solids (at + 16)
+    in let top = base + (if bit-and flags 1024 /= 0 then height / 2 else height)
+    in let floor = bit-and flags 512 /= 0 & bit-and flags 192 == 0 & top < z & not (walk-clear map cell top 0)
+    in let land = bit-and flags 64 /= 0 & z > ground + 2 & base < ground + 16 & top > ground & bit-and (peek-qword map.land (cell * 24 + 16)) 192 == 0
+    in if floor | land then True else walk-buried map cell ground z (i + 1)
 
   walk-low : WalkMap, Integer, Integer -> Integer
   walk-low (map) (x) (y) = min (min (walk-z map x y) (walk-z map x (y + 1))) (min (walk-z map (x + 1) y) (walk-z map (x + 1) (y + 1)))

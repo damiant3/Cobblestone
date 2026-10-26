@@ -131,12 +131,13 @@ Chapter: BulletinBoard
     in sip-length (bbs-lines s i (list-push (gp-put16 (gp-put16 strings #0190) #83EA) 0 & [bbs-line-count s i]) 0)
   bbs-open : BbsState, GsiState, Integer -> List (List Integer)
   bbs-open (s) (items) (board) = [bbs-display board, gsi-contents items board 0 [#3C, 0, 0, 0, 0] 0]
- A client string is copied straight from the packet into the post's row, cut at its first zero and at the field width.
+ A client string is copied from the packet into the post's row, cut at its first byte outside printable ASCII (32 to 126)
+ and at the field width: every reader's client draws it.
   bbs-copy : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
   bbs-copy (buf) (at) (packet) (from) (left) (width) = let n = bbs-zero packet from (min left (width - 1)) 0
     in let a = poke-byte buf at n in bbs-put-bytes buf (at + 1) (bbs-slice packet from n 0 []) 0
   bbs-zero : List Integer, Integer, Integer, Integer -> Integer
-  bbs-zero (packet) (from) (left) (n) = if n >= left | from + n >= list-length packet | list-at packet (from + n) == 0 then n else bbs-zero packet from left (n + 1)
+  bbs-zero (packet) (from) (left) (n) = if n >= left | from + n >= list-length packet | list-at packet (from + n) < 32 | list-at packet (from + n) > 126 then n else bbs-zero packet from left (n + 1)
   bbs-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   bbs-slice (packet) (from) (n) (i) (out) = if i >= n then out else bbs-slice packet from n (i + 1) (list-push out (list-at packet (from + i)))
   bbs-copy-lines : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
@@ -144,6 +145,9 @@ Chapter: BulletinBoard
     else let n = list-at packet at
     in let copied = bbs-copy buf (row + 160 + k * 96) packet (at + 1) n 96
     in bbs-copy-lines buf row packet (at + 1 + n) (left - 1) (k + 1)
+ The poster's client asks for the new message's header (0x71 sub 4) when the item arrives, as every reader's does
+ (ServUO BulletinBoards.cs PostMessage only adds the item); a header sent with the item listed the post twice for the
+ poster (Damian, 2026-10-20).
   bbs-post : BbsState, GsiState, Integer, Integer, Text, Text, List Integer -> List (List Integer)
   bbs-post (s) (items) (board) (poster) (name) (time) (packet) = let i = bbs-count s
     in if i >= s.room | list-length packet < 14 then [gs-system "The board is full."]
@@ -167,7 +171,7 @@ Chapter: BulletinBoard
         in let touched = world-touch items.world
         in when world-get items.world serial
           is Err (_) -> []
-          is Ok (o) -> [sip-item o, bbs-header s board i]
+          is Ok (o) -> [sip-item o]
   bbs-drop : BbsState, Integer -> Integer
   bbs-drop (s) (i) = let n = bbs-count s
     in if i + 1 >= n then let cleared = bbs-clear (s.buf + bbs-row i) 0 (bbs-row-bytes / 8) in poke-qword s.buf 0 (n - 1)
@@ -190,17 +194,22 @@ Chapter: BulletinBoard
     else if op == 6 then (if bit-and (gp-u32 packet 1) #7FFFFFFF /= board then None
       else when world-get game.world input.session.serial
         is Err (_) -> None
-        is Ok (me) -> if walk-abs (me.x - bbs-x) > 2 | walk-abs (me.y - bbs-y) > 2 then Just (gsi-denied "That is too far away.")
+        is Ok (me) -> if not (bbs-near me) then Just (gsi-denied "That is too far away.")
           else Just (gs-reply (bbs-open s items board) "board:open"))
     else if op /= #71 | list-length packet < 12 | gp-u32 packet 4 /= board then None
-    else let sub = list-at packet 3
-    in let message = gp-u32 packet 8
-    in if sub == 3 | sub == 4 then (let i = bbs-at s message 0
-        in if i < 0 then Just (gs-reply [] "board:missing")
-        else Just (gs-reply [(if sub == 3 then bbs-content s board i else bbs-header s board i)] "board:read"))
-    else if sub == 5 then Just (gs-reply (bbs-post s items board input.session.serial name time packet) "board:post")
-    else if sub == 6 then Just (gs-reply (bbs-remove s items input.session.serial message) "board:remove")
-    else None
+    else when world-get game.world input.session.serial
+      is Err (_) -> None
+      is Ok (me) -> if not (bbs-near me) then Just (gsi-denied "That is too far away.")
+        else let sub = list-at packet 3
+        in let message = gp-u32 packet 8
+        in if sub == 3 | sub == 4 then (let i = bbs-at s message 0
+            in if i < 0 then Just (gs-reply [] "board:missing")
+            else Just (gs-reply [(if sub == 3 then bbs-content s board i else bbs-header s board i)] "board:read"))
+        else if sub == 5 then Just (gs-reply (bbs-post s items board input.session.serial name time packet) "board:post")
+        else if sub == 6 then Just (gs-reply (bbs-remove s items input.session.serial message) "board:remove")
+        else None
+  bbs-near : WorldObject -> Boolean
+  bbs-near (me) = walk-abs (me.x - bbs-x) <= 2 & walk-abs (me.y - bbs-y) <= 2
   bbs-specs : List GameOpcodeSpec = [GameOpcodeSpec { opcode = 113, size = 0, minimum = 12, maximum = 2048 }]
   bbs-encode : BbsState, Integer -> Integer
   bbs-encode (s) (buf) = let copied = ws-copy s.buf buf (8 + min (bbs-count s) bbs-limit * bbs-row-bytes) 0

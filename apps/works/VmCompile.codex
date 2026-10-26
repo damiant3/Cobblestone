@@ -19,49 +19,74 @@ Section: Text to Byte Conversion
   text-to-serial-bytes : Text, Integer, Integer, List Integer -> List Integer
   text-to-serial-bytes (txt) (i) (len) (acc) =
     if i >= len then acc
-    else let cce = char-code-at txt i
-    in let u = to-unicode cce
-    in let byte = if u >= 128 then 63 else u
-    in text-to-serial-bytes txt (i + 1) len (list-push acc byte)
+    else let n = cce-decode-length (char-code (char-at txt i))
+    in let u = to-unicode (cce-decode-at txt i)
+    in text-to-serial-bytes txt (i + n) len (serial-push-cp acc u)
+
+  serial-push-cp : List Integer, Integer -> List Integer
+  serial-push-cp (acc) (u) =
+    if u < 128 then list-push acc u
+    else if u < 2048 then list-push (list-push acc (bit-or 192 (bit-shru u 6))) (bit-or 128 (bit-and u 63))
+    else if u < 65536 then list-push (list-push (list-push acc (bit-or 224 (bit-shru u 12))) (bit-or 128 (bit-and (bit-shru u 6) 63))) (bit-or 128 (bit-and u 63))
+    else list-push (list-push (list-push (list-push acc (bit-or 240 (bit-shru u 18))) (bit-or 128 (bit-and (bit-shru u 12) 63))) (bit-or 128 (bit-and (bit-shru u 6) 63))) (bit-or 128 (bit-and u 63))
 
 Section: Serial Protocol
 
   vm-build-serial-input : Text, Text -> List Integer
   vm-build-serial-input (mode) (source) =
     let mode-bytes = text-to-serial-bytes mode 0 (text-length mode) []
-    in let newline = [10]
-    in let source-bytes = text-to-serial-bytes source 0 (text-length source) []
-    in let eot = [4]
-    in mode-bytes & newline & source-bytes & eot
+    in let framed = text-to-serial-bytes source 0 (text-length source) (list-push mode-bytes 10)
+    in list-push framed 4
+
+Section: Line Markers
+
+ Byte values: 83 73 90 69 58 is `SIZE:`; 67 79 68 69 71 69 78 45 is
+ `CODEGEN-`, followed by 72 65 76 84 69 68 (`HALTED`) or 69 82 82 79 82 83
+ (`ERRORS`); 33 69 88 67 is `!EXC`; 87 68 58 is `WD:`, 72 69 65 80 58 is
+ `HEAP:` and 83 84 65 67 75 58 is `STACK:`. Each test is bounded by the end of
+ its own line.
+
+  vm-at-size : List Integer, Integer, Integer -> Boolean
+  vm-at-size (b) (i) (eol) =
+    i + 5 <= eol & list-at b i == 83 & list-at b (i + 1) == 73 & list-at b (i + 2) == 90 & list-at b (i + 3) == 69 & list-at b (i + 4) == 58
+
+  vm-at-codegen-stop : List Integer, Integer, Integer -> Boolean
+  vm-at-codegen-stop (b) (i) (eol) =
+    if i + 14 > eol then False
+    else if list-at b i /= 67 | list-at b (i + 1) /= 79 | list-at b (i + 2) /= 68 | list-at b (i + 3) /= 69 then False
+    else if list-at b (i + 4) /= 71 | list-at b (i + 5) /= 69 | list-at b (i + 6) /= 78 | list-at b (i + 7) /= 45 then False
+    else vm-at-halted b (i + 8) | vm-at-errors b (i + 8)
+
+  vm-at-halted : List Integer, Integer -> Boolean
+  vm-at-halted (b) (i) =
+    list-at b i == 72 & list-at b (i + 1) == 65 & list-at b (i + 2) == 76 & list-at b (i + 3) == 84 & list-at b (i + 4) == 69 & list-at b (i + 5) == 68
+
+  vm-at-errors : List Integer, Integer -> Boolean
+  vm-at-errors (b) (i) =
+    list-at b i == 69 & list-at b (i + 1) == 82 & list-at b (i + 2) == 82 & list-at b (i + 3) == 79 & list-at b (i + 4) == 82 & list-at b (i + 5) == 83
+
+  vm-at-exc : List Integer, Integer, Integer -> Boolean
+  vm-at-exc (b) (i) (eol) =
+    i + 4 <= eol & list-at b i == 33 & list-at b (i + 1) == 69 & list-at b (i + 2) == 88 & list-at b (i + 3) == 67
+
+  vm-at-telemetry : List Integer, Integer, Integer -> Boolean
+  vm-at-telemetry (b) (i) (eol) =
+    if i + 3 <= eol & list-at b i == 87 & list-at b (i + 1) == 68 & list-at b (i + 2) == 58 then True
+    else if i + 5 <= eol & list-at b i == 72 & list-at b (i + 1) == 69 & list-at b (i + 2) == 65 & list-at b (i + 3) == 80 & list-at b (i + 4) == 58 then True
+    else i + 6 <= eol & list-at b i == 83 & list-at b (i + 1) == 84 & list-at b (i + 2) == 65 & list-at b (i + 3) == 67 & list-at b (i + 4) == 75 & list-at b (i + 5) == 58
 
 Section: Output Parsing
 
-  vm-parse-compile-output : VmSerialPort -> VmCompileResult
-  vm-parse-compile-output (port) =
-    let output = port.vs-output
-    in let len = list-length output
-    in vm-scan-for-size output 0 len
+ A log keeps at most 65536 bytes, the approved slice's grading bound for one
+ input (`Build.md`).
 
-  vm-scan-for-size : List Integer, Integer, Integer -> VmCompileResult
-  vm-scan-for-size (bytes) (i) (len) =
-    if i >= len then VmCompileResult { vcr-success = False, vcr-binary = [], vcr-size = 0, vcr-log = "no SIZE marker in output" }
-    else if vm-matches-size-marker bytes i len then
-      let size-start = i + 5
-      in let size-val = vm-parse-int-from-bytes bytes size-start len 0
-      in let binary-start = vm-skip-to-newline bytes size-start len + 1
-      in let binary = vm-extract-bytes bytes binary-start size-val
-      in VmCompileResult { vcr-success = True, vcr-binary = binary, vcr-size = size-val, vcr-log = "" }
-    else if vm-matches-halted-marker bytes i len then
-      VmCompileResult { vcr-success = False, vcr-binary = [], vcr-size = 0, vcr-log = "CODEGEN-HALTED" }
-    else vm-scan-for-size bytes (i + 1) len
+  vm-log-cap : Integer = 65536
 
-  vm-matches-size-marker : List Integer, Integer, Integer -> Boolean
-  vm-matches-size-marker (bytes) (i) (len) =
-    i + 5 <= len & list-at bytes i == 83 & list-at bytes (i + 1) == 73 & list-at bytes (i + 2) == 90 & list-at bytes (i + 3) == 69 & list-at bytes (i + 4) == 58
-
-  vm-matches-halted-marker : List Integer, Integer, Integer -> Boolean
-  vm-matches-halted-marker (bytes) (i) (len) =
-    i + 15 <= len & list-at bytes i == 67 & list-at bytes (i + 1) == 79 & list-at bytes (i + 2) == 68 & list-at bytes (i + 3) == 69 & list-at bytes (i + 4) == 71 & list-at bytes (i + 5) == 69 & list-at bytes (i + 6) == 78 & list-at bytes (i + 7) == 45 & list-at bytes (i + 8) == 72 & list-at bytes (i + 9) == 65 & list-at bytes (i + 10) == 76
+  vm-skip-to-newline : List Integer, Integer, Integer -> Integer
+  vm-skip-to-newline (bytes) (i) (len) =
+    if i >= len then len
+    else if list-at bytes i == 10 then i
+    else vm-skip-to-newline bytes (i + 1) len
 
   vm-parse-int-from-bytes : List Integer, Integer, Integer, Integer -> Integer
   vm-parse-int-from-bytes (bytes) (i) (len) (acc) =
@@ -70,11 +95,12 @@ Section: Output Parsing
     in if b >= 48 & b <= 57 then vm-parse-int-from-bytes bytes (i + 1) len (acc * 10 + b - 48)
     else acc
 
-  vm-skip-to-newline : List Integer, Integer, Integer -> Integer
-  vm-skip-to-newline (bytes) (i) (len) =
-    if i >= len then i
-    else if list-at bytes i == 10 then i
-    else vm-skip-to-newline bytes (i + 1) len
+  vm-digit-count : List Integer, Integer, Integer, Integer -> Integer
+  vm-digit-count (bytes) (i) (eol) (n) =
+    if i >= eol then n
+    else let b = list-at bytes i
+    in if b >= 48 & b <= 57 then vm-digit-count bytes (i + 1) eol (n + 1)
+    else n
 
   vm-extract-bytes : List Integer, Integer, Integer -> List Integer
   vm-extract-bytes (bytes) (start) (count) =
@@ -86,6 +112,77 @@ Section: Output Parsing
     else if i >= list-length bytes then acc
     else vm-extract-loop bytes (i + 1) stop (list-push acc (list-at bytes i))
 
+  vm-copy-line : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vm-copy-line (bytes) (i) (eol) (cap) (acc) =
+    if i >= eol then acc
+    else if list-length acc >= cap then acc
+    else let b = list-at bytes i
+    in vm-copy-line bytes (i + 1) eol cap (if b == 13 then acc else list-push acc b)
+
+  vm-log-line : List Integer, Integer, Integer, List Integer -> List Integer
+  vm-log-line (bytes) (i) (eol) (log) =
+    if i >= eol then log
+    else if vm-at-telemetry bytes i eol then log
+    else if list-length log >= vm-log-cap then log
+    else list-push (vm-copy-line bytes i eol vm-log-cap log) 10
+
+  vm-log-all : List Integer, Integer, Integer, List Integer -> List Integer
+  vm-log-all (bytes) (i) (len) (log) =
+    if i >= len then log
+    else let eol = vm-skip-to-newline bytes i len
+    in vm-log-all bytes (eol + 1) len (vm-log-line bytes i eol log)
+
+  vm-fail : List Integer, Text -> VmCompileResult
+  vm-fail (log) (why) =
+    VmCompileResult { vcr-success = False, vcr-binary = [], vcr-size = 0, vcr-log = why & "\n" & utf8-bytes-to-text log }
+
+  vm-parse-compile-output : VmSerialPort -> VmCompileResult
+  vm-parse-compile-output (port) = vm-parse-cdx-bytes (port.vs-output)
+
+  vm-parse-cdx-bytes : List Integer -> VmCompileResult
+  vm-parse-cdx-bytes (bytes) = vm-cdx-scan bytes 0 (list-length bytes) []
+
+  vm-cdx-scan : List Integer, Integer, Integer, List Integer -> VmCompileResult
+  vm-cdx-scan (bytes) (i) (len) (log) =
+    if i >= len then vm-fail log "no SIZE: line, no CODEGEN-HALTED or CODEGEN-ERRORS, and no !EXC in the guest output"
+    else let eol = vm-skip-to-newline bytes i len
+    in if vm-at-size bytes i eol then vm-cdx-payload bytes i eol len log
+    else if vm-at-codegen-stop bytes i eol then vm-fail (vm-log-all bytes 0 len []) "the compile halted"
+    else if vm-at-exc bytes i eol then vm-fail (vm-log-all bytes 0 len []) "the guest trapped"
+    else vm-cdx-scan bytes (eol + 1) len (vm-log-line bytes i eol log)
+
+  vm-cdx-payload : List Integer, Integer, Integer, Integer, List Integer -> VmCompileResult
+  vm-cdx-payload (bytes) (i) (eol) (len) (log) =
+    if vm-digit-count bytes (i + 5) eol 0 == 0 then vm-fail log "SIZE: carries no byte count"
+    else if eol >= len then vm-fail log "SIZE: line is not terminated"
+    else let size = vm-parse-int-from-bytes bytes (i + 5) eol 0
+    in let start = eol + 1
+    in if size == 0 then vm-fail log "SIZE: declares an empty binary"
+    else if start + size > len then vm-fail log ("SIZE: declared " & show size & " byte(s), the stream carried " & show (len - start))
+    else VmCompileResult { vcr-success = True, vcr-binary = vm-extract-bytes bytes start size, vcr-size = size, vcr-log = utf8-bytes-to-text log }
+
+  vm-parse-text-bytes : List Integer -> VmCompileResult
+  vm-parse-text-bytes (bytes) =
+    if list-length bytes == 0 then vm-fail [] "the TEXT compile produced no output"
+    else vm-text-scan bytes 0 (list-length bytes) [] True
+
+  vm-text-scan : List Integer, Integer, Integer, List Integer, Boolean -> VmCompileResult
+  vm-text-scan (bytes) (i) (len) (acc) (first) =
+    let eol = vm-skip-to-newline bytes i len
+    in if vm-at-codegen-stop bytes i eol then vm-fail (vm-log-all bytes 0 len []) "the TEXT compile halted"
+    else if vm-at-exc bytes i eol then vm-fail (vm-log-all bytes 0 len []) "the guest trapped"
+    else if vm-at-telemetry bytes i eol then vm-text-next bytes eol len acc first
+    else vm-text-next bytes eol len (vm-text-line bytes i eol acc first) False
+
+  vm-text-line : List Integer, Integer, Integer, List Integer, Boolean -> List Integer
+  vm-text-line (bytes) (i) (eol) (acc) (first) =
+    vm-copy-line bytes i eol (eol - i + list-length acc + 1) (if first then acc else list-push acc 10)
+
+  vm-text-next : List Integer, Integer, Integer, List Integer, Boolean -> VmCompileResult
+  vm-text-next (bytes) (eol) (len) (acc) (first) =
+    if eol >= len then VmCompileResult { vcr-success = True, vcr-binary = acc, vcr-size = list-length acc, vcr-log = "" }
+    else vm-text-scan bytes (eol + 1) len acc first
+
 Section: Compile Entry Points
 
   vm-compile : List Integer, Text, Text, Integer -> VmCompileResult
@@ -94,8 +191,13 @@ Section: Compile Entry Points
     in let cfg = GuestConfig { entry-point = 1048576, memory-mb = 256 }
     in let result = vm-setup-and-run-with-serial cfg revision-id seed-cdx input-bytes
     in when result.vfr-status
-      is VmRefused (why) -> VmCompileResult { vcr-success = False, vcr-binary = [], vcr-size = 0, vcr-log = why }
-      is otherwise -> vm-parse-compile-output (result.vfr-devices.vd-com1)
+      is VmRefused (why) -> vm-fail [] why
+      is VmCrashed (info) -> vm-fail [] ("the guest crashed: " & format-exit-info info)
+      is otherwise -> vm-parse-mode-output mode (result.vfr-devices.vd-com1.vs-output)
+
+  vm-parse-mode-output : Text, List Integer -> VmCompileResult
+  vm-parse-mode-output (mode) (bytes) =
+    if mode == "TEXT" then vm-parse-text-bytes bytes else vm-parse-cdx-bytes bytes
 
   vm-compile-cdx : List Integer, Text, Integer -> VmCompileResult
   vm-compile-cdx (seed-cdx) (source) (revision-id) =

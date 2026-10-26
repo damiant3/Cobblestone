@@ -1,0 +1,44 @@
+Chapter: BvtCityBeds
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter CityWorkers
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter EconomyGatherer
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter Cities
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-239 and UOAIX-163: Britain's reagent gatherers lodged in the herbalist's shop (trial 46700: the ash miner and the
+ pearl diver at 1486,1582,20, stuck at home at night). On BvtNpcMove's founded Britain, cg-city-beds moves a city 0
+ worker homed in that shop to a floor tile of the town's houses with that house's door (1); leaves a Skara Brae worker
+ homed there (2) and a Britain worker already housed (4); the switch gate counts the shop bed and not the house (8).
+  bcb-shop-bed : BbSpot = BbSpot { x = 1484, y = 1584, z = 20 }
+  bcb-checks : Integer -> Integer
+  bcb-checks (unused) = when bnm-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.town
+      is None -> -2
+      is Just (town) -> when bb-economy 0
+        is Err (_) -> -3
+        is Ok (x) -> let r = cgg-resource-of x.world 15 0
+          in when egg-new-for x 3702 (cgg-lumber-place + 5000) r 0
+            is Err (_) -> -4
+            is Ok (g) -> let shop = cgg-make-in cw-britain g 0 bcb-shop-bed bcb-shop-bed 0 0 0 0
+              in let skara = cgg-make-in (cw-skara (ct-table 0) (ct-city-shops 0) ct-shop-roles) g 0 bcb-shop-bed bcb-shop-bed 0 0 0 0
+              in let floor = (list-at cgg-houses 0).floor
+              in let kept = cgg-make-in cw-britain g 0 (BbSpot { x = floor.x1, y = floor.y1, z = 20 }) bcb-shop-bed 0 0 0 0
+              in let gated = cg-city-lodging [shop] 0
+              in let moved = cg-city-beds owner [shop, skara, kept]
+              in let h = cgg-house-of shop.home 0
+              in let door = if h >= 0 & h < list-length cgg-houses then (list-at cgg-houses h).door else BbSpot { x = 0, y = 0, z = 0 }
+              in let housed = if h >= 0 & h < list-length cgg-houses & shop.door.x == door.x & shop.door.y == door.y then 1 else 0
+              in let apart = if skara.home.x == bcb-shop-bed.x & skara.home.y == bcb-shop-bed.y then 2 else 0
+              in let stays = if kept.home.x == floor.x1 & kept.home.y == floor.y1 & moved == 1 then 4 else 0
+              in let gate = if gated == 1 & cg-city-lodging [shop] 0 == 0 then 8 else 0
+              in housed + apart + stays + gate
+  bvt-city-beds : Integer -> [Console] Integer
+  bvt-city-beds (unused) = act
+    n <- bcb-checks 0
+    bvt-check ("Britain's reagent gatherers live in the town's houses, not the herbalist's shop, and the switch gate counts a shop bed (UOAIX-239, trial 46700; code " & show n & ")") (n == 15)
+  end

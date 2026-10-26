@@ -52,7 +52,8 @@ port of call whose own resource, once Damian picks it, is cargo the fleet carrie
   (`CityStables.codex` `csm-pen`), until F2 gives each ship a dock. The step is its own timer kind (8, 12, 13 and 20 are
   taken), armed at boot and re-armed with `wtm-add`. Saved as a CompositeCodec tail section of its own (actor, hold
   serial, lane, leg, next sailing tick a ship), with a version byte so a world without it loads with a fresh fleet.
-  Logs `FLEET ship=k port=city bought|sold item=i n=q at=p margin=m` per trade. A bvt case on two ports grades the
+  The `ECONOMY ROWS` line carries the fleet's running totals (`fleet-legs`, `fleet-sold`, `fleet-bought`, and
+  `fleet-unsailed` for a leg no ship could sail: no captain, hold or purse; `cg-fleet-said`). A bvt case on two ports grades the
   choice of goods: buys below the next port's bid by the margin, sells only above cost, never past the purse or the
   hold (template: `bvt/BvtCityStables.codex`, a `blh-owner` fixture with bit-per-check answers).
 - **F2, ships at sea.** Built: `import-fleet-lanes.ps1` writes `MerchantFleetLanes.codex` from MAP0: each port's dock
@@ -70,7 +71,8 @@ port of call whose own resource, once Damian picks it, is cargo the fleet carrie
   Restful Slumber, door 3739,1316) founds one powder digger (place `cgg-powder-place`, 424): it digs the powder
   (resource item 166, already in the catalog) with a shovel on the sands 3600..3615, 1264..1279 and sells it to the
   smithy; `cw-wants` admits it in Nujel'm alone (`bvt/BvtNujelmPowder`). The east lane buys it in Nujel'm and sells it
-  where a blacksmith bids more. All of F1 to F3 is built and NOT RUN in a trial.
+  where a blacksmith bids more. All of F1 to F3 is built; trial-47037 traded (54 legs, 22 bought,
+  21 sold, no buy refused). Not yet seen by a player in game.
 
 ## Open decisions
 

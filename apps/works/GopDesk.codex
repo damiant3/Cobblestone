@@ -955,17 +955,27 @@ Section: Monitor
     else desk-marks-find ms fid (i - 1)
 
   desk-marks-kill : Integer, Integer -> Integer
-  desk-marks-kill (ms) (fid) =
-    let i = desk-marks-find ms fid (desk-marks-depth ms - 1)
-    in if i < 0 then 0 else poke-32 ms (8 * i + 8) desk-focus-none
+  desk-marks-kill (ms) (fid) = desk-marks-kill-from ms fid (desk-marks-depth ms - 1) 0
 
+ A pane can hold two entries (desk-marks-remark, below), so a close kills every entry naming it and answers how many.
+  desk-marks-kill-from : Integer, Integer, Integer, Integer -> Integer
+  desk-marks-kill-from (ms) (fid) (i) (n) =
+    if i < 0 then n
+    else if desk-marks-id ms i == fid then (let w = poke-32 ms (8 * i + 8) desk-focus-none in desk-marks-kill-from ms fid (i - 1) (n + 1))
+    else desk-marks-kill-from ms fid (i - 1) n
+
+ A pane whose entry is buried (it reused a hole, or an entry was pushed above it) and whose state has moved
+ to the frontier cannot rewrite that entry, because the marks must ascend; it pushes a second entry naming itself at
+ the frontier instead, so a close of a pane above restores no lower than the moved state (WORKS-59). Answers 1 wrote,
+ 2 pushed the second entry, 0 no live entry, -1 refused (below the entry beneath, between two entries, or a full stack).
   desk-marks-remark : Integer, Integer, Integer -> Integer
   desk-marks-remark (ms) (fid) (mark) =
     let d = desk-marks-depth ms
     in let i = desk-marks-find ms fid (d - 1)
     in if i < 0 then 0
-    else if i + 1 < d & mark >= desk-marks-mark ms (i + 1) then 0 - 1
     else if i > 0 & mark < desk-marks-mark ms (i - 1) then 0 - 1
+    else if i + 1 < d & mark >= desk-marks-mark ms (i + 1) then
+      (if d >= desk-marks-max | mark < desk-marks-mark ms (d - 1) then 0 - 1 else let p = desk-marks-push ms fid mark in 2)
     else let w = poke-32 ms (8 * i + 12) mark
     in 1
 

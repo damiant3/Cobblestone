@@ -1,0 +1,40 @@
+Chapter: BvtRouteLru
+  cites Uoaix chapter TownRoutes
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter BvtCheck
+
+  brl-stamp : TlPath, Integer -> Integer
+  brl-stamp (p) (i) = if i >= tl-route-limit then 0
+    else let a = poke-qword p.route-keys (i * tl-route-key-bytes + 64) (if i == 5 then 10 else 1000 + i) in brl-stamp p (i + 1)
+  brl-checks : Integer -> Text
+  brl-checks (unused) = when walk-map-new 1400 1600 16 16
+    is Err (e) -> e
+    is Ok (map) -> let p = tl-path-new map
+      in let full = __record-set p "route-count" tl-route-limit
+      in let stamped = brl-stamp p 0
+      in let first = rte-victim p 1 0
+      in let touched = rte-touch p 5
+      in let second = rte-victim p 1 0
+      in show first & " " & show second & " " & show p.route-cursor
+  brl-land : WalkMap, Integer -> Integer
+  brl-land (map) (i) = if i >= 256 then 0 else let a = walk-set-land map (1400 + int-mod i 16) (1600 + i / 16) 0 0 in brl-land map (i + 1)
+  brl-tally : Integer -> Text
+  brl-tally (unused) = when walk-map-new 1400 1600 16 16
+    is Err (e) -> e
+    is Ok (map) -> when world-new 64
+      is Err (e) -> e
+      is Ok (world) -> let laid = brl-land map 0
+        in let p = tl-path-new map
+        in let meter = cb-zeroed 8
+        in let bound = __record-set p "meter" meter
+        in let r = rte-plan p world map None (WorldObject { serial = 0, kind = 1, x = 1401, y = 1601, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) 1408 1601 0
+        in show (if r >= 0 then 1 else 0) & " " & show p.searches & " " & show (if p.cells == p.expanded & p.cells > 0 & peek-qword meter 0 == p.cells then 1 else 0)
+  bvt-route-lru : Integer -> [Console] Integer
+  bvt-route-lru (unused) = act
+    started <- hpet-start
+    n <- brl-tally 0
+    tallied <- bvt-check ("a plan counts one search and every cell it expanded on its planner, the wheel line's tally (red, UOAIX-267; " & n & ")") (n == "1 1 1")
+    t <- brl-checks 0
+    lru <- bvt-check ("a full route table gives up the slot used longest ago, not the next in turn, and a used route moves to the back (red, UOAIX-267; " & t & ")") (t == "5 0 0")
+    tallied + lru
+  end

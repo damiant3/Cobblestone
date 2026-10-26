@@ -1,0 +1,52 @@
+Chapter: BvtVendorActors
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameVendorCodec
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BvtSealLoans
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bva-made : Result Integer Text -> Integer
+  bva-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bva-vendors : GvWorld, Integer, Integer -> Integer
+  bva-vendors (v) (n) (i) = if i >= n then v.vendor-count
+    else let x = v.currency
+    in let actor = ep-admit x.world (eu-open x 2 (1000 + i)) 100
+    in let npc = bva-made (world-create v.game.world (gs-mobile 0 1421 1698 0 400 1002))
+    in let stock = bva-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let extra = bva-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let buys = bva-made (world-create v.game.world (gs-item npc #0E75 0))
+    in let added = gv-add-vendor v npc actor stock extra buys
+    in bva-vendors v n (i + 1)
+  bva-agree : GvWorld, Integer, Integer -> Integer
+  bva-agree (v) (t) (a) = if a > v.currency.world.actor-count + 1 then 0
+    else (if gvsc-actor-of v t a == gvsc-actor-owner v a 0 0 then 0 else 1) + bva-agree v t (a + 1)
+  bva-debts : GvWorld, Integer, Integer -> Integer
+  bva-debts (v) (debts) (i) = if i >= v.vendor-count then 0
+    else (if peek-qword debts (i * 8) == bb-debt v.currency.world.money (ep-actor v.currency.world (list-at v.vendors i).actor).purse 0 then 0 else 1) + bva-debts v debts (i + 1)
+  bvt-vendor-actors : Integer -> [Console] Integer
+  bvt-vendor-actors (unused) = when cg-game 256
+    is Err (e) -> bvt-check ("vendor tables fixture game: " & e) False
+    is Ok (game) -> when bb-economy 0
+      is Err (e) -> bvt-check ("vendor tables fixture economy: " & e) False
+      is Ok (x) -> let v = gv-new game x
+        in let shops = bva-vendors v 3 0
+        in let t = gvsc-actor-table v
+        in let differ = bva-agree v t 0
+        in let shared = (list-at v.vendors 0).actor
+        in let was = (list-at v.vendors 1).actor
+        in let moved = __record-set (list-at v.vendors 1) "actor" shared
+        in let t2 = gvsc-actor-table v
+        in let twice = gvsc-actor-of v t2 shared
+        in let old = gvsc-actor-owner v shared 0 0
+        in let back = __record-set (list-at v.vendors 1) "actor" was
+        in let struck = bsl-open x
+        in let lent = if struck > 0 & eu-lend x True 1 (ep-actor x.world shared).purse 3 1 0 em-limit > 0 then 1 else 0
+        in let debts = bb-shop-debts v
+        in let wrong = bva-debts v debts 0
+        in act
+          a <- bvt-check ("the save check's actor table answers as the row walk for every actor, out of range included (red, UOAIX audit 2026-10-18; " & show differ & " differ, " & show shops & " shops)") (differ == 0 & shops == 3)
+          b <- bvt-check ("an actor two vendor rows share is -1 in the table, as in the row walk (" & show twice & " " & show old & ")") (twice == 0 - 1 & old == 0 - 1)
+          c <- bvt-check ("each shop's open crown loan from one walk of the loans is bb-debt's, and the lent one is there (" & show wrong & " differ, lent " & show lent & ")") (wrong == 0 & lent == 1 & peek-qword debts 0 /= 0)
+          a + b + c
+        end

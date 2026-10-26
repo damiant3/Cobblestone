@@ -142,14 +142,14 @@ $QuireManifests = @{
 
 function New-CitePattern {
     # Alternation sorted longest-first so 'Games' wins over 'Game'.
-    #
+    # 
     # This pattern is generated from the KEYS of $QuireDirs, so a cite to an
     # unregistered quire does not match it, is never walked, and is never
     # resolved: the chapter is silently left out of the unit and the author gets
     # a cascade of CDX3002 at every USE SITE and never once at the cite. That is
     # what $StrictCitePat below exists to stop, and it is what Resolve-CiteOrder
     # now uses by default.
-    #
+    # 
     # The two bundlers this was kept for no longer carry their own copies:
     # concat-codex-self.ps1 and plug-build-lib.ps1 both take $StrictCitePat
     # and $QuireDirs from here, so NOTHING in the tree calls
@@ -195,7 +195,7 @@ function Get-CiteKey {
 
 function Get-PresentChapterNames {
     # The presence seed, keyed on the bare chapter name.
-    #
+    # 
     # A cite is satisfied two ways, not one: the chapter is RESOLVED through the
     # registry, or it is already PRESENT in the unit because a bundler globbed
     # the directory it lives in and renamed its header to <Dir>--<Name>. The
@@ -203,7 +203,7 @@ function Get-PresentChapterNames {
     # codex/compiler -- so 'cites Codex chapter Build Settings' is answered by
     # 'Chapter: Core--Build Settings' sitting in the same unit, and the registry
     # has no entry for 'Codex' at all and should not.
-    #
+    # 
     # This keys on the NAME and not on quire::name, which is the reason the
     # existing SeedSeen cannot do the job: concat renames by DIRECTORY (Core--)
     # while the cite names a QUIRE (Codex), so the two never share a key.
@@ -353,12 +353,12 @@ function Resolve-CiteOrder {
     # conditional on a line nobody could know to write: `for` without the
     # cite failed with `CDX3002: Undefined name: map-list`, and a tuple with
     # `CDX2002: Unknown name: MkTup2`.
-    #
+    # 
     # Unconditional rather than "only if the source uses the sugar" because
     # detecting use means parsing sugar with a regex, and getting that wrong
     # fails the same way this did. The two chapters are 141 lines and cite
     # nothing, so there is no cascade -- the cost is a fixed 5 KB per unit.
-    #
+    # 
     # A chapter that defines its own `map-list` still wins inside itself:
     # ChapterScoper mangles both sides of a collision per chapter, so a
     # mention resolves to its own chapter's. That is the same rule the register
@@ -380,7 +380,7 @@ function Resolve-CiteOrder {
 
 function Get-DiagRegions {
     # Maps a unit line number back to the file it came from.
-    #
+    # 
     # The compiler numbers diagnostics against the assembled UNIT -- every
     # cited chapter, then the source -- so a source line is reported at
     # (prelude + its own line). Every position a user sees in a file that
@@ -388,12 +388,12 @@ function Get-DiagRegions {
     # a cite-less file was right only by accident, because its unit was
     # itself. Measured: an error on line 11 of a file citing one foreword
     # chapter reported as 214:5.
-    #
+    # 
     # Both assemblers must map back or only one of them tells the truth --
     # compile.ps1 for a single compile and test-compile-batch.ps1 for the
     # battery, which builds its own unit and writes its own build.log. That
     # is why this lives here rather than in either of them.
-    #
+    # 
     # Format-CiteChapters replaces a chapter's `Chapter:` line one-for-one
     # and appends two blank lines, so an entry occupies Lines.Count + 2.
     param([Parameter(Mandatory=$true)] $Ordered, [Parameter(Mandatory=$true)] [string]$SrcPath)

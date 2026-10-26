@@ -1,8 +1,15 @@
-// The 1998 server's creature templates (uo-reference rundir/bank/templatestable.dat, namestable.dat, defines) and damage spells
-// (rundir/scripts.wombat/spelskil.m Q42R, *base.m). Generated from those files; not edited by hand.
-public static class UoBestiary {
-    // name|hp|ar|wrestling|tactics|parrying|magery|resist  (skills on the 0-1000 server scale, each the AVERAGE of the template's dice expression, e.g. 1d200+700 -> 800; hp and ar averaged likewise; 0 when absent)
-    public static readonly string[] Creatures = {
+using System.Collections.Immutable;
+#nullable enable
+// The 1998 server's creature templates (uo-reference rundir/bank/templatestable.dat, namestable.dat, defines) and
+// damage spells (rundir/scripts.wombat/spelskil.m Q42R, *base.m). Generated from those files; not edited by hand.
+
+namespace Uoaix.Assist;
+
+public static class UoBestiary
+{
+    // name|hp|ar|wrestling|tactics|parrying|magery|resist  (skills on the 0-1000 server scale, each the AVERAGE of the
+    // template's dice expression, e.g. 1d200+700 -> 800; hp and ar averaged likewise; 0 when absent)
+    static readonly ImmutableArray<string> s_creatures = [
         "air elemental|140|25|700|700|700|675|675",
         "air elemental (summoned)|125|19|700|700|600|675|675",
         "alligator|88|15|500|500|550|0|325",
@@ -123,9 +130,11 @@ public static class UoBestiary {
         "white wolf|68|8|525|525|500|0|275",
         "wisp|210|20|800|800|800|800|800",
         "zombie|58|9|425|425|250|0|275",
-    };
-    // name|circle|num|die|bonus  (damage = num * random(1, die) + bonus, per spelskil.m's per-circle table) for every spell that deals damage
-    public static readonly string[] Spells = {
+    ];
+    public static ImmutableArray<string> Creatures => s_creatures;
+    // name|circle|num|die|bonus  (damage = num * random(1, die) + bonus, per spelskil.m's per-circle table) for every
+    // spell that deals damage
+    static readonly ImmutableArray<string> s_spells = [
         "Magic Arrow|1|1|3|3",
         "Magic Trap|2|1|8|4",
         "Harm|2|1|8|4",
@@ -140,5 +149,6 @@ public static class UoBestiary {
         "Flamestrike|7|7|8|10",
         "Meteor Swarm|7|7|8|10",
         "Earthquake|8|0|1|0",
-    };
+    ];
+    public static ImmutableArray<string> Spells => s_spells;
 }

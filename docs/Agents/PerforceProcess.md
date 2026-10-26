@@ -12,11 +12,11 @@ already covers this; this is the specific case that keeps violating it.)
 
 **If you find a NEW trap:** add one row to the index in section 3, in the same
 shape. If it needs a recipe, add it to section 4 and point the row at it. If it
-is mechanically checkable, add it to `build/p4-stale-check.ps1` so the next
+is mechanically checkable, add it to `tools/agents/p4-stale-check.ps1` so the next
 agent never meets it -- and read what that script actually promises first, below,
 because a check added to it inherits its blind spot.
 
-**What the preflight does and does not do.** `build/p4-stale-check.ps1` runs as
+**What the preflight does and does not do.** `tools/agents/p4-stale-check.ps1` runs as
 a `build/build.ps1` preflight. Stated exactly, because the previous wording
 overclaimed the half that matters most:
 
@@ -92,7 +92,7 @@ p4 clean codex/... apps/...           # sync -f leaves strays behind (P-STRAY)
 p4 unshelve -s <CL> -c <CL>
 p4 sync                               # THIS schedules the resolve; unshelve does not (P-UNSHELVE)
 p4 resolve -am
-build/p4-stale-check.ps1              # FAILS on behind/unresolved; only WARNS on a dropped add
+tools/agents/p4-stale-check.ps1              # FAILS on behind/unresolved; only WARNS on a dropped add
 p4 opened                             # LOOK at it
 p4 status                             # the dropped add the preflight will not fail on
 build/build.ps1
@@ -196,7 +196,7 @@ p4 revert -c <CL> ...
   ... gates ...
 p4 unshelve -s <CL> -c <CL>
 p4 sync ; p4 resolve -am
-build/p4-stale-check.ps1
+tools/agents/p4-stale-check.ps1
 p4 shelve -d -c <CL>       # submit is refused while a shelf exists (P-SHELFSUBMIT)
 p4 submit -c <CL>          # read the output: the CL may be RENUMBERED (P-RENUMBER)
 ```
@@ -257,9 +257,9 @@ p4 resolve -am
 ### Purity: one workspace back to depot state
 
 ```powershell
-pwsh build/p4-purify.ps1 -Client BigWhite_Codex_<agent> -DryRun             # what would go; no approval
-pwsh build/p4-purify.ps1 -Client BigWhite_Codex_<agent> -ApprovedBy damian  # dev client: sweep, sync -f, merge down
-pwsh build/p4-purify.ps1 -Client BigWhite_Codex_<agent>_main -ApprovedBy damian  # main client: sweep, sync -f
+pwsh tools/agents/p4-purify.ps1 -Client BigWhite_Codex_<agent> -DryRun             # what would go; no approval
+pwsh tools/agents/p4-purify.ps1 -Client BigWhite_Codex_<agent> -ApprovedBy damian  # dev client: sweep, sync -f, merge down
+pwsh tools/agents/p4-purify.ps1 -Client BigWhite_Codex_<agent>_main -ApprovedBy damian  # main client: sweep, sync -f
 ```
 
 Deletes every untracked file and empty directory except dot-prefixed paths
@@ -272,8 +272,8 @@ reason `merge-down-all.ps1` does.
 ### The whole fleet at once
 
 ```powershell
-pwsh build/merge-down-all.ps1 -DryRun             # which streams have work; no approval
-pwsh build/merge-down-all.ps1 -ApprovedBy damian  # the real thing
+pwsh tools/agents/merge-down-all.ps1 -DryRun             # which streams have work; no approval
+pwsh tools/agents/merge-down-all.ps1 -ApprovedBy damian  # the real thing
 ```
 
 `-DryRun` is free. **The real run needs Damian to have asked for it in that

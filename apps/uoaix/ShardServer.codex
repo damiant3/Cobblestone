@@ -92,15 +92,16 @@ Chapter: ShardServer
     in let length = __record-set transport "recv-len" (transport.recv-len - count)
     in 0
 
-  ss-encode-replies : Integer, Boolean, List (List Integer), Integer, Integer, List (List Integer) -> Result ShardEncoded Text
-  ss-encode-replies (huffman) (compress) (packets) (i) (size) (out) =
+ A response is refused past limit bytes: the game links pass their tx and spill together (ShardLinks sl-enqueue).
+  ss-encode-replies : Integer, Boolean, List (List Integer), Integer, Integer, Integer, List (List Integer) -> Result ShardEncoded Text
+  ss-encode-replies (huffman) (compress) (packets) (limit) (i) (size) (out) =
     if i >= list-length packets then Ok (ShardEncoded { packets = out, bytes = size })
     else let encoded = if compress then gh-encode huffman (list-at packets i) else Ok (list-at packets i)
     in when encoded
       is Err (e) -> Err e
       is Ok (bytes) ->
-        if size + list-length bytes > stx-max-bytes then Err "game response exceeds transmit budget"
-        else ss-encode-replies huffman compress packets (i + 1) (size + list-length bytes) (list-push out bytes)
+        if size + list-length bytes > limit then Err "game response exceeds transmit budget"
+        else ss-encode-replies huffman compress packets limit (i + 1) (size + list-length bytes) (list-push out bytes)
 
   ss-flatten : List (List Integer), Integer, Integer, List Integer -> List Integer
   ss-flatten (packets) (i) (j) (out) =
@@ -112,7 +113,7 @@ Chapter: ShardServer
   ss-game-replies : Integer, Boolean, List (List Integer) -> Result (List Integer) Text
   ss-game-replies (huffman) (compress) (packets) =
     if list-length packets > 64 then Err "game response packet budget exceeded"
-    else when ss-encode-replies huffman compress packets 0 0 (__list-with-capacity (list-length packets))
+    else when ss-encode-replies huffman compress packets stx-max-bytes 0 0 (__list-with-capacity (list-length packets))
       is Err (e) -> Err e
       is Ok (encoded) -> Ok (ss-flatten encoded.packets 0 0 (__list-with-capacity encoded.bytes))
 

@@ -576,6 +576,82 @@ const callDown = p =>
      gated.length ? gated.map(v => V[v]).join('; ') : '7 variants');
 }
 
+// pagat, 5draw.html, Jacks or Better: "if no one has yet bet, a player who
+// does not have a pair of jacks or better is obliged to pass", and when
+// nobody opens "the cards are thrown in and it is the next player's turn to
+// deal". The pot stays and both ante again; the other seat now speaks first.
+{
+  const bad = [];
+  let thrown = 0;
+  const handOf = (p, s) => [...Array(e.pvt_dealt(p, s))].map((_, i) => e.pvt_card(p, s, i)).join();
+  for (let seed = 1; seed <= 120; seed++) {
+    const p = e.pvt_new(7, seed);
+    if (e.pvt_canopen(p) === 1) continue;
+    const pot = e.pvt_pot(p), c0 = e.pvt_chips(p, 0), c1 = e.pvt_chips(p, 1), h0 = handOf(p, 0);
+    const q = e.pvt_call(p);
+    if (q === p) { bad.push(`seed ${seed}: the check was refused`); continue; }
+    const r = e.pvt_step(q);
+    if (e.pvt_bet(r, 1) > 0) continue; // the other seat opened
+    thrown++;
+    const why = [];
+    if (e.pvt_stage(r) !== 0 || e.pvt_done(r) !== 0) why.push(`stage ${e.pvt_stage(r)}, done ${e.pvt_done(r)}`);
+    if (e.pvt_pot(r) !== pot + 10) why.push(`pot ${pot} to ${e.pvt_pot(r)}`);
+    if (e.pvt_chips(r, 0) !== c0 - 5 || e.pvt_chips(r, 1) !== c1 - 5) why.push(`chips ${e.pvt_chips(r, 0)}, ${e.pvt_chips(r, 1)}`);
+    if (e.pvt_cur(r) !== 1) why.push(`seat ${e.pvt_cur(r)} speaks first`);
+    if (handOf(r, 0) === h0) why.push('the same cards');
+    if (why.length) bad.push(`seed ${seed}: ${why.join(', ')}`);
+  }
+  ok('CONTROL: neither seat opened in some deals', thrown > 0, `${thrown} deals`);
+  ok('jacks or better throws in an unopened deal: the pot stays, both ante, the deal passes', bad.length === 0,
+     bad.slice(0, 3).join('; ') || `${thrown} throw-ins`);
+}
+{
+  const bad = [];
+  let reached = 0;
+  for (let seed = 1; seed <= 300; seed++) {
+    let p = e.pvt_new(7, seed), guard = 0;
+    if (e.pvt_canopen(p) !== 1) continue;
+    p = e.pvt_raise(p);
+    while (e.pvt_done(p) === 0 && e.pvt_stage(p) === 0 && guard++ < 20) p = e.pvt_cur(p) === 0 ? e.pvt_call(p) : e.pvt_step(p);
+    if (e.pvt_stage(p) !== 1 || e.pvt_cur(p) !== 0) continue;
+    p = e.pvt_draw(e.pvt_mark(e.pvt_mark(e.pvt_mark(p, 0), 1), 2));
+    while (e.pvt_done(p) === 0 && e.pvt_stage(p) === 1 && e.pvt_cur(p) === 1 && guard++ < 20) p = e.pvt_step(p);
+    if (e.pvt_stage(p) !== 2 || e.pvt_cur(p) !== 0 || e.pvt_tocall(p, 0) !== 0) continue;
+    if (e.pvt_canopen(p) === 1) continue; // still holds jacks or better
+    reached++;
+    if (e.pvt_canraise(p) !== 1) bad.push(`seed ${seed}: after the draw, without jacks, the opener may not bet`);
+  }
+  ok('CONTROL: openers broke up in the draw', reached > 0, `${reached} hands`);
+  ok('after the draw any hand may bet: the jacks gate is on opening only', bad.length === 0,
+     bad.slice(0, 3).join('; ') || `${reached} hands`);
+}
+
+// Wild hands rank as the natural cards they stand for, kickers included
+// (pagat, ranking.html: "wild cards are as good as the natural cards they
+// represent"). Follow the queen deals seven each and at most one wild rank.
+{
+  const bad = [];
+  let checked = 0, kicked = 0;
+  for (let seed = 1; seed <= 200; seed++) {
+    const { p } = playOut(6, seed, callDown);
+    if (e.pvt_done(p) !== 1 || e.pvt_folded(p) !== -1) continue;
+    if (e.pvt_dealt(p, 0) !== 7 || e.pvt_dealt(p, 1) !== 7) continue;
+    let w = -1;
+    for (let c = 0; c < 52; c++) if (e.pvt_wildat(p, c) === 1) { w = c % 13; break; }
+    const hr = s => e.pv_wild7h(...[...Array(7)].map((_, i) => e.pvt_shown(p, s, i)), w);
+    const a = hr(0), b = hr(1);
+    const cmp = e.pv_cmp(a, b);
+    const want = cmp === 1 ? 0 : cmp === 2 ? 1 : -1;
+    checked++;
+    if (cmp !== 0 && e.pv_rank(a) === e.pv_rank(b)) kicked++;
+    if (e.pvt_winner(p) !== want) bad.push(`seed ${seed}: paid seat ${e.pvt_winner(p)}, the hands say ${want}`);
+  }
+  ok('CONTROL: follow-the-queen showdowns were decided inside one category', checked > 0 && kicked > 0,
+     `${checked} showdowns, ${kicked} decided inside a category`);
+  ok('a wild showdown pays the seat the full comparison names', bad.length === 0,
+     bad.slice(0, 3).join('; ') || `${checked} showdowns`);
+}
+
 // The draw belongs to the two draw games, five card draw and jacks or better.
 {
   const offered = [1, 2, 3, 4, 5, 6, 7].filter(v => {

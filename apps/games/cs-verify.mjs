@@ -270,6 +270,41 @@ const start = e.cs_new();
      `${got} (published 197281) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 }
 
+// --- the published oracle where the special rules are reached -------------
+// To depth 4 the opening reaches no castle, no en passant and no promotion.
+// These positions and counts are chessprogramming.org's "Perft Results":
+// Kiwipete (castling both ways, en passant, promotions, pins), position 3
+// (en passant against a pinned pawn, discovered checks), position 4
+// (promotions, castling out of and through attack), position 5. None has an
+// en passant square, so placement, side and rights set each one exactly.
+{
+  const codes = { P: 1, N: 2, B: 3, R: 4, Q: 5, K: 6, p: 7, n: 8, b: 9, r: 10, q: 11, k: 12 };
+  const fen = (text) => {
+    const [place, side, rights] = text.split(' ');
+    let h = e.cs_blank(), sq = 0;
+    for (const ch of place) {
+      if (ch === '/') continue;
+      if (ch >= '1' && ch <= '8') { sq += Number(ch); continue; }
+      h = e.cs_place(h, sq++, codes[ch]);
+    }
+    h = e.cs_rights(h, +rights.includes('K'), +rights.includes('Q'), +rights.includes('k'), +rights.includes('q'));
+    return e.cs_seal(e.cs_side(h, side === 'w' ? 0 : 1));
+  };
+  const published = [
+    ['Kiwipete', 'r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -', [48, 2039, 97862]],
+    ['position 3', '8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -', [14, 191, 2812, 43238]],
+    ['position 4', 'r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq -', [6, 264, 9467]],
+    ['position 5', 'rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ -', [44, 1486, 62379]],
+  ];
+  for (const [name, text, counts] of published) {
+    const h = fen(text);
+    counts.forEach((want, i) => {
+      const got = e.cs_perft(h, i + 1);
+      ok(`perft ${i + 1} from ${name}`, got === want, `${got} (published ${want})`);
+    });
+  }
+}
+
 // --- the two generators, over seeded games -------------------------------
 // A seeded walk rather than a fixed list of positions, because the
 // positions worth comparing are the ones neither file's author chose.

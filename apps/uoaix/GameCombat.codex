@@ -860,6 +860,7 @@ Chapter: GameCombat
               is Ok (loosed) -> when cb-hit c shard input a b source target (if range == 0 then 0 else cb-ammo held)
                 is Err (message) -> Err message
                 is Ok (replies) -> let spent = if slot < 0 then 0 else cb-tire row c.tick
+                  in let flown = if range == 0 then 0 else cb-notice c source input.session.serial 0 0 [cb-moving source target (cb-ammo-art held)] 0
                   in let shot = if range == 0 then replies else ([cb-moving source target (cb-ammo-art held)] & loosed & replies)
                   in cb-batches c shard input map pending (i + 1) (list-push chunks (if slot >= 0 & mine then list-push shot (gs-stamina-packet row a.serial) else shot))
  UOX3 uox.ini ATTACKSTAMINA=-2: each player swing spends 2 stamina (slot byte 145 counts spent, capped at the dexterity, gp-stat),
@@ -904,10 +905,16 @@ Chapter: GameCombat
           in when world-get shard.world input.session.serial
             is Err (_) -> []
             is Ok (m) -> cb-view c shard m 0 []
-        in when cb-swings c shard input map 0 visible
+        in when (when c.wheel is None -> cb-swings c shard input map 0 visible is Just (_) -> cb-own-swing c shard input map visible)
           is Err (message) -> Err message
           is Ok (packets) -> if list-length packets == 0 then Ok None
             else Ok (Just (gs-reply packets "combat pulse"))
+ UOAIX-268: with a wheel the NPCs swing in its owner's combat round, once per world tick and told to every viewer in range
+ through the ring, so a pulse steps only its own player's swing and walks no other combatant.
+  cb-own-swing : GameCombat, GameShard, GameInput, WalkMap, List (List Integer) -> Result (List (List Integer)) Text
+  cb-own-swing (c) (shard) (input) (map) (packets) = let me = input.session.serial
+    in if me <= 0 | peek-qword (sa-at c.positions (cb-actor-slot me (list-length c.actors))) 0 < 0 then Ok packets
+    else cb-batches c shard input map [me] 0 (list-push (__list-with-capacity 2) packets)
   cb-fixture : GameCombat, GameShard, GameInput, WalkMap, Integer, Integer -> Result Integer Text
   cb-fixture (c) (shard) (input) (map) (direction) (count) =
     if count == 2 then let ready = __record-set c "scene" 2 in Ok 0

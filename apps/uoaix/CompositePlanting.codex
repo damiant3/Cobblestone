@@ -6,7 +6,8 @@ Chapter: CompositePlanting
  timber (EconomyHarvest eh-ground, eh-plant) and a harvest site, which UHC1 persists. A planted tree draws as
  world items under serials 7D000001 and up, two a site (the sapling or trunk, then the leaves).
   CplRequest = record { serial : Integer, target : Integer, lot : Integer, expires : Integer, resource : Integer }
-  CplViewer = record { connection : Integer, sent : Integer, used : Integer, room : Integer }
+  CplViewer = record { connection : Integer, sent : Integer, used : Integer, room : Integer,
+    near : Integer, near-count : Integer, cx : Integer, cy : Integer, sites : Integer }
   CplState = record { requests : List CplRequest, nonce : Integer, viewers : List CplViewer, clock : Integer }
   cpl-serial-base : Integer = #7D000000
   cpl-context : Integer = #504C0000
@@ -14,7 +15,7 @@ Chapter: CompositePlanting
   cpl-resource : Integer = 15
   cpl-ground : Integer = 2
   cpl-sapling : Integer = 56
- TILEDATA art: sapling 0x0CE9, oak trunk 0x0CDA and oak leaves 0x0CDB, stump 0x0E56.
+ TILEDATA art: sapling 0x0CE9, oak trunk 0x0CDA and oak leaves 0x0CDB, stump 0x0E57.
   cpl-sapling-art : Integer = #0CE9
   cpl-trunk-art : Integer = #0CDA
   cpl-leaves-art : Integer = #0CDB
@@ -45,7 +46,7 @@ Chapter: CompositePlanting
   cpl-leaves-of (site) = if site.species /= 0 then cpl-species-leaves site.species else cpl-leaves site.resource
   cpl-ripe : GameHarvest, Integer -> Boolean
   cpl-ripe (h) (k) = (cpl-orchard (cpl-site h k).resource | (cpl-site h k).resource == 27) & (cpl-node h k).stage == 2 & h.vendor.currency.world.hour >= (cpl-node h k).ready
-  cpl-stump-art : Integer = #0E56
+  cpl-stump-art : Integer = #0E57
   cpl-requests : Integer, List CplRequest -> List CplRequest
   cpl-requests (left) (xs) = if left == 0 then xs else cpl-requests (left - 1) (list-push xs (CplRequest { serial = 0, target = 0, lot = -1, expires = 0, resource = 0 }))
   cpl-seed-resource : EpWorld, Integer, Integer -> Integer
@@ -76,7 +77,8 @@ Chapter: CompositePlanting
   cpl-viewers (left) (xs) = if left == 0 then xs
     else let sent = alloc-bytes 256
     in let cleared = wf-fill sent 0 256 0
-    in cpl-viewers (left - 1) (list-push xs (CplViewer { connection = -1, sent = sent, used = 0, room = 256 }))
+    in cpl-viewers (left - 1) (list-push xs (CplViewer { connection = -1, sent = sent, used = 0, room = 256,
+      near = alloc-bytes (256 * 4), near-count = 0 - 1, cx = 0, cy = 0, sites = 0 }))
  A viewer's sent stages are one byte per harvest site, grown with GameHarvest's site table at the growth point (cs-grow).
   cpl-fit : CplState, Integer -> Integer
   cpl-fit (state) (sites) = cpl-fit-from state.viewers sites 0
@@ -88,7 +90,9 @@ Chapter: CompositePlanting
       in let copied = wf-copy v.sent fresh 0 v.room
       in let filled = wf-fill fresh v.room sites 0
       in let a = __record-set v "sent" fresh
-      in let b = __record-set v "room" sites in 1
+      in let b = __record-set v "room" sites
+      in let c = __record-set v "near" (alloc-bytes (sites * 4))
+      in let d = __record-set v "near-count" (0 - 1) in 1
     in grown + cpl-fit-from viewers sites (i + 1)
  A planted site's items take serials base + 2k + 1 and + 2 for the live sites k.
   cpl-ours : GameHarvest, Integer -> Boolean
@@ -334,7 +338,7 @@ Chapter: CompositePlanting
   cpl-viewer : CplState, Integer -> CplViewer
   cpl-viewer (state) (connection) = let found = cpl-viewer-find state.viewers connection 0
     in let v = list-at state.viewers (if found >= 0 then found else cpl-viewer-oldest state.viewers 0 0)
-    in let fresh = if found >= 0 then 0 else let cleared = wf-fill v.sent 0 v.room 0 in let c = __record-set v "connection" connection in 0
+    in let fresh = if found >= 0 then 0 else let cleared = wf-fill v.sent 0 v.room 0 in let c = __record-set v "connection" connection in let n = __record-set v "near-count" (0 - 1) in 0
     in let tick = __record-set state "clock" (state.clock + 1)
     in let used = __record-set v "used" state.clock in v
   cpl-viewer-find : List CplViewer, Integer, Integer -> Integer
@@ -369,15 +373,31 @@ Chapter: CompositePlanting
   cpl-draw-map : GhSite, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
   cpl-draw-map (site) (main) (had) (want) (packets) = let gone = if had >= 7 & want < 7 then list-push packets (sip-remove (main + 1)) else packets
     in if want >= 7 then list-push gone (cpl-item (main + 1) (site.species + (if want == 8 then 2 else 1)) site.x site.y site.z) else gone
-  cpl-scan : GameHarvest, CplViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
-  cpl-scan (h) (v) (x) (y) (k) (packets) = if k >= h.count | k >= v.room then packets
-    else let site = cpl-site h k
-    in let near = walk-abs (site.x - x) <= 18 & walk-abs (site.y - y) <= 18
+ A viewer keeps the sites within cpl-reach + cpl-margin of the place it last scanned every site from, and steps only
+ those until it moves cpl-margin away; a site appended since joins them, as sites never move once placed.
+  cpl-reach : Integer = 18
+  cpl-margin : Integer = 24
+  cpl-step : GameHarvest, CplViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cpl-step (h) (v) (x) (y) (k) (packets) = let site = cpl-site h k
+    in let near = walk-abs (site.x - x) <= cpl-reach & walk-abs (site.y - y) <= cpl-reach
     in let had = peek-byte v.sent k
     in let want = if near then cpl-want h k else 0
-    in if had == want then cpl-scan h v x y (k + 1) packets
+    in if had == want then packets
     else let set = poke-byte v.sent k want
-    in cpl-scan h v x y (k + 1) (if near then cpl-draw h k had want packets else packets)
+    in if near then cpl-draw h k had want packets else packets
+  cpl-keep : GameHarvest, CplViewer, Integer -> Integer
+  cpl-keep (h) (v) (k) = let site = cpl-site h k
+    in if walk-abs (site.x - v.cx) > cpl-reach + cpl-margin | walk-abs (site.y - v.cy) > cpl-reach + cpl-margin then 0
+    else let put = poke-32 v.near (v.near-count * 4) k in let n = __record-set v "near-count" (v.near-count + 1) in 1
+  cpl-scan : GameHarvest, CplViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cpl-scan (h) (v) (x) (y) (k) (packets) = if k >= h.count | k >= v.room then packets
+    else let kept = cpl-keep h v k in cpl-scan h v x y (k + 1) (cpl-step h v x y k packets)
+  cpl-gather : GameHarvest, CplViewer, Integer, Integer -> Integer
+  cpl-gather (h) (v) (k) (last) = if k >= last then let s = __record-set v "sites" last in 0
+    else let kept = cpl-keep h v k in cpl-gather h v (k + 1) last
+  cpl-near-scan : GameHarvest, CplViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cpl-near-scan (h) (v) (x) (y) (i) (packets) = if i >= v.near-count then packets
+    else cpl-near-scan h v x y (i + 1) (cpl-step h v x y (peek-32 v.near (i * 4)) packets)
  A mature planted tree stands as its trunk: the trunk's TILEDATA collider is in the walk map while the node is
  mature and out of it otherwise, so the stage 3a lookup answers timber for a hatchet aimed at it.
   cpl-collide : GameHarvest, Integer, WalkMap, Integer -> Integer
@@ -405,7 +425,11 @@ Chapter: CompositePlanting
     in let head = [list-at packet 0, list-at packet 1, list-at packet 2, list-at packet 3, list-at packet 4, list-at packet 5, list-at packet 6]
     in gp-put16 (list-push (list-push (gp-put16 (gp-put16 (gp-put32 head 0) site.x) site.y) (list-at packet 15)) (bit-and site.z 255)) (cpl-trunk-of site)
   cpl-view : CplState, GameHarvest, Integer, Integer, Integer -> List (List Integer)
-  cpl-view (state) (h) (connection) (x) (y) = cpl-scan h (cpl-viewer state connection) x y 0 []
+  cpl-view (state) (h) (connection) (x) (y) = let v = cpl-viewer state connection
+    in if v.near-count < 0 | walk-abs (x - v.cx) > cpl-margin | walk-abs (y - v.cy) > cpl-margin then
+      let a = __record-set v "cx" x in let b = __record-set v "cy" y in let c = __record-set v "near-count" 0
+      in let d = __record-set v "sites" (min h.count v.room) in cpl-scan h v x y 0 []
+    else let gathered = cpl-gather h v v.sites (min h.count v.room) in cpl-near-scan h v x y 0 []
  The Royal Test Farm (UOAIX-58) is the farmhouse at 1223..1239,1567..1583. Each bed is resource, x, y in its farm field
  (Damian 2026-10-07: "there is a farm field next to the farm, and i want this stuff all planted out there, not on the
  green fringe next to the farm building"): MAP0.MUL furrows 1208..1239,1592..1615, every tile land z 0 with no static,

@@ -1,0 +1,47 @@
+Chapter: NetFrameRefuse
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ Every frame carries valid IP and TCP checksums, so only the shape tests can refuse
+ it. A SYN with don't-fragment set is the control: real peers set DF.
+
+Section: Frames
+
+  nfr-me : List Integer = [10, 0, 2, 15]
+  nfr-peer : List Integer = [10, 0, 2, 2]
+
+  nfr-session : Integer -> NetSession
+  nfr-session (n) = (net-listen (net-session-new [2, 0, 0, 0, 0, 1] nfr-me nfr-peer 9443 0 nfr-peer 1000)).session
+
+  nfr-syn : Integer -> List Integer
+  nfr-syn (words) =
+    let seg = tcp-build-segment 50000 9443 7000 0 tcp-flag-syn 8192 []
+    in tcp-with-checksum (list-set-at seg 12 (16 * words)) nfr-peer nfr-me
+
+  nfr-frame : Integer, Integer, List Integer -> List Integer
+  nfr-frame (first) (frag) (tcp) = nfr-frame-to nfr-me first frag tcp
+
+  nfr-frame-to : List Integer, Integer, Integer, List Integer -> List Integer
+  nfr-frame-to (dst) (first) (frag) (tcp) =
+    let ip = ip-build-packet nfr-peer dst ip-proto-tcp tcp
+    in let shaped = list-set-at (list-set-at (list-set-at (list-set-at (list-set-at ip 0 first) 6 (bit-shru frag 8)) 7 (bit-and frag 255)) 10 0) 11 0
+    in let ck = ip-checksum shaped 0 ip-header-size 0
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (list-set-at (list-set-at shaped 10 (bit-shru ck 8)) 11 (bit-and ck 255))
+
+  nfr-out : Integer, Integer, Integer -> Text
+  nfr-out (first) (frag) (words) = (net-process-frame (nfr-session 0) (nfr-frame first frag (nfr-syn words))).output
+
+  opening : [Console] Nothing = act
+    print-line-uni ("syn = " & nfr-out 69 0 5)
+    print-line-uni ("syn with don't-fragment = " & nfr-out 69 #4000 5)
+    print-line-uni ("ihl 6 = " & nfr-out 70 0 5)
+    print-line-uni ("version 6 = " & nfr-out 101 0 5)
+    print-line-uni ("more fragments = " & nfr-out 69 #2000 5)
+    print-line-uni ("fragment offset 8 = " & nfr-out 69 1 5)
+    print-line-uni ("tcp data offset 4 = " & nfr-out 69 0 4)
+    print-line-uni ("tcp data offset 15 = " & nfr-out 69 0 15)
+    print-line-uni ("syn for another address = " & (net-process-frame (nfr-session 0) (nfr-frame-to [10, 0, 2, 16] 69 0 (tcp-with-checksum (tcp-build-segment 50000 9443 7000 0 tcp-flag-syn 8192 []) nfr-peer [10, 0, 2, 16]))).output)
+  end
+
+Page 1

@@ -1,0 +1,429 @@
+Chapter: BvtIncident
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtWorkerDay
+  cites Uoaix chapter BvtGuardWard
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-275 stage 1 (UoaixCoroners.md) on BvtWorkerDay's town, every guard and Britain worker parked off the scene.
+ Bits: 1 with incidents off a death notes no victim; 2 with them on it does, and the next town step holds the found
+ corpse at stage 1; 4 the decay wheel keeps the held corpse and rots an unheld one; 8 a guard beside the held corpse
+ leaves it; 16 no worker in sight leaves stage 1; 32 a miner in sight is taken as the witness; 64 the witness beside the
+ mayor takes him (stage 3, his post kept) and is let go; 128 the mayor beside the corpse waits (stage 4); 256 a witness
+ that dies is let go and its incident returns to stage 1; 512 the incident tail restores the row and a torn tail is
+ refused; 1024 the corpse gone frees the row and leaves the mayor bound for his post; 2048 thirteen used rows of sixteen
+ make growth due and a doubling clears it. Stage 2: 4096 a player in reach of the waiting corpse is offered once over two
+ steps, 8192 one 8 tiles off is not; 16384 "accept" there gives the player the quest (stage 5), marks the account,
+ frees the mayor and drops the offers; 32768 that account is neither offered nor taken at another waiting corpse;
+ 65536 the holder in the cemetery beside a hunting creature leaves stage 5, 131072 the creature gone ends it (stage 6).
+ Stage 3: 262144 two coroners are made in the healer shop; 524288 beside the corpse they wait while a hunting creature
+ stands in the cemetery and take it once none does, choosing a grave in region 5505's walk-map rows (stage 7); 1048576
+ both at the grave lay the dirt and the stone (stage 8); 2097152 an empty town purse is funded by the crown, as every
+ town expense is (cg-fund-town), and pays the holder a deed at once; 4194304 back in the shop the coroners are dismissed and the row freed; 8388608 an
+ unseen corpse is let go after cg-witness-wait decay periods and rots; 16777216 a ghost player in reach is not offered.
+ 33554432: body 400 is a hunting body, and an innocent's corpse is not cheered while a hunter's is. Q5: 67108864 an
+ unaccepted waiting incident a second short of a game day since the mayor arrived stays open; 134217728 at a game day
+ with the cemetery clear it goes to the coroners with no holder, its offers dropped and its witness let go;
+ 268435456 with a hunting creature in the cemetery it is let go (stage 0, no victim) and its corpse stays to decay;
+ 536870912 buried with no holder, the coroners gone, the row is freed and nothing is paid. 1073741824 coroners at the
+ grave whose walk home has not failed stay bound, and once one walk has failed both are dismissed where they stand
+ and the row is freed (L-FUTILITY, trial-47481). 2147483648 an unaccepted burial hires no coroners while an accepted
+ one waits for them, and the accepted one hires them (trial-47635). 8589934592 an incident queued for the mayor (stage 3) two game days after its witness ran stays open and closes at three (trial-47730). 4294967296 the offer is told to its player alone and an incident line to everyone in range through the event ring (trial-47676). 17179869183 is all, negative when the scene cannot
+ be built.
+  bci-park : CompositeGame, Integer -> Integer
+  bci-park (owner) (i) = if i >= list-length owner.miners then
+      (let g = when owner.gatherer is None -> 0 is Just (w) -> bgk-move owner w.serial 1490 1750
+      in when owner.farmer is None -> 0 is Just (f) -> bgk-move owner f.serial 1491 1750)
+    else let m = bgk-move owner (list-at owner.miners i).serial (1492 + i) 1752 in bci-park owner (i + 1)
+  bci-corpse : CompositeGame, Integer, Integer -> Integer
+  bci-corpse (owner) (x) (y) = when world-create owner.checkpoint.game.world (WorldObject { serial = 0, kind = 2, x = x, y = y, z = 0, graphic = 8198, hue = 0, container = 0, amount = 400, health = 0 })
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bci-row : Integer, Integer, Integer, Integer -> Integer
+  bci-row (ring) (x) (y) (i) = if i >= sa-capacity ring then 0
+    else let row = sa-at ring i in if peek-qword row 0 == x & peek-qword row 8 == y then row else bci-row ring x y (i + 1)
+  bci-held-row : Integer, Integer, Integer -> Integer
+  bci-held-row (ring) (corpse) (i) = if i >= sa-capacity ring then 0
+    else let row = sa-at ring i in if peek-qword row 0 /= 0 & peek-qword row 56 == corpse then row else bci-held-row ring corpse (i + 1)
+  bci-step : CompositeGame, CivicLive, WalkMap -> Integer
+  bci-step (owner) (c) (britain) = list-length (cg-dead-step owner c britain (c.town.now + 100000) 0 [])
+  bci-there : CompositeGame, Integer -> Boolean
+  bci-there (owner) (serial) = when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (_) -> True
+  bci-fell : CompositeGame, Integer -> Integer
+  bci-fell (owner) (serial) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> 0
+    is Ok (m) -> when world-update owner.checkpoint.game.world (__record-set m "health" 0) is Err (_) -> 0 is Ok (_) -> 1
+  bci-plain : CompositeGame -> Integer
+  bci-plain (owner) = let off = __record-set owner "incidents" False
+    in let victim = bgk-mobile owner 1445 1620
+    in let body = bci-corpse owner 1445 1620
+    in let noted = cg-dead-note owner victim 0
+    in let row = bci-row owner.dead 1445 1620 0
+    in let quiet = row /= 0 & peek-qword row 72 == 0
+    in let cleared = if row == 0 then 0 else cg-dead-zero row 0
+    in let gone = cv-discard owner.checkpoint.game.world body
+    in if quiet then 1 else 0
+  bci-held : CompositeGame, CivicLive, WalkMap, Integer, Integer -> Integer
+  bci-held (owner) (c) (britain) (corpse) (row) = let g0 = (list-at c.guards 0).serial
+    in let control = bci-corpse owner 1480 1700
+    in let a = cg-decay-fire owner corpse 1000 + cg-decay-fire owner control 1000
+    in let b = cg-decay-fire owner corpse 1000000000 + cg-decay-fire owner control 1000000000
+    in let kept = if bci-there owner corpse & not (bci-there owner control) then 4 else 0
+    in let near = bgk-move owner g0 1451 1610
+    in let buried = when world-get owner.checkpoint.game.world corpse
+      is Err (_) -> 0
+      is Ok (body) -> let r = cg-dead-bury owner c britain (c.town.now + 100000) body row in if bci-there owner corpse then 8 else 0
+    in let back = bgk-move owner g0 1500 1750
+    in kept + buried
+  bci-scene : CompositeGame, CivicLive, WalkMap -> Integer
+  bci-scene (owner) (c) (britain) = let m0 = (list-at owner.miners 0).serial
+    in let m1 = (list-at owner.miners 1).serial
+    in let mayor = bgk-move owner c.mayor 1430 1600
+    in let switched = __record-set owner "incidents" True
+    in let victim = bgk-mobile owner 1450 1610
+    in let corpse = bci-corpse owner 1450 1610
+    in if victim == 0 | corpse == 0 | mayor == 0 then 0 - 3
+    else let noted = cg-dead-note owner victim 0
+    in let row = bci-row owner.dead 1450 1610 0
+    in if row == 0 then 0 - 4
+    else let s1 = bci-step owner c britain
+    in let found = if peek-qword row 72 == victim & peek-qword row 64 == cg-incident-fallen & peek-qword row 56 == corpse then 2 else 0
+    in let unseen = if peek-qword row 64 == cg-incident-fallen & peek-qword row 80 == 0 then 16 else 0
+    in let held = bci-held owner c britain corpse row
+    in let near = bgk-move owner m0 1454 1610
+    in let s2 = bci-step owner c britain
+    in let taken = if peek-qword row 64 == cg-incident-running & peek-qword row 80 == m0 & cg-incident-runner owner.dead m0 0 then 32 else 0
+    in let told = bgk-move owner m0 1431 1600
+    in let s3 = bci-step owner c britain
+    in let called = if peek-qword row 64 == cg-incident-called & not (cg-incident-runner owner.dead m0 0) & cg-mayor-row owner.dead 0 >= 0
+      & peek-qword row 112 == 1430 * 65536 + 1600 then 64 else 0
+    in let arrived = bgk-move owner c.mayor 1451 1611
+    in let s4 = bci-step owner c britain
+    in let waiting = if peek-qword row 64 == cg-incident-waiting then 128 else 0
+    in let lost = bci-lost owner c britain m1
+    in let restored = bci-tail owner corpse row
+    in let quested = bci-quest owner c britain corpse
+    in let other = bci-row owner.dead 1460 1625 0
+    in let freed = if other == 0 then 0 else bci-freed owner c britain (peek-qword other 56)
+    in let buried = bci-coroners owner c britain corpse
+    in found + unseen + held + taken + called + waiting + lost + restored + quested + freed + buried + bci-unseen owner
+  bci-account : CompositeGame, List Integer, Integer -> Integer
+  bci-account (owner) (name) (serial) = let table = owner.checkpoint.game.accounts
+    in let made = ga-create table name [112, 119]
+    in let i = ga-find table name 0
+    in if i < 0 then 0 - 1 else let slot = poke-qword (ga-slots table i) 0 serial in i
+  bci-input : Integer -> GameInput
+  bci-input (serial) = let input = gn-input 3
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let who = __record-set input.session "serial" serial in input
+  bci-accept : List Integer = [3, 0, 15, 0, 0, 0, 0, 0, 97, 99, 99, 101, 112, 116, 0]
+  bci-offers : Integer, Integer, Integer, Integer -> Integer
+  bci-offers (ring) (corpse) (i) (n) = if i >= sa-capacity ring then n
+    else bci-offers ring corpse (i + 1) (if peek-qword (sa-at ring i) 0 == 1 & peek-qword (sa-at ring i) 8 == corpse then n + 1 else n)
+  bci-noted : Maybe GameReply -> Text
+  bci-noted (said) = when said is None -> "" is Just (r) -> r.note
+  bci-quest : CompositeGame, CivicLive, WalkMap, Integer -> Integer
+  bci-quest (owner) (c) (britain) (corpse) = let row = bci-held-row owner.dead corpse 0
+    in let p = bgk-mobile owner 1453 1610
+    in let far = bgk-mobile owner 1458 1610
+    in let pa = if p == 0 then 0 - 1 else bgk-player owner p 77021
+    in let fa = if far == 0 then 0 - 1 else bgk-player owner far 77022
+    in let a1 = bci-account owner [99, 100, 114, 97] p
+    in let a2 = bci-account owner [99, 100, 114, 98] far
+    in let ghost = bgk-mobile owner 1451 1609
+    in let ga = if ghost == 0 then 0 - 1 else bgk-player owner ghost 77023
+    in let a3 = bci-account owner [99, 100, 114, 99] ghost
+    in let haunted = bci-fell owner ghost + (when world-get owner.checkpoint.game.world ghost is Err (_) -> 0 is Ok (m) -> when world-update owner.checkpoint.game.world (__record-set m "graphic" 402) is Err (_) -> 0 is Ok (_) -> 1)
+    in if row == 0 | p == 0 | far == 0 | pa < 0 | fa < 0 | a1 < 0 | a2 < 0 | ga < 0 | a3 < 0 | haunted /= 2 then 0
+    else let s1 = bci-step owner c britain
+    in let once = bci-offers owner.quests corpse 0 0
+    in let s2 = bci-step owner c britain
+    in let offered = if peek-qword row 64 == cg-incident-waiting & cg-quest-find owner.quests 1 corpse p 0 >= 0 & once == 1 & bci-offers owner.quests corpse 0 0 == 1 then 4096 else 0
+    in let unreached = if cg-quest-find owner.quests 1 corpse far 0 < 0 then 8192 else 0
+    in let unhaunted = if cg-quest-find owner.quests 1 corpse ghost 0 < 0 & offered > 0 then 16777216 else 0
+    in let said = bci-noted (cg-incident-accept owner owner.checkpoint.game (bci-input p) bci-accept)
+    in let took = said == "incident: quest accepted" & peek-qword row 64 == cg-incident-quested & peek-qword row 88 == p
+      & cg-quest-find owner.quests 2 a1 0 0 >= 0 & cg-mayor-row owner.dead 0 < 0 & bci-offers owner.quests corpse 0 0 == 0
+    in let accepted = if took then 16384 else 0
+    in let served = bci-served owner c britain p
+    in offered + unreached + unhaunted + accepted + served + bci-cemetery owner c britain row p
+  bci-served : CompositeGame, CivicLive, WalkMap, Integer -> Integer
+  bci-served (owner) (c) (britain) (p) = let corpse = bci-corpse owner 1452 1612
+    in let i = cg-dead-free owner.dead 0
+    in if corpse == 0 | i < 0 then 0
+    else let row = sa-at owner.dead i
+    in let a = poke-qword row 0 1452 + poke-qword row 8 1612 + poke-qword row 16 400
+    in let b = poke-qword row 56 corpse + poke-qword row 64 cg-incident-waiting + poke-qword row 72 1
+    in let s = bci-step owner c britain
+    in let quiet = cg-quest-find owner.quests 1 corpse p 0 < 0
+    in let said = bci-noted (cg-incident-accept owner owner.checkpoint.game (bci-input p) bci-accept)
+    in let refused = said == "incident: account served" & peek-qword row 64 == cg-incident-waiting & peek-qword row 88 == 0
+    in let purged = cg-quest-purge owner.quests corpse 0
+    in let cleared = cg-dead-zero row 0
+    in let gone = cv-discard owner.checkpoint.game.world corpse
+    in if quiet & refused then 32768 else 0
+  bci-hunt-profile : List WsProfile, Integer -> Integer
+  bci-hunt-profile (ps) (i) = if i >= list-length ps then 0 - 1
+    else if (list-at ps i).ai == 2 | (list-at ps i).ai == 11 then i else bci-hunt-profile ps (i + 1)
+  bci-hunter : CompositeGame, GameWorldSpawn, Integer -> Integer
+  bci-hunter (owner) (s) (unused) = let profile = bci-hunt-profile s.catalog.profiles 0
+    in if profile < 0 then 0
+    else when gws-summon s owner.checkpoint.game profile 1500 1700 0 0 (s.combat.tick + gws-forever)
+      is Err (_) -> 0
+      is Ok (serial) -> serial
+  bci-cemetery : CompositeGame, CivicLive, WalkMap, Integer, Integer -> Integer
+  bci-cemetery (owner) (c) (britain) (row) (p) = when owner.spawns
+    is None -> 0
+    is Just (s) -> let h = bci-hunter owner s 0
+      in let s0 = bci-step owner c britain
+      in let outside = peek-qword row 64 == cg-incident-quested
+      in let inside = bgk-move owner p 1350 1460
+      in let foe = if h == 0 then 0 else bgk-move owner h 1352 1462
+      in let s1 = bci-step owner c britain
+      in let blocked = h /= 0 & foe == 1 & peek-qword row 64 == cg-incident-quested
+      in let away = if h == 0 then 0 else bgk-move owner h 1500 1700
+      in let s2 = bci-step owner c britain
+      in (if outside & blocked then 65536 else 0) + (if peek-qword row 64 == cg-incident-coroners then 131072 else 0)
+  bci-lost : CompositeGame, CivicLive, WalkMap, Integer -> Integer
+  bci-lost (owner) (c) (britain) (m1) = let victim = bgk-mobile owner 1460 1625
+    in let corpse = bci-corpse owner 1460 1625
+    in let noted = cg-dead-note owner victim 0
+    in let row = bci-row owner.dead 1460 1625 0
+    in if row == 0 then 0
+    else let s1 = bci-step owner c britain
+    in let near = bgk-move owner m1 1463 1625
+    in let s2 = bci-step owner c britain
+    in let ran = peek-qword row 64 == cg-incident-running & peek-qword row 80 == m1
+    in let fell = bci-fell owner m1
+    in let s3 = bci-step owner c britain
+    in if ran & fell == 1 & peek-qword row 64 == cg-incident-fallen & peek-qword row 80 == 0 & not (cg-incident-runner owner.dead m1 0) then 256 else 0
+  bci-tail : CompositeGame, Integer, Integer -> Integer
+  bci-tail (owner) (corpse) (row) = let size = cg-incident-tail-size owner
+    in let buf = alloc-bytes size
+    in let written = cg-incident-write-tail owner buf
+    in let cleared = bci-wipe owner.dead 0
+    in let gone = bci-held-row owner.dead corpse 0 == 0
+    in let restored-n = cg-incident-read-tail owner buf size
+    in let back = bci-held-row owner.dead corpse 0
+    in let torn = cg-incident-read-tail owner buf 4
+    in if gone & written == buf + size & restored-n == 2 & cg-incident-count owner.dead 0 0 == 2 & back /= 0 & peek-qword back 64 == cg-incident-waiting & torn == 0 - 1 then 512 else 0
+  bci-wipe : Integer, Integer -> Integer
+  bci-wipe (ring) (i) = if i >= sa-capacity ring then 0 else let z = cg-dead-zero (sa-at ring i) 0 in bci-wipe ring (i + 1)
+  bci-freed : CompositeGame, CivicLive, WalkMap, Integer -> Integer
+  bci-freed (owner) (c) (britain) (corpse) = let gone = cv-discard owner.checkpoint.game.world corpse
+    in let s = bci-step owner c britain
+    in if gone == 1 & bci-held-row owner.dead corpse 0 == 0 & not (cg-incident-held owner.dead corpse 0) & cg-mayor-row owner.dead 0 < 0
+      & c.mayor-walk.target.x == 1430 & c.mayor-walk.target.y == 1600 then 1024 else 0
+  bci-graves : WorldTable, Integer, Integer -> Integer
+  bci-graves (world) (serial) (n) = if serial == 0 then n
+    else bci-graves world (world-tile-next world serial) (n + (when world-get world serial is Err (_) -> 0 is Ok (o) -> if o.graphic == cg-grave-dirt then 1 else if o.graphic == cg-grave-stone then 2 else 0))
+  bci-deeds : WorldTable, Integer, Integer -> Integer
+  bci-deeds (world) (serial) (n) = if serial == 0 then n
+    else bci-deeds world (world-next-sibling world serial) (n + (when world-get world serial is Err (_) -> 0 is Ok (o) -> if o.graphic == cn-deed-art & o.health == 1 then 1 else 0))
+  bci-coroners : CompositeGame, CivicLive, WalkMap, Integer -> Integer
+  bci-coroners (owner) (c) (britain) (corpse) = let row = bci-held-row owner.dead corpse 0
+    in let seconds = c.town.now + 100000
+    in if row == 0 | peek-qword row 64 /= cg-incident-coroners then 0
+    else when walk-map-new 1336 1488 48 24
+      is Err (_) -> 0
+      is Ok (graves) -> let filled = bwd-fill graves 0
+        in when world-get owner.checkpoint.game.world corpse
+        is Err (_) -> 0
+        is Ok (body) -> let hired = cg-incident-fetch owner c britain seconds body row
+          in let a = peek-qword row 96 in let b = peek-qword row 104
+          in let healer = cg-shop-titled "Healer" 0
+          in let made = a /= 0 & b /= 0 & healer >= 0 & cg-coroner-shop owner a healer & cg-coroner-shop owner b healer
+            & ns-has (as-mobile-name owner.active owner.checkpoint.game a) "coroner"
+          in let near = bgk-move owner a 1449 1610 + bgk-move owner b 1450 1609
+          in let h = when owner.spawns is None -> 0 is Just (s) -> bci-hunter owner s 0
+          in let inside = if h == 0 then 0 else bgk-move owner h 1352 1495
+          in let waited = cg-incident-fetch owner c graves seconds body row
+          in let kept = h /= 0 & inside == 1 & peek-qword row 64 == cg-incident-coroners & bci-there owner corpse
+          in let gone = if h == 0 then 0 else bgk-move owner h 1500 1700
+          in let took = cg-incident-fetch owner c graves seconds body row
+          in let g = peek-qword row 136
+          in let gx = g / 65536 in let gy = int-mod g 65536
+          in let carried = peek-qword row 64 == cg-incident-carrying & not (bci-there owner corpse) & gx >= 1340 & gx <= 1372 & gy >= 1490 & gy <= 1507
+          in let at = bgk-move owner a (gx - 1) gy + bgk-move owner b (gx + 1) gy
+          in let laid = cg-incident-late owner c graves seconds row
+          in let mound = peek-qword row 64 == cg-incident-buried & bci-graves owner.checkpoint.game.world (world-tile-first owner.checkpoint.game.world gx gy) 0 == 3
+          in let holder = peek-qword row 88
+          in let pack = gsi-pack-find owner.items.world holder 0
+          in let town = when owner.gov is None -> 0 is Just (s) -> (tg-office s.government 1).purse
+          in let opened = cg-open-treasury owner
+          in let x = owner.vendor.currency
+          in let empty = town >= 1 & (em-purse x.world.money town).coin == 0
+          in let before = bci-deeds owner.items.world (world-first-child owner.items.world pack) 0
+          in let paying = cg-incident-pay owner c row
+          in let paid = empty & peek-qword row 152 == 1 & bci-deeds owner.items.world (world-first-child owner.items.world pack) 0 == before + 1
+          in let s = list-at bb-shops healer
+          in let home = bgk-move owner a ((s.x1 + s.x2) / 2) ((s.y1 + s.y2) / 2) + bgk-move owner b ((s.x1 + s.x2) / 2 + 1) ((s.y1 + s.y2) / 2)
+          in let back = cg-incident-late owner c britain seconds row
+          in let dismissed = not (bci-there owner a) & not (bci-there owner b) & peek-qword row 0 == 0
+          in (if made then 262144 else 0) + (if kept & carried then 524288 else 0) + (if mound then 1048576 else 0)
+            + (if paid then 2097152 else 0) + (if dismissed then 4194304 else 0)
+  bci-unseen : CompositeGame -> Integer
+  bci-unseen (owner) = let victim = bgk-mobile owner 1480 1650
+    in let corpse = bci-corpse owner 1480 1650
+    in let noted = cg-dead-note owner victim 0
+    in let row = bci-row owner.dead 1480 1650 0
+    in if row == 0 | corpse == 0 then 0
+    else let held = poke-qword row 56 corpse + poke-qword row 64 cg-incident-fallen
+    in let armed = cg-decay-fire owner corpse 1000
+    in let fires = bci-fire owner corpse 1 cg-witness-wait
+    in let still = bci-there owner corpse & peek-qword row 64 == cg-incident-fallen
+    in let last = cg-decay-fire owner corpse ((cg-witness-wait + 2) * 1000000000)
+    in if still & not (bci-there owner corpse) & peek-qword row 64 == 0 then 8388608 else 0
+  bci-fire : CompositeGame, Integer, Integer, Integer -> Integer
+  bci-fire (owner) (corpse) (i) (n) = if i > n then 0 else let f = cg-decay-fire owner corpse (i * 1000000000) in bci-fire owner corpse (i + 1) n
+  bci-grow : CompositeGame -> Integer
+  bci-grow (owner) = let kept = owner.dead
+    in let fresh = sa-new cg-dead-bytes cg-dead-rows
+    in let swapped = __record-set owner "dead" fresh
+    in let twelve = bci-fill fresh 0 12
+    in let idle = cg-dead-due owner
+    in let thirteen = bci-fill fresh 12 13
+    in let due = cg-dead-due owner
+    in let grown = sa-grow fresh (sa-capacity fresh * 2)
+    in let later = cg-dead-due owner
+    in let back = __record-set owner "dead" kept
+    in if not idle & due & grown == 0 & sa-capacity fresh == 32 & not later then 2048 else 0
+  bci-fill : Integer, Integer, Integer -> Integer
+  bci-fill (ring) (i) (n) = if i >= n then 0 else let a = poke-qword (sa-at ring i) 0 1 in bci-fill ring (i + 1) n
+  bci-checks : Integer -> Integer
+  bci-checks (unused) = when bwd-founded 0
+    is Err (_) -> 0 - 1
+    is Ok (owner) -> let attached = when owner.spawns is Just (_) -> Ok 0 is None -> cg-spawn-attach owner
+      in when owner.civic
+      is None -> 0 - 2
+      is Just (c) -> when owner.town-map
+        is None -> 0 - 2
+        is Just (britain) -> if list-length c.guards < 1 | c.mayor == 0 | list-length owner.miners < 2 then 0 - 2
+          else let parked = bgk-park owner c 0 + bci-park owner 0
+          in let plain = bci-plain owner
+          in let scene = bci-scene owner c britain
+          in if scene < 0 then scene else plain + scene + bci-grow owner + bci-cheer owner + bci-close owner c britain
+  bci-open : CompositeGame, Integer, Integer, Integer -> Integer
+  bci-open (owner) (corpse) (x) (y) = let i = cg-dead-free owner.dead 0
+    in if corpse == 0 | i < 0 then 0
+    else let row = sa-at owner.dead i
+    in let a = poke-qword row 0 x + poke-qword row 8 y + poke-qword row 16 400
+    in let b = poke-qword row 56 corpse + poke-qword row 64 cg-incident-waiting + poke-qword row 72 1 + poke-qword row 80 77
+    in row
+  bci-shut : CompositeGame, Integer, Integer -> Integer
+  bci-shut (owner) (row) (corpse) = let purged = cg-quest-purge owner.quests corpse 0 in let z = cg-dead-zero row 0 in cv-discard owner.checkpoint.game.world corpse
+  bci-close : CompositeGame, CivicLive, WalkMap -> Integer
+  bci-close (owner) (c) (britain) = let seconds = c.town.now + 100000
+    in let corpse = bci-corpse owner 1470 1640
+    in let row = bci-open owner corpse 1470 1640
+    in if row == 0 then 0
+    else let offered = cg-quest-add owner.quests 1 corpse 77
+    in let beside = bgk-move owner c.mayor 1471 1641
+    in let young = poke-qword row 160 (seconds - cg-queued-close + 2) + poke-qword row 144 (seconds - cg-unaccepted-close + 2)
+    in let s1 = bci-step owner c britain
+    in let stays = peek-qword row 64 == cg-incident-waiting & peek-qword row 80 == 77
+    in let aged = poke-qword row 144 (seconds - cg-unaccepted-close + 1)
+    in let s2 = bci-step owner c britain
+    in let buried = peek-qword row 64 == cg-incident-coroners & peek-qword row 88 == 0 & peek-qword row 80 == 0 & bci-offers owner.quests corpse 0 0 == 0
+    in let shut = bci-shut owner row corpse
+    in let body = bci-corpse owner 1472 1642
+    in let hunted = bci-open owner body 1472 1642
+    in let h = when owner.spawns is None -> 0 is Just (s) -> bci-hunter owner s 0
+    in let inside = if h == 0 then 0 else bgk-move owner h 1352 1462
+    in let aged2 = if hunted == 0 then 0 else poke-qword hunted 160 (seconds - cg-queued-close + 2) + poke-qword hunted 144 (seconds - cg-unaccepted-close + 1)
+    in let s3 = if hunted == 0 then 0 else bci-step owner c britain
+    in let released = hunted /= 0 & inside == 1 & peek-qword hunted 64 == 0 & peek-qword hunted 72 == 0 & bci-there owner body
+    in let away = if h == 0 then 0 else bgk-move owner h 1500 1700
+    in let shut2 = if hunted == 0 then 0 else bci-shut owner hunted body
+    in let i = cg-dead-free owner.dead 0
+    in let late = if i < 0 then 0 else sa-at owner.dead i
+    in let placed = if late == 0 then 0 else poke-qword late 0 1474 + poke-qword late 8 1644 + poke-qword late 64 cg-incident-buried + poke-qword late 136 (1350 * 65536 + 1495)
+    in let home = if late == 0 then [] else cg-incident-late owner c britain seconds late
+    in let unpaid = late /= 0 & peek-qword late 0 == 0 & peek-qword late 152 == 0
+    in (if stays then 67108864 else 0) + (if buried then 134217728 else 0) + (if released then 268435456 else 0) + (if unpaid then 536870912 else 0)
+      + bci-queued owner c britain + bci-stranded owner c britain + bci-first owner c britain + bci-told owner c
+  bci-queued : CompositeGame, CivicLive, WalkMap -> Integer
+  bci-queued (owner) (c) (britain) = let seconds = c.town.now + 4 * cg-queued-close
+    in let corpse = bci-corpse owner 1490 1660
+    in let row = bci-open owner corpse 1490 1660
+    in if row == 0 then 0
+    else let queued = poke-qword row 64 cg-incident-called + poke-qword row 160 (seconds - 2 * cg-unaccepted-close)
+    in let s1 = when world-get owner.checkpoint.game.world corpse is Err (_) -> [] is Ok (body) -> cg-incident-step owner c britain seconds body row
+    in let held = peek-qword row 64 == cg-incident-called
+    in let stale = poke-qword row 160 (seconds - cg-queued-close + 1)
+    in let s2 = when world-get owner.checkpoint.game.world corpse is Err (_) -> [] is Ok (body) -> cg-incident-step owner c britain seconds body row
+    in let closed = peek-qword row 64 == cg-incident-coroners | peek-qword row 64 == 0
+    in let shut = bci-shut owner row corpse
+    in if held & closed then 8589934592 else 0
+  bci-hook : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> Integer
+  bci-hook (buf) (x) (y) (excluded) (also) (only) (packet) = poke-qword buf 0 (peek-qword buf 0 + 1) + poke-qword buf 8 only + poke-qword buf 16 (list-length packet)
+  bci-told : CompositeGame, CivicLive -> Integer
+  bci-told (owner) (c) = let buf = alloc-bytes 24
+    in let z = poke-qword buf 0 0 + poke-qword buf 8 0 + poke-qword buf 16 0
+    in let kept = owner.combat.notice-hook
+    in let bound = __record-set owner.combat "notice-hook" (bci-hook buf)
+    in let a = cg-incident-tell owner c.mayor 4242 cg-offer-line
+    in let one = peek-qword buf 0 == 1 & peek-qword buf 8 == 4242 & peek-qword buf 16 > 44 & list-length a == 0
+    in let b = cg-incident-say owner c.mayor "Hark, a test line for the ring."
+    in let wide = peek-qword buf 0 == 2 & peek-qword buf 8 == 0 & list-length b == 0
+    in let back = __record-set owner.combat "notice-hook" kept
+    in if one & wide then 4294967296 else 0
+  bci-first : CompositeGame, CivicLive, WalkMap -> Integer
+  bci-first (owner) (c) (britain) = let seconds = c.town.now + 100000
+    in let k1 = bci-corpse owner 1478 1652
+    in let lone = bci-open owner k1 1478 1652
+    in let k2 = bci-corpse owner 1480 1654
+    in let took = bci-open owner k2 1480 1654
+    in if lone == 0 | took == 0 then 0
+    else let a = poke-qword lone 64 cg-incident-coroners + poke-qword took 64 cg-incident-coroners + poke-qword took 88 77
+    in let s1 = when world-get owner.checkpoint.game.world k1 is Err (_) -> [] is Ok (body) -> cg-incident-fetch owner c britain seconds body lone
+    in let waited = peek-qword lone 96 == 0
+    in let s2 = when world-get owner.checkpoint.game.world k2 is Err (_) -> [] is Ok (body) -> cg-incident-fetch owner c britain seconds body took
+    in let hired = peek-qword took 96 /= 0
+    in let freed = if peek-qword took 96 == 0 then 0 else cg-coroners-free owner c took
+    in let gone = bci-shut owner lone k1 + bci-shut owner took k2
+    in if waited & hired then 2147483648 else 0
+  bci-stranded : CompositeGame, CivicLive, WalkMap -> Integer
+  bci-stranded (owner) (c) (britain) = let i = cg-dead-free owner.dead 0
+    in let row = if i < 0 then 0 else sa-at owner.dead i
+    in let a = if row == 0 then 0 else cg-coroner-make owner c britain 0
+    in let b = if a == 0 then 0 else cg-coroner-make owner c britain 5
+    in if b == 0 then 0
+    else let placed = poke-qword row 0 1476 + poke-qword row 8 1646 + poke-qword row 64 cg-incident-buried + poke-qword row 96 a + poke-qword row 104 b + poke-qword row 136 (1350 * 65536 + 1495)
+    in let far = bgk-move owner a 1341 1489 + bgk-move owner b 1343 1489
+    in let bound = cg-coroners-bind c row
+    in let calm = rte-queued (list-at c.coroners 0).walk + rte-queued (list-at c.coroners 1).walk
+    in let s1 = cg-incident-late owner c britain (c.town.now + 100000) row
+    in let held = peek-qword row 0 /= 0 & bci-there owner a & bci-there owner b
+    in let failed = __record-set (list-at c.coroners 0).walk "fails" 1
+    in let s2 = cg-incident-late owner c britain (c.town.now + 100000) row
+    in let gone = peek-qword row 0 == 0 & not (bci-there owner a) & not (bci-there owner b)
+    in let cleared = if peek-qword row 0 == 0 then 0 else cg-coroners-free owner c row + cg-dead-zero row 0
+    in if held & gone then 1073741824 else 0
+ trial-47111: a brigand's profile hunts with a human body (400), so a murdered human's corpse read as a monster's and
+ townsfolk cheered at it; an innocent's corpse is never cheered, a hunter's still is.
+  bci-cheer : CompositeGame -> Integer
+  bci-cheer (owner) = when owner.spawns
+    is None -> 0
+    is Just (s) -> let p = bci-hunt-profile s.catalog.profiles 0
+      in if p < 0 then 0
+      else let body = (list-at s.catalog.profiles p).body
+      in if cg-monster-body owner 400 & cg-cheers owner False body & not (cg-cheers owner True 400) & not (cg-cheers owner True body) then 33554432 else 0
+  bvt-incident : Integer -> [Console] Integer
+  bvt-incident (unused) = act
+    n <- bci-checks 0
+    a <- bvt-check ("UOAIX-275 an innocent's death holds its corpse as an incident only with incidents on, and neither decay nor a guard takes it (code " & show n & ")") (n >= 0 & bit-and n 15 == 15)
+    b <- bvt-check ("UOAIX-275 a worker in sight runs to the mayor, the mayor walks to the corpse and waits; a fallen witness is let go (code " & show n & ")") (n >= 0 & bit-and n 496 == 496)
+    d <- bvt-check ("UOAIX-275 the incident tail round-trips, the corpse gone frees the mayor, and the table grows (code " & show n & ")") (n >= 0 & bit-and n 3584 == 3584)
+    e <- bvt-check ("UOAIX-275 the mayor offers the quest once to a player in reach, 'accept' takes it once per account (code " & show n & ")") (n >= 0 & bit-and n 61440 == 61440 & bit-and n 16777216 == 16777216)
+    f <- bvt-check ("UOAIX-275 the quest ends only with the holder in a cemetery no hunting creature stands in (code " & show n & ")") (n >= 0 & bit-and n 196608 == 196608)
+    g <- bvt-check ("UOAIX-275 two coroners from the healer take the corpse only into a clear cemetery, lay the grave, the holder is paid a deed and the coroners go home (code " & show n & ")") (n >= 0 & bit-and n 8126464 == 8126464)
+    h <- bvt-check ("UOAIX-275 a corpse no worker sees is let go after cg-witness-wait decay periods and rots (code " & show n & ")") (n >= 0 & bit-and n 8388608 == 8388608)
+    k <- bvt-check ("UOAIX-275 townsfolk never cheer at an innocent's corpse, though body 400 is a hunting body (code " & show n & ")") (n >= 0 & bit-and n 33554432 == 33554432)
+    q <- bvt-check ("UOAIX-275 Q5 an unaccepted incident closes at a game day: the coroners bury it unpaid in a clear cemetery, a hunted one lets it decay (code " & show n & ")") (n >= 0 & bit-and n 1006632960 == 1006632960)
+    r <- bvt-check ("UOAIX-275 coroners whose walk home fails are dismissed where they stand and free the row (code " & show n & ")") (n >= 0 & bit-and n 1073741824 == 1073741824)
+    t <- bvt-check ("UOAIX-275 coroners serve an accepted burial before an unaccepted one (code " & show n & ")") (n >= 0 & bit-and n 2147483648 == 2147483648)
+    u <- bvt-check ("UOAIX-275 the offer is told to its player alone and an incident line to everyone in range (code " & show n & ")") (n >= 0 & bit-and n 4294967296 == 4294967296)
+    v <- bvt-check ("UOAIX-275 Q5 an incident queued for the mayor closes three game days after its witness ran, not one (code " & show n & ")") (n >= 0 & bit-and n 8589934592 == 8589934592)
+    a + b + d + e + f + g + h + k + q + r + t + u + v
+  end

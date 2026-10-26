@@ -445,6 +445,44 @@ const isDeuce = c => c >= 0 && c % 13 === 0;
      bad2.slice(0, 2).join('; ') || `${moves} moves, ${flips} cards turned`);
   ok('control: cards were turned up, so the flip was exercised', flips > 0, `${flips}`);
 }
+
+// -- RULES: a completed run leaves, and only a whole face-up one ------------
+// Spades are ids 0 to 12: the two is 0, the king 11, the ace 12. A run leaves
+// the tableau when king to ace of one suit lies face up at the end of a
+// column, after a move or after a deal; a king still face down under its
+// queen is not yet in the run.
+{
+  const put = (h, c, cards) => cards.reduce((s, card) => e.sp_put(s, c, card), h);
+  const run = (hi, lo) => [...Array(hi - lo + 1).keys()].map(i => hi - i);
+  const jackToAce = [...run(9, 0), 12];
+  const build = hidden => {
+    let h = put(put(e.sp_blank(), 0, [11, 10]), 1, jackToAce);
+    if (hidden) h = e.sp_hide(h, 0, 1);
+    return h;
+  };
+  for (const hidden of [true, false]) {
+    const h = build(hidden);
+    const legal = e.sp_can(h, 1, 0, 0) === 1;
+    const next = e.sp_move(h, 1, 0, 0);
+    const want = hidden ? { suits: 0, n: 13 } : { suits: 1, n: 0 };
+    ok(hidden ? 'a king face down under its queen keeps the run on the table'
+              : 'control: the same run with its king face up leaves the table',
+       legal && e.sp_suits(next) === want.suits && e.sp_coln(next, 0) === want.n,
+       `legal ${legal}, ${e.sp_suits(next)} suits, column of ${e.sp_coln(next, 0)}`);
+  }
+  for (const last of [12, 25]) {
+    let h = put(e.sp_blank(), 0, run(11, 0));
+    for (let c = 1; c < COLS; c++) h = e.sp_put(h, c, 13 + c);
+    for (let c = COLS - 1; c >= 1; c--) h = e.sp_sput(h, 13 + c);
+    h = e.sp_sput(h, last);
+    const next = e.sp_deal(h);
+    const done = last === 12;
+    ok(done ? 'an ace dealt onto king to two of its suit completes the run'
+            : 'control: an ace of another suit dealt there completes nothing',
+       e.sp_stockn(next) === 0 && e.sp_suits(next) === (done ? 1 : 0) && e.sp_coln(next, 0) === (done ? 0 : 13),
+       `stock ${e.sp_stockn(next)}, ${e.sp_suits(next)} suits, column of ${e.sp_coln(next, 0)}`);
+  }
+}
 console.log(fail === 0
   ? `\nPASS: Spider deals, sequences and moves by its rules (${pass} arms).`
   : `\nFAIL: ${fail} of ${pass + fail} arms.`);

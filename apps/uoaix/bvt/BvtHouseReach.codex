@@ -1,0 +1,36 @@
+Chapter: BvtHouseReach
+  cites Uoaix chapter Housing
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ A deed house held by 9001 centered on 1500,1600 and one held by 9002 at 1520,1600: "I ban thee" and "Remove thyself"
+ move only a player standing inside the holder's own house, as in 1998; a target answered with any serial on the map
+ moved that player to the house's step (val, UOAIX audit 2026-10-18).
+  bvhr-made : Result Integer Text -> Integer
+  bvhr-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvhr-house : CnState, Integer, Integer, Integer -> Integer
+  bvhr-house (land) (x) (y) (holder) = let k = cn-free-site land 0
+    in let a = cn-site-set land k 0 1 in let b = cn-site-set land k 1 x in let c = cn-site-set land k 2 y
+    in let d = cn-site-set land k 4 holder in let e = poke-qword land.buf 8 (k + 1) in k
+  bvhr-codes : Integer -> List Integer
+  bvhr-codes (unused) = when world-new 64
+    is Err (_) -> [-1, -1]
+    is Ok (w) -> let land = cn-new 0
+      in let h = bvhr-house land 1500 1600 9001
+      in let other = bvhr-house land 1520 1600 9002
+      in let inside = bvhr-made (world-create w (gs-mobile 0 1502 1601 0 400 1002))
+      in let wall = bvhr-made (world-create w (gs-mobile 0 1497 1603 0 400 1002))
+      in let street = bvhr-made (world-create w (gs-mobile 0 1500 1605 0 400 1002))
+      in let far = bvhr-made (world-create w (gs-mobile 0 2500 600 0 400 1002))
+      in let neighbour = bvhr-made (world-create w (gs-mobile 0 1520 1600 0 400 1002))
+      in let chest = bvhr-made (world-create w (WorldObject { serial = 0, kind = 2, x = 1501, y = 1600, z = 0, graphic = #0E43, hue = 0, container = 0, amount = 1, health = 0 }))
+      in [(if hs-holds land w 9001 h inside then 1 else 0) + (if hs-holds land w 9001 h wall then 1 else 0),
+        (if hs-holds land w 9001 h street then 1 else 0) + (if hs-holds land w 9001 h far then 1 else 0) + (if hs-holds land w 9001 h neighbour then 1 else 0)
+          + (if hs-holds land w 9001 h chest then 1 else 0) + (if hs-holds land w 9001 h (far + 4096) then 1 else 0) + (if hs-holds land w 9002 h inside then 1 else 0)
+          + (if other < 0 then 1 else 0)]
+  bvt-house-reach : Integer -> [Console] Integer
+  bvt-house-reach (unused) = let n = bvhr-codes 0 in act
+    a <- bvt-check ("a player inside the holder's house, its walls included, can be banned or ejected (2: " & show (list-at n 0) & ")") (list-at n 0 == 2)
+    b <- bvt-check ("a player on the street, across the map or in a neighbour's house, a chest, a serial the world does not hold, and a house that is not the holder's are refused (0: " & show (list-at n 1) & ")") (list-at n 1 == 0)
+    a + b
+  end

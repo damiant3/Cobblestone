@@ -84,6 +84,16 @@ $Plugs = @(
        Ext  = 'ts'
        Exe  = 'node'
        Args = { param($f) @($f) } }
+    # Git for Windows' perl, not on PATH. Its stderr carries "Deep recursion"
+    # warnings for the recursion rows, so only stdout is compared.
+    @{ Name = 'perl'
+       Cdx  = 'codex\plugs\perl\build-output\perl-plug.cdx'
+       Ext  = 'pl'
+       Exe  = 'C:\Program Files\Git\usr\bin\perl.exe'
+       Invoke = {
+           param($srcOut)
+           & 'C:\Program Files\Git\usr\bin\perl.exe' $srcOut 2>$null
+       } }
     @{ Name = 'zig'
        Cdx  = 'codex\plugs\zig\build-output\zig-plug.cdx'
        Ext  = 'zig'

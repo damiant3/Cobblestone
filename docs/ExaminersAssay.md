@@ -7601,6 +7601,42 @@ loads the cell as `ValNull`. Every arm except `db-csv-roundtrip` holds the
 i64-max value beside the first refused one. The readers with no channel are VerifiedFormatParsing
 row 23.
 
+`GameServer`'s and codexmagic `ServerUtil`'s `parse-int` have no channel, so the
+request is the one refused: `GameServer`, `ClanServer`, `PlaneServer` and
+`MagicServer` answer 400 before any handler runs when a query value is above
+9223372036854775759 (`Games chapter GameQuery`), and `game-query-cap` pins
+which request lines that fires on. The bound is i64 max less 48, because
+`parse-int-loop` adds the digit's code point before subtracting 48: measured on
+`GameServer`, ...759 parses and ...760 and i64 max both trap. Against the guard
+sabotaged to `False`, `GameServer` and `ClanServer` each trap (`!EXC=06`) on a
+20-digit value and answer nothing after it. `magic-auth-secret` carries a
+19-digit `sig-high` in range, which an 18-digit cap wrongly refused.
+
+`magic` `OracleParse`'s `parse-int-prefix` answers -1 before `acc * 10 + d`
+would pass i64 max, the "no number" its callers already read, and
+`parse-primary-effect` and `whole-card-effect` answer `NoEffect` for a clause
+carrying such a number, so it is unmodelled rather than a default damage or
+pump (`magic-oracle-overflow`; the depot parser traps on its first huge
+number). The census over all ten pools is line-identical against the depot
+parser (487 lines, 2026-10-20). `CardBridge` `parse-pt` and
+`SolverBridgeReport` `str-to-int` read the -1 as a value; both read repository
+card data only.
+
+`WorkflowEngine`'s `parse-int-loop` answers -1 above 9223372036854775759, and
+`GreaterThan` and `LessThan` are false on it (`workflow-condition-overflow`;
+the depot engine traps on ...760).
+
+`WaLoad`'s `wa-scan` stores each field in a u32 slot, so a field above
+4294967295 rejects its line: `wa-pivot-line` emits nothing and answers
+`wlr-rejected` 1, and `WaReal` prints `lines rejected`. `wademo-pivot` holds
+the u32 maximum beside the first refused value; with the check sabotaged,
+4294967296 is emitted truncated and a 20-digit field traps.
+
+`PageCompiler`'s `page-tokenize-number` pushes `TkBadNum` where `n * 10 + cc`
+would pass i64 max (CCE digits are codes 3 to 12, so i64 max itself traps), and
+`compile-page` answers `PcError` for a token list holding one
+(`page-number-overflow`; with the bound sabotaged the tokenizer traps).
+
 ## The Glyph unitsPerEm Guards (`codex/test/apps/glyph-upem-guard`)
 
 Track D item 19, the `ui/` leg. **`unitsPerEm` is a raw 16-bit field of the
@@ -7774,8 +7810,8 @@ gate. `truetype-bridge-test`, `truetype-render-test`, `truetype-test` and
 
 `build/plug-oracle-test.ps1` is the only thing in the tree that runs a plug's
 OUTPUT, and it does it by EXECUTING the emitted source, so it can only reach a
-plug whose target toolchain is on this box: python, javascript, csharp, zig,
-wasm. **Every binary and image emitter is outside it by construction.** There
+plug whose target toolchain is on this box: python, javascript, typescript,
+csharp, zig, perl, wasm. **Every binary and image emitter is outside it by construction.** There
 is no SPIR-V runtime here, and installing one to grade a plug is not the trade;
 the honest consequence was that those plugs had no runner at all.
 

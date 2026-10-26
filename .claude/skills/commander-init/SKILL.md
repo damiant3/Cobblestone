@@ -29,7 +29,7 @@ boundary there is no usage record for the compacted context, and the row
 says `compacted HH:MM, no turn since` instead of printing the stale number.
 
 ```powershell
-build/measure-context.ps1            # every lane, one row: percent, at-rest, last write, compaction
+tools/agents/measure-context.ps1            # every lane, one row: percent, at-rest, last write, compaction
 ```
 
 The tool is the formula and its header states it; the skill carries only
@@ -78,7 +78,7 @@ re-read of its context, and five lanes bumped every 12 minutes while
 Damian slept is what this rule exists to prevent. Never re-send a grant
 because a lane has not launched yet; measure its context instead.
 
-**Pulse checklist:** (1) Step 1's table, handoffs ordered at 75; (2)
+**Pulse checklist:** (1) Step 1's table, handoffs ordered past 75 (a start threshold, not an end one); (2)
 status.json per lane, grant FIFO where a WaitingForBox lane's ask fits
 the box, bump only a lane whose run has exited; (3) guests and free
 memory; (4) main landings and root's merge-down; (5) Steve's PRs, issues

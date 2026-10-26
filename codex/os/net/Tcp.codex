@@ -125,6 +125,16 @@ Section: Segment Parsing
       payload-stop = stop
     }
 
+ RFC 9293 3.1: the data offset counts 32-bit words, at least 5, and the header it
+ names must lie inside the segment.
+
+  tcp-header-length-valid-at : List Integer, Integer, Integer -> Boolean
+  tcp-header-length-valid-at (buf) (off) (stop) =
+    if stop - off < tcp-header-size then False
+    else let hdr-len = 4 * bit-and (bit-shru (read-be16 buf (off + 12)) 12) 15
+    in if hdr-len < tcp-header-size then False
+    else off + hdr-len <= stop
+
   tcp-parse : List Integer -> TcpSegment
   tcp-parse (data) = tcp-parse-at data 0 (list-length data)
 
@@ -347,7 +357,7 @@ Section: SYN_RECEIVED State
   tcp-step-syn-received : TcpConnection, TcpEvent -> TcpStep
   tcp-step-syn-received (conn) (ev) = when ev
     is EvSegment (seg) ->
-      if tcp-has-flag seg tcp-flag-ack then
+      if tcp-has-flag seg tcp-flag-ack & seg.ack-num == conn.send-next then
         if tcp-seg-payload-len seg > 0 then
           let c1 = set-recv-next (tcp-set-state conn TcpEstablished) (seg.seq-num + tcp-seg-payload-len seg)
           in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
@@ -370,10 +380,13 @@ Section: ESTABLISHED State
       in TcpStep { conn = c1, action = ActSend seg }
     is EvSegment (seg) ->
       if tcp-has-flag seg tcp-flag-rst then tcp-step-rst conn seg
+      else if tcp-has-flag seg tcp-flag-fin & seg.seq-num /= conn.recv-next then TcpStep { conn = conn, action = ActNone }
       else if tcp-has-flag seg tcp-flag-fin then
-        let c1 = set-recv-next (tcp-set-state conn TcpCloseWait) (seg.seq-num + 1)
-        in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
-        in TcpStep { conn = c1, action = ActSend ack }
+        let n = if tcp-seg-payload-len seg > 0 then tcp-seg-payload-len seg else 0
+        in let c1 = set-recv-next (tcp-set-state conn TcpCloseWait) (seg.seq-num + n + 1)
+        in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
+        in if n > 0 then TcpStep { conn = c1, action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack }
+        else TcpStep { conn = c1, action = ActSend ack }
       else if tcp-seg-payload-len seg > 0 then
         let c1 = set-recv-next conn (seg.seq-num + tcp-seg-payload-len seg)
         in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
@@ -391,18 +404,7 @@ Section: ESTABLISHED State
 Section: FIN_WAIT_1 State
   tcp-step-fin-wait1 : TcpConnection, TcpEvent -> TcpStep
   tcp-step-fin-wait1 (conn) (ev) = when ev
-    is EvSegment (seg) ->
-      if tcp-has-flag seg tcp-flag-fin & tcp-has-flag seg tcp-flag-ack then
-        let c1 = set-recv-next (tcp-set-state conn TcpTimeWait) (seg.seq-num + 1)
-        in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
-        in TcpStep { conn = c1, action = ActSend ack }
-      else if tcp-has-flag seg tcp-flag-ack then
-        TcpStep { conn = tcp-set-state conn TcpFinWait2, action = ActNone }
-      else if tcp-has-flag seg tcp-flag-fin then
-        let c1 = set-recv-next (tcp-set-state conn TcpTimeWait) (seg.seq-num + 1)
-        in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
-        in TcpStep { conn = c1, action = ActSend ack }
-      else TcpStep { conn = conn, action = ActNone }
+    is EvSegment (seg) -> tcp-step-half-closed conn seg (tcp-has-flag seg tcp-flag-ack & seg.ack-num == conn.send-next)
     is EvClose -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "closing" }
@@ -410,15 +412,27 @@ Section: FIN_WAIT_1 State
 Section: FIN_WAIT_2 State
   tcp-step-fin-wait2 : TcpConnection, TcpEvent -> TcpStep
   tcp-step-fin-wait2 (conn) (ev) = when ev
-    is EvSegment (seg) ->
-      if tcp-has-flag seg tcp-flag-fin then
-        let c1 = set-recv-next (tcp-set-state conn TcpTimeWait) (seg.seq-num + 1)
-        in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (seg.seq-num + 1) tcp-flag-ack (conn.send-window) []
-        in TcpStep { conn = c1, action = ActSend ack }
-      else TcpStep { conn = conn, action = ActNone }
+    is EvSegment (seg) -> tcp-step-half-closed conn seg True
     is EvClose -> TcpStep { conn = conn, action = ActNone }
     is EvConnect -> TcpStep { conn = conn, action = ActNone }
     is EvSend (data) -> TcpStep { conn = conn, action = ActError "closing" }
+
+ RFC 9293 3.10.7.4: FIN_WAIT_1 and FIN_WAIT_2 still receive, because the peer may
+ send after our FIN (a half close). Data and a FIN count only at recv-next; data is
+ delivered and acknowledged, a FIN's data with it.
+
+  tcp-step-half-closed : TcpConnection, TcpSegment, Boolean -> TcpStep
+  tcp-step-half-closed (conn) (seg) (fin-acked) =
+    let n = tcp-seg-payload-len seg
+    in let fin = tcp-has-flag seg tcp-flag-fin
+    in if (n > 0 | fin) & seg.seq-num /= conn.recv-next then TcpStep { conn = conn, action = ActNone }
+    else let next = if fin then TcpTimeWait else if fin-acked then TcpFinWait2 else TcpFinWait1
+    in let c1 = if n > 0 | fin then set-recv-next (tcp-set-state conn next) (seg.seq-num + n + (if fin then 1 else 0))
+      else tcp-set-state conn next
+    in let ack = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (c1.recv-next) tcp-flag-ack (conn.send-window) []
+    in if n > 0 then TcpStep { conn = c1, action = ActDataAck (seg.payload-buf) (seg.payload-off) (seg.payload-stop) ack }
+    else if fin then TcpStep { conn = c1, action = ActSend ack }
+    else TcpStep { conn = c1, action = ActNone }
 
 Section: CLOSE_WAIT State
   tcp-step-close-wait : TcpConnection, TcpEvent -> TcpStep
@@ -435,6 +449,14 @@ Section: CLOSE_WAIT State
       let seg = tcp-build-segment (conn.local-port) (conn.remote-port) (conn.send-next) (conn.recv-next) (bit-or tcp-flag-ack tcp-flag-psh) (conn.send-window) data
       in let c1 = set-send-next conn (conn.send-next + list-length data)
       in TcpStep { conn = c1, action = ActSend seg }
+
+Section: Acceptance
+
+ RFC 9293 3.10.7: an ACK in SYN_RECEIVED counts only when it acknowledges our SYN,
+ and in FIN_WAIT_1 or LAST_ACK only when it acknowledges our FIN (in each, ack-num
+ is send-next), and a FIN only at the next expected sequence
+ number, the same exact-sequence rule RFC 5961 sets for a reset. A segment failing
+ the test changes nothing.
 
 Section: RST In A Synchronized State
 
@@ -453,7 +475,7 @@ Section: LAST_ACK State
   tcp-step-last-ack : TcpConnection, TcpEvent -> TcpStep
   tcp-step-last-ack (conn) (ev) = when ev
     is EvSegment (seg) ->
-      if tcp-has-flag seg tcp-flag-ack then
+      if tcp-has-flag seg tcp-flag-ack & seg.ack-num == conn.send-next then
         TcpStep { conn = tcp-set-state conn TcpClosed, action = ActClosed }
       else TcpStep { conn = conn, action = ActNone }
     is EvClose -> TcpStep { conn = conn, action = ActNone }

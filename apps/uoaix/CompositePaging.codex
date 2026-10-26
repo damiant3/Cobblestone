@@ -32,6 +32,7 @@ Chapter: CompositePaging
           is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
           is Ok (map) -> act
             designed <- cp-designs owner map
+            paged <- cg-flora-page owner.state map cache.fills
             when owner.state.decoration
               is None -> Ok 0
               is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
@@ -80,6 +81,7 @@ Chapter: CompositePaging
       is Err (e) -> let stopped = cs-refuse owner ("map window: " & e) in Err e
       is Ok (map) -> act
         designed <- cp-designs owner map
+        paged <- cg-flora-page owner.state map cache.fills
         when owner.state.decoration
           is None -> Ok 0
           is Just (state) -> if wd-bound state then Ok 0 else when wd-rebind state map map.stride
@@ -1232,9 +1234,16 @@ Chapter: CompositePaging
     else if context == 3 then cp-place map owner game input x y z
     else if context == 4 then crm-remove owner game input serial
     else if context == 5 then crm-kill owner game input serial
+    else if not (cp-context-allowed owner.state.testing context) then act Ok (cp-say input "british:refused" "That target is no longer active.") end
     else if context >= 16 & context < 16 + 47 * 1001 then act Ok (cp-skill-on owner game input serial (csk-from-context context)) end
     else if context >= cat-base & context < cat-base + 7 * 256 then act Ok (cp-attr-on owner game input serial (cat-from-context context)) end
     else act Ok (cp-say input "british:refused" "That target is no longer active.") end
+ The cursor context is the client's own 32 bits (0x6C bytes 2 to 5), so a forged one reached cp-skill-on and cp-attr-on
+ outside testing mode and with a stat up to 255 (red, UOAIX audit 2026-10-18).
+  cp-context-allowed : Boolean, Integer -> Boolean
+  cp-context-allowed (testing) (context) = if context >= 16 & context < 16 + 47 * 1001 then testing
+    else if context >= cat-base & context < cat-base + 7 * 256 then testing & (let r = cat-from-context context in r.value >= cat-least r.skill & r.value <= cat-most)
+    else True
   cp-skill : CompositeOwner, GameShard, GameInput, List Integer -> GameReply
   cp-skill (owner) (game) (input) (packet) = if not owner.state.testing then cp-say input "british:refused" "[skill works only in testing mode."
     else when csk-parse packet
@@ -1634,6 +1643,7 @@ Chapter: CompositePaging
           is Err (e) -> Err e
           is Ok (_) -> act
             checked <- cp-map-check game cache.map
+            synced <- cg-flora-world owner.state cache.map cache.fills
             cs-tick owner game cache.map watcher tick
           end
       end

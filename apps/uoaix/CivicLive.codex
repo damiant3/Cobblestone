@@ -35,11 +35,21 @@ Chapter: CivicLive
   cv-walk-on (s) (nav) (p) (mobile) (map) (doors) (target) =
     let kept = tl-copy-spot p.target target
     in let moves = p.walk.moves
+    in let around = __record-set p.walk "sidestep" 1
     in when rte-toward-budget nav s.law.world (Just s.town.vendors.game) map doors (cv-admit s mobile.serial) p.walk mobile target.x target.y target.z cv-plan-budget
       is Err (e) -> Err (if e == "route step refused" then "Law refused civic step" else e)
-      is Ok (packets) -> if p.walk.moves == moves then let retry = __record-set p "next-step" (p.next-step + 60) in Ok packets
+      is Ok (moved) -> let packets = moved & cv-pardon s p mobile
+        in if p.walk.moves == moves then let retry = __record-set p "next-step" (p.next-step + 60) in Ok packets
         else let direction-set = __record-set p "direction" p.walk.facing
         in let next = __record-set p "next-step" (p.next-step + 12) in Ok packets
+ Damian, 2026-10-20: a guard a player blocks says "Pardon me citizen, I must keep my rounds." once a block (L-FUTILITY):
+ the walk marks a block 1 and the line marks it 2; the walk's next route step clears it.
+  cv-pardon : CivicLive, CvPatrol, WorldObject -> List (List Integer)
+  cv-pardon (s) (p) (mobile) = if p.walk.pressed /= 1 then []
+    else let said = __record-set p.walk "pressed" 2
+    in when world-get s.law.world mobile.serial
+      is Err (_) -> []
+      is Ok (now) -> when cv-announce s now "Pardon me citizen, I must keep my rounds." is Err (_) -> [] is Ok (line) -> line
  An escorting guard walks to a tile beside its town's jail cell and waits there for the prisoner to step into the cell;
  lw-arrive then starts the sentence.
   cv-announce : CivicLive, WorldObject, Text -> Result (List (List Integer)) Text
@@ -62,7 +72,9 @@ Chapter: CivicLive
  A patrolling guard whose last cv-stuck-fails patrol plans all failed is set back on its waypoint: trial 43802's castle
  guard stood on the land at z 50 under the main floor at z 72 and reached no waypoint. The count is the patrol's own
  (stuck): a chase or an armor errand walks the same RteWalk, and a plan of theirs that succeeds clears its fails
- (live-43827: guard 4 sat 60 tiles from the castle at fails 3 to 5 for 7 game hours).
+ (live-43827: guard 4 sat 60 tiles from the castle at fails 3 to 5 for 7 game hours). A patrol plan that succeeds does
+ not clear it either, only reaching the waypoint does: trial-46700's guard 3 stood at 1427,1566,30 for 17 game hours
+ with `blocked 32`, its count climbing to 5 and cleared by a plan whose first step was blocked.
   cv-stuck-fails : Integer = 6
  A castle guard below the main floor walks to the north stair's top first: the planner keeps one z a cell and the floor
  stands over courtyard land, so no plan from the town reaches a floor waypoint (proofs/GuardCastleRouteProof). The
@@ -75,7 +87,7 @@ Chapter: CivicLive
   cv-leg-goal (mobile) (target) = if target.z == cv-castle-floor & (walk-abs (mobile.z - cv-castle-floor) > 2 | cv-on-stair mobile)
     then BbSpot { x = cv-castle-stair-x, y = cv-castle-stair-y, z = cv-castle-floor } else target
   cv-stuck-after : RteWalk, Integer -> Integer
-  cv-stuck-after (w) (n) = if w.route >= 0 then 0 else if w.fails > 0 & w.rest == bit-shl 1 w.fails then n + 1 else n
+  cv-stuck-after (w) (n) = if w.fails > 0 & w.rest == bit-shl 1 w.fails then n + 1 else n
   cv-return : CivicLive, CvPatrol, WorldObject, BbSpot -> Result (List (List Integer)) Text
   cv-return (s) (p) (mobile) (target) =
     let moved = WorldObject { serial = mobile.serial, kind = mobile.kind, x = target.x, y = target.y, z = target.z,

@@ -6,6 +6,20 @@ Chapter: BvtRingGump
  table's gump; it now keeps a whole gump for its one listener.
   brg-bytes : Integer, List Integer -> List Integer
   brg-bytes (n) (out) = if n == 0 then out else brg-bytes (n - 1) (list-push out (int-mod n 251))
+  brg-fill : CeRing, Integer -> Integer
+  brg-fill (ring) (n) = if n == 0 then 0 else let a = ce-add ring 5 1000 1000 [#1C, 0, 9, 0, 0, 0, 5, 0, 0] in brg-fill ring (n - 1)
+ A client left unread past ce-horizon rows (300 ambient lines said beside it, then one gump told to it alone) catches up
+ with its own row only, as cs-heard asks ce-pending; the control is a client 10 rows behind, who still hears the lines.
+  brg-catchup : Integer -> [Console] Integer
+  brg-catchup (unused) = let ring = ce-new 0
+    in let said = brg-fill ring 300
+    in let told = ce-add-to ring 0 0 7 0 0 [#B0, 0, 11, 0, 0, 0, 7, #43, #41, #52, #44]
+    in let late = ce-behind ring 0
+    in let got = ce-pending ring 7 (\s -> late) (\s -> False) True 1000 1000 0 0 []
+    in let near = ring.next - 11
+    in let close = ce-behind ring near
+    in let heard = ce-pending ring 7 (\s -> close) (\s -> False) True 1000 1000 near 0 []
+    in bvt-check "a client 302 rows behind the ring skips the stale ambient lines and still gets the gump told to it alone; one 10 rows behind hears its 9 lines and the gump" (late & list-length got == 1 & list-at (list-at got 0) 0 == #B0 & not close & list-length heard == 10)
   bvt-ring-gump : Integer -> [Console] Integer
   bvt-ring-gump (unused) = let ring = ce-new 0
     in let gump = brg-bytes 3000 (__list-with-capacity 3000)
@@ -13,8 +27,16 @@ Chapter: BvtRingGump
     in let heard = ce-pending ring 7 (\s -> False) (\s -> False) True 1000 1000 0 0 []
     in let other = ce-pending ring 8 (\s -> False) (\s -> False) True 1000 1000 0 0 []
     in let huge = ce-add-to ring 0 0 7 0 0 (brg-bytes (ce-bytes + 1) (__list-with-capacity (ce-bytes + 1)))
+    in let cards = ce-new 0
+    in let card = [#B0, 0, 30, 0, 0, 0, 7, #43, #41, #52, #44] & brg-bytes 19 []
+    in let plain = ce-add-to cards 0 0 7 0 0 gump
+    in let mine = ce-add-to cards 0 0 7 0 0 card
+    in let theirs = ce-add-to cards 0 0 8 0 0 card
     in act
       a <- bvt-check "a 3000-byte gump told to one seat is kept and heard by that seat alone, whole (UOAIX-230)" (kept == 1 & list-length heard == 1 & list-length (list-at heard 0) == 3000 & list-at (list-at heard 0) 2999 == list-at gump 2999 & list-length other == 0)
       b <- bvt-check "a packet past a row is still refused, not cut" (huge == 0)
-      a + b
+      c <- bvt-check "UOAIX-230: an unheard card gump told to a seat is found with its time (ce-card-oldest), from the first unheard sequence" (ce-card-oldest cards 7 1 (0 - 1) >= 0 & ce-card-oldest cards 8 1 (0 - 1) >= 0)
+      d <- bvt-check "no card gump is found for a seat told none, a seat told only a non-card packet, or once every row is heard" (ce-card-oldest cards 9 1 (0 - 1) == 0 - 1 & ce-card-oldest ring 7 1 (0 - 1) == 0 - 1 & ce-card-oldest cards 7 cards.next (0 - 1) == 0 - 1)
+      e <- brg-catchup 0
+      a + b + c + d + e
     end

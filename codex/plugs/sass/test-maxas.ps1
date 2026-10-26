@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$MaxasDir = (Join-Path $env:TEMP 'sass-ctrl-oracle\maxas'),
+    [string]$MaxasDir = (Join-Path $PSScriptRoot '..\..\..\build-output\maxas'),
     [string]$Perl = 'C:\Program Files\Git\usr\bin\perl.exe'
 )
 
@@ -8,7 +8,7 @@ param(
 # (54eda7af): every instruction line through maxas's own processAsmLine,
 # readCtrl and genCode, and every control word against maxas's Assemble
 # packing of the three control codes after it (reuse flags 0). It also
-# requires the three in-slice kernels to be listed and the two out-of-slice
+# requires the three in-slice kernels to be listed and the eight out-of-slice
 # kernels to be refused for their reasons. What a kernel computes is not
 # graded here. The plug is rebuilt from source first.
 #
@@ -38,7 +38,7 @@ $failed = 0
 foreach ($k in 'gpu-scale-add', 'gpu-global-index', 'gpu-nested') {
     if (-not $text.Contains(".kernel $k`n")) { Write-Host "FAIL: kernel $k not listed"; $failed++ }
 }
-foreach ($r in 'REFUSED gpu-refuse-recursion: recursion count-down', 'REFUSED gpu-refuse-multiply: multiply') {
+foreach ($r in 'REFUSED gpu-refuse-recursion: recursion count-down', 'REFUSED gpu-refuse-multiply: multiply', 'REFUSED gpu-divide: divide', 'REFUSED gpu-loop: recursion gpu-loop', 'REFUSED gpu-narrow: narrow memory', 'REFUSED gpu-shared: shared memory', 'REFUSED gpu-wmma: divide', 'REFUSED gpu-wmma-shared: divide', 'REFUSED gpu-float: float', 'REFUSED gpu-async: async copy', 'REFUSED gpu-warp: warp sync') {
     if (-not $text.Contains($r)) { Write-Host "FAIL: missing '$r'"; $failed++ }
 }
 
@@ -113,5 +113,23 @@ foreach ($line in $cost) {
     $index++
 }
 if ($index -ne $sizes.Count) { throw 'emit-cost missing or incorrect instructions' }
+# Whole-plug cost: the scheduler's control codes and the listing text. Measured
+# 2026-10-18 (seed 292381CBBECE88CA): about 400 and 1,840 bytes an instruction,
+# doubling with n; the prefix-copying forms they replace took 2,490 and 13,245
+# at n = 512 and grew x3.9 a doubling.
+foreach ($kind in @(@('SCHED', 800), @('LIST', 4000))) {
+    $sizes = @(512, 1024, 2048, 4096)
+    $index = 0
+    $previous = 0L
+    foreach ($line in $cost) {
+        if ($line -notmatch "^$($kind[0]) (\d+) (\d+) (\d+)$") { continue }
+        $n = [long]$matches[1]; $bytes = [long]$matches[2]; $count = [long]$matches[3]
+        if ($index -ge $sizes.Count -or $n -ne $sizes[$index] -or $count -le 0 -or ($kind[0] -eq 'SCHED' -and $count -ne $n)) { throw "$($kind[0]) output coverage failed" }
+        if ($bytes -le 0 -or $bytes -gt $kind[1] * $n -or ($previous -gt 0 -and $bytes -gt 3 * $previous)) { throw "$($kind[0]) heap is not linear" }
+        $previous = $bytes
+        $index++
+    }
+    if ($index -ne $sizes.Count) { throw "$($kind[0]) lines missing" }
+}
 if ($failed) { Write-Host "FAIL: $failed"; exit 1 }
 Write-Host 'PASS'

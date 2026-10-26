@@ -1,0 +1,52 @@
+Chapter: BvtFloraTick
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter Construction
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter WorldFlora
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ The four house pieces cn-collide lays (boards 0x04A9, wall 0x0007, door 0x06A5, stairs 0x0751) are given flags 512 and
+ height 1 in a TILEDATA stand-in; 72000 bytes holds the entry of 0x0751, the highest of them.
+  bft-art : Integer, Integer -> Integer
+  bft-art (tiles) (art) = let at = wf-tile-at art in let a = poke-32 tiles at 512 in poke-byte tiles (at + 16) 1
+  bft-solids : WalkMap, Integer -> Integer
+  bft-solids (map) (cell) = if cell >= map.width * map.height then 0 else peek-qword map.solids (cell * map.stride) + bft-solids map (cell + 1)
+  bft-house : CompositeGame -> Integer
+  bft-house (owner) = let tiles = alloc-bytes 72000
+    in let a = bft-art tiles #04A9 in let b = bft-art tiles #0007 in let c = bft-art tiles #06A5 in let d = bft-art tiles #0751
+    in let bound = __record-set owner.items "tiles" tiles
+    in let s = owner.construction
+    in let counted = poke-qword s.buf 8 1
+    in let e = cn-site-set s 0 0 1 in let f = cn-site-set s 0 1 1420 in let g = cn-site-set s 0 2 1620 in let h = cn-site-set s 0 3 0
+    in cn-site-set s 0 13 0
+  bft-pages : CompositeGame, WalkMap, Integer, Integer -> Integer
+  bft-pages (owner) (map) (fills) (left) = if left <= 0 then 0 else cg-flora-page owner map fills + bft-pages owner map fills (left - 1)
+  bft-checks : Integer -> List Integer
+  bft-checks (unused) = when blh-owner 0
+    is Err (_) -> []
+    is Ok (owner) -> when walk-map-new 1400 1600 64 64
+      is Err (_) -> []
+      is Ok (map) -> let built = bft-house owner
+        in let ticked = cg-flora-world owner map 5
+        in let laid = bft-solids map 0
+        in let quiet = bft-pages owner map 5 4
+        in let kept = bft-solids map 0
+        in let refilled = walk-zero map.land map.solids 0 4096 map.stride
+        in let dropped = bft-solids map 0
+        in let paged = cg-flora-page owner map 6
+        in let back = bft-solids map 0
+        in let again = bft-pages owner map 6 4
+        in [laid, quiet, kept, dropped, paged, back, again]
+  bft-text : List Integer, Integer -> Text
+  bft-text (xs) (i) = if i >= list-length xs then "" else " " & show (list-at xs i) & bft-text xs (i + 1)
+  bft-ok : List Integer -> Boolean
+  bft-ok (n) = list-length n == 7 & list-at n 0 > 0 & list-at n 1 == 0 & list-at n 2 == list-at n 0 & list-at n 3 == 0
+    & list-at n 4 == 1 & list-at n 5 == list-at n 0 & list-at n 6 == 0
+  bvt-flora-tick : Integer -> [Console] Integer
+  bvt-flora-tick (unused) = act
+    n <- bft-checks 0
+    t <- bft-text n 0
+    ok <- bft-ok n
+    bvt-check ("the world tick lays a house's colliders once, four sessions on the same window lay nothing more, and a refilled window gets them back at its next cover (red, UOAIX-267; laid quiet kept dropped paged back again:" & t & ")") ok
+  end

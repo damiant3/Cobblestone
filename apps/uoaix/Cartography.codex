@@ -54,6 +54,11 @@ Chapter: Cartography
         in let blank = gal-find h.items.world (world-first-child h.items.world pack) cart-blank 0
         in if blank == 0 | cart-pen h.items.world pack == 0 then Ok (Just (gsi-denied "You need a blank map and a mapmaker's pen in your backpack to draw a map."))
         else cart-draw h s magic (as-session s game input me slot) me pack blank now
+ ServUO MapItem.OnDoubleClick: a drawn map shows its chart only to one who can reach it (the pack, or 2 tiles).
+  cart-reach : WorldTable, Integer, WorldObject -> Boolean
+  cart-reach (world) (viewer) (map) = when world-get world viewer
+    is Err (_) -> False
+    is Ok (me) -> ia-access world me map 65
   cart-handler-at : GameHarvest, ActiveSkills, Magery, GameShard, GameInput, List Integer, Integer -> Result (Maybe GameReply) Text
   cart-handler-at (h) (s) (magic) (game) (input) (packet) (now) =
     if cart-button packet then (if input.mode /= 2 | input.session.phase /= 2 | game.active /= input.session.serial | h.items.world.buffer /= game.world.buffer then Ok None
@@ -66,7 +71,9 @@ Chapter: Cartography
       is Ok (item) -> if item.kind /= 2 | (item.graphic /= cart-blank & item.graphic /= cart-drawn) then Ok None
         else if item.graphic == cart-drawn then (if not (mgs-known magic item.serial) then Ok None else when mgs-meta magic item.serial
           is Err (_) -> Ok None
-          is Ok (meta) -> if not meta.chart then Ok None else Ok (Just (gs-reply [cart-details item.serial meta.x meta.y meta.z] "cartography map shown")))
+          is Ok (meta) -> if not meta.chart then Ok None
+            else if not (cart-reach h.items.world input.session.serial item) then Ok (Just (gsi-denied "That is too far away."))
+            else Ok (Just (gs-reply [cart-details item.serial meta.x meta.y meta.z] "cartography map shown")))
         else let at = gv-player h.vendor input.session.serial 0
         in let slot = gsi-slot game input.session.serial 0
         in if at < 0 | slot < 0 then Ok None

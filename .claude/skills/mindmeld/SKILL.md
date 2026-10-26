@@ -217,8 +217,8 @@ Sync, then distribute the accumulated docs to every dev stream so phase 2
 reviews the same bytes everywhere:
 
 ```powershell
-pwsh build/merge-down-all.ps1 -DryRun             # look first
-pwsh build/merge-down-all.ps1 -ApprovedBy damian
+pwsh tools/agents/merge-down-all.ps1 -DryRun             # look first
+pwsh tools/agents/merge-down-all.ps1 -ApprovedBy damian
 ```
 
 **The `-ApprovedBy` flag needs Damian to have asked in this session.**
@@ -277,7 +277,7 @@ The last agent in the ring:
 1. Applies the accumulated findings to the docs. Where two findings disagree,
    verify against the source and say which won.
 2. Submits to main, docs only, ASCII description.
-3. Runs `pwsh build/merge-down-all.ps1 -ApprovedBy damian` so every dev
+3. Runs `pwsh tools/agents/merge-down-all.ps1 -ApprovedBy damian` so every dev
    stream carries the final docs.
 4. Reports to Damian: what changed, what was rejected and why, and anything
    the fleet disagreed about that he should settle.

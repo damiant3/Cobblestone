@@ -192,41 +192,23 @@ $mutations = @(
        From  = '(name "boxed" (fn int-default (ctd "Box" (args int-default))))'
        To    = '(name "boxed" (fn int-default (ctd "Box" (args (int 0 10 ov-error)))))' },
 
-    # The substitution arm. MkTup2 is the one callee that reaches an apply
-    # with its type variables still on the wire: a curried call records each
-    # node's result with the substitution SO FAR applied, so the inner node
-    # carries (fn (tvar 3) (Tup2 int-default (tvar 3))) while the callee
-    # still says (fn (tvar 2) (fn (tvar 3) (Tup2 (tvar 2) (tvar 3)))).
+    # A `tvar-substitution` arm stood here and was RETIRED: the compiler now
+    # publishes every call site's instantiation, MkTup2's included, so no
+    # callee reaches an apply with its type variables on the wire and the
+    # arm's anchor is absent from the base IR.
     #
-    # Corrupting the ARGUMENT's type is what only substitution can catch.
-    # Without substitution both comparisons involve tvar 2 and answer
-    # TyUnknown, so the whole thing is silent.
-    #
-    # It must NOT be the inner node's RESULT type that moves: that type is
-    # also the OUTER apply's callee, so corrupting it disagrees concretely
-    # one node up and is caught with or without this change. Confirmed
-    # MISSED before and CAUGHT after.
-    #
-    @{ Class = 'tvar-substitution'; Kind = 'apply-result-type'
-       From  = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" int-default)'
-       To    = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" text)' },
-
     # The argument-side twin of variance-widened-type-arg, and the arm that
     # exists because its absence let a WRONG fix score 21 of 21 on
-    # 2026-08-09. The mutation above corrupts the argument to a type of
-    # another SORT, so a checker that only asks whether the argument FITS the
-    # parameter still catches it. This one corrupts it to a bounded integer
-    # that DOES fit int-default, so the fit question answers yes and only the
-    # invariance of the tuple's type argument rejects it.
-    #
-    # That is the `fresh-row-id` shape, which is a real defect the compiler
-    # accepted, so a checker blind here is blind to the class this lane
-    # found. The rejected fix fixed the callee's variables from the site's
-    # own recorded result type; under it this mutation is SILENT and every
-    # other arm still passes.
-    @{ Class = 'bounded-arg-into-plain-slot'; Kind = 'apply-result-type'
-       From  = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" int-default)'
-       To    = '(ctd "Tup2" (args (tvar 2) (tvar 3)))))) (name "n" (int 0 10 ov-error))' },
+    # 2026-08-09. It corrupts the argument to a bounded integer that FITS the
+    # published int-default slot, so a checker that reads the site's
+    # instantiation and asks only whether the argument fits answers yes;
+    # only an instantiation derived from the argument, (int 0 10) for the
+    # tuple's first type argument, contradicts the recorded result under
+    # invariance. That is the `fresh-row-id` shape, a real defect the
+    # compiler accepted.
+    @{ Class = 'bounded-arg-into-plain-slot'; Kind = 'ctor-instantiation'
+       From  = '(name "MkTup2" (fn int-default (fn text (ctd "Tup2" (args int-default text))))) (name "n" int-default)'
+       To    = '(name "MkTup2" (fn int-default (fn text (ctd "Tup2" (args int-default text))))) (name "n" (int 0 10 ov-error))' },
 
     # A `tvar-spine-substitution` arm stood here and was RETIRED, not lost.
     # It corrupted wrap-kids' declared parameter so a comprehension's result,
@@ -242,20 +224,30 @@ $mutations = @(
     # decoration this file warns about, so it is gone. Do not re-add it
     # without a compiler that leaves the shape uninstantiated.
     #
-    # The arm below covers the substitution now, and it covers BOTH halves:
-    # via-if's result variable is fixed at the INNER node from the lambda's
-    # body and consumed on the OUTER node's recorded type, so the
-    # accumulation across the spine is load-bearing and not only the descent.
-    # via-if's lambda body is an `if`, which the compiler records as the bare
-    # type variable while both arms carry Tree. Those are the four sites in
-    # IR/Lowering.codex that lower-lambda's fix does not reach, because there
-    # the body's own type is a variable too and there is nothing concrete to
-    # substitute.
-    #
-    # Confirmed MISSED before and CAUGHT after, against both compilers.
-    @{ Class = 'tvar-spine-branch-arms'; Kind = 'apply-arg-type'
-       From  = '(name "hold-kids" (fn (list (sum "Tree" (args))) (sum "Tree" (args))))'
-       To    = '(name "hold-kids" (fn (list text) (sum "Tree" (args))))' },
+    # The definition twin of the arm above: `same` published at int-default
+    # while its argument is bounded. The compiler publishes the instantiation
+    # it derives from the argument, (fn (int 0 10) (int 0 10)), so this IR is
+    # a wrong published instantiation; the bounded argument fits the
+    # published slot, and only the derivation from the argument rejects it.
+    @{ Class = 'poly-inst-bounded-arg'; Kind = 'poly-instantiation'
+       From  = '(apply (name "same" (fn (int 0 10 ov-error) (int 0 10 ov-error))) (name "n" (int 0 10 ov-error)) (int 0 10 ov-error))'
+       To    = '(apply (name "same" (fn int-default int-default)) (name "n" (int 0 10 ov-error)) int-default)' },
+
+    # The same check inside a polymorphic body: same-again calls `same` at
+    # its own rigid variable, and the mutation publishes the result at
+    # another. Two distinct variables are opaque to the per-node
+    # comparisons, so only the derivation (y's variable binds `same`'s) can
+    # disagree. A drift in the compiler's variable numbering shows as
+    # NOT-APPLICABLE, never as a pass.
+    @{ Class = 'poly-inst-rigid-body'; Kind = 'poly-instantiation'
+       From  = '(apply (name "same" (fn (tvar 43) (tvar 43))) (name "y" (tvar 43)) (tvar 43))'
+       To    = '(apply (name "same" (fn (tvar 43) (tvar 44))) (name "y" (tvar 43)) (tvar 44))' },
+
+    # A `tvar-spine-branch-arms` arm stood here and was RETIRED on the same
+    # ground: via-if's lambda now reaches the wire with every type concrete,
+    # and with rc-arg-spine forced to the empty map the row stayed CAUGHT by
+    # an ordinary argument comparison. No arm in this corpus reaches the
+    # spine substitution while the compiler publishes every instantiation.
 
     # Stage 2. A literal too large for the bounded parameter it is handed to.
     @{ Class = 'bounds-exceeded-arg'; Kind = 'bounds-exceeded'

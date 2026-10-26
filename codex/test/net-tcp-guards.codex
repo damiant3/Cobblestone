@@ -1,0 +1,76 @@
+Chapter: NetTcpGuards
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ Each pair differs only in the one number the guard reads, so the wrong arm and
+ the right arm cannot both pass by accident.
+
+Section: The State Machine
+
+  ntg-me : List Integer = [10, 0, 2, 15]
+  ntg-peer : List Integer = [10, 0, 2, 2]
+
+  ntg-seg : Integer, Integer, Integer -> TcpSegment
+  ntg-seg (seq) (ack) (flags) = tcp-segment-of 50000 9443 seq ack flags 8192 []
+
+  ntg-lis : TcpConnection = tcp-set-state (tcp-new-connection 9443 [10, 0, 2, 15] 0 [10, 0, 2, 2] 1000) TcpListening
+  ntg-synr : TcpStep = tcp-step ntg-lis (EvSegment (ntg-seg 7000 0 tcp-flag-syn))
+  ntg-est : TcpStep = tcp-step (ntg-synr.conn) (EvSegment (ntg-seg 7001 1001 tcp-flag-ack))
+  ntg-fin-wrong : TcpStep = tcp-step (ntg-est.conn) (EvSegment (ntg-seg 7002 1001 (bit-or tcp-flag-fin tcp-flag-ack)))
+  ntg-cw : TcpStep = tcp-step (ntg-est.conn) (EvSegment (ntg-seg 7001 1001 (bit-or tcp-flag-fin tcp-flag-ack)))
+  ntg-fw1 : TcpStep = tcp-step (ntg-est.conn) EvClose
+  ntg-fw1-old-ack : TcpStep = tcp-step (ntg-fw1.conn) (EvSegment (ntg-seg 7001 1001 tcp-flag-ack))
+  ntg-fw2 : TcpStep = tcp-step (ntg-fw1.conn) (EvSegment (ntg-seg 7001 1002 tcp-flag-ack))
+  ntg-fw1-fin-wrong : TcpStep = tcp-step (ntg-fw1.conn) (EvSegment (ntg-seg 7002 1002 (bit-or tcp-flag-fin tcp-flag-ack)))
+  ntg-fw1-fin : TcpStep = tcp-step (ntg-fw1.conn) (EvSegment (ntg-seg 7001 1002 (bit-or tcp-flag-fin tcp-flag-ack)))
+  ntg-fw2-fin-wrong : TcpStep = tcp-step (ntg-fw2.conn) (EvSegment (ntg-seg 7005 1002 tcp-flag-fin))
+  ntg-fw2-fin : TcpStep = tcp-step (ntg-fw2.conn) (EvSegment (ntg-seg 7001 1002 tcp-flag-fin))
+  ntg-la : TcpStep = tcp-step (ntg-cw.conn) EvClose
+  ntg-la-old-ack : TcpStep = tcp-step (ntg-la.conn) (EvSegment (ntg-seg 7002 1001 tcp-flag-ack))
+  ntg-la-ack : TcpStep = tcp-step (ntg-la.conn) (EvSegment (ntg-seg 7002 1002 tcp-flag-ack))
+
+Section: Frames
+
+  ntg-frame : List Integer, Integer, Integer, List Integer -> List Integer
+  ntg-frame (src) (seq) (flags) (payload) =
+    let tcp = tcp-with-checksum (tcp-build-segment 50000 9443 seq 1001 flags 8192 payload) src ntg-me
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (ip-build-packet src ntg-me ip-proto-tcp tcp)
+
+  ntg-est-session : Integer -> NetSession
+  ntg-est-session (n) = set-conn (net-session-new [2, 0, 0, 0, 0, 1] ntg-me ntg-peer 9443 50000 ntg-peer 1000) (set-remote (ntg-est.conn) 50000 ntg-peer)
+
+  ntg-data : Integer, List Integer -> Text
+  ntg-data (seq) (payload) =
+    let r = net-process-frame (ntg-est-session 0) (ntg-frame ntg-peer seq (bit-or tcp-flag-ack tcp-flag-psh) payload)
+    in r.output & (if r.data-stop > r.data-off then ", first byte " & show (list-at (r.data) (r.data-off)) else "")
+
+  ntg-hello : List Integer = [104, 101, 108, 108, 111]
+
+  ntg-listener : Integer -> NetSession
+  ntg-listener (n) = (net-listen (net-session-new [2, 0, 0, 0, 0, 1] ntg-me ntg-peer 9443 0 [0, 0, 0, 0] 1000)).session
+
+  ntg-first : NetResult = net-process-frame (ntg-listener 0) (ntg-frame ntg-peer 7000 tcp-flag-syn [])
+  ntg-second : NetResult = net-process-frame (ntg-first.session) (ntg-frame [10, 0, 2, 99] 9000 tcp-flag-syn [])
+
+  opening : [Console] Nothing = act
+    print-line-uni ("syn-received, ack of our syn = " & tcp-state-name (ntg-est.conn.state))
+    print-line-uni ("established, fin one past recv-next = " & tcp-state-name (ntg-fin-wrong.conn.state))
+    print-line-uni ("established, fin at recv-next = " & tcp-state-name (ntg-cw.conn.state))
+    print-line-uni ("fin-wait-1, ack before our fin = " & tcp-state-name (ntg-fw1-old-ack.conn.state))
+    print-line-uni ("fin-wait-1, ack of our fin = " & tcp-state-name (ntg-fw2.conn.state))
+    print-line-uni ("fin-wait-1, fin one past recv-next = " & tcp-state-name (ntg-fw1-fin-wrong.conn.state))
+    print-line-uni ("fin-wait-1, fin at recv-next = " & tcp-state-name (ntg-fw1-fin.conn.state))
+    print-line-uni ("fin-wait-2, fin four past recv-next = " & tcp-state-name (ntg-fw2-fin-wrong.conn.state))
+    print-line-uni ("fin-wait-2, fin at recv-next = " & tcp-state-name (ntg-fw2-fin.conn.state))
+    print-line-uni ("last-ack, ack before our fin = " & tcp-state-name (ntg-la-old-ack.conn.state))
+    print-line-uni ("last-ack, ack of our fin = " & tcp-state-name (ntg-la-ack.conn.state))
+    print-line-uni ("data at recv-next = " & ntg-data 7001 ntg-hello)
+    print-line-uni ("data two past recv-next = " & ntg-data 7003 ntg-hello)
+    print-line-uni ("data wholly before recv-next = " & ntg-data 6990 ntg-hello)
+    print-line-uni ("data from two before recv-next = " & ntg-data 6999 ([120, 120] & ntg-hello))
+    print-line-uni ("listener after a syn: " & tcp-state-name (ntg-first.session.conn.state) & ", peer ends " & show (list-at (ntg-first.session.conn.remote-ip) 3))
+    print-line-uni ("then a syn from another address: peer ends " & show (list-at (ntg-second.session.conn.remote-ip) 3))
+  end
+
+Page 1

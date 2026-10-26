@@ -205,7 +205,7 @@ Chapter: TestingToolsProof
     brewed <- csp-send p (ttp-scribe-answer ginseng #A010 1)
     potion <- ttp-find world (world-first-child world pack) #0F0C 2
     a <- ttp-check "the kit mortar grinds kit ginseng with an empty bottle into a lesser heal potion, as UOX3 470 and 1466" (mortar > 0 & ttp-note asked == "alchemy target" & trained >= 0
-      & ttp-note offered == "alchemy menu" & list-length tiers > 17 & list-at tiers 0 == #7C & gp-u16 tiers 7 == #A010 & list-at tiers 17 == 3
+      & ttp-note offered == "alchemy menu" & list-length tiers > 17 & list-at tiers 0 == #B0 & gp-u16 tiers 9 == #A010
       & ttp-note brewed == "alchemy made" & potion > 0 & ttp-amount world ginseng == roots - 1 & ttp-amount world bottles == empties - 1
       & gsi-name owner.items (when world-get world potion is Err (_) -> WorldObject { serial = 0, kind = 0, x = 0, y = 0, z = 0, graphic = 0, hue = 0, container = 0, amount = 0, health = 0 } is Ok (o) -> o) == "lesser heal potion")
     a-bag <- ttp-check "the potion is made inside the bag holding the mortar, the kit's tools bag (GameServer.md testing stock)" (potion > 0 & ttp-parent world potion == ttp-parent world mortar & ttp-parent world mortar /= pack)
@@ -287,7 +287,7 @@ Chapter: TestingToolsProof
     print-line-uni ("SCRIBE level=" & show level & " " & ttp-note used & " / " & ttp-note menu & " / " & ttp-note circle & " / " & note)
     (if note == "inscription failed" then (if ttp-amount world blank == scrolls & ttp-amount world moss == mosses then 2 else 3)
       else if note /= "inscription made spell=1" then 0
-      else if ttp-amount world blank == scrolls - 1 & ttp-amount world moss == mosses - 1 & ttp-scribe-level owner i == level + 1
+      else if ttp-amount world blank == scrolls - 1 & ttp-amount world moss == mosses - 1
         & ttp-find world (world-first-child world pack) #1F2E 2 > 0 then 1 else 4)
   end
   ttp-scribe-loop : CsPlayer, CompositeGame, WorldTable, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Console, Device.Block] Integer
@@ -306,7 +306,7 @@ Chapter: TestingToolsProof
     used <- csp-send p (csp-use pen)
     menu <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
     circle <- csp-send p (ttp-scribe-answer blank #A000 4)
-    made <- csp-send p (ttp-scribe-answer blank #A004 1)
+    made <- csp-send p (ttp-scribe-answer blank #A004 8)
     if ttp-note made == "inscription failed" & left > 1 then ttp-scribe-recall p owner pen blank slot (left - 1) else act ttp-note made end
   end
   ttp-decoration : WalkMap -> Result WdState Text
@@ -467,18 +467,22 @@ Chapter: TestingToolsProof
     b <- ttp-check "with no Inscription a blank scroll offers no spell" (ttp-note unskilled == "You lack the skill to inscribe any spell in your spellbook.")
     novice <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 23 11
     looped <- ttp-scribe-loop p owner world pack pen blank moss slot i 0 0 60
-    c <- ttp-check "at 1.1 Inscription a Clumsy scroll fails consuming nothing (UOX3 984), and succeeds consuming a blank scroll and the spell's reagents and gaining Inscription (985)" (looped == 1)
+    c <- ttp-check "at 1.1 Inscription a Clumsy scroll fails consuming nothing (UOX3 984), and succeeds consuming a blank scroll and the spell's reagents and Inscription rises over the attempts (985)" (looped == 1 & ttp-scribe-level owner i > 11)
     master <- if i < 0 then -1 else sk-set (list-at owner.active.actors i).skills.levels 23 1000
     cleared <- __record-set (list-at owner.production.harvest.requests slot) "next" 0
     opened <- csp-send p (csp-use pen)
     menu <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
     circles <- ttp-first-packet menu
-    d <- ttp-check "at 100.0 the menu offers the six circles holding the 27 working spells" (ttp-note menu == "inscription menu" & list-length circles > 21
-      & list-at circles 0 == #7C & gp-u32 circles 3 == blank & gp-u16 circles 7 == #A000 & list-at circles 21 == 6)
+    eighth <- csp-send p (ttp-scribe-answer blank #A000 8)
+    d <- ttp-check "at 100.0 the circle gump reaches the eighth circle, every spell being built (UOAIX-81)" (ttp-note menu == "inscription menu" & list-length circles > 21
+      & list-at circles 0 == #B0 & gp-u32 circles 3 == blank & gp-u16 circles 9 == #A000 & ttp-note eighth == "inscription spells")
+    recleared <- __record-set (list-at owner.production.harvest.requests slot) "next" 0
+    repen <- csp-send p (csp-use pen)
+    reopened <- csp-send p (ttp-target-object p blank 60 90 #0EF3)
     fourth <- csp-send p (ttp-scribe-answer blank #A000 4)
     spells <- ttp-first-packet fourth
-    e <- ttp-check "the fourth circle offers Recall with its scroll art 0x1F4C" (ttp-note fourth == "inscription spells" & list-length spells > 25
-      & gp-u16 spells 7 == #A004 & list-at spells 23 == 1 & gp-u16 spells 24 == #1F4C)
+    e <- ttp-check "the fourth circle offers its eight spells, Recall among them with its scroll art 0x1F4C" (ttp-note fourth == "inscription spells" & list-length spells > 25
+      & gp-u16 spells 7 == #A004 & list-at spells 23 == 8 & gp-u16 spells 24 == #1F45 & ttp-has-u16 spells #1F4C 24)
     forged <- csp-send p (ttp-scribe-answer blank #A004 9)
     stale <- csp-send p (ttp-scribe-answer blank #A004 1)
     f <- ttp-check "a choice past the menu is refused and closes it, and a closed menu is refused" (ttp-note forged == "That selection is no longer available."
@@ -492,12 +496,25 @@ Chapter: TestingToolsProof
     h <- ttp-check "the scroll is made inside the bag holding the pen and ink (GameServer.md testing stock)" (ttp-parent world (ttp-find world (world-first-child world pack) #1F4C 2) == ttp-parent world pen & ttp-parent world pen /= pack)
     a + b + c + d + e + f + g + h
   end
+  ttp-has-u16 : List Integer, Integer, Integer -> Boolean
+  ttp-has-u16 (p) (value) (at) = if at + 1 >= list-length p then False else if gp-u16 p at == value then True else ttp-has-u16 p value (at + 1)
   ttp-bytes-at : List Integer, Text, Integer, Integer -> Boolean
   ttp-bytes-at (p) (text) (at) (i) = if i == text-length text then list-at p (at + i) == 0
     else if list-at p (at + i) /= to-unicode (char-code (char-at text i)) then False else ttp-bytes-at p text at (i + 1)
   ttp-in-packet : List Integer, Text, Integer -> Boolean
   ttp-in-packet (p) (text) (at) = if at + text-length text >= list-length p then False
     else if list-at p (at - 1) == text-length text + 1 & ttp-bytes-at p text at 0 then True else ttp-in-packet p text (at + 1)
+  ttp-labelled-in : List Integer, Text, Integer -> Boolean
+  ttp-labelled-in (p) (text) (at) = if at + text-length text >= list-length p then False
+    else if list-at p (at - 1) > text-length text + 1 & ttp-prefix-at p text at 0 then True else ttp-labelled-in p text (at + 1)
+  ttp-prefix-at : List Integer, Text, Integer, Integer -> Boolean
+  ttp-prefix-at (p) (text) (at) (i) = if i == text-length text then True
+    else if list-at p (at + i) /= to-unicode (char-code (char-at text i)) then False else ttp-prefix-at p text at (i + 1)
+  ttp-labelled : Result GameReply Text, Text -> Boolean
+  ttp-labelled (r) (text) = when r is Err (_) -> False is Ok (x) -> ttp-labelled-at x.packets (text & " at ") 0
+  ttp-labelled-at : List (List Integer), Text, Integer -> Boolean
+  ttp-labelled-at (packets) (text) (i) = if i == list-length packets then False
+    else if list-at (list-at packets i) 0 == #74 & ttp-labelled-in (list-at packets i) text 9 then True else ttp-labelled-at packets text (i + 1)
   ttp-listed-in : List (List Integer), Text, Integer -> Boolean
   ttp-listed-in (packets) (text) (i) = if i == list-length packets then False
     else if list-at (list-at packets i) 0 == #74 & ttp-in-packet (list-at packets i) text 9 then True else ttp-listed-in packets text (i + 1)
@@ -595,7 +612,7 @@ Chapter: TestingToolsProof
       & gcr-title 6 == "Bowcraft and Fletching" & list-length (gcr-recipes owner.vendor.currency.world 6) == 2
       & (when fletching is Err (_) -> False is Ok (r) -> r.note == "Move beside the required workshop."))
     smithing <- csp-send p (csp-use hammer)
-    menu <- ttp-check "the kit hammer is taken as a craft tool, and away from an anvil it says to come within 2 tiles of one" (when smithing is Err (_) -> False is Ok (r) -> r.note == "You must be within 2 tiles of an anvil.")
+    menu <- ttp-check "the kit hammer is taken as a craft tool, and away from a smithy it says to come within 3 tiles of an anvil and a forge (UOAIX-242 D4)" (when smithing is Err (_) -> False is Ok (r) -> r.note == "You must be within 3 tiles of an anvil and a forge.")
     cuts <- ttp-scissors p owner world knife scissors pick pack (x + 1) (y + 1)
     shears <- ttp-shear p owner world scissors me
     looks <- ttp-navigate p owner world pack me
@@ -605,13 +622,13 @@ Chapter: TestingToolsProof
     scribed <- ttp-inscribe p owner world pack pick me map
     vendor <- ttp-provisioner owner
     vendor-pack <- glk-own-pack owner.items vendor.serial
-    peeked <- csp-send p (csp-use vendor-pack)
-    lordly <- ttp-check "Lord British opens a shopkeeper's worn backpack with no roll and no crime (snooping; cg-snoop-pack)" (vendor-pack > 0 & ttp-note peeked == "items:inspect-pack")
     stocked <- ttp-lot owner.vendor vendor.actor 25 0
     at <- (when world-get world vendor.serial is Err (_) -> [0, 0] is Ok (m) -> [m.x, m.y])
     walked <- csp-walk-to p (list-at at 0) (list-at at 1) 1 200
+    peeked <- csp-send p (csp-use vendor-pack)
+    lordly <- ttp-check "Lord British opens a shopkeeper's worn backpack with no roll and no crime (snooping; cg-snoop-pack)" (vendor-pack > 0 & ttp-note peeked == "items:inspect-pack")
     shown <- csp-send p (csp-use vendor.serial)
-    named <- ttp-check "the provisioner's sale list names the pickaxe by its art, not the catalog's stone pickaxe" (ttp-listed shown "pickaxe" & not (ttp-listed shown "stone pickaxe"))
+    named <- ttp-check "the provisioner's sale list names the pickaxe by its art, not the catalog's stone pickaxe, with its price label (UOAIX-225)" (ttp-labelled shown "pickaxe" & not (ttp-labelled shown "stone pickaxe"))
     left <- ttp-buy-all p owner 8
     f <- ttp-rebook store me pack
     d <- ttp-check "the provisioner sells a pickaxe, and buying every one empties its stock" (stocked >= 0 & is-ok walked & left < 8 & ttp-lot owner.vendor vendor.actor 25 0 < 0)
@@ -675,7 +692,8 @@ Chapter: TestingToolsProof
             loaded <- cs-load-town store (CompositeSetup { vendor-z = 0, shrine-z = 0, home-z = 0, decoration = None }) (Just britain) None
             when loaded
               is Err (e) -> ttp-check ("recovery " & e) False
-              is Ok (owner) -> if fresh then ttp-first owner map specs else ttp-later owner map specs
+              is Ok (owner) -> let growing = world-bind-grow owner.state.checkpoint.game.world (\u -> cg-grow owner.state)
+                in if fresh then ttp-first owner map specs else ttp-later owner map specs
           end
       end
 

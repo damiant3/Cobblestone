@@ -1,0 +1,38 @@
+Chapter: BvtPlacementDock
+  cites Uoaix chapter BritainShops
+  cites Uoaix chapter BvtCheck
+
+ The Skara Brae docks' colliders as the 2026-10-18 map cache holds them (644,2234): water land at -15 with flags 64, a
+ plank at -3 height 1 with flags 17921 (surface, half height) and a water static at -5 height 0 with flags 193. Trial
+ 45735 cornered the docks' fishmonger at the water (`cornered (no clear tile): Skara Brae docks`) and refused the
+ fisherman's shore, after walk-buried read the water static as an impassable piece on a land floor (UOAIX-266).
+  bpk-land : WalkMap, Boolean, Integer -> Integer
+  bpk-land (map) (water) (i) = if i >= 64 then 0
+    else let x = 600 + int-mod i 8
+    in let y = 2200 + i / 8
+    in let a = walk-set-land map x y (if water then 0 - 15 else 40) (if water then 64 else 0)
+    in let b = if water then walk-add-solid map x y (0 - 3) 1 17921 else walk-add-solid map x y 60 1 67133953
+    in let c = if water then walk-add-solid map x y (0 - 5) 0 193 else Ok 0
+    in bpk-land map water (i + 1)
+  bpk-map : Boolean -> Result WalkMap Text
+  bpk-map (water) = when walk-map-new 600 2200 8 8
+    is Err (e) -> Err e
+    is Ok (map) -> let laid = bpk-land map water 0 in Ok map
+  bpk-spot : WorldTable, WalkMap -> Text
+  bpk-spot (w) (map) = when bb-placement w map (BbShop { title = "Fishmonger", premises = "Docks", x1 = 602, y1 = 2202, x2 = 604, y2 = 2202 }) 0
+    is Err (e) -> e
+    is Ok (s) -> show s.x & "," & show s.y & "," & show s.z
+  bpk-checks : Integer -> Text
+  bpk-checks (unused) = when world-new 64
+    is Err (e) -> e
+    is Ok (w) -> when bpk-map True
+      is Err (e) -> e
+      is Ok (dock) -> when bpk-map False
+        is Err (e) -> e
+        is Ok (inn) -> let piece = walk-add-solid inn 602 2202 40 2 279104
+          in bpk-spot w dock & " " & bpk-spot w inn
+  bvt-placement-dock : Integer -> [Console] Integer
+  bvt-placement-dock (unused) = act
+    t <- bpk-checks 0
+    bvt-check ("a plank over water is a clear shop tile (the water under it is no blocked floor), and a land floor an impassable piece blocks is still passed over (" & t & ")") (t == "602,2202,-3 603,2202,40")
+  end

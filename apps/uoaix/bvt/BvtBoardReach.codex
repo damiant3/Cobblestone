@@ -1,0 +1,44 @@
+Chapter: BvtBoardReach
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ The bank board answers every 0x71 (a read of a post's body or header, a post, a removal) only within 2 tiles, as its
+ opening does; a read and a removal were answered from anywhere on the map (val, UOAIX audit 2026-10-18).
+  bvbr-made : Result Integer Text -> Integer
+  bvbr-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvbr-input : Integer, Integer -> GameInput
+  bvbr-input (number) (serial) = let input = gn-input number
+    in let mode = __record-set input "mode" 2
+    in let phase = __record-set input.session "phase" 2
+    in let who = __record-set input.session "serial" serial in input
+  bvbr-note : Maybe GameReply -> Text
+  bvbr-note (r) = when r is None -> "none" is Just (reply) -> reply.note
+  bvbr-notes : Integer -> List Text
+  bvbr-notes (unused) = when world-new 64
+    is Err (_) -> ["fixture"]
+    is Ok (w) -> let accounts = ga-new ga-dev
+      in let game = GameShard { world = w, characters = ga-working accounts, accounts = accounts, next-key = 305419895, pending-key = 0, active = 0, log = slg-new slg-trace, skills = chs-new 0 }
+      in let items = gsi-new w
+      in let made = bbs-install items
+      in let board = bbs-board w
+      in let s = bbs-new 0
+      in let near = bvbr-made (world-create w (gs-mobile 0 (bbs-x + 1) bbs-y 0 400 1002))
+      in let far = bvbr-made (world-create w (gs-mobile 0 600 400 0 400 1002))
+      in let read = gp-put32 (gp-put32 [#71, 0, 12, 3] board) 0
+      in let header = gp-put32 (gp-put32 [#71, 0, 12, 4] board) 0
+      in let remove = gp-put32 (gp-put32 [#71, 0, 12, 6] board) 0
+      in [bvbr-note (bbs-handler s items game (bvbr-input 3 far) read "Far" "noon"), bvbr-note (bbs-handler s items game (bvbr-input 3 far) header "Far" "noon"),
+        bvbr-note (bbs-handler s items game (bvbr-input 3 far) remove "Far" "noon"), bvbr-note (bbs-handler s items game (bvbr-input 4 near) read "Near" "noon"),
+        bvbr-note (bbs-handler s items game (bvbr-input 4 near) remove "Near" "noon"), (if made == 1 & board /= 0 then "board" else "no board")]
+  bvbr-at : List Text, Integer -> Text
+  bvbr-at (n) (i) = if i < list-length n then list-at n i else "?"
+  bvt-board-reach : Integer -> [Console] Integer
+  bvt-board-reach (unused) = let n = bvbr-notes 0
+    in let far = bvbr-at n 5 == "board" & bvbr-at n 0 == "That is too far away." & bvbr-at n 1 == "That is too far away." & bvbr-at n 2 == "That is too far away."
+    in let near = bvbr-at n 3 == "board:missing" & bvbr-at n 4 == "board:remove"
+    in act
+    a <- bvt-check ("a read of a post's body or header and a removal from across the map are refused: " & bvbr-at n 0 & ", " & bvbr-at n 1 & ", " & bvbr-at n 2) far
+    b <- bvt-check ("the same read and removal within 2 tiles are answered: " & bvbr-at n 3 & ", " & bvbr-at n 4) near
+    a + b
+  end

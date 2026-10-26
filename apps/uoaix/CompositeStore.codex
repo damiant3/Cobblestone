@@ -62,11 +62,12 @@ Chapter: CompositeStore
  every round makes it. The heap stays 256 MiB below the guest's RAM for a round's scratch (root's ruling: guest memory
  less the boot heap and the scratch).
   cs-grow-need : CompositeOwner, Integer -> Boolean
-  cs-grow-need (owner) (now) = cg-grow-due owner.state | cs-room-due owner now | cs-mute-free owner.muted 0 < 16 | nn-due owner.state.known | owner.gm-due 0 | gv-gone-due owner.state.vendor | gld-due owner.state.land
+  cs-grow-need (owner) (now) = cg-grow-due owner.state | cs-room-due owner now | cs-mute-free owner.muted 0 < 16 | nn-due owner.state.known | owner.gm-due 0 | gv-gone-due owner.state.vendor | gld-due owner.state.land | cs-pool-due owner.views 0 | cg-walk-due owner.state
  The WORLD GROWN line's due and still masks, one bit per term of cs-grow-need: 0 world, 1 actors, 2 network offers,
  3 trades, 4 timers, 5 purses, 6 stations, 7 nodes, 8 loans, 9 start tables, 10 vendor tables, 11 accounts, 12 law,
  13 government, 14 census, 15 harvest sites, 16 spawns, 17 construction, 18 help, 19 boards, 20 decor, 21 pins,
- 22 books, 23 housing, 24 cast, 25 swaps, 26 checkpoint room, 27 mutes, 28 names, 29 gm, 30 vendor gone, 31 land.
+ 22 books, 23 housing, 24 cast, 25 swaps, 26 checkpoint room, 27 mutes, 28 names, 29 gm, 30 vendor gone, 31 land, 32 view rows, 33 walk colliders,
+ 34 incidents.
   cs-due-bit : Boolean, Integer -> Integer
   cs-due-bit (due) (bit) = if due then bit-shl 1 bit else 0
   cs-grow-why : CompositeOwner, Integer -> Integer
@@ -81,7 +82,8 @@ Chapter: CompositeStore
     + cs-due-bit (hp-due s.pages) 18 + cs-due-bit (bbs-due s.bbs) 19 + cs-due-bit (dc-due s.decor) 20 + cs-due-bit (mpn-due s.pins) 21
     + cs-due-bit (wbk-due s.books) 22 + cs-due-bit (hs-due s.housing) 23 + cs-due-bit (cg-cast-due s) 24 + cs-due-bit (cg-trades-due s) 25
     + cs-due-bit (cs-room-due owner now) 26 + cs-due-bit (cs-mute-free owner.muted 0 < 16) 27 + cs-due-bit (nn-due s.known) 28
-    + cs-due-bit (owner.gm-due 0) 29 + cs-due-bit (gv-gone-due s.vendor) 30 + cs-due-bit (gld-due s.land) 31
+    + cs-due-bit (owner.gm-due 0) 29 + cs-due-bit (gv-gone-due s.vendor) 30 + cs-due-bit (gld-due s.land) 31 + cs-due-bit (cs-pool-due owner.views 0) 32
+    + cs-due-bit (cg-walk-due s) 33 + cs-due-bit (cg-dead-due s) 34
   cs-grow-reserve : Integer = 268435456
   cs-grow-limit : Integer = bare-metal-ram-size - cs-grow-reserve
  The checkpoint buffers (saved and work) hold the composite at its live size with half again to spare; once less than
@@ -89,7 +91,7 @@ Chapter: CompositeStore
   cs-room : Integer -> Integer
   cs-room (bytes) = (bytes + bytes / 2 + 65536) / 8 * 8
   cs-state-size : CompositeGame -> Integer
-  cs-state-size (state) = cc-size state.checkpoint.game.world.capacity + cs-bound (euc-size state.vendor.currency) + (euc-part-count + es-part-count) * 65536 + cs-bound (gvsc-tail-size state.vendor) + cs-bound (ga-tail-size state.checkpoint.game.accounts) + cs-bound (cc-law-tail-size state) + cs-bound (cc-gov-tail-size state) + cs-bound (ts-tail-size state.checkpoint.state) + cs-bound (ghc-tail-size state.production.harvest) + cs-bound (cc-spawn-tail-size state) + cs-bound (cn-tail-size state.construction) + cs-bound (hp-tail-size state.pages) + cs-bound (bbs-tail-size state.bbs) + cs-bound (nn-tail-size state.known) + cs-bound (gv-gone-tail-size state.vendor) + cs-bound (cc-speech-tail-size state) + cs-bound (8 + cgf-bytes) + cs-bound (plr-tail-size 0) + cs-bound (mpn-tail-size state.pins) + cs-bound (wbk-tail-size state.books) + cs-bound (dc-tail-size state.decor + gld-tail-size state.land) + cs-bound (kl-tail-size 0) + cs-bound (hs-tail-size state.housing) + cs-bound (id-tail-size state.durability state.items.world)
+  cs-state-size (state) = cc-size state.checkpoint.game.world.capacity + cs-bound (euc-size state.vendor.currency) + (euc-part-count + es-part-count) * 65536 + cs-bound (gvsc-tail-size state.vendor) + cs-bound (ga-tail-size state.checkpoint.game.accounts) + cs-bound (cc-law-tail-size state) + cs-bound (cc-gov-tail-size state) + cs-bound (ts-tail-size state.checkpoint.state) + cs-bound (ghc-tail-size state.production.harvest) + cs-bound (cc-spawn-tail-size state) + cs-bound (cn-tail-size state.construction) + cs-bound (hp-tail-size state.pages) + cs-bound (bbs-tail-size state.bbs) + cs-bound (nn-tail-size state.known) + cs-bound (gv-gone-tail-size state.vendor) + cs-bound (cc-speech-tail-size state) + cs-bound (8 + cgf-bytes) + cs-bound (plr-tail-size 0) + cs-bound (mpn-tail-size state.pins) + cs-bound (wbk-tail-size state.books) + cs-bound (dc-tail-size state.decor + gld-tail-size state.land) + cs-bound (kl-tail-size 0) + cs-bound (hs-tail-size state.housing) + cs-bound (id-tail-size state.durability state.items.world) + cs-bound (cg-incident-tail-size state)
  The most a section of n bytes takes in its slot (cc-slot-pick), with its slot length; the currency's fifteen purse
  table parts and its gold economy's seven parts are slotted the same way inside it, each adding at most another 64 KiB.
   cs-bound : Integer -> Integer
@@ -109,9 +111,11 @@ Chapter: CompositeStore
     else let due = cs-room-due-now owner
     in let a = poke-qword owner.room-check 0 (max 1 now)
     in let b = poke-qword owner.room-check 8 (if due then 1 else 0) in due
+  cs-widen-room : Integer, Integer -> Integer
+  cs-widen-room (room) (bytes) = max (room * 2) (cs-room bytes)
   cs-widen : CompositeOwner -> Integer
   cs-widen (owner) = if not (cs-room-due-now owner) then owner.room
-    else let room = cs-room (cs-state-size owner.state)
+    else let room = cs-widen-room owner.room (cs-state-size owner.state)
     in let saved = alloc-bytes room
     in let copied = ws-copy owner.saved saved owner.size 0
     in let a = __record-set owner "saved" saved
@@ -155,6 +159,9 @@ Chapter: CompositeStore
     in let landed = if gld-due owner.state.land then gld-grow owner.state.land else 0
     in let offered = if cg-network-due owner.state then cg-network-grow owner.state else 0
     in let departed = if gv-gone-due owner.state.vendor then gv-gone-grow-to owner.state.vendor (owner.state.vendor.gone-room * 2) else 0
+    in let pooled = cs-pool-grow owner.views 0
+    in let walked = if cg-walk-due owner.state then cg-walk-grow owner.state else 0
+    in let mourned = if cg-dead-due owner.state then cg-dead-grow owner.state else 0
     in let muting = if cs-mute-free owner.muted 0 < 16 then let grown = __record-set owner "muted" (cs-mute-slots 0 owner.muted) in list-length owner.muted else 0
     in when (if cg-world-due owner.state then cs-grow-world owner else Ok owner.state.checkpoint.game.world.capacity)
       is Err (e) -> Err e
@@ -167,6 +174,11 @@ Chapter: CompositeStore
   cs-fit-links (owner) (n) = let fitted = cg-fit-links owner.state n
     in let k = 32 * n - list-length owner.events.events
     in if k <= 0 then n else let rows = __record-set owner.events "events" (ce-rows (ce-limit - k) owner.events.events) in n
+  cs-pool-due : List CsView, Integer -> Boolean
+  cs-pool-due (views) (i) = if i >= list-length views then False else gcv-pool-due (list-at views i).view | cs-pool-due views (i + 1)
+  cs-pool-grow : List CsView, Integer -> Integer
+  cs-pool-grow (views) (i) = if i >= list-length views then 0
+    else let grown = if gcv-pool-due (list-at views i).view then gcv-pool-grow (list-at views i).view else 0 in cs-pool-grow views (i + 1)
   cs-grow-views : List CsView, Integer, Integer -> Integer
   cs-grow-views (views) (capacity) (i) = if i >= list-length views then 0
     else let a = gcv-grow (list-at views i).view capacity in cs-grow-views views capacity (i + 1)
@@ -599,11 +611,12 @@ Chapter: CompositeStore
                   & ",spawns:" & cs-span owner.timing 18 19 & ",speech-british:" & cs-span owner.timing 19 20 & ",miners-board:" & cs-span owner.timing 20 21
                   & ",gov-day:" & cs-span owner.timing 21 7 & " gov-day-us=gov:" & cs-span owner.timing 21 24 & ",construction:" & cs-span owner.timing 24 25
                   & ",workers:" & cs-span owner.timing 25 26 & ",ships:" & cs-span owner.timing 26 27 & ",day:" & cs-span owner.timing 27 7 & " image-hash-us=" & cs-span owner.timing 22 23)
+                slg-line owner.state.checkpoint.game.log slg-store slg-info ("STORE ROOM image=" & show owner.size & " bound=" & show (cs-state-size owner.state) & " room=" & show owner.room)
                 slg-line owner.state.checkpoint.game.log slg-store slg-info ("ECONOMY ROWS hour=" & show owner.state.vendor.currency.world.hour
                   & " events=" & show owner.state.vendor.currency.count & " copper=" & show owner.state.vendor.currency.copper.entry-count
                   & " silver=" & show owner.state.vendor.currency.silver.entry-count & " gold=" & show owner.state.vendor.currency.world.money.entry-count
                   & " trades=" & show owner.state.vendor.currency.world.trade-count & " timers=" & show owner.state.timers.used & " timers-peak=" & show owner.state.timers.peak
-                  & cg-powder-said owner.state)
+                  & " families=" & show owner.state.housing.fam-count & cg-powder-said owner.state & cg-fleet-said owner.state)
                 moves <- slg-line owner.state.checkpoint.game.log slg-store slg-info (gws-moves-said owner.state.spawns)
                 slotted <- if ws-slots-low owner.state.checkpoint.game.world then slg-line owner.state.checkpoint.game.log slg-store slg-warn ("WORLD SLOTS LOW " & ws-slots-text owner.state.checkpoint.game.world)
                   else act 0 end
@@ -624,7 +637,9 @@ Chapter: CompositeStore
     else let captured = cs-before owner in act
       started <- hpet-ticks
       borrowed <- cs-borrow owner input
+      m0 <- cs-meter owner
       handled <- cg-route owner.state game input map port packet
+      routed-cells <- cs-entry owner 16 m0
       handled-at <- hpet-ticks
       when handled
         is Err (e) -> act
@@ -640,7 +655,7 @@ Chapter: CompositeStore
           registered <- cg-items owner.state 0
           committed <- if reply.close | cs-items-dirty owner 0 | owner.state.vendor.sequence /= owner.vendor-sequence
             | (list-at packet 0 /= 2 & world-revision game.world /= owner.guard-revision)
-            then (if reply.close then cs-commit owner False else cs-defer owner) else cs-timer owner hpet-ticks
+            then (if reply.close then cs-close-save owner else cs-defer owner) else cs-timer owner hpet-ticks
           when committed
             is Err (e) -> Err e
             is Ok (_) -> act
@@ -665,7 +680,7 @@ Chapter: CompositeStore
     let source = peek-qword at 0
     in let slot = world-slot game.world source
     in let sent = if source == viewer then "self" else if slot < 0 then "gone"
-      else if (list-at owner.state.view.seen slot).object.serial == source then "yes" else "no"
+      else if gcv-seen-serial owner.state.view slot == source then "yes" else "no"
     in let before = peek-qword at 88
     in let distance = max (walk-abs (peek-qword at 40 - peek-qword at 64)) (walk-abs (peek-qword at 48 - peek-qword at 72))
     in label & " victim=" & show (peek-qword at 8) & " cause=" & cs-cause (peek-qword at 16) & " damage=" & show (peek-qword at 24)
@@ -741,13 +756,15 @@ Chapter: CompositeStore
     else let name = utf8-bytes-to-text (sip-slot-name game.characters slot 0 [])
     in name /= "" & ((text-length text == 4 & ns-match text "name" 0 0) | ns-has text ("my name is " & name) | ns-has text ("i am " & name))
   cs-hear-name : CompositeGame, GameShard, WorldObject, Integer, Integer -> Integer
-  cs-hear-name (state) (game) (m) (i) (learned) = if i == state.vendor.player-count then learned
-    else let hearer = (list-at state.vendor.players i).serial
+  cs-hear-name (state) (game) (m) (i) (learned) = cs-hear-near state game m (cg-players-near state.vendor game.world m.x m.y ce-range) i learned
+  cs-hear-near : CompositeGame, GameShard, WorldObject, List Integer, Integer, Integer -> Integer
+  cs-hear-near (state) (game) (m) (near) (i) (learned) = if i >= list-length near then learned
+    else let hearer = list-at near i
     in let heard = if hearer == m.serial then 0 else when world-get game.world hearer
       is Err (_) -> 0
       is Ok (h) -> if h.kind /= 1 | walk-abs (h.x - m.x) > ce-range | walk-abs (h.y - m.y) > ce-range then 0
         else max 0 (nn-learn state.known hearer m.serial)
-    in cs-hear-name state game m (i + 1) (learned + heard)
+    in cs-hear-near state game m near (i + 1) (learned + heard)
   cs-say-all : CompositeOwner, WorldObject, List (List Integer), Integer -> Integer
   cs-say-all (owner) (m) (spoken) (i) = if i == list-length spoken then 0
     else let said = list-at spoken i
@@ -759,7 +776,8 @@ Chapter: CompositeStore
       is Err (_) -> reply
       is Ok (m) -> let row = list-at owner.views at
         in let now = get-ticks
-        in let pending = ce-pending owner.events m.serial (\s -> as-concealed-any owner.state.active s) (\s -> as-ghost-unseen owner.state.active game m.serial s now) (m.health == 0 | as-spirit-hears owner.state.active m.serial get-ticks) m.x m.y row.heard 0 []
+        in let behind = ce-behind owner.events row.heard
+        in let pending = ce-pending owner.events m.serial (\s -> behind | as-concealed-any owner.state.active s) (\s -> as-ghost-unseen owner.state.active game m.serial s now) (m.health == 0 | as-spirit-hears owner.state.active m.serial get-ticks) m.x m.y row.heard 0 []
         in let marked = __record-set row "heard" (owner.events.next - 1)
         in let weather = cs-weather owner row m map
         in if list-length pending == 0 & list-length weather == 0 then reply else cg-walk-redrawn input.session (GameReply { packets = reply.packets & cs-heard-dress owner.state.items pending & weather, close = reply.close, note = reply.note })
@@ -789,7 +807,9 @@ Chapter: CompositeStore
     else let captured = cs-before owner in act
      started <- hpet-ticks
      borrowed <- cs-borrow owner input
+     m0 <- cs-meter owner
      handled <- cg-pulse owner.state game input map port tick
+     pulsed-cells <- cs-entry owner 8 m0
      handled-at <- hpet-ticks
      when handled
       is Err (e) -> act
@@ -804,9 +824,14 @@ Chapter: CompositeStore
           is Err (e) -> Err e
           is Ok (_) -> when cg-view owner.state game input (when reply is None -> gs-reply [] "client view" is Just (value) -> value)
             is Err (e) -> Err e
-            is Ok (viewed) -> let value = cs-heard owner borrowed game input map viewed
+            is Ok (viewed) -> let told-at = if input.mode /= 2 | input.session.phase /= 2 then 0 - 1
+                else ce-card-oldest owner.events input.session.serial (max ((list-at owner.views borrowed).heard + 1) (owner.events.next - ce-limit)) (0 - 1)
+              in let lag = if input.mode /= 2 | input.session.phase /= 2 then 0 else owner.events.next - 1 - (list-at owner.views borrowed).heard
+              in let value = cs-heard owner borrowed game input map viewed
               in if list-length value.packets == 0 & not value.close then Ok None else act
               finished <- hpet-ticks
+              caught <- if lag <= ce-horizon then act 0 end else slg-line game.log slg-world slg-warn ("VIEW CATCHUP serial=" & show input.session.serial & " behind=" & show lag & " rows, ambient rows skipped")
+              told <- if told-at < 0 then act 0 end else slg-line game.log slg-world slg-info ("CARDS TOLD serial=" & show input.session.serial & " age-us=" & show (cs-microseconds told-at finished))
               slg-line game.log slg-world slg-trace ("WORLD PULSE ms=" & show (cs-microseconds 0 finished / 1000) & " packets=" & show (list-length value.packets)
                 & " handler-us=" & show (cs-microseconds started handled-at) & " total-us=" & show (cs-microseconds started finished)
                 & " stages-us=" & cs-stages owner 0 "")
@@ -817,8 +842,8 @@ Chapter: CompositeStore
 
  cg-pulse's stage stamps in the order they are taken, each as microseconds since the pulse began (a stage that did not
  run reads as 0); a stage's own cost is the difference from the one before it.
-  cs-stage-order : List Integer = [5, 6, 7, 1, 8, 9, 10, 11, 12, 2, 3, 4]
-  cs-stage-names : List Text = ["vendors", "monsters", "decoration", "base", "labor", "move", "live", "lineup", "speech", "town", "magic", "skills"]
+  cs-stage-order : List Integer = [5, 6, 7, 13, 14, 1, 8, 9, 10, 11, 12, 2, 3, 4]
+  cs-stage-names : List Text = ["vendors", "monsters", "decoration", "timers", "views", "base", "labor", "move", "live", "lineup", "speech", "town", "magic", "skills"]
   cs-stages : CompositeOwner, Integer, Text -> Text
   cs-stages (owner) (i) (out) = if i == list-length cs-stage-order then out
     else let start = peek-qword owner.state.stages 0
@@ -828,24 +853,71 @@ Chapter: CompositeStore
   cs-tick (owner) (game) (map) (watcher) (tick) =
     if owner.store.fault /= 0 then act Ok -1 end
     else let captured = cs-before owner
+    in let folded = cg-kind-fold owner.state.kind-time owner.state.wheel-total 0
+    in let accrued = poke-qword owner.state.entry-cells 32 (peek-qword owner.state.entry-cells 32 + cs-meter owner)
     in let zeroed = cg-kind-reset owner.state.kind-time 0
     in let t0 = get-ticks
+    in let m0 = cs-meter owner
     in when cg-tick owner.state game map watcher tick
       is Err (e) -> act
         isolated <- cs-isolated owner -1 e
         Err e
       end
-      is Ok (_) -> let t1 = get-ticks in act
+      is Ok (_) -> let t1 = get-ticks in let ticked-cells = cs-entry owner 0 m0 in act
         flown <- cs-flight-step owner
         t2 <- get-ticks
+        m1 <- cs-meter owner
         reported <- cs-reports owner game
+        report-cells <- cs-entry owner 24 m1
         t3 <- get-ticks
         saved <- if cs-items-dirty owner 0 | owner.state.vendor.sequence /= owner.vendor-sequence
           then cs-defer owner else cs-timer owner hpet-ticks
         t4 <- get-ticks
         said <- cs-tick-slow owner t0 t1 t2 t3 t4
+        wheeled <- cs-wheel owner
         saved
       end
+ UOAIX-267: a route plan is the costly part of a walker's step only if the planners search often or widely, so the
+ wheel line names the searches begun and the cells expanded since the last line, Britain's planner and the city towns'.
+  cs-nav-text : CompositeGame -> Text
+  cs-nav-text (s) = (when s.town is None -> "" is Just (t) -> " britain-searches=" & show t.nav.searches & " britain-cells=" & show t.nav.cells)
+    & " city-searches=" & show (cs-city-sum s.city-towns 0 True) & " city-cells=" & show (cs-city-sum s.city-towns 0 False)
+    & " tick-cells=" & show (peek-qword s.entry-cells 0) & " pulse-cells=" & show (peek-qword s.entry-cells 8) & " route-cells=" & show (peek-qword s.entry-cells 16) & " report-cells=" & show (peek-qword s.entry-cells 24)
+    & " meter-cells=" & show (peek-qword s.entry-cells 32 + peek-qword (s.kind-time + cg-kind-meter) 0)
+    & (when s.town is None -> "" is Just (t) -> " britain-why=" & cs-why-text t.nav.why 0) & " city-why=" & cs-city-why s.city-towns 0
+ rte-why's slots: no-route/displaced/reused/ended/goal-changed/hit/refused/searched/searched-by-rte-toward/cells-for-rte-toward/cells-by-rte-plan/evicted, then searches and cells by direct rte-plan site (TownRoutes rte-plan-at), then probes rte-probe-budget ended, then the serials of the last walkers replanned for ended and for goal-changed (a serial in britain-why; city-why sums them, a nonzero sum only says a city walker did).
+  cs-why-text : Integer, Integer -> Text
+  cs-why-text (b) (i) = if i >= tl-why-slots then "" else (if i == 0 then "" else "/") & show (peek-qword b (i * 8)) & cs-why-text b (i + 1)
+  cs-city-why : List TownLive, Integer -> Text
+  cs-city-why (ts) (slot) = if slot >= tl-why-slots then "" else (if slot == 0 then "" else "/") & show (cs-city-why-sum ts slot 0) & cs-city-why ts (slot + 1)
+  cs-city-why-sum : List TownLive, Integer, Integer -> Integer
+  cs-city-why-sum (ts) (slot) (i) = if i >= list-length ts then 0 else peek-qword (list-at ts i).nav.why (slot * 8) + cs-city-why-sum ts slot (i + 1)
+  cs-city-sum : List TownLive, Integer, Boolean -> Integer
+  cs-city-sum (ts) (i) (searches) = if i >= list-length ts then 0
+    else (if searches then (list-at ts i).nav.searches else (list-at ts i).nav.cells) + cs-city-sum ts (i + 1) searches
+ The meter's cells by entry point: the world tick (0), session pulses (8), packet routes (16) and the tick's reports (24),
+ since the last line.
+  cs-meter : CompositeOwner -> Integer
+  cs-meter (owner) = peek-qword (owner.state.kind-time + cg-kind-meter) 0
+  cs-entry : CompositeOwner, Integer, Integer -> Integer
+  cs-entry (owner) (at) (m0) = let b = owner.state.entry-cells in poke-qword b at (peek-qword b at + cs-meter owner - m0)
+  cs-nav-reset : CompositeGame -> Integer
+  cs-nav-reset (s) = let e = poke-qword s.entry-cells 0 0 in let f = poke-qword s.entry-cells 8 0 in let g = poke-qword s.entry-cells 16 0 in let r = poke-qword s.entry-cells 24 0 in let q = poke-qword s.entry-cells 32 (0 - peek-qword (s.kind-time + cg-kind-meter) 0) in let b = when s.town is None -> 0 is Just (t) -> cs-nav-zero t.nav in cs-city-reset s.city-towns 0
+  cs-nav-zero : TlPath -> Integer
+  cs-nav-zero (p) = let a = __record-set p "searches" 0 in let b = __record-set p "cells" 0 in let c = wd-zero p.why 0 (tl-why-slots * 8) in 0
+  cs-city-reset : List TownLive, Integer -> Integer
+  cs-city-reset (ts) (i) = if i >= list-length ts then 0 else let z = cs-nav-zero (list-at ts i).nav in cs-city-reset ts (i + 1)
+  cs-wheel : CompositeOwner -> [Console] Integer
+  cs-wheel (owner) = let s = owner.state
+    in let counted = __record-set s "wheel-ticks" (s.wheel-ticks + 1)
+    in if s.wheel-ticks < cg-wheel-ticks then act 0 end
+    else let text = cg-wheel-text s.wheel-total (max 1 hpet-ticks-per-second) & cs-nav-text s
+    in let zeroed = cs-nav-reset s
+    in let cleared = cg-kind-reset s.wheel-total 0
+    in let restarted = __record-set s "wheel-ticks" 0 in act
+      slg-line s.checkpoint.game.log slg-world slg-info ("WHEEL TOTAL ticks=" & show cg-wheel-ticks & " " & text)
+      1
+    end
  UOAIX-216: a world tick of 250 ms or more (get-ticks, wall time under -clock-scale) names its stages: the world step
  (cg-tick, the timer wheel), the save's disk write (cs-flight-step), the reports and the save key, then the wheel's
  guest microseconds and fired count per timer kind (cg-kind-said; guest time runs -clock-scale times wall time).
@@ -871,8 +943,39 @@ Chapter: CompositeStore
       told <- cs-threat-report owner
       rested <- cs-leisure-report owner 0
       towns <- cs-city-leisure-report owner
-      reported + workers + guarded + deaths + alarms + told + rested + towns
+      incidents <- cs-incident-rows owner game 0
+      reported + workers + guarded + deaths + alarms + told + rested + towns + incidents
     end
+ UOAIX-275: an open incident's stage and where its actors stand (the witness, the mayor and his walk's failed plans, the
+ first coroner), at a stage change and once every cs-incident-every reports (every report wrote 22,656 lines in 41
+ minutes, trial-47148).
+  cs-incident-every : Integer = 64
+  cs-incident-rows : CompositeOwner, GameShard, Integer -> [Console] Integer
+  cs-incident-rows (owner) (game) (i) = let ring = owner.state.dead
+    in if i >= sa-capacity ring then act 0 end
+    else let row = sa-at ring i
+    in if peek-qword row 0 == 0 | peek-qword row 64 == 0 then cs-incident-rows owner game (i + 1)
+    else if peek-qword row 168 == peek-qword row 64 & peek-qword row 176 < cs-incident-every then (let n = poke-qword row 176 (peek-qword row 176 + 1) in cs-incident-rows owner game (i + 1))
+    else let said = poke-qword row 168 (peek-qword row 64) + poke-qword row 176 0
+    in let mayor = when owner.state.civic is None -> 0 is Just (c) -> c.mayor
+    in let fails = when owner.state.civic is None -> 0 is Just (c) -> c.mayor-walk.walk.fails
+    in let carried = when owner.state.civic is None -> 0 is Just (c) -> (list-at c.coroners 0).walk.fails
+    in act
+      slg-line game.log slg-town slg-info ("INCIDENT row=" & show i & " stage=" & show (peek-qword row 64) & " corpse=" & show (peek-qword row 56)
+        & " at " & show (peek-qword row 0) & "," & show (peek-qword row 8) & " victim=" & show (peek-qword row 72)
+        & " witness=" & show (peek-qword row 80) & " at " & cs-at game (peek-qword row 80) & " mayor at " & cs-at game mayor & " mayor-fails=" & show fails
+        & " holder=" & show (peek-qword row 88) & " coroners=" & show (peek-qword row 96) & "," & show (peek-qword row 104) & " at " & cs-at game (peek-qword row 96) & " coroner-fails=" & show carried
+        & " grave=" & show (peek-qword row 136 / 65536) & "," & show (int-mod (peek-qword row 136) 65536) & " paid=" & show (peek-qword row 152) & (if peek-qword row 64 == 1 then " unseen=" else " ran=") & show (peek-qword row 160)
+        & " offers=" & show (cs-offers owner.state.quests (peek-qword row 56) 0 0))
+      rest <- cs-incident-rows owner game (i + 1)
+      1 + rest
+    end
+ The players the mayor has offered this corpse's quest (kind-1 quest rows, CompositeGameRules cg-offer-each).
+  cs-offers : Integer, Integer, Integer, Integer -> Integer
+  cs-offers (ring) (corpse) (i) (n) = if i >= sa-capacity ring then n
+    else cs-offers ring corpse (i + 1) (if peek-qword (sa-at ring i) 0 == 1 & peek-qword (sa-at ring i) 8 == corpse then n + 1 else n)
+  cs-at : GameShard, Integer -> Text
+  cs-at (game) (serial) = if serial == 0 then "-" else when world-get game.world serial is Err (_) -> "-" is Ok (m) -> show m.x & "," & show m.y
  The city keepers' last finished night (CityKeeperLeisure tally), once.
   cs-named-keepers : Integer, Integer -> Text
   cs-named-keepers (tally) (i) = if i >= ck-named then "" else let v = peek-qword tally (ck-named-last + i * 16)
@@ -1023,8 +1126,9 @@ Chapter: CompositeStore
           & " tries=" & show c.visit & " gold-ore=" & show c.mined & " blocked=" & show c.blocked)
         1
       end
- UOAIX-154 diagnostic: a worker at home off its bed reports whether a plan routes from where it stands to its bed, to
- its door, and from its door to its bed (1 or 0), so a night block names the leg that fails.
+ UOAIX-154 diagnostic: a worker blocked at home (a line its blocks raised, not its arrival) reports whether a plan routes
+ from where it stands to its bed, to its door, and from its door to its bed (1 or 0), so a night block names the leg that
+ fails. Each is a full plan on Britain's shared planner.
   cs-keeper-plans : CompositeOwner, GameShard, Integer, BshKeeper -> Text
   cs-keeper-plans (owner) (game) (i) (k) = when owner.state.town
     is None -> ""
@@ -1056,7 +1160,8 @@ Chapter: CompositeStore
   cs-worker-report : CompositeOwner, GameShard, Text, CgGatherer -> [Console] Integer
   cs-worker-report (owner) (game) (name) (c) = let state = c.leg * 2 + c.via + 32 * (c.blocked / 32)
     in if c.reported == state then act 0 end
-    else let noted = __record-set c "reported" state in act
+    else let blocking = int-mod c.reported 32 == int-mod state 32
+    in let noted = __record-set c "reported" state in act
       slg-line game.log slg-town slg-info ("WORKER " & name & " leg " & show c.leg & (if c.via == 1 then " via entrance" else "")
         & " at " & (when world-get game.world c.serial is Err (_) -> "-" is Ok (m) -> show m.x & "," & show m.y & "," & show m.z)
         & " home " & show c.home.x & "," & show c.home.y & "," & show c.home.z
@@ -1066,23 +1171,30 @@ Chapter: CompositeStore
         & " raw=" & show (cgg-held c c.trade.raw) & " tool=" & (if c.trade.tool == 0 | ep-tool (ep-actor c.gatherer.producer.currency.world c.gatherer.producer.actor) c.trade.tool then "1" else "0")
         & " ready=" & (if cgg-ready c then "1" else "0") & " closed=" & show owner.state.vendor.closed
         & (if c.city.city == 0 then "" else " way " & show c.door.x & "," & show c.door.y & "," & show c.door.z)
-        & (if c.leg /= 0 | c.via /= 0 | c.city.city /= 0 then "" else cs-bed-plans owner game c)
-        & (if c.city.city == 0 | c.blocked < 32 | not (c.leg == 4 | c.leg == 6 | c.leg == 8 | c.leg == 10) then "" else cs-shop-plans owner c))
+        & (if c.leg /= 0 | c.via /= 0 | c.city.city /= 0 | not blocking then "" else cs-bed-plans owner game c)
+        & (if c.blocked < 32 | not (c.leg == 4 | c.leg == 6 | c.leg == 8 | c.leg == 10) then "" else cs-shop-plans owner c))
       1
     end
- UOAIX-260 diagnostic: a city worker blocked on a walk to its sale or work tile (c.shop) reports that tile and whether a
- plan reaches it from where it stands and from its way (1 or 0).
+ UOAIX-260 diagnostic: a worker blocked on a walk to its sale or work tile (c.shop) reports that tile, the buyer's
+ keeper, and whether a plan reaches the tile from where it stands and from its way (1 or 0); Britain plans with its doors.
   cs-shop-plans : CompositeOwner, CgGatherer -> Text
-  cs-shop-plans (owner) (c) = when cw-town-of owner.state.worker-cities owner.state.city-towns c.city.city 0
+  cs-shop-plans (owner) (c) = if c.city.city == 0 then (when owner.state.town is None -> "" is Just (t) -> when owner.state.town-map
+      is None -> ""
+      is Just (map) -> cs-shop-plans-in c t map owner.state.town-doors)
+    else when cw-town-of owner.state.worker-cities owner.state.city-towns c.city.city 0
     is None -> ""
     is Just (t) -> when ct-map-of owner.state.city-maps c.city.city
       is None -> ""
-      is Just (map) -> when world-get t.vendors.game.world c.serial
-        is Err (_) -> ""
-        is Ok (m) -> let here = BbSpot { x = m.x, y = m.y, z = m.z }
-          in " shop " & show c.shop.x & "," & show c.shop.y & "," & show c.shop.z
-            & " plan here=" & (if cgg-plans t map None here c.shop then "1" else "0")
-            & " way=" & (if cgg-plans t map None (cgg-way c t) c.shop then "1" else "0")
+      is Just (map) -> cs-shop-plans-in c t map None
+  cs-shop-plans-in : CgGatherer, TownLive, WalkMap, Maybe WdState -> Text
+  cs-shop-plans-in (c) (t) (map) (doors) = when world-get t.vendors.game.world c.serial
+    is Err (_) -> ""
+    is Ok (m) -> let here = BbSpot { x = m.x, y = m.y, z = m.z }
+      in let index = cgg-vendor-of c c.trade.buyer
+      in " shop " & show c.shop.x & "," & show c.shop.y & "," & show c.shop.z
+        & " buyer " & (if index < 0 | index >= t.vendors.vendor-count then "none" else when world-get t.vendors.game.world (list-at t.vendors.vendors index).serial is Err (_) -> "none" is Ok (k) -> show index & "@" & show k.x & "," & show k.y & "," & show k.z)
+        & " plan here=" & (if cgg-plans t map doors here c.shop then "1" else "0")
+        & " way=" & (if cgg-plans t map doors (cgg-way c t) c.shop then "1" else "0")
   cs-miners-report : CompositeOwner, GameShard, Integer -> [Console] Integer
   cs-miners-report (owner) (game) (i) = if i >= list-length owner.state.miners then act 0 end
     else act
@@ -1125,19 +1237,20 @@ Chapter: CompositeStore
     end
  A pass that dirties items or the vendor sequence marks the save pending (store-due 4) instead of committing inside its round,
  so the 60 s save key commits it, forced because cs-dirty does not see an item-only change (UOAIX-216: trial 42651 committed
- 665 times in 21 minutes, each stalling its round). A close still commits at once.
+ 665 times in 21 minutes, each stalling its round).
  A save key that comes due while a flight is writing keeps its bit until the flight lands: a commit drains the flight in
  one call, and a compaction's 18.8 MB snapshot drained so froze the shard for 20 s (UOAIX-261, live 44158 save 396).
   cs-save-now : Integer, Integer -> Boolean
   cs-save-now (due) (flying) = bit-and due 1 /= 0 & not (cs-flying flying)
   cs-flying : Integer -> Boolean
   cs-flying (state) = state == 1
- A command's commit during play marks the save pending (store-due 4) while a flight writes, for the same reason; a close
- and the boot still commit at once.
+ A command's commit during play marks the save due, forced when the command asks (UOAIX-267: a commit in the round wrote
+ the whole checkpoint unspread whenever no flight was writing); the next cs-timer writes it spread. The boot still
+ commits at once.
   cs-commit-play : CompositeOwner, Boolean -> [Console, Device.Block] Result Integer Text
-  cs-commit-play (owner) (force) = if cs-flying (peek-qword owner.flight 0) then
-      let marked = __record-set owner.state "store-due" (bit-or owner.state.store-due 4) in act Ok 0 end
-    else cs-commit owner force
+  cs-commit-play (owner) (force) = let marked = __record-set owner.state "store-due" (cs-play-due owner.state.store-due force) in act Ok 0 end
+  cs-play-due : Integer, Boolean -> Integer
+  cs-play-due (due) (force) = bit-or due (if force then 5 else 1)
   cs-report-clear : Integer -> Integer
   cs-report-clear (due) = bit-and due 5
   cs-save-clear : Integer -> Integer
@@ -1159,7 +1272,16 @@ Chapter: CompositeStore
   cs-disconnect : CompositeOwner, GameShard, GameInput -> [Console, Device.Block] Result Integer Text
   cs-disconnect (owner) (game) (input) =
     if game.world.buffer /= owner.state.checkpoint.game.world.buffer | game.characters /= owner.state.checkpoint.game.characters then act Err "disconnect owner binding differs" end
-    else let traded = cg-trade-depart owner.state game input.session.serial in let departed = cg-depart owner.state input.session.serial in let shelved = gv-window-all owner.state.vendor 0 in cs-commit-soft owner
+    else let traded = cg-trade-depart owner.state game input.session.serial in let departed = cg-depart owner.state input.session.serial in let shelved = gv-window-all owner.state.vendor 0
+    in cs-close-save owner
+ UOAIX-267: a close committed inside the round that closed the link, draining any flight first: trial-45735's bot
+ disconnects held their rounds 22.9 to 86.2 s (`slow-link ... close=`), and trial-45789's 0xA0 relay replies, which
+ close the login link, 6.4 and 17.7 s. A close (a disconnect, or a reply that closes) marks the save due and forced
+ instead; the next cs-timer commits it spread once no flight is writing.
+  cs-close-save : CompositeOwner -> [Console, Device.Block] Result Integer Text
+  cs-close-save (owner) = let marked = __record-set owner.state "store-due" (cs-close-due owner.state.store-due) in act Ok 0 end
+  cs-close-due : Integer -> Integer
+  cs-close-due (due) = bit-or due 5
 
  The largest composite length the deltas from at onward reach, so the restore sizes its buffer before replaying them.
   cs-replay-span : UoStore, Integer, Integer, Integer -> [Device.Block] Result Integer Text

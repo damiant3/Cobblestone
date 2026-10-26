@@ -122,11 +122,13 @@ try {
           await evaluate('document.getElementById("td0")?.scrollIntoView({block:"center"})');
           await sleep(200);
           const card = await evaluate('(()=>{const c=document.getElementById("td0");if(!c)return null;const r=c.getBoundingClientRect();return {text:c.innerText,links:[...c.querySelectorAll("a")].map(a=>a.getAttribute("href")),left:r.left,right:r.right,overflow:document.documentElement.scrollWidth>innerWidth,cards:document.querySelectorAll("#today-grid>.card").length};})()');
-          if (!card?.text.includes('Valheim') || !card.links.includes('modbuilder/index.html') || !card.links.includes('compile/prism.html') || card.cards !== 6 || card.left < 0 || card.right > width || card.overflow) throw new Error('Grouped tool cards are missing or do not fit at ' + width + ': ' + JSON.stringify(card));
+          if (!card?.text.includes('Valheim') || !card.links.includes('modbuilder/index.html') || !card.links.includes('compile/prism.html') || card.cards !== 7 || card.left < 0 || card.right > width || card.overflow) throw new Error('Grouped tool cards are missing or do not fit at ' + width + ': ' + JSON.stringify(card));
           const uoaix = await evaluate('(()=>{const c=document.getElementById("td-uo");return c&&{text:c.innerText,href:c.querySelector("a")?.getAttribute("href"),art:getComputedStyle(c).backgroundImage};})()');
           if (uoaix?.href !== 'uoaix.html' || !uoaix.text.includes('no public play') || !uoaix.text.includes('a new kind of UO') || !uoaix.text.includes('playwrights') || !uoaix.art.includes('uoaix-isometric-village.jpg')) throw new Error('UOAIX card/link/status/art missing');
           await evaluate('document.getElementById("td-uo").scrollIntoView({block:"center"})');
           await sleep(200);
+          const assistImage = await evaluate('new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve({width:i.naturalWidth,height:i.naturalHeight});i.onerror=()=>reject(new Error("Assist screenshot did not load"));i.src=document.getElementById("td-ua-shot").href;})');
+          if (!assistImage.width || !assistImage.height) throw new Error('Assist screenshot is empty');
           const uoaixCardShot = await send('Page.captureScreenshot', {format:'png'});
           writeFileSync(join(out, 'uoaix-card-' + width + '.png'), Buffer.from(uoaixCardShot.data, 'base64'));
           await evaluate('document.getElementById("td0").scrollIntoView({block:"center"})');

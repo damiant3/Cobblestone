@@ -148,8 +148,14 @@ function playGame(pick) {
     const chosen = ms[idx];
     if (chosen.cap >= 0) lastCapture = plies;
     const crowns = !isKing(g[chosen.from]) && (turn === 0 ? Math.floor(chosen.to / 8) === 0 : Math.floor(chosen.to / 8) === 7);
-    if (chosen.cap >= 0 || crowns) lastProgress = plies + 1;
+    // WCDF, as the ACF publishes it: the count is broken by a capture or by
+    // any uncrowned man advancing (every man move advances), not by crowning
+    // alone.
+    if (chosen.cap >= 0 || !isKing(g[chosen.from])) lastProgress = plies + 1;
     h = e.ck_apply(h, idx);
+    if (e.ck_done(h) === 0 && e.ck_chain(h) < 0 && plies + 1 - lastProgress >= 80) {
+      problems.push(`ply ${plies}: 80 plies with no man moved and no capture, and the game goes on`);
+    }
     const after = cells(h);
     // Rules 5 and 6 from the board, not from the engine's own chain: after a
     // capture that did not crown, the turn stays exactly when the piece can
@@ -198,7 +204,7 @@ function playGame(pick) {
     if (e.ck_done(r.h) !== 1) { openEnded.push(`seed ${seed}: running after ${r.plies} plies`); continue; }
     // A finished game is a win for the side that moved last, because the side
     // to move has no piece or no legal move; or it is a draw at exactly eighty
-    // plies without a capture or a crowning.
+    // plies without a capture or a man's move.
     const w = e.ck_winner(r.h), toMove = e.ck_turn(r.h), quiet = r.plies - r.lastProgress;
     if (w === 1 - toMove) {
       if (count(cells(r.h), toMove) > 0 && e.ck_moves(r.h) > 0) judged.push(`seed ${seed}: ${w} wins but ${toMove} can move`);
@@ -276,6 +282,40 @@ ok('class: crowning ends the move, though the new king could capture again',
 cls('a man does not capture backwards', setUp([[26, 1], [35, 3], [60, 3]]), ['26-17', '26-19']);
 cls('a king captures backwards, and must', setUp([[26, 2], [35, 3], [60, 3]]), ['26-44x35']);
 cls('a king moves one square, not flying', setUp([[27, 2], [60, 3]]), ['27-18', '27-20', '27-34', '27-36']);
+// The forty-move rule (WCDF): 40 moves by each side with no capture and no
+// uncrowned man advanced. The kings shuffle 62/53 and 1/10, out of reach of
+// each other and of the man on 49; with manAt >= 0 South's man steps 49->40
+// at that ply. Returns the ply count when the game ended, or -1.
+const shuffle = (manAt) => {
+  let h = setUp([[62, 2], [49, 1], [1, 4]]);
+  for (let ply = 0; ply < 400; ply++) {
+    if (e.ck_done(h) === 1) return { ended: ply, winner: e.ck_winner(h) };
+    const turn = e.ck_turn(h);
+    const [a, b] = turn === 0 ? [62, 53] : [1, 10];
+    const at = e.ck_cell(h, a) === (turn === 0 ? 2 : 4) ? a : b;
+    const idx = ply === manAt ? find(h, 49, 40) : find(h, at, at === a ? b : a);
+    if (idx < 0) return { ended: -1, winner: -2, stuck: ply };
+    h = e.ck_apply(h, idx);
+  }
+  return { ended: -1, winner: -2 };
+};
+// The opponent advances toward its own king row and crowns when it can: South
+// crowns on row 0 and North on row 7, each with a quiet slide beside it.
+{
+  const south = setUp([[10, 1], [49, 1], [7, 3]], 0);
+  const sTo = e.ck_move_to(south, e.ck_ai(south));
+  ok('opponent: South takes the crowning move over a quiet slide', sTo === 1 || sTo === 3, `to ${sTo}`);
+  const north = setUp([[53, 3], [14, 3], [40, 1]], 1);
+  const nTo = e.ck_move_to(north, e.ck_ai(north));
+  ok('opponent: North takes the crowning move over a quiet slide', nTo === 60 || nTo === 62, `to ${nTo}`);
+}
+{
+  const quiet = shuffle(-1), stepped = shuffle(78);
+  ok('CONTROL: eighty plies of king moves alone is a draw at ply 80',
+     quiet.ended === 80 && quiet.winner === -1, JSON.stringify(quiet));
+  ok('class: a man advancing at ply 78 restarts the count, so the draw comes after 159 plies',
+     stepped.ended === 159 && stepped.winner === -1, JSON.stringify(stepped));
+}
 cls('North captures toward row 7, and a chain goes on for North too',
     setUp([[21, 3], [28, 1], [44, 1], [0, 1]], 1), ['21-35x28']);
 {

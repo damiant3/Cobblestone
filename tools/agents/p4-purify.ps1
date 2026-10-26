@@ -17,9 +17,9 @@
 # exactly as merge-down-all.ps1 does. -DryRun needs no approval: it lists what
 # would go and runs nothing.
 #
-#   pwsh build/p4-purify.ps1 -Client BigWhite_Codex_val -DryRun
-#   pwsh build/p4-purify.ps1 -Client BigWhite_Codex_val -ApprovedBy damian
-#   pwsh build/p4-purify.ps1 -Client BigWhite_Codex_val_main -ApprovedBy damian
+#   pwsh tools/agents/p4-purify.ps1 -Client BigWhite_Codex_val -DryRun
+#   pwsh tools/agents/p4-purify.ps1 -Client BigWhite_Codex_val -ApprovedBy damian
+#   pwsh tools/agents/p4-purify.ps1 -Client BigWhite_Codex_val_main -ApprovedBy damian
 #
 # Exit 0 when the workspace is pure and (for a dev stream) level with main.
 # Exit 1 when it refused, or the merge left files to resolve.

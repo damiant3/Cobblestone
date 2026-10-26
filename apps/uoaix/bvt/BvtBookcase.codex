@@ -17,10 +17,11 @@ Chapter: BvtBookcase
     a <- bvt-check "every 1.25 bookcase art (0x0A97..0x0A9C) opens the bookcase container gump 0x4D (UOAIX-228)" (wd-bookcase #0A97 & wd-bookcase #0A9C & wd-bookcase-gump == #4D)
     b <- bvt-check "a ruined bookcase, the arts beside the range and a door answer with their name instead" (not (wd-bookcase #0C14) & not (wd-bookcase #0C15) & not (wd-bookcase #0A96) & not (wd-bookcase #0A9D) & not (wd-bookcase #0675))
     c <- bvt-check "a bookcase lists three library books in its gump: a 0x3C of 5 + 3 x 19 bytes, each book inside the bookcase (UOAIX-228)" (bbk-contents 0)
-    d <- bvt-check "a library book reads as the client's 98-byte 0x93 header, read-only, and a 0x66 of every page whose length field is its length; its serial names its bookcase's book" (bbk-read 0)
+    d <- bvt-check "a library book opens with the client's 98-byte 0x93 header alone, read-only; its serial names its bookcase's book" (bbk-read 0)
+    g <- bvt-check "a 0x66 page request (line count 0xFFFF) answers that one page, a page past the book answers none, and a write or another serial is no request" (bbk-page 0)
     e <- bvt-check "every library book fits the client's book: 20 pages of 8 lines of 39 characters, a 60-byte title and a 30-byte author" (bbk-fit (lib-books 0) 0)
     f <- bvt-check "a decoration, planting or flora serial is no library book" (not (lib-is (wd-serial-base + 5)) & not (lib-is #7D000005) & not (lib-is #7C000005) & lib-is (lib-serial-base + 1))
-    a + b + c + d + e + f
+    a + b + c + d + e + f + g
   end
   bbk-contents : Integer -> Boolean
   bbk-contents (unused) = let p = lib-contents #7E000010 15
@@ -30,7 +31,20 @@ Chapter: BvtBookcase
   bbk-read (unused) = let serial = lib-serial-base + 4 * 15 + 2 + 1
     in let r = lib-read serial
     in let h = list-at r 0
-    in let g = list-at r 1
-    in list-length r == 2 & list-at h 0 == #93 & list-length h == 98 & gp-u32 h 1 == serial & list-at h 5 == 0
-      & list-at g 0 == #66 & list-at g 1 * 256 + list-at g 2 == list-length g & gp-u32 g 3 == serial
+    in list-length r == 1 & list-at h 0 == #93 & list-length h == 98 & gp-u32 h 1 == serial & list-at h 5 == 0
       & lib-book-of serial == lib-index 15 2 & lib-title serial == (list-at (lib-books 0) (lib-index 15 2)).title
+  bbk-ask : Integer, Integer, Integer -> List Integer
+  bbk-ask (serial) (page) (lines) = gp-put16 (gp-put16 (gp-put16 (gp-put32 [#66, 0, 13] serial) 1) page) lines
+  bbk-page : Integer -> Boolean
+  bbk-page (unused) = let serial = lib-serial-base + 4 * 15 + 2 + 1
+    in let b = list-at (lib-books 0) (lib-book-of serial)
+    in let last = list-length b.pages
+    in let p = lib-page serial last
+    in let lines = list-at b.pages (last - 1)
+    in let past = lib-page serial (last + 1)
+    in lib-asked (bbk-ask serial last #FFFF) == last & lib-asked (bbk-ask serial 1 3) == -1 & lib-asked (bbk-ask (wd-serial-base + 5) 1 #FFFF) == -1
+      & list-at p 0 == #66 & list-at p 1 * 256 + list-at p 2 == list-length p & gp-u32 p 3 == serial & gp-u16 p 7 == 1 & gp-u16 p 9 == last
+      & gp-u16 p 11 == list-length lines & list-length p == 13 + bbk-bytes lines 0 0
+      & list-length past == 9 & gp-u16 past 7 == 0
+  bbk-bytes : List Text, Integer, Integer -> Integer
+  bbk-bytes (lines) (i) (n) = if i >= list-length lines then n else bbk-bytes lines (i + 1) (n + text-length (list-at lines i) + 1)

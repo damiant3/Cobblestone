@@ -69,7 +69,7 @@ with no retained allocation beyond the owner's callback state.
 `GameOpcodeSpec { opcode, size, minimum, maximum }` declares framing.
 Fixed packets use size=minimum=maximum. Size zero means an opcode followed
 by a big-endian two-byte total length; minimum is at least 3. Every maximum
-is at most 256, matching GameInput's assembly buffer. `go-valid specs`
+is at most `go-wire-limit` (65535), GameInput's assembly buffer. `go-valid specs`
 rejects invalid declarations, duplicate opcodes and changed framing for an
 existing core opcode. At most 256 declarations are accepted. Undeclared
 core packets retain their existing framing; undeclared unknown packets refuse.
@@ -161,8 +161,8 @@ Do not use the standalone blocking sender inside the shared loop. Pulses and
 packet callbacks obey the same private-mutation/commit requirement above.
 
 Allocate registry and captured callback state below the connection/owner
-scratch marks. GameInput is now 104 native bytes; its packet and diagnostic
-buffers remain 256 bytes each. Registry validation is O(N squared) at startup;
+scratch marks. GameInput is 104 native bytes; its packet buffer is
+`go-wire-limit` bytes and its diagnostic buffer 256. Registry validation is O(N squared) at startup;
 lookup is O(N) at opcode/prefix boundaries, not on every byte. A spec is 32
 bytes, and default-spec temporaries are request scratch. Dispatch validates
 the complete packet's declared extent and byte range in O(packet length).
@@ -195,9 +195,9 @@ there), plus 0x56, 0x66, 0x69, 0x71 and 0x93.
 | 12 | skill, spell or action command | `ActiveSkillsHandler`, `MageryActions` |
 | 22 | resync | `gs-resync` |
 | 2C | death menu answer | `GameCombat` |
-| 34 | status (type 4, any serial) and skills (type 5) | `GameCombat`; `ActiveSkillsHandler` and `GameHarvest` |
+| 34 | status (type 4, a mobile in view) and skills (type 5) | `GameCombat`; `ActiveSkillsHandler` and `GameHarvest` |
 | 3B, 9F | buy, sell | `GameVendor` |
-| 56, 66, 75, 93 | map pin, book page, pet rename, book title | skipped with a note (UOAIX-175 to 177) |
+| 56, 66, 75, 93 | map pin, book page, pet rename, book title | `cg-map-pin`, `cg-wbook-write`, `cg-pet-rename` |
 | 69 | text or emote colour change (5 bytes, sent twice, no colour carried; UOX3 CPTextEmoteColour) | skipped by `gn-default-handler` (correct: it carries nothing) |
 | 6C | target | the cursor's owner |
 | 6F | secure trade | the composite |
@@ -213,6 +213,30 @@ there), plus 0x56, 0x66, 0x69, 0x71 and 0x93.
 Not counted as player packets: 04, 0A, 14, 47, 48, 58, 61, 79, 7E and 9D are god-client requests; 9A and AC answer a
 prompt or a text entry the server never sends. To re-run the audit, count `PACKET <n> unhandled packet skipped` in the
 server logs (`gn-default-handler` skips every packet with no fixed size, `gs-handle` the fixed ones it does not claim): across 137 trial and live logs (2026-10-06 to 2026-10-09) the only one was 0x69.
+
+## What each client field is held to
+
+A field the client controls is refused before use; a refusal answers a denial line or, from framing, closes the
+connection. Nothing a client sends may trap or halt the shard.
+
+- **Extent.** `gn-byte` frames by `cg-specs`: fixed packets exactly; 0x03 10..137, 0x12 5..256, 0x3B 8..232, 0x9F
+  9..201, 0x6F 8..64, 0x71 12..2048, 0xB1 23..256; any other dynamic opcode 3..65535. A handler reads past a fixed
+  header only behind a test of the packet's length, and a walk over a whole packet recurses in an `else` arm, never
+  through `&` (DevelopersGuide: one stack frame per byte otherwise).
+- **View.** The 1.25 client is sent nothing past 18 tiles, so it can name nothing there: `cg-route` refuses an attack,
+  double-click or click (0x05, 0x06, 0x09: serial at 1), a status request (0x34 type 4: at 6) or an object target (0x6C
+  type 0: at 7) naming a world object whose outermost holder lies past `gsi-look-range` (`gsi-view-refused`), before
+  any family runs. Each handler then keeps its own reach: 2 tiles to use, lift or drop (`ia-access`), 12 and line of
+  sight for a spell (`mga-visible`), the board's 2 tiles for every 0x71, the house's plot for an eject or ban
+  (`hs-holds`).
+- **Cursor contexts** (0x6C at 2) match the request that issued them (`request.target`, `actor.cursor`, `hs-cmd-row`);
+  GM contexts pass `gm-allow`, `[skill`/`[attr` contexts `cp-context-allowed`.
+- **Menu and gump answers.** A 0x7D names the open menu's id and dialog serial; a 0xB1 its gump id; the choice or
+  button is bounded by the list it indexes.
+- **Amounts and coordinates.** `ia-plan` takes 1..65535 and no more than the stack; carts are read against the quote
+  (`gv-read-lines`); a ground drop is `ia-near` and inside the walk window.
+- **Numbers and text in speech.** Every digit parser is capped (`bc-number`, `cp-number`, `cp-long`, `ch-number`,
+  `csk-digits`, `mg-number`, `gsi-skill-number`); text is copied up to its field's width and the packet's end.
 
 ## Proof
 

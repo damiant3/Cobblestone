@@ -10,14 +10,16 @@ Chapter: GameWorldSpawn
 
   WorldSpawnSlot = record { serial : Integer, region : Integer, profile : Integer,
     direction : Integer, due : Integer, seen : Integer, sector : Integer, next : Integer, visit : Integer, engaged : Integer,
-    follow : Integer, owner : Integer, order : Integer, goal-x : Integer, goal-y : Integer, goal-steps : Integer, summoned : Integer, actor : Integer, stepped : Integer, aim : Integer, foe : Integer, ward : Integer }
+    follow : Integer, owner : Integer, order : Integer, goal-x : Integer, goal-y : Integer, goal-steps : Integer, summoned : Integer, actor : Integer, stepped : Integer, aim : Integer, foe : Integer, ward : Integer, doze : Integer }
   GameWorldSpawn = record { catalog : WsCatalog, combat : GameCombat, steps : Integer, fast : Integer,
     slots : List WorldSpawnSlot, populations : Integer, deadlines : Integer,
     links : List Integer, viewer : Integer, due : Integer, cursor : Integer, unseen : Integer,
     heads : Integer, lists : Integer, stamp : Integer, fights : Integer, shortfalls : Integer, prey : (Integer, Integer, Integer -> Integer), spared : (Integer -> Boolean), wheeled : Boolean,
-    area-heads : Integer, area-links : Integer }
+    area-heads : Integer, area-links : Integer, index : Integer, index-cap : Integer, index-used : Integer, awake : (Integer, Integer -> Boolean) }
   gws-prey-none : Integer, Integer, Integer -> Integer
   gws-prey-none (attacker) (x) (y) = 0
+  gws-awake-all : Integer, Integer -> Boolean
+  gws-awake-all (x) (y) = True
  A serial a wild creature never takes as its target; the composite spares its town workers (root for Damian, 2026-10-09).
   gws-spared-none : Integer -> Boolean
   gws-spared-none (serial) = False
@@ -59,7 +61,8 @@ Chapter: GameWorldSpawn
       is Err (_) -> 0
       is Ok (m) -> gws-file g i m.x m.y
   gws-reindex : GameWorldSpawn, WorldTable -> Integer
-  gws-reindex (g) (world) = let heads = gws-zero g.heads 0 (gws-columns * gws-rows)
+  gws-reindex (g) (world) = let serials = gws-index-rebuild g
+    in let heads = gws-zero g.heads 0 (gws-columns * gws-rows)
     in let lists = gws-zero g.lists 0 (list-length g.links * (list-length g.slots + 1))
     in let fights = gws-zero g.fights 0 (list-length g.slots + 1)
     in gws-reindex-slots g world 0
@@ -95,7 +98,7 @@ Chapter: GameWorldSpawn
   gws-slots (left) (xs) = if left == 0 then xs
     else gws-slots (left - 1) (list-push xs (WorldSpawnSlot {
       serial = 0, region = -1, profile = -1, direction = 0, due = 0, seen = 0, sector = -1, next = 0, visit = 0, engaged = 0,
-      follow = 0, owner = 0, order = 0, goal-x = 0, goal-y = 0, goal-steps = 0, summoned = 0, actor = 0, stepped = 0, aim = 0, foe = 0, ward = 0 }))
+      follow = 0, owner = 0, order = 0, goal-x = 0, goal-y = 0, goal-steps = 0, summoned = 0, actor = 0, stepped = 0, aim = 0, foe = 0, ward = 0, doze = 0 }))
   gws-new : WsCatalog, GameCombat, Integer -> Result GameWorldSpawn Text
   gws-new (catalog) (combat) (capacity) =
     let count = list-length catalog.regions
@@ -116,12 +119,15 @@ Chapter: GameWorldSpawn
     in let f = gws-zero area-heads 0 (gws-columns * gws-rows)
     in let area-links = alloc-bytes (max 1 (gws-area-count catalog.regions 0 0) * 16)
     in let filed = gws-area-index area-heads area-links catalog.regions (list-length catalog.regions - 1) 0
+    in let index-cap = gws-index-cap capacity
+    in let index = alloc-bytes (index-cap * 16)
+    in let cleared = gws-zero index 0 (index-cap * 2)
     in Ok (GameWorldSpawn { catalog = catalog, combat = combat, steps = 0, fast = 0,
       slots = gws-slots capacity (__list-with-capacity capacity),
       populations = populations, deadlines = deadlines,
       links = gm-links gm-link-limit (__list-with-capacity gm-link-limit), viewer = 0, due = 0, cursor = 0, unseen = 0,
       heads = heads, lists = lists, stamp = 0, fights = fights, shortfalls = shortfalls, prey = gws-prey-none, spared = gws-spared-none, wheeled = False,
-      area-heads = area-heads, area-links = area-links })
+      area-heads = area-heads, area-links = area-links, index = index, index-cap = index-cap, index-used = 0, awake = gws-awake-all })
  Every region is filed in each sector its area touches, last region first so a sector lists its regions in catalog
  order: area-heads holds a sector's first entry + 1, and an entry is 16 bytes, the region's index then the next entry + 1.
   gws-area-span : WsRect -> Integer
@@ -157,6 +163,8 @@ Chapter: GameWorldSpawn
     in let slots = __record-set g "slots" (gws-slots (capacity - list-length g.slots) g.slots)
     in let lists = __record-set g "lists" (alloc-bytes (list-length g.links * (capacity + 1) * 8))
     in let fights = __record-set g "fights" (alloc-bytes ((capacity + 1) * 8))
+    in let index-cap = __record-set g "index-cap" (gws-index-cap capacity)
+    in let index = __record-set g "index" (alloc-bytes (g.index-cap * 16))
     in let rebuilt = gws-reindex g world in capacity
   gws-in : WsRect, Integer, Integer -> Boolean
   gws-in (r) (x) (y) = x >= r.x1 & x <= r.x2 & y >= r.y1 & y <= r.y2
@@ -238,6 +246,7 @@ Chapter: GameWorldSpawn
             in if bound /= 0 then let removed = world-delete shard.world serial in Err "world spawn combat binding"
             else let slot = list-at g.slots free
             in let a = __record-set slot "serial" serial
+            in let indexed = gws-index-put g serial free
             in let b = __record-set slot "region" region
             in let c = __record-set slot "profile" profile
             in let d = __record-set slot "direction" (cb-random g.combat 8)
@@ -304,6 +313,7 @@ Chapter: GameWorldSpawn
         in if bound /= 0 then let removed = world-delete shard.world serial in Err "summon combat binding"
         else let slot = list-at g.slots free
         in let a = __record-set slot "serial" serial
+        in let indexed = gws-index-put g serial free
         in let b = __record-set slot "region" -1
         in let c = __record-set slot "profile" profile
         in let d = __record-set slot "direction" (cb-random g.combat 8)
@@ -708,7 +718,8 @@ Chapter: GameWorldSpawn
         else if slot.summoned > 0 & g.combat.tick >= slot.summoned then when gws-dismiss g shard m.serial
           is Err (e) -> Err e
           is Ok (_) -> gws-visit g shard map viewer i draw packets
-        else let a = list-at g.combat.actors (world-slot shard.world m.serial)
+        else let roused = if slot.doze /= 0 & g.awake m.x m.y then (let up = __record-set slot "doze" 0 in gws-arm g i) else 0
+        in let a = list-at g.combat.actors (world-slot shard.world m.serial)
         in let fighting = a.war & a.target /= 0
         in let regrown = if m.health > 0 then gws-regrow g shard slot m else False
         in let moved = if m.health > 0 then gws-act g shard map slot m viewer else False
@@ -803,9 +814,50 @@ Chapter: GameWorldSpawn
   gws-clear-region (g) (region) = if region < 0 | region >= list-length g.catalog.regions then 0 else poke-qword g.deadlines (region * 8) gws-cleared
   gws-region-cleared : GameWorldSpawn, Integer -> Boolean
   gws-region-cleared (g) (region) = region >= 0 & region < list-length g.catalog.regions & peek-qword g.deadlines (region * 8) >= gws-cleared
+ A serial's slot was a walk over every slot, from 26 sites including each combat swing and guard focus, a player's
+ serial walking them all (red, UOAIX audit 2026-10-18, UOAIX-265). An open-addressed table of (serial, slot) pairs, a
+ power of two at least four times the slots, holds every live slot: a spawn or summon adds its pair, a despawn leaves a
+ stale one, and a pair counts only while its slot still holds the serial, so an empty cell answers "no spawn". The
+ table is rebuilt in place when half used, and by gws-reindex at load and growth.
+  gws-index-cap : Integer -> Integer
+  gws-index-cap (slots) = gws-index-pow2 16 (slots * 4)
+  gws-index-pow2 : Integer, Integer -> Integer
+  gws-index-pow2 (c) (want) = if c >= want then c else gws-index-pow2 (c * 2) want
+  gws-index-hash : Integer, Integer -> Integer
+  gws-index-hash (serial) (cap) = bit-and (bit-xor serial (bit-shru serial 16)) (cap - 1)
+  gws-index-free : GameWorldSpawn, Integer -> Integer
+  gws-index-free (g) (at) = if peek-qword g.index (at * 16) == 0 then at else gws-index-free g (bit-and (at + 1) (g.index-cap - 1))
+  gws-index-add : GameWorldSpawn, Integer, Integer -> Integer
+  gws-index-add (g) (serial) (slot) = let at = gws-index-free g (gws-index-hash serial g.index-cap)
+    in let a = poke-qword g.index (at * 16) serial
+    in let b = poke-qword g.index (at * 16 + 8) slot
+    in let used = __record-set g "index-used" (g.index-used + 1) in 0
+  gws-index-all : GameWorldSpawn, Integer -> Integer
+  gws-index-all (g) (i) = if i == list-length g.slots then 0
+    else let s = (list-at g.slots i).serial
+    in let added = if s == 0 then 0 else gws-index-add g s i
+    in gws-index-all g (i + 1)
+  gws-index-rebuild : GameWorldSpawn -> Integer
+  gws-index-rebuild (g) = let z = gws-zero g.index 0 (g.index-cap * 2)
+    in let u = __record-set g "index-used" 0
+    in gws-index-all g 0
+  gws-index-put : GameWorldSpawn, Integer, Integer -> Integer
+  gws-index-put (g) (serial) (slot) = if serial == 0 then 0
+    else if g.index-used * 2 >= g.index-cap then gws-index-rebuild g
+    else gws-index-add g serial slot
+  gws-index-find : GameWorldSpawn, Integer, Integer, Integer -> Integer
+  gws-index-find (g) (serial) (at) (n) = if n >= g.index-cap then gws-slot-scan g serial 0
+    else let s = peek-qword g.index (at * 16)
+    in if s == 0 then -1
+    else let slot = peek-qword g.index (at * 16 + 8)
+    in if s == serial & slot >= 0 & slot < list-length g.slots & (list-at g.slots (max 0 slot)).serial == serial then slot
+    else gws-index-find g serial (bit-and (at + 1) (g.index-cap - 1)) (n + 1)
   gws-slot-of : GameWorldSpawn, Integer, Integer -> Integer
-  gws-slot-of (g) (serial) (i) = if i == list-length g.slots then -1
-    else if (list-at g.slots i).serial == serial then i else gws-slot-of g serial (i + 1)
+  gws-slot-of (g) (serial) (i) = if i /= 0 | serial == 0 | g.index-cap == 0 then gws-slot-scan g serial i
+    else gws-index-find g serial (gws-index-hash serial g.index-cap) 0
+  gws-slot-scan : GameWorldSpawn, Integer, Integer -> Integer
+  gws-slot-scan (g) (serial) (i) = if i == list-length g.slots then -1
+    else if (list-at g.slots i).serial == serial then i else gws-slot-scan g serial (i + 1)
   gws-after : (WalkMap, WsRegion, WsProfile, Integer, Integer -> Result Integer Text), GameWorldSpawn, GameShard, GameInput, WalkMap, Integer, Result (Maybe GameReply) Text -> Result (Maybe GameReply) Text
   gws-after (terrain) (g) (shard) (input) (map) (tick) (prior) = when prior
     is Err (e) -> Err e
@@ -844,10 +896,31 @@ Chapter: GameWorldSpawn
     is Just (_) -> if g.wheeled then Ok packets
       else let marked = __record-set g "wheeled" True
       in let refused = gws-arm-all g 0 0 in Ok packets
+ A wild creature with no player's character within reach (awake) dozes: its wake neither visits nor re-arms it, and the
+ first view visit with a player in reach arms it again (Damian, 2026-10-18, the region rule). One a player drives or
+ that is fighting (owned, summoned, following, herded, engaged or at war) never dozes.
+  gws-dozes : GameWorldSpawn, GameShard, WorldSpawnSlot -> Boolean
+  gws-dozes (g) (shard) (slot) = slot.owner == 0 & slot.summoned == 0 & slot.follow == 0 & slot.goal-steps == 0 & slot.engaged == 0
+    & not (gws-at-war g shard slot.serial)
+  gws-doze : GameWorldSpawn, GameShard, Integer -> Boolean
+  gws-doze (g) (shard) (i) = let slot = list-at g.slots i
+    in if slot.serial == 0 then False
+    else if not (gws-dozes g shard slot) then False
+    else when world-get shard.world slot.serial
+      is Err (_) -> False
+      is Ok (m) -> if g.awake m.x m.y then False else let dozed = __record-set slot "doze" 1 in True
+ A strike on a dozing creature, or its death, arms it again: it fights back an NPC that attacks it far from every player
+ (UOAIX-268), and one killed dozing is released at that wake.
+  gws-rouse : GameWorldSpawn, Integer -> Integer
+  gws-rouse (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then 0
+    else let slot = list-at g.slots i
+    in if slot.doze == 0 then 0 else let up = __record-set slot "doze" 0 in gws-arm g i
   gws-wake : GameWorldSpawn, GameShard, WalkMap, Integer, Integer, Integer -> Result Integer Text
   gws-wake (g) (shard) (map) (watcher) (i) (tick) = if i < 0 | i >= list-length g.slots then Ok 0
     else let now = __record-set g.combat "tick" (max g.combat.tick tick)
-    in when world-get shard.world watcher
+    in if gws-doze g shard i then Ok 0
+    else when world-get shard.world watcher
       is Err (_) -> Ok (gws-arm g i)
       is Ok (viewer) -> when gws-visit g shard map viewer i False []
         is Err (e) -> Err e

@@ -48,6 +48,16 @@ binds its slots and touches the world revision so the route commits. Creation
 takes the first free slot, whatever slot the client names. UGC1 version 2
 carries the table; the mode and the boot's RDRAND words are zeroed in it.
 
+Every wire password check (0x80, 0x91, the 0x83 delete) runs on the one game
+loop, so the three go through `ga-admit-gated`, `ga-login-gated` and
+`ga-verify-gated` (root's ruling, 2026-10-18). A refused password cools its
+account 1 s, doubling to 32 s, until a success. Refused passwords spend a shard
+budget of 4 PBKDF2 runs a 4 s window, and while it is spent every login is
+refused before any hash; a success spends nothing. A development account is
+created at most once in 10 s. Each refusal answers 0x82 reason 3 at 0x80 and
+closes the connection at 0x91. The throttle lives beside the table in memory
+and is not saved.
+
 **Testing stock (Damian, 2026-10-08).** A new testing character's backpack stays light. Its bank box holds one bag per profession, each fully stocked with every tool of that craft and enough of each material to make one of each item it can make (the trowel included); the bank box has no item-count or weight limit. An item crafted with a tool is created inside the bag that holds that tool, so a tester takes a bag, tries every item, and puts the bag back ("lets group them by profession, and include the materials we currently put in the bank box. lets keep the initial backpack light ... make bank boxes virutally unlimited in item count and weight. make bags grouped by proffsion fully stocked with all tools and amounts of each material components of their craft sufficient to build one of each item ... items should be created inside the bag with the tool used to create them.").
 
 Launch: `start-composite-game.ps1 -Testing` (dev accounts, testing stock),

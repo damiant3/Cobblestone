@@ -53,7 +53,8 @@ Chapter: Construction
   cn-sent-bytes : CnState -> Integer
   cn-sent-bytes (s) = (s.site-room + 7) / 8 * 8
   CnRequest = record { serial : Integer, target : Integer, deed : Integer, expires : Integer }
-  CnViewer = record { connection : Integer, sent : Integer, used : Integer }
+  CnViewer = record { connection : Integer, sent : Integer, used : Integer,
+    near : Integer, near-count : Integer, cx : Integer, cy : Integer, revision : Integer, sites : Integer }
  A house placed or forfeited raises revision, so a reader of the rows knows when they changed (not saved).
   CnState = record { buf : Integer, requests : List CnRequest, viewers : List CnViewer, nonce : Integer, clock : Integer, plot-room : Integer, site-room : Integer, placed : Integer, revision : Integer }
   cn-clear : Integer, Integer, Integer -> Integer
@@ -64,7 +65,8 @@ Chapter: Construction
   cn-viewers (left) (xs) = if left == 0 then xs
     else let sent = alloc-bytes cn-site-limit
     in let cleared = cn-clear sent 0 (cn-site-limit / 8)
-    in cn-viewers (left - 1) (list-push xs (CnViewer { connection = -1, sent = sent, used = 0 }))
+    in cn-viewers (left - 1) (list-push xs (CnViewer { connection = -1, sent = sent, used = 0,
+      near = alloc-bytes (cn-site-limit * 4), near-count = 0 - 1, cx = 0, cy = 0, revision = 0, sites = 0 }))
   cn-new : Integer -> CnState
   cn-new (unused) = let buf = alloc-bytes cn-codec-bytes
     in let cleared = cn-clear buf 0 (cn-codec-bytes / 8)
@@ -112,7 +114,8 @@ Chapter: Construction
   cn-resend : List CnViewer, Integer, Integer -> Integer
   cn-resend (viewers) (bytes) (i) = if i >= list-length viewers then 0
     else let v = list-at viewers i in let fresh = alloc-bytes bytes in let cleared = cn-clear fresh 0 (bytes / 8)
-    in let set = __record-set v "sent" fresh in let gone = __record-set v "connection" -1 in cn-resend viewers bytes (i + 1)
+    in let set = __record-set v "sent" fresh in let gone = __record-set v "connection" -1
+    in let near = __record-set v "near" (alloc-bytes (bytes * 4)) in let unkept = __record-set v "near-count" (0 - 1) in cn-resend viewers bytes (i + 1)
   cn-due : CnState -> Boolean
   cn-due (s) = (s.plot-room - cn-plots s < s.plot-room / 4 & s.plot-room < cn-plot-ceiling) | (s.site-room - cn-sites s < s.site-room / 4 & s.site-room < cn-site-ceiling)
   cn-grow : CnState -> Integer
@@ -430,18 +433,29 @@ Section: Drawing
   cn-draw (s) (designs) (k) (had) (want) (out) = if had /= 0 & want /= 0 then out & cn-doors s designs k 0 []
     else if want /= 0 then cn-draw-house s designs k out
     else out & [sip-remove (cn-site-serial k 6), sip-remove (cn-site-serial k 7), sip-remove (cn-site-serial k 8)]
-  cn-scan : CnState, MdState, CnViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
-  cn-scan (s) (designs) (v) (x) (y) (k) (out) = if k >= cn-sites s then out
-    else let near = walk-abs (cn-site s k 1 - x) <= cn-range & walk-abs (cn-site s k 2 - y) <= cn-range
+ A viewer keeps the houses within cn-range + cn-margin of the place it last scanned every house from, and steps only
+ those until it moves cn-margin away or a house is placed or torn (revision).
+  cn-margin : Integer = 24
+  cn-step : CnState, MdState, CnViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-step (s) (designs) (v) (x) (y) (k) (out) = let near = walk-abs (cn-site s k 1 - x) <= cn-range & walk-abs (cn-site s k 2 - y) <= cn-range
     in let had = peek-byte v.sent k
     in let want = if not near | cn-site s k 0 == 0 then 0 else 2 + cn-site s k 13
-    in if had == want then cn-scan s designs v x y (k + 1) out
+    in if had == want then out
     else let set = poke-byte v.sent k want
-    in cn-scan s designs v x y (k + 1) (cn-draw s designs k had want out)
+    in cn-draw s designs k had want out
+  cn-keep : CnState, CnViewer, Integer -> Integer
+  cn-keep (s) (v) (k) = if walk-abs (cn-site s k 1 - v.cx) > cn-range + cn-margin | walk-abs (cn-site s k 2 - v.cy) > cn-range + cn-margin then 0
+    else let put = poke-32 v.near (v.near-count * 4) k in let n = __record-set v "near-count" (v.near-count + 1) in 1
+  cn-scan : CnState, MdState, CnViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-scan (s) (designs) (v) (x) (y) (k) (out) = if k >= cn-sites s then out
+    else let kept = cn-keep s v k in cn-scan s designs v x y (k + 1) (cn-step s designs v x y k out)
+  cn-near-scan : CnState, MdState, CnViewer, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cn-near-scan (s) (designs) (v) (x) (y) (i) (out) = if i >= v.near-count then out
+    else cn-near-scan s designs v x y (i + 1) (cn-step s designs v x y (peek-32 v.near (i * 4)) out)
   cn-viewer : CnState, Integer -> CnViewer
   cn-viewer (s) (connection) = let found = cn-viewer-find s.viewers connection 0
     in let v = list-at s.viewers (if found >= 0 then found else cn-viewer-oldest s.viewers 0 0)
-    in let fresh = if found >= 0 then 0 else let cleared = cn-clear v.sent 0 (cn-sent-bytes s / 8) in let c = __record-set v "connection" connection in 0
+    in let fresh = if found >= 0 then 0 else let cleared = cn-clear v.sent 0 (cn-sent-bytes s / 8) in let c = __record-set v "connection" connection in let n = __record-set v "near-count" (0 - 1) in 0
     in let tick = __record-set s "clock" (s.clock + 1)
     in let used = __record-set v "used" s.clock in v
   cn-viewer-find : List CnViewer, Integer, Integer -> Integer
@@ -451,7 +465,11 @@ Section: Drawing
   cn-viewer-oldest (viewers) (i) (best) = if i == list-length viewers then best
     else cn-viewer-oldest viewers (i + 1) (if (list-at viewers i).used < (list-at viewers best).used then i else best)
   cn-view : CnState, MdState, Integer, Integer, Integer -> List (List Integer)
-  cn-view (s) (designs) (connection) (x) (y) = cn-scan s designs (cn-viewer s connection) x y 0 []
+  cn-view (s) (designs) (connection) (x) (y) = let v = cn-viewer s connection
+    in if v.near-count < 0 | v.revision /= s.revision | v.sites /= cn-sites s | walk-abs (x - v.cx) > cn-margin | walk-abs (y - v.cy) > cn-margin then
+      let a = __record-set v "cx" x in let b = __record-set v "cy" y in let c = __record-set v "near-count" 0
+      in let d = __record-set v "revision" s.revision in let e = __record-set v "sites" (cn-sites s) in cn-scan s designs v x y 0 []
+    else cn-near-scan s designs v x y 0 []
 
 Section: Walls
 

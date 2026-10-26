@@ -1,11 +1,9 @@
 # Independent Rechecker -- a plug that re-derives what the compiler asserted
 
-**Status:** Stages 1-3 BUILT (`codex/plugs/recheck/`); stage 4 (proof
-retention) open. Phase 0 was re-confirmed against main on
-2026-08-03 by val (stage 0). Three of section 4's five claims did not
-survive the re-measurement; section 4 is rewritten below and the stage
-table in section 5 is re-scoped. Stage 3 is now blocked on a wire
-change and is no longer free.
+**Status:** Stages 1-3 BUILT (`codex/plugs/recheck/`), with every call
+site's instantiation derived (section 9, "The fork underneath this").
+Stage 4, the proof-term wire, is designed (section 5) and deferred until
+Damian calls it.
 
 **Author:** AgentGrid session, 2026-08-02, at Damian's request.
 Implementation to be assigned to a fleet agent.
@@ -347,7 +345,7 @@ Sequencing follows from that split: everything free comes first.
 | 2 | **BUILT 2026-08-03, `RecheckBounds.codex`, kill-rate 12 of 12 overall and sabotage-verified.** Bounded-integer re-derivation: every narrowing site either statically fits or carries the mode the IR declares. Independent of the compiler's own prover | none | no |
 | 3a | **BUILT 2026-08-03.** Emit what stage 3 needs: `FunTy`'s effect row as an optional trailing element, and `unique-params` as an optional trailing field on `(def ...)`. Both spellings additive, so every existing positional reader is unaffected. Only rows carrying concrete labels are published (bare row variables cost 15.4 per cent of IR text and are inert) | yes | yes |
 | 3b | **BUILT 2026-08-03, `RecheckEffects.codex`, kill-rate 15 of 15.** Effect-row and linear re-derivation: no call escapes a declared row; every linear parameter used exactly once on every path | none | no |
-| 4 | Retain proof terms in the IR text path (mirror `keep-proof-defs` / `ir-chapter-with-proofs`), then re-check them: `Refl`/`sym`/`trans`/`cong`/`app-cong`, induction subgoals and IH use, the CDX4023 acyclicity property, the CDX4024 grammar | yes | yes |
+| 4 | The proof-term wire (below, "Stage 4: the proof-term wire"): 4a the compiler publishes each claim and proof term under the `proofs` mode word; 4b the plug re-checks CDX4024, CDX4023 and induction against them | 4a yes | 4a yes |
 
 Stage 1 is the one that would have caught the Lean bug's shape: a
 declaration accepted with an argument nothing ever type-checked. It is
@@ -357,6 +355,87 @@ Stage 3 was split by the 2026-08-03 re-measurement. Its 3a half is the
 only unplanned seed-affecting work this design has acquired, and it is
 small: two arms of `ir-emit-type` that currently discard what they were
 handed. It changes no emitted program, exactly as stage 4 does not.
+
+### Stage 4: the proof-term wire
+
+**Why a new wire.** The IR has nothing to re-check: lowering turns an
+`induction` body into `IrIntLit 0` (`IR/Lowering.codex` 145), and the
+claim `for all (xs : MyList), append xs MyNil === xs` is typed bare
+`ProofTy` (`Types/TypeChecker.codex` 38), so a retained proof definition
+is `(def "append-nil" ... (params) proof (int-lit 0) 0 0)`. The facts a
+second checker needs exist only in the AST.
+
+**What the compiler checks, and so what the wire must let a second
+checker redo** (`Types/TypeChecker.codex` 2816-2890 and 3529-3690):
+
+1. CDX4024: a proof body is a name, an application whose proof-typed
+   arguments are proof terms, an `induction`, or a `let` of proof terms.
+2. CDX4023: no proof definition reaches itself through the names its body
+   mentions.
+3. Induction: for each constructor of the scrutinee's type, the arm binds
+   the constructor's fields, the claim with the variable replaced by the
+   constructor application is normalized through the program's
+   definitions, one inductive hypothesis is bound per field of the
+   scrutinee's own type, and the arm's proof term must have the subgoal's
+   type, with `Refl : a === a`, `sym`, `trans`, `cong`, `app-cong` as typed
+   in `Types/Builtins.codex` 1640-1680.
+
+**The wire.** Published only in IR-CCE when the mode carries the word
+`proofs` (`parse-mode-flags`): `compile.ps1 -IrCce -Passes none -RawFlags
+proofs`, the rechecker's own invocation plus the word. Without it the IR
+must stay byte-identical, proved by compiling `codex/test/induction-list`
+and the whole compiler payload to IR-CCE before and after. The forms
+follow the chapter's `(defs ...)` list and precede the chapter's closing
+parenthesis, so `emit-ir-chapter` and `ir-print-defs` split the `"))"` that
+closes both today, and `emit-ir-cce`'s SIZE total counts the forms.
+
+The prune stays: under `proofs` the names a claim or proof term mentions
+are added to the prune's roots, so the definitions a claim reduces through
+reach the wire and `method-materialize` sees an ordinary rooted chapter.
+The claim and the term come from the scoped AST (`checked.scoped` in
+`compile-frontend-passes`), threaded to the emitter as a `CompileFrontend`
+field holding the proof definitions only. One form per proof definition:
+
+```
+(proof "append-nil" "InductionList"
+  (claim (a-forall "xs" (a-named "MyList")
+           (a-propeq <lhs> <rhs>)))
+  (term <term>))
+```
+
+The claim is written by a claim emitter of its own: `ir-emit-atype-expr`'s
+spellings for the terms (`append xs MyNil` is `(a-app (a-named "append")
+(args (a-named "xs") (a-named "MyNil")))`), with the quantifier as
+`(a-forall "xs" <binder type> <body>)`. `ir-emit-atype-expr`'s own
+`(a-forall)` arm, which drops all three, is left alone, so no existing
+spelling moves. `<term>` is the CDX4024 grammar and nothing else:
+`(t-name "Refl")` for every name (builtins, hypotheses, cited claims,
+ordinary names alike), `(t-apply <term> <term>)`, `(t-induction "xs"
+(t-arm "MyNil" () <term>) (t-arm "MyCons" ("h" "t" "ih") <term>))` with
+the pattern's variables in order and the hypotheses after the fields,
+`(t-let "n" <term> <term>)`, and `(t-other "<form>")` for any other form,
+named as `pg-form-name` names it. Whether an argument is proof-typed is
+not on the wire: the checker decides it from the term (a proof builtin, a
+hypothesis or a proof definition's name, or an application headed by one),
+which is the grammar check's own question answered independently. For
+`codex/test/induction-list` the term is `(t-induction "xs" (t-arm "MyNil"
+() (t-name "Refl")) (t-arm "MyCons" ("h" "t" "ih") (t-apply (t-name
+"cong") (t-name "ih"))))`.
+
+**The checker (stage 4b, plug only).** Grammar over `<term>`, the cycle
+check over the `t-name` mentions among proof names, and induction by its
+own substitution and its own normalizer over the IR definition bodies on
+the wire, never the compiler's `normalize-codextype` (section 7). A
+normalization that runs out of fuel answers UNSUPPORTED. `assume` is
+reported as an assumption, never as agreement.
+
+**Order.** 4a, the compiler's emission, is seed-affecting and lands with
+4b in one arc, proved once (R-GATE): emission nothing reads is a path
+nothing tests (L-UNCALLED). The spelling is this design's.
+
+**Ruling (Damian's).** Stage 4 is deferred unless Damian calls it
+(`CurrentPlan.md` Track C). This design is ready for that call; nothing of
+it is built.
 
 ## 6. Output contract
 
@@ -525,11 +604,13 @@ pwsh codex/plugs/recheck/sweep.ps1 -Limit 0
 
 ### Where the rechecker stands
 
-Whole compiler as ONE payload, `-Passes none`, against the shipped seed:
-**AGREE 4862, DISAGREE 0, UNSUPPORTED 0, IMPROVED 0, SINGLE-WITNESS 0.**
-Kill-rate **27 of 27** with a passing control. The rechecker raises exactly
-one finding against the whole compiler, the underived range in
-`compile-type-check`, which is stage 2 and a separate question.
+Whole compiler as ONE payload, `-Passes none`, against the shipped seed
+(2026-10-20): **6660 definitions, AGREE 6660 in each of stages 1-3,
+DISAGREE 0, UNSUPPORTED 0, IMPROVED 0, SINGLE-WITNESS 0.** Kill-rate **27
+of 27** with a passing control (2026-10-20). On that payload the
+instantiation checks decide 935 constructor type arguments and 2112
+polymorphic call sites, 61 of them inside polymorphic bodies, measured by
+turning their agreement into a finding for one run.
 
 **Two different units are in play and they have been quoted
 interchangeably.** The verdict line counts one verdict per definition per
@@ -647,31 +728,47 @@ invariant, so arms that unified against one variable cannot differ. A
 too-narrow recorded bound is exactly the silent wrongness this lane exists
 to catch.
 
-### The fork underneath this, and it is Damian's call
+### The fork underneath this
 
-The alternative to deriving the instantiation is to fix the ARTIFACT: have
-the compiler emit the instantiated type at the site, since it already
-computed it.
+**The compiler now publishes every call site's instantiation** (measured
+2026-10-20: the subject's IR carries no uninstantiated callee type
+variable at any site, and with `rc-arg-spine` forced to the empty map the
+corpus and the whole compiler read the same). The substitution above is
+therefore unexercised on today's wire; it is kept because it is what
+decides a site that arrives uninstantiated. Reading the published
+instantiation alone is agreement by construction, and it was measured
+that way: a bounded argument under a published `int-default` slot, which
+the compiler itself refuses (CDX2001), passed silently. So the rechecker
+derives the instantiation again and holds it against the published one:
 
-- **For emitting.** L-ERASED is the precedent. A rule the compiler enforces
-  but does not emit is invisible to any auditor reading the artifact, and
-  the repair there was to make the artifact carry the distinction. Every
-  auditor written against this IR, now and later, gets it free.
-- **For deriving.** This lane exists for INDEPENDENCE. An auditor that
-  recomputes the instantiation catches a WRONG one; an auditor that reads
-  the compiler's own answer agrees with it by construction, which is the
-  failure section 7 exists to prevent.
-- **Cost.** Deriving is plug-only and reversible. Emitting is
-  seed-affecting, needs the build token and a gate, and enlarges the IR.
+- **Constructors: built.** `rc-check-ctor-inst` binds each type parameter
+  declared as a bare field type to its argument's recorded type and
+  requires the published type argument to equal it (`ctor-instantiation`,
+  kill-rate arm `bounded-arg-into-plain-slot`). Integer literals and
+  `__narrow` results bind nothing; their values are `RecheckBounds`'s.
+- **Polymorphic definitions: built.** `rc-check-poly-inst` keeps the
+  chapter's polymorphic definitions (about 34 of 6660 in the compiler, so a
+  list, not an index), matches each declared parameter against its argument
+  through `rc-spine-witness` at the node that supplies the last one, and
+  requires the substituted declared type to equal the head's published type
+  (`poly-instantiation`, kill-rate arm `poly-inst-bounded-arg`, MISSED with
+  the check disabled).
+- **Inside a polymorphic body: built.** The head is published at the
+  caller's own variables, which are rigid there; `rc-check-poly-rigid`
+  rewrites each as a named type of its own on the argument and published
+  sides, so `rc-match` binds the callee's variables without any change to
+  the matcher the other stages share (kill-rate arm `poly-inst-rigid-body`,
+  MISSED with the path disabled).
+- **Undecided, and said so:** a variable whose only witness is an integer
+  literal (`same-again 2`) stays unbound, because a literal's value is
+  `RecheckBounds`'s question, and the site reports
+  `poly-instantiation-undecided`.
 
-**They are not exclusive, and the strongest position is both**: the
-compiler publishes its instantiation, the rechecker derives one
-independently, and they must agree. The DERIVING half is built; nothing
-about it forecloses emitting, because the derivation is what would check an
-emitted instantiation. Whether this artifact is meant to be
-SELF-DESCRIBING or merely AUDITABLE is a ruling rather than a measurement,
-both readings are consistent with everything the compiler does today, and
-it blocks nothing.
+This is the strongest of the fork's positions, both halves at once: the
+artifact is self-describing (L-ERASED's repair, which every auditor of this
+IR gets free), and the rechecker stays independent, because an auditor
+that recomputes the instantiation catches a WRONG one while an auditor
+that reads the compiler's answer agrees with it by construction.
 
 ### What this lane has learned the expensive way
 

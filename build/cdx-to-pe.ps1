@@ -63,14 +63,14 @@ $entryOff  = R64 200     # __start offset (text-relative)
 $debugOff  = R32 220
 
 # --- Refuse a CDX this file cannot vouch for --------------------------------
-#
+# 
 # Every number above was READ OUT OF THE FILE and, until 2026-08-15, trusted:
 # the section copies at the bottom index $cdx by $textOff/$textSz and the map
 # walk loops $mapCount times, all unchecked. That is the class blu found in
 # codex/os/net -- a length taken from bytes somebody else wrote and then walked
 # to. "Our own compiler wrote it" stops being true the moment the file has been
 # through a disk, a copy, or a truncated write.
-#
+# 
 # What the failure looks like MATTERS here, and it is why this refuses rather
 # than letting the copy throw. A CDX whose header survives while its content is
 # short is the exact truncation shape: the offsets still parse, so the diagnostic
@@ -78,14 +78,14 @@ $debugOff  = R32 220
 # which number was wrong. Worse, a header understating a section produces a PE
 # that BUILDS CLEAN and dies on the metal with a black screen, which is the most
 # expensive failure this project has.
-#
+# 
 # HASH, not signature. The signature at bytes 40..135 is absent on any CDX built
 # without the signing key and its absence is legal, so requiring it would refuse
 # ordinary artifacts. The content hash at bytes 8..39 is written by the compiler
 # on EVERY build (cdx-build-header, X86_64Chapter.codex), so it is the field that
 # is always there to check. Verified 2026-08-15 to reproduce exactly on
 # seed/Codex.cdx, build/output/Sut.cdx, stage1.cdx and canary-factorial.cdx.
-#
+# 
 # The hash covers the content region only: sha256-buf over [0, full-len) of the
 # code buffer, which lands in the file at [224, debugOff) when a debug map is
 # present and [224, EOF) when it is not.
@@ -135,12 +135,12 @@ if ($calcHash -ne $storedHash) {
 }
 
 # --- Look symbols up in the CDX's own embedded debug map (MAP1) ---
-#
+# 
 # The embedded map is the authoritative one. seed/Codex.map is NOT: the seed is
 # built -Repl and -Repl emits no text MAP block, so nothing refreshes that file.
 # Measured 2026-07-27 against seed/Codex.cdx, they disagree outright --
 # embedded 0x22067E/2257 against text 0x21E1F0/1747 for __syscall_handler.
-#
+# 
 # Names in the map are CCE, not ASCII. The tier-0 table is frequency-ordered
 # (codex/foreword/core/CCE.codex), so the letters are nowhere near their ASCII
 # values: 'a' is 15, 'e' is 13, '_' is 85.
@@ -219,7 +219,7 @@ if ($HeapFloorPages -gt 0 -and (-not $OwnedProcessPool -or $HeapAt -ne 0)) {
     throw 'HeapFloorPages requires OwnedProcessPool and no HeapAt.'
 }
 
-#
+# 
 # `__start` (emit-start, X86_64Chapter.codex) is the bare-metal runtime init:
 # GDT, page tables, CR3, the syscall MSR, and -- the one that matters here --
 # emit-ata-init at X86_64Chapter.codex:423. A payload entered at `opening`
@@ -227,7 +227,7 @@ if ($HeapFloorPages -gt 0 -and (-not $OwnedProcessPool -or $HeapAt -ne 0)) {
 # 2026-08-08: the compiler in DISK mode entered at `opening` triple-faults in
 # fat16-find-in-root with CR2=0 on the unchecked -1, and entered at `__start`
 # compiles from the volume and emits a CDX byte-identical to the host.
-#
+# 
 # The default stays `opening` because the shipping GOP payloads work that way
 # and do not use this block layer at all -- they read the stick through their
 # own USB mass-storage driver. Pass -EntryStart for a payload that uses the
@@ -270,13 +270,13 @@ $textAligned = ($textSz + 7) -band -8
 $dataVaddr = $ImageBase + $textAligned
 
 # Memory layout constants (must match X86_64Boot.codex)
-#
+# 
 # $HeapCeiling MUST match `bare-metal-ram-size` in X86_64State.codex, and the
 # `L` is load-bearing: PowerShell parses 0xC0000000 as Int32, which is
 # NEGATIVE, and [long] then sign-extends it to 0xFFFFFFFFC0000000. Firmware
 # reads that as a ceiling above all memory and ignores it, so the allocation
 # silently goes top-down again and the bug looks unfixed. Measured 2026-08-08.
-#
+# 
 # The ceiling exists because the payload builds its own PML4 at 0x8000 and
 # emit-start loads CR3 unconditionally: bare-metal-pd-count RAM PDs cover
 # [0, 3 GB) write-back, plus ONE device PD over [3 GB, 4 GB) with PCD and NX.
@@ -306,13 +306,13 @@ $ms = [System.IO.MemoryStream]::new()
 $bw = [System.IO.BinaryWriter]::new($ms)
 
 # Refuse to continue on a failed AllocatePages, and say which one failed.
-#
+# 
 # Both allocations below are load-bearing and neither has a recovery: the code
 # pages ARE the address the guest is linked for, and the heap pages are its
 # stack. Carrying on past a failure means writing into memory the firmware still
 # owns, which is how this stub bricked a real board (CL 2019) and how it
 # reboot-looped under edk2 until 2026-07-29.
-#
+# 
 # The byte goes to both UARTs deliberately, and it is cheap insurance rather
 # than a claim about where anything else prints. This stub runs before the guest
 # has said a word, so if it halts here the operator has whatever ports they
@@ -321,34 +321,41 @@ $bw = [System.IO.BinaryWriter]::new($ms)
 # the time went to the port nobody was capturing.
 function AllocPanic([char]$c) {
     $bw.Write([byte]0xB0); $bw.Write([byte][int]$c)   # mov al, c
-    $bw.Write([byte[]]@(0x66, 0xBA, 0xF8, 0x03))      # mov dx, 0x3F8
+    # mov dx, 0x3F8
+    $bw.Write([byte[]]@(102, 186, 248, 3))
     $bw.Write([byte]0xEE)                             # out dx, al
-    $bw.Write([byte[]]@(0x66, 0xBA, 0xF8, 0x02))      # mov dx, 0x2F8
+    # mov dx, 0x2F8
+    $bw.Write([byte[]]@(102, 186, 248, 2))
     $bw.Write([byte]0xEE)                             # out dx, al
     $bw.Write([byte]0xFA)                             # cli -- before EBS the timer is live and a bare hlt RESUMES
     $bw.Write([byte]0xF4)                             # hlt
-    $bw.Write([byte[]]@(0xEB, 0xFD))                  # jmp back to the hlt: a panic must not fall through
+    # jmp back to the hlt: a panic must not fall through
+    $bw.Write([byte[]]@(235, 253))
 }
 function AssertAllocOk([char]$c) {
-    $bw.Write([byte[]]@(0x48, 0x85, 0xC0))            # test rax, rax
-    $bw.Write([byte[]]@(0x74, 0x10))                  # jz +16 (over the panic block)
+    # test rax, rax
+    $bw.Write([byte[]]@(72, 133, 192))
+    # jz +16 (over the panic block)
+    $bw.Write([byte[]]@(116, 16))
     AllocPanic $c
 }
 # The same refusal, painted, for the board with no serial port.
-#
+# 
 # The machine the desk flies on reports through a phone camera, so a panic that
 # writes only to the two UARTs leaves DARK BLUE on the glass and DARK BLUE
 # already means "died somewhere inside this stub". A refused heap allocation is
 # the one in-stub death whose answer is a number we are trying to measure, so it
 # gets a colour of its own and stops being one of the anonymous ones.
-#
+# 
 # The displacement is patched rather than written, because it spans a GopFill
 # whose length is a function of the fill body and the next person to touch that
 # body must not have to find this number.
 function AssertAllocOkPainted([char]$c, [int]$colour) {
-    $bw.Write([byte[]]@(0x48, 0x85, 0xC0))            # test rax, rax
+    # test rax, rax
+    $bw.Write([byte[]]@(72, 133, 192))
     $jz = $ms.Position
-    $bw.Write([byte[]]@(0x74, 0x00))                  # jz over paint+panic, patched below
+    # jz over paint+panic, patched below
+    $bw.Write([byte[]]@(116, 0))
     GopFill $colour
     AllocPanic $c
     $end = $ms.Position
@@ -360,7 +367,7 @@ function AssertAllocOkPainted([char]$c, [int]$colour) {
 }
 
 # PROGRESS marks, the counterpart to the panic bytes above.
-#
+# 
 # Lowercase is progress, uppercase is a halt. Both UARTs, for the reason the
 # comment above gives: the operator has whatever port they happened to attach.
 # The marks work on both sides of ExitBootServices, which is why the sequence
@@ -378,7 +385,7 @@ function MarkBytes([char]$c) {
 function Mark([char]$c) { $bw.Write([byte[]](MarkBytes $c)) }
 
 # The camera-readable half of the same signal.
-#
+# 
 # The marks above go to the two UARTs, and the machine this image is FOR has no
 # serial port: the sitting's telemetry rig is a phone camera pointed at the
 # glass. So on the hardware that matters the marks are invisible, and a black
@@ -388,13 +395,13 @@ function Mark([char]$c) { $bw.Write([byte[]](MarkBytes $c)) }
 # three different next actions. The retired option_a_stub.asm solved this with
 # two solid framebuffer fills (main 12073) while this stub had nothing, which is
 # why the marks were brought over here before that .asm was deleted.
-#
+# 
 # Same two colours at the same two points, so the one table serves every image:
 #   firmware screen unchanged  never loaded, or LocateProtocol(GOP) failed
 #   DARK BLUE                  we have a framebuffer, died inside the stub
 #   DARK GREEN                 stub finished, control passed to the guest
 #   text over dark green       the guest is alive and ConOut works
-#
+# 
 # EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID 9042a9de-23dc-4a38-96fb-7aded080516a, laid
 # out as raw bytes rather than composed from two qword literals, so no
 # endianness reasoning is involved in reading it against the spec.
@@ -427,7 +434,7 @@ $ProcNetScopeOffset  = 24
 # VRes * PixelsPerScanLine, not VRes * HRes: on a padded-scanline panel (the
 # real board reports stride 2048 against a visible 1920) the second one covers
 # a fraction of the screen and leaves a stripe.
-#
+# 
 # The two values live in R12 and R13, not in stack slots, and that is not a
 # style choice. This stub REPLACES RSP with the top of the heap allocation
 # before it hands off, so any `[rsp+N]` written before that line reads a
@@ -437,21 +444,28 @@ $ProcNetScopeOffset  = 24
 # itself. R12 and R13 are callee-saved in the MS x64 ABI, so the firmware calls
 # in between preserve them, and the prolog pushes both and the stub uses
 # neither.
-#
+# 
 # LocateProtocol(GOP), then keep FrameBufferBase and the pixel count. Called
 # once, before anything that can fail. A firmware without GOP leaves R12 zero
 # and every later fill becomes a no-op, so this is additive: nothing that
 # worked before now depends on it.
 function GopAcquire() {
     $body = [System.Collections.Generic.List[byte]]::new()
-    $body.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))   # mov rax, [rsp+0x28]  (gop)
-    $body.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))         # mov rax, [rax+0x18]  (Mode)
-    $body.AddRange([byte[]]@(0x48, 0x8B, 0x48, 0x08))         # mov rcx, [rax+0x08]  (Info)
+    # mov rax, [rsp+0x28]  (gop)
+    $body.AddRange([byte[]]@(72, 139, 68, 36, 40))
+    # mov rax, [rax+0x18]  (Mode)
+    $body.AddRange([byte[]]@(72, 139, 64, 24))
+    # mov rcx, [rax+0x08]  (Info)
+    $body.AddRange([byte[]]@(72, 139, 72, 8))
 
-    $body.AddRange([byte[]]@(0x4C, 0x8B, 0x60, 0x18))         # mov r12, [rax+0x18]  (FrameBufferBase)
-    $body.AddRange([byte[]]@(0x44, 0x8B, 0x69, 0x08))         # mov r13d, [rcx+0x08]  (VRes)
-    $body.AddRange([byte[]]@(0x8B, 0x41, 0x20))               # mov eax, [rcx+0x20]  (PixelsPerScanLine)
-    $body.AddRange([byte[]]@(0x44, 0x0F, 0xAF, 0xE8))         # imul r13d, eax
+    # mov r12, [rax+0x18]  (FrameBufferBase)
+    $body.AddRange([byte[]]@(76, 139, 96, 24))
+    # mov r13d, [rcx+0x08]  (VRes)
+    $body.AddRange([byte[]]@(68, 139, 105, 8))
+    # mov eax, [rcx+0x20]  (PixelsPerScanLine)
+    $body.AddRange([byte[]]@(139, 65, 32))
+    # imul r13d, eax
+    $body.AddRange([byte[]]@(68, 15, 175, 232))
 
     # The framebuffer half of the handoff block, published while rcx still
     # holds Info and r12 the framebuffer base. rdi is dead here (the prolog
@@ -459,33 +473,52 @@ function GopAcquire() {
     # sites). The header and the ACPI field are written outside this body:
     # they do not depend on GOP, and this body is reached by a rel8 jnz whose
     # budget is 127 bytes.
-    $body.AddRange([byte[]]@(0xBF))                           # mov edi, HandoffAddr
+    # mov edi, HandoffAddr
+    $body.AddRange([byte[]]@(191))
     $body.AddRange([BitConverter]::GetBytes([int]$HandoffAddr))
-    $body.AddRange([byte[]]@(0x4C, 0x89, 0x67, 0x10))         # mov [rdi+0x10], r12   fb base
-    $body.AddRange([byte[]]@(0x8B, 0x41, 0x04))               # mov eax, [rcx+0x04]   HRes
-    $body.AddRange([byte[]]@(0x89, 0x47, 0x18))               # mov [rdi+0x18], eax
-    $body.AddRange([byte[]]@(0x8B, 0x41, 0x08))               # mov eax, [rcx+0x08]   VRes
-    $body.AddRange([byte[]]@(0x89, 0x47, 0x1C))               # mov [rdi+0x1C], eax
-    $body.AddRange([byte[]]@(0x8B, 0x41, 0x20))               # mov eax, [rcx+0x20]   PixelsPerScanLine
-    $body.AddRange([byte[]]@(0x89, 0x47, 0x20))               # mov [rdi+0x20], eax
-    $body.AddRange([byte[]]@(0x8B, 0x41, 0x0C))               # mov eax, [rcx+0x0C]   PixelFormat
-    $body.AddRange([byte[]]@(0x89, 0x47, 0x24))               # mov [rdi+0x24], eax
+    # mov [rdi+0x10], r12   fb base
+    $body.AddRange([byte[]]@(76, 137, 103, 16))
+    # mov eax, [rcx+0x04]   HRes
+    $body.AddRange([byte[]]@(139, 65, 4))
+    # mov [rdi+0x18], eax
+    $body.AddRange([byte[]]@(137, 71, 24))
+    # mov eax, [rcx+0x08]   VRes
+    $body.AddRange([byte[]]@(139, 65, 8))
+    # mov [rdi+0x1C], eax
+    $body.AddRange([byte[]]@(137, 71, 28))
+    # mov eax, [rcx+0x20]   PixelsPerScanLine
+    $body.AddRange([byte[]]@(139, 65, 32))
+    # mov [rdi+0x20], eax
+    $body.AddRange([byte[]]@(137, 71, 32))
+    # mov eax, [rcx+0x0C]   PixelFormat
+    $body.AddRange([byte[]]@(139, 65, 12))
+    # mov [rdi+0x24], eax
+    $body.AddRange([byte[]]@(137, 71, 36))
 
     $body.AddRange([byte[]](MarkBytes 'v'))                   # 'v' = video acquired
 
-    $bw.Write([byte[]]@(0x4D, 0x31, 0xE4))                    # xor r12, r12
-    $bw.Write([byte[]]@(0x4D, 0x31, 0xED))                    # xor r13, r13
+    # xor r12, r12
+    $bw.Write([byte[]]@(77, 49, 228))
+    # xor r13, r13
+    $bw.Write([byte[]]@(77, 49, 237))
     $bw.Write([byte[]]@(0x48, 0xB8)); $bw.Write($GopGuid, 8, 8)  # mov rax, guid[8..15]
     $bw.Write([byte]0x50)                                     # push rax
     $bw.Write([byte[]]@(0x48, 0xB8)); $bw.Write($GopGuid, 0, 8)  # mov rax, guid[0..7]
     $bw.Write([byte]0x50)                                     # push rax
-    $bw.Write([byte[]]@(0x48, 0x89, 0xE1))                    # mov rcx, rsp  (&guid)
-    $bw.Write([byte[]]@(0x48, 0x83, 0xEC, 0x30))              # sub rsp, 0x30
-    $bw.Write([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))        # lea r8, [rsp+0x28]
-    $bw.Write([byte[]]@(0x48, 0x31, 0xD2))                    # xor rdx, rdx
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))              # mov rax, [r15+0x60]
-    $bw.Write([byte[]]@(0xFF, 0x90, 0x40, 0x01, 0x00, 0x00))  # call [rax+0x140]
-    $bw.Write([byte[]]@(0x48, 0x85, 0xC0))                    # test rax, rax
+    # mov rcx, rsp  (&guid)
+    $bw.Write([byte[]]@(72, 137, 225))
+    # sub rsp, 0x30
+    $bw.Write([byte[]]@(72, 131, 236, 48))
+    # lea r8, [rsp+0x28]
+    $bw.Write([byte[]]@(76, 141, 68, 36, 40))
+    # xor rdx, rdx
+    $bw.Write([byte[]]@(72, 49, 210))
+    # mov rax, [r15+0x60]
+    $bw.Write([byte[]]@(73, 139, 71, 96))
+    # call [rax+0x140]
+    $bw.Write([byte[]]@(255, 144, 64, 1, 0, 0))
+    # test rax, rax
+    $bw.Write([byte[]]@(72, 133, 192))
     if ($EntryStart) {
         # The flown A5 stub, byte for byte: no mode change on this path.
         if ($body.Count -gt 127) { throw "[cdx-to-pe] GopAcquire body outgrew a rel8 branch" }
@@ -494,12 +527,14 @@ function GopAcquire() {
     } else {
         $sm = [byte[]](GopSetLargestMode)
         $region = $sm.Length + $body.Count
-        $bw.Write([byte[]]@(0x0F, 0x85))                      # jnz rel32 over mode-select + body
+        # jnz rel32 over mode-select + body
+        $bw.Write([byte[]]@(15, 133))
         $bw.Write([BitConverter]::GetBytes([int]$region))
         $bw.Write($sm)
         $bw.Write($body.ToArray())
     }
-    $bw.Write([byte[]]@(0x48, 0x83, 0xC4, 0x40))              # add rsp, 0x40
+    # add rsp, 0x40
+    $bw.Write([byte[]]@(72, 131, 196, 64))
 }
 
 # Pick the largest mode the firmware will enumerate, before Mode->Info is
@@ -518,70 +553,109 @@ function GopAcquire() {
 # them. r12/r13 are still zero and untouched.
 function GopSetLargestMode() {
     $s = [System.Collections.Generic.List[byte]]::new()
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))    # mov rax, [rsp+0x28]   gop
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # mov rax, [rax+0x18]   Mode
-    $s.AddRange([byte[]]@(0x8B, 0x08))                      # mov ecx, [rax]        MaxMode
+    # mov rax, [rsp+0x28]   gop
+    $s.AddRange([byte[]]@(72, 139, 68, 36, 40))
+    # mov rax, [rax+0x18]   Mode
+    $s.AddRange([byte[]]@(72, 139, 64, 24))
+    # mov ecx, [rax]        MaxMode
+    $s.AddRange([byte[]]@(139, 8))
     # Bank what the firmware offered BEFORE anything can branch away, so the
     # one-mode case is readable as a fact rather than as an absence. rdx and r8
     # are both dead here; rax is the Mode pointer and is still wanted below.
     $s.AddRange([byte[]]@(0xBA)); $s.AddRange([BitConverter]::GetBytes([int]($HandoffAddr + 0xC8)))
-    $s.AddRange([byte[]]@(0x89, 0x0A))                      # mov [rdx], ecx        maxmode
-    $s.AddRange([byte[]]@(0x44, 0x8B, 0x40, 0x04))          # mov r8d, [rax+4]      mode before
-    $s.AddRange([byte[]]@(0x44, 0x89, 0x42, 0x04))          # mov [rdx+4], r8d
-    $s.AddRange([byte[]]@(0x83, 0xF9, 0x01))                # cmp ecx, 1
+    # mov [rdx], ecx        maxmode
+    $s.AddRange([byte[]]@(137, 10))
+    # mov r8d, [rax+4]      mode before
+    $s.AddRange([byte[]]@(68, 139, 64, 4))
+    # mov [rdx+4], r8d
+    $s.AddRange([byte[]]@(68, 137, 66, 4))
+    # cmp ecx, 1
+    $s.AddRange([byte[]]@(131, 249, 1))
     # rel32, not rel8: the banking stores below put skip more than 127 bytes away.
     $s.AddRange([byte[]]@(0x0F, 0x8E)); $jleAt = $s.Count; $s.AddRange([byte[]]@(0, 0, 0, 0))   # jle skip
-    $s.AddRange([byte[]]@(0x8B, 0x70, 0x04))                # mov esi, [rax+4]      best = current mode
-    $s.AddRange([byte[]]@(0x31, 0xFF))                      # xor edi, edi          best area = 0
-    $s.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x30))          # sub rsp, 0x30
-    $s.AddRange([byte[]]@(0x31, 0xDB))                      # xor ebx, ebx          i = 0
+    # mov esi, [rax+4]      best = current mode
+    $s.AddRange([byte[]]@(139, 112, 4))
+    # xor edi, edi          best area = 0
+    $s.AddRange([byte[]]@(49, 255))
+    # sub rsp, 0x30
+    $s.AddRange([byte[]]@(72, 131, 236, 48))
+    # xor ebx, ebx          i = 0
+    $s.AddRange([byte[]]@(49, 219))
     $loopAt = $s.Count                                      # loop:
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58))    # mov rax, [rsp+0x58]   gop
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # mov rax, [rax+0x18]   Mode
-    $s.AddRange([byte[]]@(0x3B, 0x18))                      # cmp ebx, [rax]        i vs MaxMode
+    # mov rax, [rsp+0x58]   gop
+    $s.AddRange([byte[]]@(72, 139, 68, 36, 88))
+    # mov rax, [rax+0x18]   Mode
+    $s.AddRange([byte[]]@(72, 139, 64, 24))
+    # cmp ebx, [rax]        i vs MaxMode
+    $s.AddRange([byte[]]@(59, 24))
     $s.Add(0x7D); $jgeAt = $s.Count; $s.Add(0)              # jge done
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x58))    # mov rcx, [rsp+0x58]   This
-    $s.AddRange([byte[]]@(0x89, 0xDA))                      # mov edx, ebx          ModeNumber
-    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x20))    # lea r8, [rsp+0x20]    &SizeOfInfo
-    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x28))    # lea r9, [rsp+0x28]    &Info
-    $s.AddRange([byte[]]@(0xFF, 0x11))                      # call [rcx]            QueryMode
-    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                # test rax, rax
+    # mov rcx, [rsp+0x58]   This
+    $s.AddRange([byte[]]@(72, 139, 76, 36, 88))
+    # mov edx, ebx          ModeNumber
+    $s.AddRange([byte[]]@(137, 218))
+    # lea r8, [rsp+0x20]    &SizeOfInfo
+    $s.AddRange([byte[]]@(76, 141, 68, 36, 32))
+    # lea r9, [rsp+0x28]    &Info
+    $s.AddRange([byte[]]@(76, 141, 76, 36, 40))
+    # call [rcx]            QueryMode
+    $s.AddRange([byte[]]@(255, 17))
+    # test rax, rax
+    $s.AddRange([byte[]]@(72, 133, 192))
     $s.Add(0x75); $jnzAt = $s.Count; $s.Add(0)              # jnz next
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))    # mov rax, [rsp+0x28]   Info
-    $s.AddRange([byte[]]@(0x8B, 0x48, 0x04))                # mov ecx, [rax+4]      HRes
-    $s.AddRange([byte[]]@(0x0F, 0xAF, 0x48, 0x08))          # imul ecx, [rax+8]     * VRes
-    $s.AddRange([byte[]]@(0x39, 0xF9))                      # cmp ecx, edi
+    # mov rax, [rsp+0x28]   Info
+    $s.AddRange([byte[]]@(72, 139, 68, 36, 40))
+    # mov ecx, [rax+4]      HRes
+    $s.AddRange([byte[]]@(139, 72, 4))
+    # imul ecx, [rax+8]     * VRes
+    $s.AddRange([byte[]]@(15, 175, 72, 8))
+    # cmp ecx, edi
+    $s.AddRange([byte[]]@(57, 249))
     $s.Add(0x76); $jbeAt = $s.Count; $s.Add(0)              # jbe next
-    $s.AddRange([byte[]]@(0x89, 0xCF))                      # mov edi, ecx
-    $s.AddRange([byte[]]@(0x89, 0xDE))                      # mov esi, ebx
+    # mov edi, ecx
+    $s.AddRange([byte[]]@(137, 207))
+    # mov esi, ebx
+    $s.AddRange([byte[]]@(137, 222))
     $nextAt = $s.Count                                      # next:
-    $s.AddRange([byte[]]@(0xFF, 0xC3))                      # inc ebx
+    # inc ebx
+    $s.AddRange([byte[]]@(255, 195))
     $s.Add(0xEB); $jmpLoopAt = $s.Count; $s.Add(0)          # jmp loop
     $doneAt = $s.Count                                      # done:
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58))    # mov rax, [rsp+0x58]   gop
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x40, 0x18))          # mov rax, [rax+0x18]   Mode
-    $s.AddRange([byte[]]@(0x3B, 0x70, 0x04))                # cmp esi, [rax+4]      best vs current
+    # mov rax, [rsp+0x58]   gop
+    $s.AddRange([byte[]]@(72, 139, 68, 36, 88))
+    # mov rax, [rax+0x18]   Mode
+    $s.AddRange([byte[]]@(72, 139, 64, 24))
+    # cmp esi, [rax+4]      best vs current
+    $s.AddRange([byte[]]@(59, 112, 4))
     $s.Add(0x74); $jeKeptAt = $s.Count; $s.Add(0)           # je kept
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x58))    # mov rcx, [rsp+0x58]   This
-    $s.AddRange([byte[]]@(0x89, 0xF2))                      # mov edx, esi
-    $s.AddRange([byte[]]@(0xFF, 0x51, 0x08))                # call [rcx+8]          SetMode
+    # mov rcx, [rsp+0x58]   This
+    $s.AddRange([byte[]]@(72, 139, 76, 36, 88))
+    # mov edx, esi
+    $s.AddRange([byte[]]@(137, 242))
+    # call [rcx+8]          SetMode
+    $s.AddRange([byte[]]@(255, 81, 8))
     # SetMode was CALLED: bank the mode asked for, flags = ran|called, and the
     # status the firmware answered. rsi is callee-saved and the firmware call
     # preserves it, so it still holds the chosen mode.
     $s.AddRange([byte[]]@(0xBA)); $s.AddRange([BitConverter]::GetBytes([int]($HandoffAddr + 0xD0)))
-    $s.AddRange([byte[]]@(0x89, 0x32))                      # mov [rdx], esi        mode chosen
-    $s.AddRange([byte[]]@(0xC7, 0x42, 0x04, 0x03, 0x00, 0x00, 0x00))   # mov dword [rdx+4], 3
-    $s.AddRange([byte[]]@(0x48, 0x89, 0x42, 0x08))          # mov [rdx+8], rax      SetMode status
+    # mov [rdx], esi        mode chosen
+    $s.AddRange([byte[]]@(137, 50))
+    # mov dword [rdx+4], 3
+    $s.AddRange([byte[]]@(199, 66, 4, 3, 0, 0, 0))
+    # mov [rdx+8], rax      SetMode status
+    $s.AddRange([byte[]]@(72, 137, 66, 8))
     $s.Add(0xEB); $jmpRestoreAt = $s.Count; $s.Add(0)       # jmp restore
     $keptAt = $s.Count                                      # kept:
     # The best mode IS the current one, so nothing was called and there is no
     # status to read. flags = ran, and the status quadword stays the zero
     # HandoffInit wrote: a reader can tell this from a SetMode that answered 0.
     $s.AddRange([byte[]]@(0xBA)); $s.AddRange([BitConverter]::GetBytes([int]($HandoffAddr + 0xD0)))
-    $s.AddRange([byte[]]@(0x89, 0x32))                      # mov [rdx], esi        mode chosen
-    $s.AddRange([byte[]]@(0xC7, 0x42, 0x04, 0x01, 0x00, 0x00, 0x00))   # mov dword [rdx+4], 1
+    # mov [rdx], esi        mode chosen
+    $s.AddRange([byte[]]@(137, 50))
+    # mov dword [rdx+4], 1
+    $s.AddRange([byte[]]@(199, 66, 4, 1, 0, 0, 0))
     $restoreAt = $s.Count                                   # restore:
-    $s.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x30))          # add rsp, 0x30
+    # add rsp, 0x30
+    $s.AddRange([byte[]]@(72, 131, 196, 48))
     $skipAt = $s.Count                                      # skip:
     # Every displacement is patched through a CAPTURED index. The six that were
     # hand-written literals here were all correct and all would have moved when
@@ -603,14 +677,18 @@ function GopSetLargestMode() {
 # reload below); rax/rcx/rdi are dead at both call sites.
 function GopFill([int]$colour) {
     $body = [System.Collections.Generic.List[byte]]::new()
-    $body.AddRange([byte[]]@(0x4C, 0x89, 0xE7))               # mov rdi, r12
-    $body.AddRange([byte[]]@(0x44, 0x89, 0xE9))               # mov ecx, r13d
+    # mov rdi, r12
+    $body.AddRange([byte[]]@(76, 137, 231))
+    # mov ecx, r13d
+    $body.AddRange([byte[]]@(68, 137, 233))
     $body.Add(0xB8)                                           # mov eax, colour
     $body.AddRange([BitConverter]::GetBytes([int]$colour))
     $body.Add(0xFC)                                           # cld
-    $body.AddRange([byte[]]@(0xF3, 0xAB))                     # rep stosd
+    # rep stosd
+    $body.AddRange([byte[]]@(243, 171))
 
-    $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                    # test r12, r12
+    # test r12, r12
+    $bw.Write([byte[]]@(77, 133, 228))
     if ($body.Count -gt 127) { throw "[cdx-to-pe] GopFill body outgrew a rel8 branch" }
     $bw.Write([byte[]]@(0x74, [byte]$body.Count))             # jz over the body
     $bw.Write($body.ToArray())
@@ -627,24 +705,36 @@ $GopDarkRed = 0x00602010
 # wrote here". That distinction is the whole point of the magic.
 function HandoffInit() {
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
-    $bw.Write([byte[]]@(0x31, 0xC0))                          # xor eax, eax
-    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x10))              # mov [rdi+0x10], rax  fb base
-    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x18))              # mov [rdi+0x18], rax  w, h
-    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x20))              # mov [rdi+0x20], rax  stride, format
-    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x28))              # mov [rdi+0x28], rax  acpi rsdp
+    # xor eax, eax
+    $bw.Write([byte[]]@(49, 192))
+    # mov [rdi+0x10], rax  fb base
+    $bw.Write([byte[]]@(72, 137, 71, 16))
+    # mov [rdi+0x18], rax  w, h
+    $bw.Write([byte[]]@(72, 137, 71, 24))
+    # mov [rdi+0x20], rax  stride, format
+    $bw.Write([byte[]]@(72, 137, 71, 32))
+    # mov [rdi+0x28], rax  acpi rsdp
+    $bw.Write([byte[]]@(72, 137, 71, 40))
     # Version 2 fields: smbios3 entry (+0x30), smbios 2.x entry (+0x38), edid
     # size (+0x40) and 128 bytes of EDID (+0x48..+0xC7). Zeroed as one run so a
     # reader of a v2 block reads "the stub looked and found none" everywhere.
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 0x30)))
-    $bw.Write([byte[]]@(0xB9, 0x16, 0x00, 0x00, 0x00))        # mov ecx, 22  (176 bytes / 8)
-    $bw.Write([byte[]]@(0xFC, 0xF3, 0x48, 0xAB))              # cld; rep stosq (rax is still 0)
+    # mov ecx, 22  (176 bytes / 8)
+    $bw.Write([byte[]]@(185, 22, 0, 0, 0))
+    # cld; rep stosq (rax is still 0)
+    $bw.Write([byte[]]@(252, 243, 72, 171))
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
     $bw.Write([byte[]]@(0x48, 0xB8)); $bw.Write([Text.Encoding]::ASCII.GetBytes('CDXHANDF'))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                    # mov [rdi+0x00], rax  magic
-    $bw.Write([byte[]]@(0xB8, 0x03, 0x00, 0x00, 0x00))        # mov eax, 3  (v3: + the GOP mode selection)
-    $bw.Write([byte[]]@(0x89, 0x47, 0x08))                    # mov [rdi+0x08], eax  version
-    $bw.Write([byte[]]@(0xB8, 0xE0, 0x00, 0x00, 0x00))        # mov eax, 224
-    $bw.Write([byte[]]@(0x89, 0x47, 0x0C))                    # mov [rdi+0x0C], eax  size
+    # mov [rdi+0x00], rax  magic
+    $bw.Write([byte[]]@(72, 137, 7))
+    # mov eax, 3  (v3: + the GOP mode selection)
+    $bw.Write([byte[]]@(184, 3, 0, 0, 0))
+    # mov [rdi+0x08], eax  version
+    $bw.Write([byte[]]@(137, 71, 8))
+    # mov eax, 224
+    $bw.Write([byte[]]@(184, 224, 0, 0, 0))
+    # mov [rdi+0x0C], eax  size
+    $bw.Write([byte[]]@(137, 71, 12))
 }
 
 # EFI_ACPI_20_TABLE_GUID 8868e871-e4f1-11d3-bc22-0080c73c8881, in EFI_GUID's
@@ -662,28 +752,43 @@ $Acpi20Guid = [byte[]]@(
 # inside GopAcquire: it needs r15 and nothing from GOP, and that body is
 # reached by a rel8 jnz with a 127-byte budget.
 function AcpiPublish() {
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x4F, 0x68))              # mov rcx, [r15+0x68]  count
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x57, 0x70))              # mov rdx, [r15+0x70]  table
+    # mov rcx, [r15+0x68]  count
+    $bw.Write([byte[]]@(73, 139, 79, 104))
+    # mov rdx, [r15+0x70]  table
+    $bw.Write([byte[]]@(73, 139, 87, 112))
     $bw.Write([byte[]]@(0x49, 0xB8)); $bw.Write($Acpi20Guid, 0, 8)   # mov r8, guid[0..7]
     $bw.Write([byte[]]@(0x49, 0xB9)); $bw.Write($Acpi20Guid, 8, 8)   # mov r9, guid[8..15]
 
     # Displacements are hand-computed against the layout below; the assertions
     # after it are what keep them honest if anything here is edited.
     $loop = [System.Collections.Generic.List[byte]]::new()
-    $loop.AddRange([byte[]]@(0x48, 0x85, 0xC9))               # 0  test rcx, rcx
-    $loop.AddRange([byte[]]@(0x74, 0x23))                     # 3  jz done   (+35)
-    $loop.AddRange([byte[]]@(0x4C, 0x39, 0x02))               # 5  cmp [rdx], r8
-    $loop.AddRange([byte[]]@(0x75, 0x15))                     # 8  jne next  (+21)
-    $loop.AddRange([byte[]]@(0x4C, 0x39, 0x4A, 0x08))         # 10 cmp [rdx+8], r9
-    $loop.AddRange([byte[]]@(0x75, 0x0F))                     # 14 jne next  (+15)
-    $loop.AddRange([byte[]]@(0x48, 0x8B, 0x42, 0x10))         # 16 mov rax, [rdx+0x10]
-    $loop.AddRange([byte[]]@(0xBF))                           # 20 mov edi, HandoffAddr
+    # 0  test rcx, rcx
+    $loop.AddRange([byte[]]@(72, 133, 201))
+    # 3  jz done   (+35)
+    $loop.AddRange([byte[]]@(116, 35))
+    # 5  cmp [rdx], r8
+    $loop.AddRange([byte[]]@(76, 57, 2))
+    # 8  jne next  (+21)
+    $loop.AddRange([byte[]]@(117, 21))
+    # 10 cmp [rdx+8], r9
+    $loop.AddRange([byte[]]@(76, 57, 74, 8))
+    # 14 jne next  (+15)
+    $loop.AddRange([byte[]]@(117, 15))
+    # 16 mov rax, [rdx+0x10]
+    $loop.AddRange([byte[]]@(72, 139, 66, 16))
+    # 20 mov edi, HandoffAddr
+    $loop.AddRange([byte[]]@(191))
     $loop.AddRange([BitConverter]::GetBytes([int]$HandoffAddr))
-    $loop.AddRange([byte[]]@(0x48, 0x89, 0x47, 0x28))         # 25 mov [rdi+0x28], rax
-    $loop.AddRange([byte[]]@(0xEB, 0x09))                     # 29 jmp done  (+9)
-    $loop.AddRange([byte[]]@(0x48, 0x83, 0xC2, 0x18))         # 31 next: add rdx, 24
-    $loop.AddRange([byte[]]@(0x48, 0xFF, 0xC9))               # 35 dec rcx
-    $loop.AddRange([byte[]]@(0xEB, 0xD8))                     # 38 jmp loop  (-40)
+    # 25 mov [rdi+0x28], rax
+    $loop.AddRange([byte[]]@(72, 137, 71, 40))
+    # 29 jmp done  (+9)
+    $loop.AddRange([byte[]]@(235, 9))
+    # 31 next: add rdx, 24
+    $loop.AddRange([byte[]]@(72, 131, 194, 24))
+    # 35 dec rcx
+    $loop.AddRange([byte[]]@(72, 255, 201))
+    # 38 jmp loop  (-40)
+    $loop.AddRange([byte[]]@(235, 216))
     if ($loop.Count -ne 40) { throw "[cdx-to-pe] ACPI scan is $($loop.Count) bytes, displacements assume 40" }
     $bw.Write($loop.ToArray())
 }
@@ -705,25 +810,39 @@ $SmbiosGuid = [byte[]]@(
 # and the handoff field it lands in (a disp8, so the loop stays 40 bytes and
 # the displacements above hold).
 function ConfigTablePublish([byte[]]$guid, [int]$field) {
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x4F, 0x68))              # mov rcx, [r15+0x68]  count
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x57, 0x70))              # mov rdx, [r15+0x70]  table
+    # mov rcx, [r15+0x68]  count
+    $bw.Write([byte[]]@(73, 139, 79, 104))
+    # mov rdx, [r15+0x70]  table
+    $bw.Write([byte[]]@(73, 139, 87, 112))
     $bw.Write([byte[]]@(0x49, 0xB8)); $bw.Write($guid, 0, 8)  # mov r8, guid[0..7]
     $bw.Write([byte[]]@(0x49, 0xB9)); $bw.Write($guid, 8, 8)  # mov r9, guid[8..15]
     $loop = [System.Collections.Generic.List[byte]]::new()
-    $loop.AddRange([byte[]]@(0x48, 0x85, 0xC9))               # 0  test rcx, rcx
-    $loop.AddRange([byte[]]@(0x74, 0x23))                     # 3  jz done   (+35)
-    $loop.AddRange([byte[]]@(0x4C, 0x39, 0x02))               # 5  cmp [rdx], r8
-    $loop.AddRange([byte[]]@(0x75, 0x15))                     # 8  jne next  (+21)
-    $loop.AddRange([byte[]]@(0x4C, 0x39, 0x4A, 0x08))         # 10 cmp [rdx+8], r9
-    $loop.AddRange([byte[]]@(0x75, 0x0F))                     # 14 jne next  (+15)
-    $loop.AddRange([byte[]]@(0x48, 0x8B, 0x42, 0x10))         # 16 mov rax, [rdx+0x10]
-    $loop.AddRange([byte[]]@(0xBF))                           # 20 mov edi, HandoffAddr
+    # 0  test rcx, rcx
+    $loop.AddRange([byte[]]@(72, 133, 201))
+    # 3  jz done   (+35)
+    $loop.AddRange([byte[]]@(116, 35))
+    # 5  cmp [rdx], r8
+    $loop.AddRange([byte[]]@(76, 57, 2))
+    # 8  jne next  (+21)
+    $loop.AddRange([byte[]]@(117, 21))
+    # 10 cmp [rdx+8], r9
+    $loop.AddRange([byte[]]@(76, 57, 74, 8))
+    # 14 jne next  (+15)
+    $loop.AddRange([byte[]]@(117, 15))
+    # 16 mov rax, [rdx+0x10]
+    $loop.AddRange([byte[]]@(72, 139, 66, 16))
+    # 20 mov edi, HandoffAddr
+    $loop.AddRange([byte[]]@(191))
     $loop.AddRange([BitConverter]::GetBytes([int]$HandoffAddr))
     $loop.AddRange([byte[]]@(0x48, 0x89, 0x47, [byte]$field)) # 25 mov [rdi+field], rax
-    $loop.AddRange([byte[]]@(0xEB, 0x09))                     # 29 jmp done  (+9)
-    $loop.AddRange([byte[]]@(0x48, 0x83, 0xC2, 0x18))         # 31 next: add rdx, 24
-    $loop.AddRange([byte[]]@(0x48, 0xFF, 0xC9))               # 35 dec rcx
-    $loop.AddRange([byte[]]@(0xEB, 0xD8))                     # 38 jmp loop  (-40)
+    # 29 jmp done  (+9)
+    $loop.AddRange([byte[]]@(235, 9))
+    # 31 next: add rdx, 24
+    $loop.AddRange([byte[]]@(72, 131, 194, 24))
+    # 35 dec rcx
+    $loop.AddRange([byte[]]@(72, 255, 201))
+    # 38 jmp loop  (-40)
+    $loop.AddRange([byte[]]@(235, 216))
     if ($loop.Count -ne 40) { throw "[cdx-to-pe] config-table scan is $($loop.Count) bytes, displacements assume 40" }
     $bw.Write($loop.ToArray())
 }
@@ -760,36 +879,56 @@ function EdidPublish([byte[]]$guid) {
     $s.Add(0x50)                                                             # 10 push rax
     $s.AddRange([byte[]]@(0x48, 0xB8)); $s.AddRange([byte[]]$guid[0..7])    # 11 mov rax, guid[0..7]
     $s.Add(0x50)                                                             # 21 push rax
-    $s.AddRange([byte[]]@(0x48, 0x89, 0xE1))                                 # 22 mov rcx, rsp  (&guid)
-    $s.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x30))                           # 25 sub rsp, 0x30
-    $s.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                     # 29 lea r8, [rsp+0x28]
-    $s.AddRange([byte[]]@(0x48, 0x31, 0xD2))                                 # 34 xor rdx, rdx
-    $s.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60))                           # 37 mov rax, [r15+0x60]
-    $s.AddRange([byte[]]@(0xFF, 0x90, 0x40, 0x01, 0x00, 0x00))               # 41 call [rax+0x140]
-    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                                 # 47 test rax, rax
+    # 22 mov rcx, rsp  (&guid)
+    $s.AddRange([byte[]]@(72, 137, 225))
+    # 25 sub rsp, 0x30
+    $s.AddRange([byte[]]@(72, 131, 236, 48))
+    # 29 lea r8, [rsp+0x28]
+    $s.AddRange([byte[]]@(76, 141, 68, 36, 40))
+    # 34 xor rdx, rdx
+    $s.AddRange([byte[]]@(72, 49, 210))
+    # 37 mov rax, [r15+0x60]
+    $s.AddRange([byte[]]@(73, 139, 71, 96))
+    # 41 call [rax+0x140]
+    $s.AddRange([byte[]]@(255, 144, 64, 1, 0, 0))
+    # 47 test rax, rax
+    $s.AddRange([byte[]]@(72, 133, 192))
     $j1 = $s.Count; $s.AddRange([byte[]]@(0x75, 0x00))                       # 50 jnz skip (patched)
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))                     # 52 mov rax, [rsp+0x28]  iface
-    $s.AddRange([byte[]]@(0x48, 0x85, 0xC0))                                 # 57 test rax, rax
+    # 52 mov rax, [rsp+0x28]  iface
+    $s.AddRange([byte[]]@(72, 139, 68, 36, 40))
+    # 57 test rax, rax
+    $s.AddRange([byte[]]@(72, 133, 192))
     $j2 = $s.Count; $s.AddRange([byte[]]@(0x74, 0x00))                       # 60 jz skip (patched)
-    $s.AddRange([byte[]]@(0x8B, 0x08))                                       # 62 mov ecx, [rax]        SizeOfEdid
-    $s.AddRange([byte[]]@(0x48, 0x8B, 0x70, 0x08))                           # 64 mov rsi, [rax+8]     Edid
-    $s.AddRange([byte[]]@(0x48, 0x85, 0xF6))                                 # 68 test rsi, rsi
+    # 62 mov ecx, [rax]        SizeOfEdid
+    $s.AddRange([byte[]]@(139, 8))
+    # 64 mov rsi, [rax+8]     Edid
+    $s.AddRange([byte[]]@(72, 139, 112, 8))
+    # 68 test rsi, rsi
+    $s.AddRange([byte[]]@(72, 133, 246))
     $j3 = $s.Count; $s.AddRange([byte[]]@(0x74, 0x00))                       # 71 jz skip (patched)
-    $s.AddRange([byte[]]@(0x81, 0xF9, 0x80, 0x00, 0x00, 0x00))               # 73 cmp ecx, 128
-    $s.AddRange([byte[]]@(0x76, 0x05))                                       # 79 jbe +5
-    $s.AddRange([byte[]]@(0xB9, 0x80, 0x00, 0x00, 0x00))                     # 81 mov ecx, 128
+    # 73 cmp ecx, 128
+    $s.AddRange([byte[]]@(129, 249, 128, 0, 0, 0))
+    # 79 jbe +5
+    $s.AddRange([byte[]]@(118, 5))
+    # 81 mov ecx, 128
+    $s.AddRange([byte[]]@(185, 128, 0, 0, 0))
     $s.AddRange([byte[]]@(0xBF)); $s.AddRange([BitConverter]::GetBytes([int]$HandoffAddr))  # 86 mov edi, HandoffAddr
-    $s.AddRange([byte[]]@(0x89, 0x4F, 0x40))                                 # 91 mov [rdi+0x40], ecx
-    $s.AddRange([byte[]]@(0x48, 0x8D, 0x7F, 0x48))                           # 94 lea rdi, [rdi+0x48]
-    $s.AddRange([byte[]]@(0xFC, 0xF3, 0xA4))                                 # 98 cld; rep movsb
+    # 91 mov [rdi+0x40], ecx
+    $s.AddRange([byte[]]@(137, 79, 64))
+    # 94 lea rdi, [rdi+0x48]
+    $s.AddRange([byte[]]@(72, 141, 127, 72))
+    # 98 cld; rep movsb
+    $s.AddRange([byte[]]@(252, 243, 164))
     $skip = $s.Count                                                         # 101 skip:
-    $s.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x40))                           # 101 add rsp, 0x40
+    # 101 add rsp, 0x40
+    $s.AddRange([byte[]]@(72, 131, 196, 64))
     $s[$j1 + 1] = [byte]($skip - ($j1 + 2))
     $s[$j2 + 1] = [byte]($skip - ($j2 + 2))
     $s[$j3 + 1] = [byte]($skip - ($j3 + 2))
     if ($s.Count -ne 105) { throw "[cdx-to-pe] EdidPublish is $($s.Count) bytes, displacements assume 105" }
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))   # mov edi, HandoffAddr
-    $bw.Write([byte[]]@(0x83, 0x7F, 0x40, 0x00))                             # cmp dword [rdi+0x40], 0
+    # cmp dword [rdi+0x40], 0
+    $bw.Write([byte[]]@(131, 127, 64, 0))
     $bw.Write([byte[]]@(0x75, [byte]$s.Count))                               # jnz over the body
     $bw.Write($s.ToArray())
 }
@@ -840,17 +979,19 @@ if ($ChainFile) {
     $tail = [System.Collections.Generic.List[byte]]::new()
     $tail.AddRange([byte[]]@(0x04, 0x04)); $tail.AddRange([BitConverter]::GetBytes([uint16](4 + $path.Length)))
     $tail.AddRange($path)
-    $tail.AddRange([byte[]]@(0x7F, 0xFF, 0x04, 0x00))
+    $tail.AddRange([byte[]]@(127, 255, 4, 0))
     $liGuid = [byte[]]@(0xA1, 0x31, 0x1B, 0x5B, 0x62, 0x95, 0xD2, 0x11, 0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B)
     $dpGuid = [byte[]]@(0x91, 0x6E, 0x57, 0x09, 0x3F, 0x6D, 0xD2, 0x11, 0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B)
     $c = [System.Collections.Generic.List[byte]]::new()
     $fix = @()
     function CallBs([int]$off) {
-        $c.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60))                  # mov rax, [r15+0x60]
+        # mov rax, [r15+0x60]
+        $c.AddRange([byte[]]@(73, 139, 71, 96))
         $c.AddRange([byte[]]@(0xFF, 0x90)); $c.AddRange([BitConverter]::GetBytes([int]$off))  # call [rax+off]
     }
     function JnzFail() {
-        $c.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x0F, 0x85))            # test rax, rax; jnz fail
+        # test rax, rax; jnz fail
+        $c.AddRange([byte[]]@(72, 133, 192, 15, 133))
         $script:fix += ,@('fail', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))
     }
     function LeaRip([byte]$modrm, [string]$label) {
@@ -858,68 +999,104 @@ if ($ChainFile) {
         $script:fix += ,@($label, $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))
     }
     $c.AddRange([byte[]](MarkBytes 'w'))
-    $c.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x40))                      # sub rsp, 0x40
+    # sub rsp, 0x40
+    $c.AddRange([byte[]]@(72, 131, 236, 64))
     $c.Add(0xBB); $c.AddRange([BitConverter]::GetBytes([int]$iters))    # mov ebx, iters
     $poll = $c.Count
-    $c.AddRange([byte[]]@(0x49, 0x8B, 0x4F, 0x30))                      # mov rcx, [r15+0x30]   ConIn
-    $c.AddRange([byte[]]@(0x48, 0x8D, 0x54, 0x24, 0x30))                # lea rdx, [rsp+0x30]   &key
-    $c.AddRange([byte[]]@(0xFF, 0x51, 0x08))                            # call [rcx+8]          ReadKeyStroke
-    $c.AddRange([byte[]]@(0x48, 0x85, 0xC0))                            # test rax, rax
+    # mov rcx, [r15+0x30]   ConIn
+    $c.AddRange([byte[]]@(73, 139, 79, 48))
+    # lea rdx, [rsp+0x30]   &key
+    $c.AddRange([byte[]]@(72, 141, 84, 36, 48))
+    # call [rcx+8]          ReadKeyStroke
+    $c.AddRange([byte[]]@(255, 81, 8))
+    # test rax, rax
+    $c.AddRange([byte[]]@(72, 133, 192))
     $c.Add(0x75); $jNoKey = $c.Count; $c.Add(0)                         # jnz nokey
-    $c.AddRange([byte[]]@(0x0F, 0xB7, 0x44, 0x24, 0x32))                # movzx eax, word [rsp+0x32]  UnicodeChar
-    $c.AddRange([byte[]]@(0x83, 0xC8, 0x20))                            # or eax, 0x20
+    # movzx eax, word [rsp+0x32]  UnicodeChar
+    $c.AddRange([byte[]]@(15, 183, 68, 36, 50))
+    # or eax, 0x20
+    $c.AddRange([byte[]]@(131, 200, 32))
     $c.AddRange([byte[]]@(0x83, 0xF8, [byte]$k))                        # cmp eax, key
     $c.AddRange([byte[]]@(0x0F, 0x84)); $fix += ,@('chain', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))  # je chain
     $c[$jNoKey] = [byte]($c.Count - ($jNoKey + 1))
     $c.Add(0xB9); $c.AddRange([BitConverter]::GetBytes([int]10000))    # mov ecx, 10000
     CallBs 0xF8                                                         # Stall
-    $c.AddRange([byte[]]@(0xFF, 0xCB))                                  # dec ebx
+    # dec ebx
+    $c.AddRange([byte[]]@(255, 203))
     $c.AddRange([byte[]]@(0x0F, 0x85)); $c.AddRange([BitConverter]::GetBytes([int]($poll - ($c.Count + 4))))  # jnz poll
     $c.Add(0xE9); $fix += ,@('done', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))  # jmp done
     $labels = @{ chain = $c.Count }
     $c.AddRange([byte[]](MarkBytes 'j'))
-    $c.AddRange([byte[]]@(0x4C, 0x89, 0xF1))                            # mov rcx, r14          ImageHandle
+    # mov rcx, r14          ImageHandle
+    $c.AddRange([byte[]]@(76, 137, 241))
     LeaRip 0x15 'li'                                                    # lea rdx, [rip+li]
-    $c.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                # lea r8, [rsp+0x28]
+    # lea r8, [rsp+0x28]
+    $c.AddRange([byte[]]@(76, 141, 68, 36, 40))
     CallBs 0x98; JnzFail                                                # HandleProtocol(LoadedImage)
-    $c.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x28))                # mov rax, [rsp+0x28]
-    $c.AddRange([byte[]]@(0x48, 0x8B, 0x48, 0x18))                      # mov rcx, [rax+0x18]   DeviceHandle
+    # mov rax, [rsp+0x28]
+    $c.AddRange([byte[]]@(72, 139, 68, 36, 40))
+    # mov rcx, [rax+0x18]   DeviceHandle
+    $c.AddRange([byte[]]@(72, 139, 72, 24))
     LeaRip 0x15 'dp'                                                    # lea rdx, [rip+dp]
-    $c.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                # lea r8, [rsp+0x28]
+    # lea r8, [rsp+0x28]
+    $c.AddRange([byte[]]@(76, 141, 68, 36, 40))
     CallBs 0x98; JnzFail                                                # HandleProtocol(DevicePath)
-    $c.AddRange([byte[]]@(0x48, 0x8B, 0x74, 0x24, 0x28))                # mov rsi, [rsp+0x28]   path start
-    $c.AddRange([byte[]]@(0x48, 0x89, 0xF7))                            # mov rdi, rsi
+    # mov rsi, [rsp+0x28]   path start
+    $c.AddRange([byte[]]@(72, 139, 116, 36, 40))
+    # mov rdi, rsi
+    $c.AddRange([byte[]]@(72, 137, 247))
     $walk = $c.Count
-    $c.AddRange([byte[]]@(0x66, 0x81, 0x3F, 0x7F, 0xFF))                # cmp word [rdi], 0xFF7F  end node
+    # cmp word [rdi], 0xFF7F  end node
+    $c.AddRange([byte[]]@(102, 129, 63, 127, 255))
     $c.Add(0x74); $jWalked = $c.Count; $c.Add(0)                        # je walked
-    $c.AddRange([byte[]]@(0x0F, 0xB7, 0x47, 0x02))                      # movzx eax, word [rdi+2]  node length
-    $c.AddRange([byte[]]@(0x83, 0xF8, 0x04, 0x0F, 0x82))                # cmp eax, 4; jb fail
+    # movzx eax, word [rdi+2]  node length
+    $c.AddRange([byte[]]@(15, 183, 71, 2))
+    # cmp eax, 4; jb fail
+    $c.AddRange([byte[]]@(131, 248, 4, 15, 130))
     $fix += ,@('fail', $c.Count); $c.AddRange([byte[]]@(0, 0, 0, 0))
-    $c.AddRange([byte[]]@(0x48, 0x01, 0xC7))                            # add rdi, rax
+    # add rdi, rax
+    $c.AddRange([byte[]]@(72, 1, 199))
     $c.Add(0xEB); $c.Add([byte](256 - (($c.Count + 1) - $walk)))       # jmp walk
     $c[$jWalked] = [byte]($c.Count - ($jWalked + 1))
-    $c.AddRange([byte[]]@(0x48, 0x29, 0xF7))                            # sub rdi, rsi          prefix length
-    $c.AddRange([byte[]]@(0x48, 0x89, 0x7C, 0x24, 0x38))                # mov [rsp+0x38], rdi
-    $c.AddRange([byte[]]@(0xB9, 0x02, 0x00, 0x00, 0x00))                # mov ecx, 2            EfiLoaderData
+    # sub rdi, rsi          prefix length
+    $c.AddRange([byte[]]@(72, 41, 247))
+    # mov [rsp+0x38], rdi
+    $c.AddRange([byte[]]@(72, 137, 124, 36, 56))
+    # mov ecx, 2            EfiLoaderData
+    $c.AddRange([byte[]]@(185, 2, 0, 0, 0))
     $c.AddRange([byte[]]@(0x48, 0x8D, 0x97)); $c.AddRange([BitConverter]::GetBytes([int]$tail.Count))  # lea rdx, [rdi+tail]
-    $c.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x28))                # lea r8, [rsp+0x28]
+    # lea r8, [rsp+0x28]
+    $c.AddRange([byte[]]@(76, 141, 68, 36, 40))
     CallBs 0x40; JnzFail                                                # AllocatePool
-    $c.AddRange([byte[]]@(0x48, 0x8B, 0x7C, 0x24, 0x28))                # mov rdi, [rsp+0x28]   buffer
-    $c.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x38))                # mov rcx, [rsp+0x38]
-    $c.AddRange([byte[]]@(0xFC, 0xF3, 0xA4))                            # cld; rep movsb        device path
+    # mov rdi, [rsp+0x28]   buffer
+    $c.AddRange([byte[]]@(72, 139, 124, 36, 40))
+    # mov rcx, [rsp+0x38]
+    $c.AddRange([byte[]]@(72, 139, 76, 36, 56))
+    # cld; rep movsb        device path
+    $c.AddRange([byte[]]@(252, 243, 164))
     LeaRip 0x35 'tail'                                                  # lea rsi, [rip+tail]
     $c.Add(0xB9); $c.AddRange([BitConverter]::GetBytes([int]$tail.Count))  # mov ecx, tail
-    $c.AddRange([byte[]]@(0xF3, 0xA4))                                  # rep movsb             file node + end
-    $c.AddRange([byte[]]@(0x31, 0xC9))                                  # xor ecx, ecx          BootPolicy FALSE
-    $c.AddRange([byte[]]@(0x4C, 0x89, 0xF2))                            # mov rdx, r14          parent
-    $c.AddRange([byte[]]@(0x4C, 0x8B, 0x44, 0x24, 0x28))                # mov r8, [rsp+0x28]    path
-    $c.AddRange([byte[]]@(0x45, 0x31, 0xC9))                            # xor r9d, r9d          no buffer
-    $c.AddRange([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x20, 0, 0, 0, 0))    # mov qword [rsp+0x20], 0
-    $c.AddRange([byte[]]@(0x48, 0x8D, 0x44, 0x24, 0x30))                # lea rax, [rsp+0x30]
-    $c.AddRange([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x28))                # mov [rsp+0x28], rax   &handle
+    # rep movsb             file node + end
+    $c.AddRange([byte[]]@(243, 164))
+    # xor ecx, ecx          BootPolicy FALSE
+    $c.AddRange([byte[]]@(49, 201))
+    # mov rdx, r14          parent
+    $c.AddRange([byte[]]@(76, 137, 242))
+    # mov r8, [rsp+0x28]    path
+    $c.AddRange([byte[]]@(76, 139, 68, 36, 40))
+    # xor r9d, r9d          no buffer
+    $c.AddRange([byte[]]@(69, 49, 201))
+    # mov qword [rsp+0x20], 0
+    $c.AddRange([byte[]]@(72, 199, 68, 36, 32, 0, 0, 0, 0))
+    # lea rax, [rsp+0x30]
+    $c.AddRange([byte[]]@(72, 141, 68, 36, 48))
+    # mov [rsp+0x28], rax   &handle
+    $c.AddRange([byte[]]@(72, 137, 68, 36, 40))
     CallBs 0xC8; JnzFail                                                # LoadImage
-    $c.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x30))                # mov rcx, [rsp+0x30]   handle
-    $c.AddRange([byte[]]@(0x31, 0xD2, 0x45, 0x31, 0xC0))                # xor edx, edx; xor r8d, r8d
+    # mov rcx, [rsp+0x30]   handle
+    $c.AddRange([byte[]]@(72, 139, 76, 36, 48))
+    # xor edx, edx; xor r8d, r8d
+    $c.AddRange([byte[]]@(49, 210, 69, 49, 192))
     CallBs 0xD0                                                         # StartImage
     $labels['fail'] = $c.Count
     $c.AddRange([byte[]](MarkBytes 'L'))
@@ -929,7 +1106,8 @@ if ($ChainFile) {
     $labels['dp'] = $c.Count; $c.AddRange($dpGuid)
     $labels['tail'] = $c.Count; $c.AddRange($tail)
     $labels['done'] = $c.Count
-    $c.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x40))                      # add rsp, 0x40
+    # add rsp, 0x40
+    $c.AddRange([byte[]]@(72, 131, 196, 64))
     foreach ($f in $fix) {
         $rel = [BitConverter]::GetBytes([int]($labels[$f[0]] - ($f[1] + 4)))
         for ($b = 0; $b -lt 4; $b++) { $c[$f[1] + $b] = $rel[$b] }
@@ -972,10 +1150,10 @@ EdidPublish $EdidDiscoveredGuid
 # Get current IP (for relative addressing of text/rodata after stub)
 # call $+5; pop rbx; sub rbx, 5  -> rbx = address of this call instruction
 $getIpOff = $ms.Position
-$bw.Write([byte[]]@(0xE8, 0x00, 0x00, 0x00, 0x00, 0x5B, 0x48, 0x83, 0xEB, 0x05))
+$bw.Write([byte[]]@(232, 0, 0, 0, 0, 91, 72, 131, 235, 5))
 
 # AllocatePages for code+rodata, AT ImageBase.
-#
+# 
 # The guest's text is linked absolute at bare-metal-load-addr
 # (X86_64State.codex:204), so it can only ever run from there. This asked for
 # AllocateAnyPages and then THREW THE RETURNED BUFFER AWAY, and the copy below
@@ -994,25 +1172,34 @@ $guardEnd  = [long]$ImageBase + [long]$codePages * 4096
 $guardMsg  = "COMPILER-130: payload range 0x{0:X8}-0x{1:X8} is not free conventional memory in this firmware's map; nothing was loaded.`r`n" -f $ImageBase, $guardEnd
 $guardText = [byte[]]([System.Text.Encoding]::Unicode.GetBytes($guardMsg) + [byte[]]@(0, 0))
 $g = [System.Collections.Generic.List[byte]]::new()
-$g.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x60))                                                          # sub rsp, 0x60
-$g.AddRange([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x28, 0, 0, 0, 0, 0x48, 0x8D, 0x4C, 0x24, 0x28, 0x31, 0xD2))  # MapSize = 0, no buffer
-$g.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x30, 0x4C, 0x8D, 0x4C, 0x24, 0x38, 0x48, 0x8D, 0x44, 0x24, 0x40, 0x48, 0x89, 0x44, 0x24, 0x20))
-$g.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x90, 0x38, 0, 0, 0))                                # GetMemoryMap, size query
-$g.AddRange([byte[]]@(0x48, 0xBA, 5, 0, 0, 0, 0, 0, 0, 0x80, 0x48, 0x39, 0xD0, 0x74, 0x10))              # EFI_BUFFER_TOO_SMALL?
+# sub rsp, 0x60
+$g.AddRange([byte[]]@(72, 131, 236, 96))
+# MapSize = 0, no buffer
+$g.AddRange([byte[]]@(72, 199, 68, 36, 40, 0, 0, 0, 0, 72, 141, 76, 36, 40, 49, 210))
+$g.AddRange([byte[]]@(76, 141, 68, 36, 48, 76, 141, 76, 36, 56, 72, 141, 68, 36, 64, 72, 137, 68, 36, 32))
+# GetMemoryMap, size query
+$g.AddRange([byte[]]@(73, 139, 71, 96, 255, 144, 56, 0, 0, 0))
+# EFI_BUFFER_TOO_SMALL?
+$g.AddRange([byte[]]@(72, 186, 5, 0, 0, 0, 0, 0, 0, 128, 72, 57, 208, 116, 16))
 $g.AddRange([byte[]](GuardHalt 'S'))
-$g.AddRange([byte[]]@(0x48, 0x8B, 0x54, 0x24, 0x28, 0x48, 0x81, 0xC2, 0, 0x20, 0, 0, 0x48, 0x89, 0x54, 0x24, 0x50))  # capacity = size + 2 pages
-$g.AddRange([byte[]]@(0xB9, 2, 0, 0, 0, 0x4C, 0x8D, 0x44, 0x24, 0x48, 0x49, 0x8B, 0x47, 0x60, 0xFF, 0x90, 0x40, 0, 0, 0))  # AllocatePool(EfiLoaderData)
+# capacity = size + 2 pages
+$g.AddRange([byte[]]@(72, 139, 84, 36, 40, 72, 129, 194, 0, 32, 0, 0, 72, 137, 84, 36, 80))
+# AllocatePool(EfiLoaderData)
+$g.AddRange([byte[]]@(185, 2, 0, 0, 0, 76, 141, 68, 36, 72, 73, 139, 71, 96, 255, 144, 64, 0, 0, 0))
 $g.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10)); $g.AddRange([byte[]](GuardHalt 'P'))
-$g.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x50, 0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x8D, 0x4C, 0x24, 0x28, 0x48, 0x8B, 0x54, 0x24, 0x48))
-$g.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x30, 0x4C, 0x8D, 0x4C, 0x24, 0x38, 0x48, 0x8D, 0x44, 0x24, 0x40, 0x48, 0x89, 0x44, 0x24, 0x20))
-$g.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x90, 0x38, 0, 0, 0))                                # GetMemoryMap
+$g.AddRange([byte[]]@(72, 139, 68, 36, 80, 72, 137, 68, 36, 40, 72, 141, 76, 36, 40, 72, 139, 84, 36, 72))
+$g.AddRange([byte[]]@(76, 141, 68, 36, 48, 76, 141, 76, 36, 56, 72, 141, 68, 36, 64, 72, 137, 68, 36, 32))
+# GetMemoryMap
+$g.AddRange([byte[]]@(73, 139, 71, 96, 255, 144, 56, 0, 0, 0))
 $g.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10)); $g.AddRange([byte[]](GuardHalt 'M'))
-$g.AddRange([byte[]]@(0x48, 0x8B, 0x74, 0x24, 0x48, 0x48, 0x8B, 0x4C, 0x24, 0x28, 0x4C, 0x8D, 0x0C, 0x0E, 0x4C, 0x8B, 0x5C, 0x24, 0x38))  # rsi map, r9 map end, r11 DescSize
+# rsi map, r9 map end, r11 DescSize
+$g.AddRange([byte[]]@(72, 139, 116, 36, 72, 72, 139, 76, 36, 40, 76, 141, 12, 14, 76, 139, 92, 36, 56))
 $g.AddRange([byte[]]@(0x48, 0xBF)); $g.AddRange([BitConverter]::GetBytes([long]$ImageBase))             # rdi = first uncovered page
 $g.AddRange([byte[]]@(0x49, 0xB8)); $g.AddRange([BitConverter]::GetBytes([long]$guardEnd))              # r8 = range end
 $gOuter = $g.Count
 $g.AddRange([byte[]]@(0x4C, 0x39, 0xC7, 0x0F, 0x83, 0, 0, 0, 0)); $gToOk = $g.Count - 4                 # cmp rdi, r8; jae ok
-$g.AddRange([byte[]]@(0x48, 0x89, 0xF2))                                                                # mov rdx, rsi
+# mov rdx, rsi
+$g.AddRange([byte[]]@(72, 137, 242))
 $gInner = $g.Count
 $g.AddRange([byte[]]@(0x4C, 0x39, 0xCA, 0x73, 0)); $gToFail = $g.Count - 1                              # cmp rdx, r9; jae fail
 $g.AddRange([byte[]]@(0x83, 0x3A, 0x07, 0x75, 0)); $gN1 = $g.Count - 1                                  # Type == 7?
@@ -1023,29 +1210,39 @@ $gNext = $g.Count
 $g.AddRange([byte[]]@(0x4C, 0x01, 0xDA, 0xEB, 0)); $g[$g.Count - 1] = [byte](($gInner - $g.Count) -band 0xFF)  # next descriptor
 foreach ($p in $gN1, $gN2, $gN3) { $g[$p] = [byte]($gNext - ($p + 1)) }
 $g[$gToFail] = [byte]($g.Count - ($gToFail + 1))
-$g.AddRange([byte[]]@(0x49, 0x8B, 0x4F, 0x40, 0x48, 0x8D, 0x15, 22, 0, 0, 0, 0x48, 0x8B, 0x41, 0x08, 0xFF, 0xD0))  # ConOut->OutputString(message)
+# ConOut->OutputString(message)
+$g.AddRange([byte[]]@(73, 139, 79, 64, 72, 141, 21, 22, 0, 0, 0, 72, 139, 65, 8, 255, 208))
 $g.AddRange([byte[]](GuardHalt 'R'))
 $g.AddRange($guardText)
 $okRel = [BitConverter]::GetBytes([int]($g.Count - ($gToOk + 4)))
 for ($k = 0; $k -lt 4; $k++) { $g[$gToOk + $k] = $okRel[$k] }
-$g.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x48, 0x49, 0x8B, 0x47, 0x60, 0xFF, 0x50, 0x48))         # FreePool(map)
-$g.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x60))                                                          # add rsp, 0x60
+# FreePool(map)
+$g.AddRange([byte[]]@(72, 139, 76, 36, 72, 73, 139, 71, 96, 255, 80, 72))
+# add rsp, 0x60
+$g.AddRange([byte[]]@(72, 131, 196, 96))
 $bw.Write($g.ToArray())
 Mark 'r'                                                                                                # the linked range is free
-$bw.Write([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x30))              # mov qword [rsp+0x30], ImageBase
+# mov qword [rsp+0x30], ImageBase
+$bw.Write([byte[]]@(72, 199, 68, 36, 48))
 $bw.Write([BitConverter]::GetBytes([int]$ImageBase))
-$bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00))  # mov rcx, 2 (AllocateAddress)
-$bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00))  # mov rdx, 1 (EfiLoaderCode)
-$bw.Write([byte[]]@(0x49, 0xC7, 0xC0))                          # mov r8, codePages
+# mov rcx, 2 (AllocateAddress)
+$bw.Write([byte[]]@(72, 199, 193, 2, 0, 0, 0))
+# mov rdx, 1 (EfiLoaderCode)
+$bw.Write([byte[]]@(72, 199, 194, 1, 0, 0, 0))
+# mov r8, codePages
+$bw.Write([byte[]]@(73, 199, 192))
 $bw.Write([BitConverter]::GetBytes([int]$codePages))
-$bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x30))              # lea r9, [rsp+0x30]
-$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
-$bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
+# lea r9, [rsp+0x30]
+$bw.Write([byte[]]@(76, 141, 76, 36, 48))
+# mov rax, [r15+0x60]
+$bw.Write([byte[]]@(73, 139, 71, 96))
+# call [rax+0x28]
+$bw.Write([byte[]]@(255, 80, 40))
 AssertAllocOk 'C'                                               # C = code allocation
 Mark 'c'                                                        # code pages are ours
 
 # AllocatePages for the heap, ANYWHERE.
-#
+# 
 # Nothing in the guest requires a particular heap base: it reads deck-pos-addr
 # and heap-hwm-addr, which this stub writes. Asking for a fixed 0x1000000 is
 # what fails under edk2 -- measured 2026-07-29, and it fails at 64 MB as well as
@@ -1065,13 +1262,19 @@ Mark 'c'                                                        # code pages are
 # a heap range that genuinely overlaps the framebuffer aperture.
 if ($HeapFloorPages -gt 0) {
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 224)))
-    $bw.Write([byte[]]@(0x48, 0xC7, 0x47, 0x18, 0x00, 0x00, 0x00, 0x20)) # pool span at +248
-    $bw.Write([byte[]]@(0x48, 0xC7, 0x07, 0xFF, 0xFF, 0xFF, 0x7F)) # allocation ceiling
-    $bw.Write([byte[]]@(0x49, 0x89, 0xF9))                      # r9 = output pool base
-    $bw.Write([byte[]]@(0xB9, 0x01, 0x00, 0x00, 0x00))          # AllocateMaxAddress
-    $bw.Write([byte[]]@(0xBA, 0x02, 0x00, 0x00, 0x00))          # EfiLoaderData
-    $bw.Write([byte[]]@(0x41, 0xB8, 0x00, 0x00, 0x02, 0x00))    # 131072 pages
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x50, 0x28))
+    # pool span at +248
+    $bw.Write([byte[]]@(72, 199, 71, 24, 0, 0, 0, 32))
+    # allocation ceiling
+    $bw.Write([byte[]]@(72, 199, 7, 255, 255, 255, 127))
+    # r9 = output pool base
+    $bw.Write([byte[]]@(73, 137, 249))
+    # AllocateMaxAddress
+    $bw.Write([byte[]]@(185, 1, 0, 0, 0))
+    # EfiLoaderData
+    $bw.Write([byte[]]@(186, 2, 0, 0, 0))
+    # 131072 pages
+    $bw.Write([byte[]]@(65, 184, 0, 0, 2, 0))
+    $bw.Write([byte[]]@(73, 139, 71, 96, 255, 80, 40))
     AssertAllocOkPainted 'Q' 0x00602060                          # purple: owned pool refused
     # The heap is the largest EfiConventionalMemory range below the ceiling,
     # less 16 MiB left to the firmware for the GDT page and the
@@ -1083,53 +1286,75 @@ if ($HeapFloorPages -gt 0) {
     $floorPreText = [byte[]]([System.Text.Encoding]::Unicode.GetBytes($floorMsgPre) + [byte[]]@(0, 0))
     $floorSufText = [byte[]]([System.Text.Encoding]::Unicode.GetBytes($floorMsgSuf) + [byte[]]@(0, 0))
     $z = [System.Collections.Generic.List[byte]]::new()
-    $z.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x60))                                                          # sub rsp, 0x60
-    $z.AddRange([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x28, 0, 0, 0, 0, 0x48, 0x8D, 0x4C, 0x24, 0x28, 0x31, 0xD2))  # MapSize = 0, no buffer
-    $z.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x30, 0x4C, 0x8D, 0x4C, 0x24, 0x38, 0x48, 0x8D, 0x44, 0x24, 0x40, 0x48, 0x89, 0x44, 0x24, 0x20))
-    $z.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x90, 0x38, 0, 0, 0))                                # GetMemoryMap, size query
-    $z.AddRange([byte[]]@(0x48, 0xBA, 5, 0, 0, 0, 0, 0, 0, 0x80, 0x48, 0x39, 0xD0, 0x74, 0x10))              # EFI_BUFFER_TOO_SMALL?
+    # sub rsp, 0x60
+    $z.AddRange([byte[]]@(72, 131, 236, 96))
+    # MapSize = 0, no buffer
+    $z.AddRange([byte[]]@(72, 199, 68, 36, 40, 0, 0, 0, 0, 72, 141, 76, 36, 40, 49, 210))
+    $z.AddRange([byte[]]@(76, 141, 68, 36, 48, 76, 141, 76, 36, 56, 72, 141, 68, 36, 64, 72, 137, 68, 36, 32))
+    # GetMemoryMap, size query
+    $z.AddRange([byte[]]@(73, 139, 71, 96, 255, 144, 56, 0, 0, 0))
+    # EFI_BUFFER_TOO_SMALL?
+    $z.AddRange([byte[]]@(72, 186, 5, 0, 0, 0, 0, 0, 0, 128, 72, 57, 208, 116, 16))
     $z.AddRange([byte[]](GuardHalt 'S'))
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x54, 0x24, 0x28, 0x48, 0x81, 0xC2, 0, 0x20, 0, 0, 0x48, 0x89, 0x54, 0x24, 0x50))  # capacity = size + 2 pages
-    $z.AddRange([byte[]]@(0xB9, 2, 0, 0, 0, 0x4C, 0x8D, 0x44, 0x24, 0x48, 0x49, 0x8B, 0x47, 0x60, 0xFF, 0x90, 0x40, 0, 0, 0))  # AllocatePool(EfiLoaderData)
+    # capacity = size + 2 pages
+    $z.AddRange([byte[]]@(72, 139, 84, 36, 40, 72, 129, 194, 0, 32, 0, 0, 72, 137, 84, 36, 80))
+    # AllocatePool(EfiLoaderData)
+    $z.AddRange([byte[]]@(185, 2, 0, 0, 0, 76, 141, 68, 36, 72, 73, 139, 71, 96, 255, 144, 64, 0, 0, 0))
     $z.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10)); $z.AddRange([byte[]](GuardHalt 'P'))
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x50, 0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x8D, 0x4C, 0x24, 0x28, 0x48, 0x8B, 0x54, 0x24, 0x48))
-    $z.AddRange([byte[]]@(0x4C, 0x8D, 0x44, 0x24, 0x30, 0x4C, 0x8D, 0x4C, 0x24, 0x38, 0x48, 0x8D, 0x44, 0x24, 0x40, 0x48, 0x89, 0x44, 0x24, 0x20))
-    $z.AddRange([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x90, 0x38, 0, 0, 0))                                # GetMemoryMap
+    $z.AddRange([byte[]]@(72, 139, 68, 36, 80, 72, 137, 68, 36, 40, 72, 141, 76, 36, 40, 72, 139, 84, 36, 72))
+    $z.AddRange([byte[]]@(76, 141, 68, 36, 48, 76, 141, 76, 36, 56, 72, 141, 68, 36, 64, 72, 137, 68, 36, 32))
+    # GetMemoryMap
+    $z.AddRange([byte[]]@(73, 139, 71, 96, 255, 144, 56, 0, 0, 0))
     $z.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10)); $z.AddRange([byte[]](GuardHalt 'M'))
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x74, 0x24, 0x48, 0x48, 0x8B, 0x4C, 0x24, 0x28, 0x4C, 0x8D, 0x0C, 0x0E, 0x4C, 0x8B, 0x5C, 0x24, 0x38))  # rsi map, r9 map end, r11 DescSize
+    # rsi map, r9 map end, r11 DescSize
+    $z.AddRange([byte[]]@(72, 139, 116, 36, 72, 72, 139, 76, 36, 40, 76, 141, 12, 14, 76, 139, 92, 36, 56))
     $z.AddRange([byte[]]@(0x48, 0xBF)); $z.AddRange([BitConverter]::GetBytes([long]$HeapCeiling))          # rdi = ceiling
-    $z.AddRange([byte[]]@(0x4D, 0x85, 0xE4, 0x74, 0x11, 0x4C, 0x89, 0xE0, 0x48, 0x2D))                     # fb present: rax = fb base - backoff
+    # fb present: rax = fb base - backoff
+    $z.AddRange([byte[]]@(77, 133, 228, 116, 17, 76, 137, 224, 72, 45))
     $z.AddRange([BitConverter]::GetBytes([int]$floorBackoff))
-    $z.AddRange([byte[]]@(0x48, 0x39, 0xF8, 0x73, 0x03, 0x48, 0x89, 0xC7))                                 # rdi = min(rdi, rax)
-    $z.AddRange([byte[]]@(0x48, 0x81, 0xE7, 0x00, 0xF0, 0xFF, 0xFF))                                       # and rdi, -4096
-    $z.AddRange([byte[]]@(0x4D, 0x31, 0xC0, 0x4D, 0x31, 0xD2, 0x48, 0x89, 0xF2))                           # r8 best size, r10 its end, rdx cursor
+    # rdi = min(rdi, rax)
+    $z.AddRange([byte[]]@(72, 57, 248, 115, 3, 72, 137, 199))
+    # and rdi, -4096
+    $z.AddRange([byte[]]@(72, 129, 231, 0, 240, 255, 255))
+    # r8 best size, r10 its end, rdx cursor
+    $z.AddRange([byte[]]@(77, 49, 192, 77, 49, 210, 72, 137, 242))
     $zLoop = $z.Count
     $z.AddRange([byte[]]@(0x4C, 0x39, 0xCA, 0x73, 0)); $zToDone = $z.Count - 1                              # cmp rdx, r9; jae done
     $z.AddRange([byte[]]@(0x83, 0x3A, 0x07, 0x75, 0)); $zN1 = $z.Count - 1                                  # Type == 7?
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x42, 0x08, 0x48, 0x8B, 0x4A, 0x18, 0x48, 0xC1, 0xE1, 0x0C, 0x48, 0x01, 0xC1))  # rax start, rcx end
-    $z.AddRange([byte[]]@(0x48, 0x39, 0xF9, 0x76, 0x03, 0x48, 0x89, 0xF9))                                 # rcx = min(rcx, ceiling)
+    # rax start, rcx end
+    $z.AddRange([byte[]]@(72, 139, 66, 8, 72, 139, 74, 24, 72, 193, 225, 12, 72, 1, 193))
+    # rcx = min(rcx, ceiling)
+    $z.AddRange([byte[]]@(72, 57, 249, 118, 3, 72, 137, 249))
     $z.AddRange([byte[]]@(0x48, 0x39, 0xC1, 0x76, 0)); $zN2 = $z.Count - 1                                  # empty below the ceiling?
     $z.AddRange([byte[]]@(0x48, 0xF7, 0xD8, 0x48, 0x01, 0xC8, 0x4C, 0x39, 0xC0, 0x76, 0)); $zN3 = $z.Count - 1  # rax = size; larger than best?
-    $z.AddRange([byte[]]@(0x49, 0x89, 0xC0, 0x49, 0x89, 0xCA))                                             # best = this range
+    # best = this range
+    $z.AddRange([byte[]]@(73, 137, 192, 73, 137, 202))
     $zNext = $z.Count
     $z.AddRange([byte[]]@(0x4C, 0x01, 0xDA, 0xEB, 0)); $z[$z.Count - 1] = [byte](($zLoop - $z.Count) -band 0xFF)  # next descriptor
     foreach ($p in $zN1, $zN2, $zN3) { $z[$p] = [byte]($zNext - ($p + 1)) }
     $z[$zToDone] = [byte]($z.Count - ($zToDone + 1))
-    $z.AddRange([byte[]]@(0x49, 0x81, 0xE8, 0x00, 0x00, 0x00, 0x01, 0x73, 0x03, 0x4D, 0x31, 0xC0))         # r8 -= 16 MiB, floor at 0
-    $z.AddRange([byte[]]@(0x4C, 0x89, 0x44, 0x24, 0x58, 0x4C, 0x89, 0x54, 0x24, 0x50))                     # keep size and end
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x4C, 0x24, 0x48, 0x49, 0x8B, 0x47, 0x60, 0xFF, 0x50, 0x48))         # FreePool(map)
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x58, 0x48, 0x8B, 0x4C, 0x24, 0x50))                     # rax size, rcx end
-    $z.AddRange([byte[]]@(0x48, 0x83, 0xC4, 0x60))                                                          # add rsp, 0x60
+    # r8 -= 16 MiB, floor at 0
+    $z.AddRange([byte[]]@(73, 129, 232, 0, 0, 0, 1, 115, 3, 77, 49, 192))
+    # keep size and end
+    $z.AddRange([byte[]]@(76, 137, 68, 36, 88, 76, 137, 84, 36, 80))
+    # FreePool(map)
+    $z.AddRange([byte[]]@(72, 139, 76, 36, 72, 73, 139, 71, 96, 255, 80, 72))
+    # rax size, rcx end
+    $z.AddRange([byte[]]@(72, 139, 68, 36, 88, 72, 139, 76, 36, 80))
+    # add rsp, 0x60
+    $z.AddRange([byte[]]@(72, 131, 196, 96))
     $z.AddRange([byte[]]@(0x48, 0xBA)); $z.AddRange([BitConverter]::GetBytes([long]$floorBytes))           # rdx = floor
     $z.AddRange([byte[]]@(0x48, 0x39, 0xD0, 0x0F, 0x83, 0, 0, 0, 0)); $zToOk = $z.Count - 4                 # cmp rax, rdx; jae ok
-    $z.AddRange([byte[]]@(0x48, 0x83, 0xEC, 0x60, 0x48, 0xC1, 0xE8, 0x14))                                 # MiB, decimal, backwards from [rsp+0x5E]
-    $z.AddRange([byte[]]@(0x48, 0x8D, 0x7C, 0x24, 0x5E, 0x66, 0xC7, 0x07, 0x00, 0x00, 0x41, 0xB9, 0x0A, 0x00, 0x00, 0x00))
-    $z.AddRange([byte[]]@(0x31, 0xD2, 0x49, 0xF7, 0xF1, 0x83, 0xC2, 0x30, 0x48, 0x83, 0xEF, 0x02, 0x66, 0x89, 0x17, 0x48, 0x85, 0xC0, 0x75, 0xEC))
+    # MiB, decimal, backwards from [rsp+0x5E]
+    $z.AddRange([byte[]]@(72, 131, 236, 96, 72, 193, 232, 20))
+    $z.AddRange([byte[]]@(72, 141, 124, 36, 94, 102, 199, 7, 0, 0, 65, 185, 10, 0, 0, 0))
+    $z.AddRange([byte[]]@(49, 210, 73, 247, 241, 131, 194, 48, 72, 131, 239, 2, 102, 137, 23, 72, 133, 192, 117, 236))
     $z.AddRange([byte[]]@(0x49, 0x8B, 0x4F, 0x40, 0x48, 0x8D, 0x15, 0, 0, 0, 0)); $zPre = $z.Count - 4      # OutputString(prefix)
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x41, 0x08, 0xFF, 0xD0))
-    $z.AddRange([byte[]]@(0x49, 0x8B, 0x4F, 0x40, 0x48, 0x89, 0xFA, 0x48, 0x8B, 0x41, 0x08, 0xFF, 0xD0))   # OutputString(digits)
+    $z.AddRange([byte[]]@(72, 139, 65, 8, 255, 208))
+    # OutputString(digits)
+    $z.AddRange([byte[]]@(73, 139, 79, 64, 72, 137, 250, 72, 139, 65, 8, 255, 208))
     $z.AddRange([byte[]]@(0x49, 0x8B, 0x4F, 0x40, 0x48, 0x8D, 0x15, 0, 0, 0, 0)); $zSuf = $z.Count - 4      # OutputString(suffix)
-    $z.AddRange([byte[]]@(0x48, 0x8B, 0x41, 0x08, 0xFF, 0xD0))
+    $z.AddRange([byte[]]@(72, 139, 65, 8, 255, 208))
     $z.AddRange([byte[]](GuardHalt 'L'))
     $zPreAt = $z.Count; $z.AddRange($floorPreText)
     $zSufAt = $z.Count; $z.AddRange($floorSufText)
@@ -1137,29 +1362,43 @@ if ($HeapFloorPages -gt 0) {
         $rel = [BitConverter]::GetBytes([int]($fix[1] - ($fix[0] + 4)))
         for ($k = 0; $k -lt 4; $k++) { $z[$fix[0] + $k] = $rel[$k] }
     }
-    $z.AddRange([byte[]]@(0x48, 0x8D, 0x51, 0xFF, 0x48, 0x89, 0x54, 0x24, 0x38))                           # [rsp+0x38] = end - 1
-    $z.AddRange([byte[]]@(0x48, 0xC1, 0xE8, 0x0C, 0x48, 0x89, 0xC6, 0x49, 0x89, 0xC0))                     # rsi = r8 = pages
-    $z.AddRange([byte[]]@(0xB9, 0x01, 0x00, 0x00, 0x00, 0xBA, 0x02, 0x00, 0x00, 0x00))                     # AllocateMaxAddress, EfiLoaderData
-    $z.AddRange([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38, 0x49, 0x8B, 0x47, 0x60, 0xFF, 0x50, 0x28))         # AllocatePages
+    # [rsp+0x38] = end - 1
+    $z.AddRange([byte[]]@(72, 141, 81, 255, 72, 137, 84, 36, 56))
+    # rsi = r8 = pages
+    $z.AddRange([byte[]]@(72, 193, 232, 12, 72, 137, 198, 73, 137, 192))
+    # AllocateMaxAddress, EfiLoaderData
+    $z.AddRange([byte[]]@(185, 1, 0, 0, 0, 186, 2, 0, 0, 0))
+    # AllocatePages
+    $z.AddRange([byte[]]@(76, 141, 76, 36, 56, 73, 139, 71, 96, 255, 80, 40))
     $bw.Write($z.ToArray())
     AssertAllocOkPainted 'H' $GopDarkRed                        # H = heap allocation status
-    $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))          # mov rax, [rsp+0x38]
-    $bw.Write([byte[]]@(0x48, 0x85, 0xC0))                      # test rax, rax
-    $bw.Write([byte[]]@(0x75, 0x10))                            # jnz +16 (over the panic)
+    # mov rax, [rsp+0x38]
+    $bw.Write([byte[]]@(72, 139, 68, 36, 56))
+    # test rax, rax
+    $bw.Write([byte[]]@(72, 133, 192))
+    # jnz +16 (over the panic)
+    $bw.Write([byte[]]@(117, 16))
     AllocPanic 'B'
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 224)))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x08))                # root base at +232
-    $bw.Write([byte[]]@(0x48, 0x89, 0xF1, 0x48, 0xC1, 0xE1, 0x0C, 0x48, 0x01, 0xC1))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x4F, 0x10))                # root end at +240
+    # root base at +232
+    $bw.Write([byte[]]@(72, 137, 71, 8))
+    $bw.Write([byte[]]@(72, 137, 241, 72, 193, 225, 12, 72, 1, 193))
+    # root end at +240
+    $bw.Write([byte[]]@(72, 137, 79, 16))
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
-    $bw.Write([byte[]]@(0xC7, 0x47, 0x08, 0x04, 0x00, 0x00, 0x00)) # handoff version 4
-    $bw.Write([byte[]]@(0xC7, 0x47, 0x0C, 0x00, 0x01, 0x00, 0x00)) # handoff size 256
+    # handoff version 4
+    $bw.Write([byte[]]@(199, 71, 8, 4, 0, 0, 0))
+    # handoff size 256
+    $bw.Write([byte[]]@(199, 71, 12, 0, 1, 0, 0))
 } else {
 if ($HeapAt -ne 0) {
-    $bw.Write([byte[]]@(0x48, 0xB8))                            # mov rax, HeapAt
+    # mov rax, HeapAt
+    $bw.Write([byte[]]@(72, 184))
     $bw.Write([BitConverter]::GetBytes([long]$HeapAt))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))          # mov [rsp+0x38], rax (requested base)
-    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x02, 0x00, 0x00, 0x00))  # mov rcx, 2 (AllocateAddress)
+    # mov [rsp+0x38], rax (requested base)
+    $bw.Write([byte[]]@(72, 137, 68, 36, 56))
+    # mov rcx, 2 (AllocateAddress)
+    $bw.Write([byte[]]@(72, 199, 193, 2, 0, 0, 0))
 } elseif ($ExitBootServices -or -not $EntryStart) {
     # A PAYLOAD CANNOT USE AnyPages WHERE A FRAMEBUFFER EXISTS, and the
     # 'V' guard below is what proves it rather than what causes it. Measured
@@ -1171,16 +1410,16 @@ if ($HeapAt -ne 0) {
     # was wrong: nothing had asked firmware to keep the heap clear of the
     # aperture, so on any map where free RAM runs up to the framebuffer it
     # will not.
-    #
+    # 
     # The ceiling therefore comes from the hardware and not from a constant.
     # r12 is GopAcquire's framebuffer base, callee-saved and untouched since,
     # and it is the same register the 'V' guard reads three instructions
     # later. Allocating MaxAddress against it puts the whole heap below the
     # aperture, so the condition the guard tests cannot arise.
-    #
+    # 
     # With no framebuffer (r12 = 0) there is no aperture to collide with and
     # AnyPages is right, including codex-vm guests below its GOP RAM range.
-    #
+    # 
     # NOT applied to the A5 path, deliberately and by construction: an
     # -EntryStart payload without -Ebs still takes AnyPages below. The
     # corrected no-GOP guard skip applies to both startup paths; whole-stub
@@ -1204,35 +1443,53 @@ if ($HeapAt -ne 0) {
     # nothing, while the guard still measures 256 MB from the base and finds
     # the aperture inside it. Measured: RAX=0xB7000000 with the framebuffer at
     # 0xBF000000, heap ending exactly AT the aperture, and 'V' still raised.
-    #
+    # 
     # So the request is backed off far enough to satisfy the WINDOW rather
     # than the heap, preserving the guard's 256 MiB overlap policy.
     # One extra megabyte makes the arena end land strictly
     # below the aperture instead of exactly on it.
     $ebsBackoff = [Math]::Max([long]0, [long]0x10000000 - ([long]$HeapPages * 4096)) + 0x100000
-    $bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
-    $bw.Write([byte[]]@(0x74, 0x17))                                # jz +23 -> AnyPages
-    $bw.Write([byte[]]@(0x4C, 0x89, 0xE0))                          # mov rax, r12 (fb base)
-    $bw.Write([byte[]]@(0x48, 0x2D))                                # sub rax, ebsBackoff
+    # test r12, r12
+    $bw.Write([byte[]]@(77, 133, 228))
+    # jz +23 -> AnyPages
+    $bw.Write([byte[]]@(116, 23))
+    # mov rax, r12 (fb base)
+    $bw.Write([byte[]]@(76, 137, 224))
+    # sub rax, ebsBackoff
+    $bw.Write([byte[]]@(72, 45))
     $bw.Write([BitConverter]::GetBytes([int]$ebsBackoff))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (ceiling)
-    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00))  # mov rcx, 1 (AllocateMaxAddress)
-    $bw.Write([byte[]]@(0xEB, 0x0E))                                # jmp +14 -> over AnyPages
-    $bw.Write([byte[]]@(0x31, 0xC0))                                # xor eax, eax
-    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (sentinel 0)
-    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00))  # mov rcx, 0 (AllocateAnyPages)
+    # mov [rsp+0x38], rax (ceiling)
+    $bw.Write([byte[]]@(72, 137, 68, 36, 56))
+    # mov rcx, 1 (AllocateMaxAddress)
+    $bw.Write([byte[]]@(72, 199, 193, 1, 0, 0, 0))
+    # jmp +14 -> over AnyPages
+    $bw.Write([byte[]]@(235, 14))
+    # xor eax, eax
+    $bw.Write([byte[]]@(49, 192))
+    # mov [rsp+0x38], rax (sentinel 0)
+    $bw.Write([byte[]]@(72, 137, 68, 36, 56))
+    # mov rcx, 0 (AllocateAnyPages)
+    $bw.Write([byte[]]@(72, 199, 193, 0, 0, 0, 0))
 
 } else {
-    $bw.Write([byte[]]@(0x31, 0xC0))                                # xor eax, eax
-    $bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x38))              # mov [rsp+0x38], rax (sentinel 0)
-    $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00))  # mov rcx, 0 (AllocateAnyPages)
+    # xor eax, eax
+    $bw.Write([byte[]]@(49, 192))
+    # mov [rsp+0x38], rax (sentinel 0)
+    $bw.Write([byte[]]@(72, 137, 68, 36, 56))
+    # mov rcx, 0 (AllocateAnyPages)
+    $bw.Write([byte[]]@(72, 199, 193, 0, 0, 0, 0))
 }
-$bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00))  # mov rdx, 2 (EfiLoaderData)
-$bw.Write([byte[]]@(0x49, 0xC7, 0xC0))                          # mov r8, HeapPages
+# mov rdx, 2 (EfiLoaderData)
+$bw.Write([byte[]]@(72, 199, 194, 2, 0, 0, 0))
+# mov r8, HeapPages
+$bw.Write([byte[]]@(73, 199, 192))
 $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
-$bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))              # lea r9, [rsp+0x38]
-$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
-$bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
+# lea r9, [rsp+0x38]
+$bw.Write([byte[]]@(76, 141, 76, 36, 56))
+# mov rax, [r15+0x60]
+$bw.Write([byte[]]@(73, 139, 71, 96))
+# call [rax+0x28]
+$bw.Write([byte[]]@(255, 80, 40))
 # Paint allocation failure only for ExitBootServices or opening startup;
 # EntryStart without ExitBootServices uses the unpainted refusal.
 if ($ExitBootServices -or -not $EntryStart) {
@@ -1242,65 +1499,100 @@ if ($ExitBootServices -or -not $EntryStart) {
 }
 # 'B' = firmware said success but never wrote the returned base: the sentinel
 # is still zero, and using it as a heap would put the guest at address 0.
-$bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))              # mov rax, [rsp+0x38]
-$bw.Write([byte[]]@(0x48, 0x85, 0xC0))                          # test rax, rax
-$bw.Write([byte[]]@(0x75, 0x10))                                # jnz +16 (over the panic)
+# mov rax, [rsp+0x38]
+$bw.Write([byte[]]@(72, 139, 68, 36, 56))
+# test rax, rax
+$bw.Write([byte[]]@(72, 133, 192))
+# jnz +16 (over the panic)
+$bw.Write([byte[]]@(117, 16))
 AllocPanic 'B'
 if ($OwnedProcessPool) {
     # Preserve the root allocation. A second EfiLoaderData allocation owns
     # all child slots and their FX pages below the runtime demand-map ceiling.
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 224)))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x47, 0x08))                  # root base at +232
+    # root base at +232
+    $bw.Write([byte[]]@(72, 137, 71, 8))
     $bw.Write([byte[]]@(0x48, 0xB9)); $bw.Write([BitConverter]::GetBytes([long]$HeapPages * 4096))
-    $bw.Write([byte[]]@(0x48, 0x01, 0xC8, 0x48, 0x89, 0x47, 0x10)) # root end at +240
-    $bw.Write([byte[]]@(0x48, 0xC7, 0x47, 0x18, 0x00, 0x00, 0x00, 0x20)) # pool span at +248
-    $bw.Write([byte[]]@(0x48, 0xC7, 0x07, 0xFF, 0xFF, 0xFF, 0x7F)) # allocation ceiling
-    $bw.Write([byte[]]@(0x49, 0x89, 0xF9))                      # r9 = output pool base
-    $bw.Write([byte[]]@(0xB9, 0x01, 0x00, 0x00, 0x00))          # AllocateMaxAddress
-    $bw.Write([byte[]]@(0xBA, 0x02, 0x00, 0x00, 0x00))          # EfiLoaderData
-    $bw.Write([byte[]]@(0x41, 0xB8, 0x00, 0x00, 0x02, 0x00))    # 131072 pages
-    $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60, 0xFF, 0x50, 0x28))
+    # root end at +240
+    $bw.Write([byte[]]@(72, 1, 200, 72, 137, 71, 16))
+    # pool span at +248
+    $bw.Write([byte[]]@(72, 199, 71, 24, 0, 0, 0, 32))
+    # allocation ceiling
+    $bw.Write([byte[]]@(72, 199, 7, 255, 255, 255, 127))
+    # r9 = output pool base
+    $bw.Write([byte[]]@(73, 137, 249))
+    # AllocateMaxAddress
+    $bw.Write([byte[]]@(185, 1, 0, 0, 0))
+    # EfiLoaderData
+    $bw.Write([byte[]]@(186, 2, 0, 0, 0))
+    # 131072 pages
+    $bw.Write([byte[]]@(65, 184, 0, 0, 2, 0))
+    $bw.Write([byte[]]@(73, 139, 71, 96, 255, 80, 40))
     AssertAllocOkPainted 'Q' 0x00602060                          # purple: owned pool refused
     $bw.Write([byte[]]@(0xBF)); $bw.Write([BitConverter]::GetBytes([int]$HandoffAddr))
-    $bw.Write([byte[]]@(0xC7, 0x47, 0x08, 0x04, 0x00, 0x00, 0x00)) # handoff version 4
-    $bw.Write([byte[]]@(0xC7, 0x47, 0x0C, 0x00, 0x01, 0x00, 0x00)) # handoff size 256
-    $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))          # restore root base
+    # handoff version 4
+    $bw.Write([byte[]]@(199, 71, 8, 4, 0, 0, 0))
+    # handoff size 256
+    $bw.Write([byte[]]@(199, 71, 12, 0, 1, 0, 0))
+    # restore root base
+    $bw.Write([byte[]]@(72, 139, 68, 36, 56))
 } else {
 # The runtime derives process slots from RSP in [1 GiB, 1.5 GiB).
 # Keep the entire boot heap outside that fixed child-process pool.
 $heapPoolSkips = @()
 for ($heapAttempt = 0; $heapAttempt -lt 2; $heapAttempt++) {
-    $bw.Write([byte[]]@(0x48, 0x8B, 0x44, 0x24, 0x38))          # mov rax, [rsp+0x38]
-    $bw.Write([byte[]]@(0x48, 0x3D, 0x00, 0x00, 0x00, 0x60))  # cmp rax, 0x60000000
-    $bw.Write([byte[]]@(0x0F, 0x83))                            # jae heapPoolDone
+    # mov rax, [rsp+0x38]
+    $bw.Write([byte[]]@(72, 139, 68, 36, 56))
+    # cmp rax, 0x60000000
+    $bw.Write([byte[]]@(72, 61, 0, 0, 0, 96))
+    # jae heapPoolDone
+    $bw.Write([byte[]]@(15, 131))
     $heapPoolSkips += $ms.Position
     $bw.Write([int]0)
-    $bw.Write([byte[]]@(0x48, 0x89, 0xC2))                      # mov rdx, rax
-    $bw.Write([byte[]]@(0x48, 0xB9))                            # mov rcx, heap bytes
+    # mov rdx, rax
+    $bw.Write([byte[]]@(72, 137, 194))
+    # mov rcx, heap bytes
+    $bw.Write([byte[]]@(72, 185))
     $bw.Write([BitConverter]::GetBytes([long]$HeapPages * 4096))
-    $bw.Write([byte[]]@(0x48, 0x01, 0xCA))                      # add rdx, rcx
-    $bw.Write([byte[]]@(0x48, 0x81, 0xFA, 0x00, 0x00, 0x00, 0x40)) # cmp rdx, 0x40000000
-    $bw.Write([byte[]]@(0x0F, 0x86))                            # jbe heapPoolDone
+    # add rdx, rcx
+    $bw.Write([byte[]]@(72, 1, 202))
+    # cmp rdx, 0x40000000
+    $bw.Write([byte[]]@(72, 129, 250, 0, 0, 0, 64))
+    # jbe heapPoolDone
+    $bw.Write([byte[]]@(15, 134))
     $heapPoolSkips += $ms.Position
     $bw.Write([int]0)
     if ($heapAttempt -eq 0 -and $HeapAt -eq 0) {
-        $bw.Write([byte[]]@(0x48, 0x89, 0xC1))                  # mov rcx, rax
-        $bw.Write([byte[]]@(0x48, 0xC7, 0xC2))                  # mov rdx, HeapPages
+        # mov rcx, rax
+        $bw.Write([byte[]]@(72, 137, 193))
+        # mov rdx, HeapPages
+        $bw.Write([byte[]]@(72, 199, 194))
         $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
-        $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))            # mov rax, [r15+0x60]
-        $bw.Write([byte[]]@(0xFF, 0x50, 0x30))                  # call FreePages
+        # mov rax, [r15+0x60]
+        $bw.Write([byte[]]@(73, 139, 71, 96))
+        # call FreePages
+        $bw.Write([byte[]]@(255, 80, 48))
         AssertAllocOk 'F'
-        $bw.Write([byte[]]@(0x48, 0xC7, 0x44, 0x24, 0x38, 0xFF, 0xFF, 0xFF, 0x3F)) # ceiling below pool
-        $bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00)) # AllocateMaxAddress
-        $bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00)) # EfiLoaderData
-        $bw.Write([byte[]]@(0x49, 0xC7, 0xC0))                  # mov r8, HeapPages
+        # ceiling below pool
+        $bw.Write([byte[]]@(72, 199, 68, 36, 56, 255, 255, 255, 63))
+        # AllocateMaxAddress
+        $bw.Write([byte[]]@(72, 199, 193, 1, 0, 0, 0))
+        # EfiLoaderData
+        $bw.Write([byte[]]@(72, 199, 194, 2, 0, 0, 0))
+        # mov r8, HeapPages
+        $bw.Write([byte[]]@(73, 199, 192))
         $bw.Write([BitConverter]::GetBytes([int]$HeapPages))
-        $bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x38))      # lea r9, [rsp+0x38]
-        $bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))            # mov rax, [r15+0x60]
-        $bw.Write([byte[]]@(0xFF, 0x50, 0x28))                  # call AllocatePages
+        # lea r9, [rsp+0x38]
+        $bw.Write([byte[]]@(76, 141, 76, 36, 56))
+        # mov rax, [r15+0x60]
+        $bw.Write([byte[]]@(73, 139, 71, 96))
+        # call AllocatePages
+        $bw.Write([byte[]]@(255, 80, 40))
         AssertAllocOk 'H'
-        $bw.Write([byte[]]@(0x48, 0x83, 0x7C, 0x24, 0x38, 0x00)) # cmp qword [rsp+0x38], 0
-        $bw.Write([byte[]]@(0x75, 0x10))                        # jnz over panic
+        # cmp qword [rsp+0x38], 0
+        $bw.Write([byte[]]@(72, 131, 124, 36, 56, 0))
+        # jnz over panic
+        $bw.Write([byte[]]@(117, 16))
         AllocPanic 'B'
     } else {
         AllocPanic 'P'
@@ -1321,29 +1613,40 @@ $ms.Position = $heapPoolDone
 # bed legitimately spans an in-RAM framebuffer it never grows into, and a
 # whole-range test would refuse every codex-vm boot. r12/r13 are GopAcquire's
 # base and pixel count, callee-saved and untouched since; rax is the heap base.
-$bw.Write([byte[]]@(0x4D, 0x85, 0xE4))                          # test r12, r12
-$bw.Write([byte[]]@(0x74, 0x31))                                # jz +49 (no fb -> skip)
-$bw.Write([byte[]]@(0x4C, 0x89, 0xE9))                          # mov rcx, r13
-$bw.Write([byte[]]@(0x48, 0xC1, 0xE1, 0x02))                    # shl rcx, 2
-$bw.Write([byte[]]@(0x4C, 0x01, 0xE1))                          # add rcx, r12  (fb end)
-$bw.Write([byte[]]@(0x48, 0x39, 0xC8))                          # cmp rax, rcx
-$bw.Write([byte[]]@(0x73, 0x22))                                # jae +34 (heap base >= fb end -> skip)
-$bw.Write([byte[]]@(0x48, 0xBA, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00))  # mov rdx, 0x10000000 (256 MB)
-$bw.Write([byte[]]@(0x48, 0x01, 0xC2))                          # add rdx, rax  (record-arena end)
-$bw.Write([byte[]]@(0x49, 0x39, 0xD4))                          # cmp r12, rdx
-$bw.Write([byte[]]@(0x73, 0x10))                                # jae +16 (fb >= arena end -> skip)
+# test r12, r12
+$bw.Write([byte[]]@(77, 133, 228))
+# jz +49 (no fb -> skip)
+$bw.Write([byte[]]@(116, 49))
+# mov rcx, r13
+$bw.Write([byte[]]@(76, 137, 233))
+# shl rcx, 2
+$bw.Write([byte[]]@(72, 193, 225, 2))
+# add rcx, r12  (fb end)
+$bw.Write([byte[]]@(76, 1, 225))
+# cmp rax, rcx
+$bw.Write([byte[]]@(72, 57, 200))
+# jae +34 (heap base >= fb end -> skip)
+$bw.Write([byte[]]@(115, 34))
+# mov rdx, 0x10000000 (256 MB)
+$bw.Write([byte[]]@(72, 186, 0, 0, 0, 16, 0, 0, 0, 0))
+# add rdx, rax  (record-arena end)
+$bw.Write([byte[]]@(72, 1, 194))
+# cmp r12, rdx
+$bw.Write([byte[]]@(73, 57, 212))
+# jae +16 (fb >= arena end -> skip)
+$bw.Write([byte[]]@(115, 16))
 AllocPanic 'V'
 Mark 'h'                                                        # heap pages are ours
 
 # A GDT that SYSCALL can actually be given.
-#
+# 
 # SYSCALL does not read a descriptor. It sets CS = STAR[47:32] and
 # SS = STAR[47:32] + 8 and forces flat 64-bit CPL-0 attributes onto the hidden
 # halves. So it needs the GDT to hold a 64-bit code descriptor immediately
 # followed by a data descriptor, and it will run without one -- which is the
 # trap, because the selector VALUES are still installed and stay installed after
 # the handler returns.
-#
+# 
 # Measured against OVMF 2026-07-29: the firmware GDT is nine entries and
 # selector 0x08 is a DATA descriptor while 0x10 is a CODE descriptor, so the
 # old STAR of (8 << 32) gave the guest CS = a data selector and SS = a code
@@ -1352,48 +1655,74 @@ Mark 'h'                                                        # heap pages are
 # 0x0008, reported by OVMF from CpuDxe. There is no consecutive (code64, data)
 # pair anywhere in that GDT, so no value of STAR fixes this and the stub has to
 # supply the pair.
-#
+# 
 # What this does: copy the firmware's own GDT into a page we own, append the
 # CURRENT CS and SS descriptors as a consecutive pair at 0x40 and 0x48, and load
 # it. Every selector the firmware already uses keeps its meaning because the
 # copy is byte-identical, and the appended pair are the firmware's own
 # descriptors rather than invented ones, so they are correct for this machine
 # without hardcoding 0x38/0x30. STAR then points at 0x40.
-$bw.Write([byte[]]@(0x48, 0xB8))                                # mov rax, $HeapCeiling
+# mov rax, $HeapCeiling
+$bw.Write([byte[]]@(72, 184))
 $bw.Write([BitConverter]::GetBytes([long]$HeapCeiling))
-$bw.Write([byte[]]@(0x48, 0x89, 0x44, 0x24, 0x40))              # mov [rsp+0x40], rax (ceiling IN)
-$bw.Write([byte[]]@(0x48, 0xC7, 0xC1, 0x01, 0x00, 0x00, 0x00))  # mov rcx, 1 (AllocateMaxAddress)
-$bw.Write([byte[]]@(0x48, 0xC7, 0xC2, 0x02, 0x00, 0x00, 0x00))  # mov rdx, 2 (EfiLoaderData)
-$bw.Write([byte[]]@(0x49, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00))  # mov r8, 1 page
-$bw.Write([byte[]]@(0x4C, 0x8D, 0x4C, 0x24, 0x40))              # lea r9, [rsp+0x40]
-$bw.Write([byte[]]@(0x49, 0x8B, 0x47, 0x60))                    # mov rax, [r15+0x60]
-$bw.Write([byte[]]@(0xFF, 0x50, 0x28))                          # call [rax+0x28]
+# mov [rsp+0x40], rax (ceiling IN)
+$bw.Write([byte[]]@(72, 137, 68, 36, 64))
+# mov rcx, 1 (AllocateMaxAddress)
+$bw.Write([byte[]]@(72, 199, 193, 1, 0, 0, 0))
+# mov rdx, 2 (EfiLoaderData)
+$bw.Write([byte[]]@(72, 199, 194, 2, 0, 0, 0))
+# mov r8, 1 page
+$bw.Write([byte[]]@(73, 199, 192, 1, 0, 0, 0))
+# lea r9, [rsp+0x40]
+$bw.Write([byte[]]@(76, 141, 76, 36, 64))
+# mov rax, [r15+0x60]
+$bw.Write([byte[]]@(73, 139, 71, 96))
+# call [rax+0x28]
+$bw.Write([byte[]]@(255, 80, 40))
 AssertAllocOk 'G'                                               # G = GDT page
 Mark 'g'                                                        # GDT page is ours
 
-$bw.Write([byte[]]@(0x0F, 0x01, 0x44, 0x24, 0x48))              # sgdt [rsp+0x48]
-$bw.Write([byte[]]@(0x48, 0x8B, 0x74, 0x24, 0x4A))              # mov rsi, [rsp+0x4A]  (old base)
-$bw.Write([byte[]]@(0x48, 0x0F, 0xB7, 0x4C, 0x24, 0x48))        # movzx rcx, word [rsp+0x48]
-$bw.Write([byte[]]@(0x48, 0xFF, 0xC1))                          # inc rcx  (limit -> length)
-$bw.Write([byte[]]@(0x48, 0x8B, 0x7C, 0x24, 0x40))              # mov rdi, [rsp+0x40]  (new page)
-$bw.Write([byte[]]@(0x49, 0x89, 0xFB))                          # mov r11, rdi  (keep the base)
-$bw.Write([byte[]]@(0xF3, 0xA4))                                # rep movsb
+# sgdt [rsp+0x48]
+$bw.Write([byte[]]@(15, 1, 68, 36, 72))
+# mov rsi, [rsp+0x4A]  (old base)
+$bw.Write([byte[]]@(72, 139, 116, 36, 74))
+# movzx rcx, word [rsp+0x48]
+$bw.Write([byte[]]@(72, 15, 183, 76, 36, 72))
+# inc rcx  (limit -> length)
+$bw.Write([byte[]]@(72, 255, 193))
+# mov rdi, [rsp+0x40]  (new page)
+$bw.Write([byte[]]@(72, 139, 124, 36, 64))
+# mov r11, rdi  (keep the base)
+$bw.Write([byte[]]@(73, 137, 251))
+# rep movsb
+$bw.Write([byte[]]@(243, 164))
 
-$bw.Write([byte[]]@(0x66, 0x8C, 0xC8))                          # mov ax, cs
-$bw.Write([byte[]]@(0x25, 0xF8, 0xFF, 0x00, 0x00))              # and eax, 0xFFF8
-$bw.Write([byte[]]@(0x66, 0x8C, 0xD2))                          # mov dx, ss
-$bw.Write([byte[]]@(0x81, 0xE2, 0xF8, 0xFF, 0x00, 0x00))        # and edx, 0xFFF8
-$bw.Write([byte[]]@(0x49, 0x8B, 0x0C, 0x03))                    # mov rcx, [r11+rax]  (code desc)
-$bw.Write([byte[]]@(0x49, 0x89, 0x4B, 0x40))                    # mov [r11+0x40], rcx
-$bw.Write([byte[]]@(0x49, 0x8B, 0x0C, 0x13))                    # mov rcx, [r11+rdx]  (data desc)
-$bw.Write([byte[]]@(0x49, 0x89, 0x4B, 0x48))                    # mov [r11+0x48], rcx
+# mov ax, cs
+$bw.Write([byte[]]@(102, 140, 200))
+# and eax, 0xFFF8
+$bw.Write([byte[]]@(37, 248, 255, 0, 0))
+# mov dx, ss
+$bw.Write([byte[]]@(102, 140, 210))
+# and edx, 0xFFF8
+$bw.Write([byte[]]@(129, 226, 248, 255, 0, 0))
+# mov rcx, [r11+rax]  (code desc)
+$bw.Write([byte[]]@(73, 139, 12, 3))
+# mov [r11+0x40], rcx
+$bw.Write([byte[]]@(73, 137, 75, 64))
+# mov rcx, [r11+rdx]  (data desc)
+$bw.Write([byte[]]@(73, 139, 12, 19))
+# mov [r11+0x48], rcx
+$bw.Write([byte[]]@(73, 137, 75, 72))
 
-$bw.Write([byte[]]@(0x66, 0xC7, 0x44, 0x24, 0x48, 0x4F, 0x00))  # mov word [rsp+0x48], 0x4F
-$bw.Write([byte[]]@(0x4C, 0x89, 0x5C, 0x24, 0x4A))              # mov [rsp+0x4A], r11
-$bw.Write([byte[]]@(0x0F, 0x01, 0x54, 0x24, 0x48))              # lgdt [rsp+0x48]
+# mov word [rsp+0x48], 0x4F
+$bw.Write([byte[]]@(102, 199, 68, 36, 72, 79, 0))
+# mov [rsp+0x4A], r11
+$bw.Write([byte[]]@(76, 137, 92, 36, 74))
+# lgdt [rsp+0x48]
+$bw.Write([byte[]]@(15, 1, 84, 36, 72))
 
 # Store SystemTable at 0x8000, and again at uefi-systab-addr.
-#
+# 
 # 0x8000 is where the bare-metal __start looks for it; cell 36208 is where every
 # `uefi-*` function in the guest reads it. Normally __start copies one to the
 # other. This stub calls `opening` directly and __start never runs, so writing
@@ -1401,39 +1730,51 @@ $bw.Write([byte[]]@(0x0F, 0x01, 0x54, 0x24, 0x48))              # lgdt [rsp+0x48
 # SystemTable to reach ConOut. Some of those call sites test for null first and
 # some do not: `uefi-con-set-attr` does not, so the dev console reached its main
 # loop, tried to set a colour, and called address 0.
-$bw.Write([byte[]]@(0x4C, 0x89, 0x3C, 0x25))                    # mov [SysTableAddr], r15
+# mov [SysTableAddr], r15
+$bw.Write([byte[]]@(76, 137, 60, 37))
 $bw.Write([BitConverter]::GetBytes([int]$SysTableAddr))
-$bw.Write([byte[]]@(0x4C, 0x89, 0x3C, 0x25))                    # mov [UefiSystabAddr], r15
+# mov [UefiSystabAddr], r15
+$bw.Write([byte[]]@(76, 137, 60, 37))
 $bw.Write([BitConverter]::GetBytes([int]$UefiSystabAddr))
-$bw.Write([byte[]]@(0x4C, 0x89, 0x34, 0x25))                    # mov [UefiImgHandleAddr], r14
+# mov [UefiImgHandleAddr], r14
+$bw.Write([byte[]]@(76, 137, 52, 37))
 $bw.Write([BitConverter]::GetBytes([int]$UefiImgHandleAddr))
 
 # r10 = the heap base the firmware actually gave us, not a hoped-for constant.
-$bw.Write([byte[]]@(0x4C, 0x8B, 0x54, 0x24, 0x38))              # mov r10, [rsp+0x38]
+# mov r10, [rsp+0x38]
+$bw.Write([byte[]]@(76, 139, 84, 36, 56))
 
 # Set RSP to top of heap allocation (bare-metal stack-above-heap layout),
 # computed from that base at runtime.
 if ($HeapFloorPages -gt 0) {
-    $bw.Write([byte[]]@(0x48, 0x8B, 0x04, 0x25))                # mov rax, [root end]
+    # mov rax, [root end]
+    $bw.Write([byte[]]@(72, 139, 4, 37))
     $bw.Write([BitConverter]::GetBytes([int]($HandoffAddr + 240)))
 } else {
 $heapBytes = [long]$HeapPages * 4096
-$bw.Write([byte[]]@(0x4C, 0x89, 0xD0))                          # mov rax, r10
-$bw.Write([byte[]]@(0x48, 0xB9))                                 # mov rcx, heapBytes
+# mov rax, r10
+$bw.Write([byte[]]@(76, 137, 208))
+# mov rcx, heapBytes
+$bw.Write([byte[]]@(72, 185))
 $bw.Write([BitConverter]::GetBytes([long]$heapBytes))
-$bw.Write([byte[]]@(0x48, 0x01, 0xC8))                          # add rax, rcx
+# add rax, rcx
+$bw.Write([byte[]]@(72, 1, 200))
 }
-$bw.Write([byte[]]@(0x48, 0x89, 0xC4))                          # mov rsp, rax
-$bw.Write([byte[]]@(0x48, 0x89, 0xC5))                          # mov rbp, rax
+# mov rsp, rax
+$bw.Write([byte[]]@(72, 137, 196))
+# mov rbp, rax
+$bw.Write([byte[]]@(72, 137, 197))
 
 # Store stackTop at stack-min-rsp-addr (overflow check tracking)
 $StackMinRspAddr = 28736
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, StackMinRspAddr
+# mov rdi, StackMinRspAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$StackMinRspAddr))
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax (stackTop still in rax)
+# mov [rdi], rax (stackTop still in rax)
+$bw.Write([byte[]]@(72, 137, 7))
 
 # Store stackTop at ram-size-addr as well.
-#
+# 
 # Cell 4072 is where EVERY panic path relocates the stack before it can say
 # anything: `__out_of_memory` and `__watchdog_panic` both begin `mov rsp,
 # [4072]`, and so does emit-cpu-exception-dump. NOTHING in the compiler writes
@@ -1442,40 +1783,51 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 # or `-device loader,addr=0xfe8` under QEMU -- and this stub never did, so the
 # cell held zero, every one of those handlers set RSP to 0, and the first push
 # took a #PF at CR2 = -8, then #DF, then a triple fault.
-#
+# 
 # That is what the dev console's "reboot-loop under real UEFI" actually was. The
 # guest was correctly detecting a stack/heap collision and calling the handler
 # that exists to report it; the handler could not run. Measured 2026-07-29 under
 # OVMF: 21 triple faults in 40 s before this store, 0 after, and the panic
 # prints OUT OF MEMORY instead.
 $RamSizeAddr = 4072
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, RamSizeAddr
+# mov rdi, RamSizeAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$RamSizeAddr))
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+# mov [rdi], rax
+$bw.Write([byte[]]@(72, 137, 7))
 
 # Store heap base at deck-pos-addr
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, DeckPosAddr
+# mov rdi, DeckPosAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$DeckPosAddr))
-$bw.Write([byte[]]@(0x4C, 0x89, 0x17))                          # mov [rdi], r10
+# mov [rdi], r10
+$bw.Write([byte[]]@(76, 137, 23))
 
 # Store 0 at deck-bound-counter-addr
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, DeckBoundCounterAddr
+# mov rdi, DeckBoundCounterAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$DeckBoundCounterAddr))
-$bw.Write([byte[]]@(0x48, 0x31, 0xC0))                          # xor rax, rax
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+# xor rax, rax
+$bw.Write([byte[]]@(72, 49, 192))
+# mov [rdi], rax
+$bw.Write([byte[]]@(72, 137, 7))
 
 # Store heap base at heap-hwm-addr
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, HeapHwmAddr
+# mov rdi, HeapHwmAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$HeapHwmAddr))
-$bw.Write([byte[]]@(0x4C, 0x89, 0x17))                          # mov [rdi], r10
+# mov [rdi], r10
+$bw.Write([byte[]]@(76, 137, 23))
 
 # Store 0 at bivy-save-addr
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, BivySaveAddr
+# mov rdi, BivySaveAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$BivySaveAddr))
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+# mov [rdi], rax
+$bw.Write([byte[]]@(72, 137, 7))
 
 # Empty proc 0's filesystem and network scope.
-#
+# 
 # emit-start writes these (X86_64Chapter.codex, emit-set-boot-scope) and a stub
 # that calls opening directly never runs emit-start, so on a board they hold
 # whatever the firmware left in memory. fat16-scope-admits reads the filesystem
@@ -1483,80 +1835,105 @@ $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
 # of the path, so a payload built without -EntryStart mounts its volume and
 # then finds no file on it. codex-vm zeroes RAM, so a bed run has always read
 # the empty text this now writes, and no bed could express the failure.
-$bw.Write([byte[]]@(0x48, 0x31, 0xC0))                          # xor rax, rax
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, proc0 fs scope
+# xor rax, rax
+$bw.Write([byte[]]@(72, 49, 192))
+# mov rdi, proc0 fs scope
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]($ProcTableBase + $ProcScopeOffset)))
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, proc0 net scope
+# mov [rdi], rax
+$bw.Write([byte[]]@(72, 137, 7))
+# mov rdi, proc0 net scope
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]($ProcTableBase + $ProcNetScopeOffset)))
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+# mov [rdi], rax
+$bw.Write([byte[]]@(72, 137, 7))
 # Cell 36320 (guard-page-base-addr) is the same class: emit-start writes it and
 # only -EntryStart runs emit-start, so on a board it holds firmware leftovers.
 # deck-reservation-guard peeks it before EVERY deck build and pokes a byte at
 # the value it reads whenever the reservation crosses it -- garbage that clears
 # the 1 GB plausibility floor turns that into a stray write at a firmware-owned
 # address. Beds read zero here (QEMU/codex-vm zero RAM), so no bed can express it.
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, 36320 (guard-page base)
+# mov rdi, 36320 (guard-page base)
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]36320))
-$bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+# mov [rdi], rax
+$bw.Write([byte[]]@(72, 137, 7))
 
 # Pre-load the serial input ring, for a board with no serial port.
-#
+# 
 # `__bare_metal_read_serial` polls a ring at serial-ring-buf-addr (1 MB below
 # the heap base the CDX header states) with the write position at cell 28704 and the read
 # position at 28712. codex-vm's -input does exactly this and nothing else
 # (load_input_file), which is why a bed run can feed the compiler a mode line
 # while a board cannot: no UART, and nothing else fills the ring.
-#
+# 
 # The bytes are stored one at a time rather than through a data section because
 # this stub is hand-assembled and has no relocations to spend.
 if ($Stdin) {
     $sb = [System.Text.Encoding]::ASCII.GetBytes($Stdin)
     if ($sb.Length -gt 120) { throw "[cdx-to-pe] -Stdin is $($sb.Length) bytes; this emitter stores it with disp8 and tops out at 120." }
-    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, serial ring
+    # mov rdi, serial ring
+    $bw.Write([byte[]]@(72, 191))
     $bw.Write([BitConverter]::GetBytes([long](3221225472 - [BitConverter]::ToUInt32($cdx, 212) - 1048576)))
     for ($i = 0; $i -lt $sb.Length; $i++) {
         $bw.Write([byte[]]@(0xC6, 0x47, [byte]$i, $sb[$i]))         # mov byte [rdi+i], imm8
     }
-    $bw.Write([byte[]]@(0x48, 0xC7, 0xC0))                          # mov rax, len
+    # mov rax, len
+    $bw.Write([byte[]]@(72, 199, 192))
     $bw.Write([BitConverter]::GetBytes([int]$sb.Length))
-    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 28704 (write pos)
+    # mov rdi, 28704 (write pos)
+    $bw.Write([byte[]]@(72, 191))
     $bw.Write([BitConverter]::GetBytes([long]28704))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
-    $bw.Write([byte[]]@(0x48, 0x31, 0xC0))                          # xor rax, rax
-    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 28712 (read pos)
+    # mov [rdi], rax
+    $bw.Write([byte[]]@(72, 137, 7))
+    # xor rax, rax
+    $bw.Write([byte[]]@(72, 49, 192))
+    # mov rdi, 28712 (read pos)
+    $bw.Write([byte[]]@(72, 191))
     $bw.Write([BitConverter]::GetBytes([long]28712))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+    # mov [rdi], rax
+    $bw.Write([byte[]]@(72, 137, 7))
     # Tell emit-start the ring is primed, or it zeroes both positions on the
     # way past and this prefill never existed. See the serial-primed-magic
     # guard in X86_64Chapter.codex. Cell 30696, magic 1347573316.
-    $bw.Write([byte[]]@(0x48, 0xC7, 0xC0))                          # mov rax, magic
+    # mov rax, magic
+    $bw.Write([byte[]]@(72, 199, 192))
     $bw.Write([BitConverter]::GetBytes([int]1347573316))
-    $bw.Write([byte[]]@(0x48, 0xBF))                                # mov rdi, 30696
+    # mov rdi, 30696
+    $bw.Write([byte[]]@(72, 191))
     $bw.Write([BitConverter]::GetBytes([long]30696))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x07))                          # mov [rdi], rax
+    # mov [rdi], rax
+    $bw.Write([byte[]]@(72, 137, 7))
     Mark 'i'                                                        # input ring primed
 }
 # Copy text section: memcpy(0x100000, rbx + textDataOff, textSz)
 # We'll patch textDataOff after we know the full stub size (two-pass)
 $copyTextPatchPos = $ms.Position + 3  # offset of the imm32 in lea rsi, [rbx+imm32]
-$bw.Write([byte[]]@(0x48, 0x8D, 0xB3))                          # lea rsi, [rbx + textDataOff]
+# lea rsi, [rbx + textDataOff]
+$bw.Write([byte[]]@(72, 141, 179))
 $bw.Write([int]0)                                                # placeholder
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, ImageBase
+# mov rdi, ImageBase
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$ImageBase))
-$bw.Write([byte[]]@(0x48, 0xB9))                                 # mov rcx, textSz
+# mov rcx, textSz
+$bw.Write([byte[]]@(72, 185))
 $bw.Write([BitConverter]::GetBytes([long]$textSz))
-$bw.Write([byte[]]@(0xF3, 0xA4))                                # rep movsb
+# rep movsb
+$bw.Write([byte[]]@(243, 164))
 
 # Copy rodata section
 $copyRodataPatchPos = $ms.Position + 3
-$bw.Write([byte[]]@(0x48, 0x8D, 0xB3))                          # lea rsi, [rbx + rodataDataOff]
+# lea rsi, [rbx + rodataDataOff]
+$bw.Write([byte[]]@(72, 141, 179))
 $bw.Write([int]0)                                                # placeholder
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, dataVaddr
+# mov rdi, dataVaddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$dataVaddr))
-$bw.Write([byte[]]@(0x48, 0xB9))                                 # mov rcx, rodataSz
+# mov rcx, rodataSz
+$bw.Write([byte[]]@(72, 185))
 $bw.Write([BitConverter]::GetBytes([long]$rodataSz))
-$bw.Write([byte[]]@(0xF3, 0xA4))                                # rep movsb
+# rep movsb
+$bw.Write([byte[]]@(243, 164))
 
 
 # The ClearScreen that used to sit here moved to the top of the stub, before
@@ -1638,7 +2015,8 @@ if ($ExitBootServices) {
                          0xB0, [byte][int]$c, 0x66, 0xBA, 0xF8, 0x03, 0xEE,
                          0x66, 0xBA, 0xF8, 0x02, 0xEE, 0xFA, 0xF4, 0xEB, 0xFD)
     }
-    $bw.Write([byte[]]@(0x48, 0x81, 0xEC))                         # sub rsp, ebsFrame
+    # sub rsp, ebsFrame
+    $bw.Write([byte[]]@(72, 129, 236))
     $bw.Write([BitConverter]::GetBytes([int]$ebsFrame))
     $bw.Write([byte[]](SizeAndPoolChunk))
     $bw.Write([byte[]](PanicBytes 'P'))
@@ -1651,22 +2029,28 @@ if ($ExitBootServices) {
     $bw.Write([byte[]](PanicBytes 'M'))
     $bw.Write([byte[]](EbsChunk))
     if ($attempt2.Count -gt 127) { throw "[cdx-to-pe] EBS retry block outgrew a rel8 branch ($($attempt2.Count))" }
-    $bw.Write([byte[]]@(0x48, 0x85, 0xC0))                         # test rax, rax
+    # test rax, rax
+    $bw.Write([byte[]]@(72, 133, 192))
     $bw.Write([byte[]]@(0x74, [byte]$attempt2.Count))              # jz over the retry
     $bw.Write($attempt2.ToArray())
     $bw.Write([byte]0xFA)                                          # cli -- firmware is gone
-    $bw.Write([byte[]]@(0x48, 0x81, 0xC4))                         # add rsp, ebsFrame
+    # add rsp, ebsFrame
+    $bw.Write([byte[]]@(72, 129, 196))
     $bw.Write([BitConverter]::GetBytes([int]$ebsFrame))
     Mark 'x'                                                       # x = boot services exited
     # Zero both SystemTable cells. Boot services are dead; a guest uefi-*
     # call through a live-looking pointer would execute freed firmware code.
     # Null makes every guarded path take its no-firmware branch instead.
-    $bw.Write([byte[]]@(0x48, 0x31, 0xC0))                         # xor rax, rax
-    $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [SysTableAddr], rax
+    # xor rax, rax
+    $bw.Write([byte[]]@(72, 49, 192))
+    # mov [SysTableAddr], rax
+    $bw.Write([byte[]]@(72, 137, 4, 37))
     $bw.Write([BitConverter]::GetBytes([int]$SysTableAddr))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [UefiSystabAddr], rax
+    # mov [UefiSystabAddr], rax
+    $bw.Write([byte[]]@(72, 137, 4, 37))
     $bw.Write([BitConverter]::GetBytes([int]$UefiSystabAddr))
-    $bw.Write([byte[]]@(0x48, 0x89, 0x04, 0x25))                   # mov [UefiImgHandleAddr], rax
+    # mov [UefiImgHandleAddr], rax
+    $bw.Write([byte[]]@(72, 137, 4, 37))
     $bw.Write([BitConverter]::GetBytes([int]$UefiImgHandleAddr))
 }
 
@@ -1675,15 +2059,15 @@ if ($ExitBootServices) {
 # codex-vm sets EFER=0xD01 for a UEFI guest so SCE is already on, but nothing
 # writes the three MSRs that say where a syscall GOES, and firmware does not
 # leave them pointing anywhere useful.
-#
+# 
 # This must come after the text copy (LSTAR names an address inside it) and
 # before the call to `opening`. rax/rcx/rdx are dead here -- ClearScreen was the
 # last user -- and rdmsr/wrmsr clobber all three, which is why it cannot sit
 # after `mov rax, opening`.
-#
+# 
 # The handler returns with `popfq; jmp rcx` rather than `sysret`, so it never
 # needs a matching SYSRET selector layout. It does need the GDT built above.
-#
+# 
 # This block used to claim the opposite -- that because SYSCALL forces flat
 # 64-bit CPL-0 attributes without consulting a descriptor table, "the firmware's
 # GDT is not involved". Forcing the hidden half is why the guest keeps running;
@@ -1709,7 +2093,8 @@ function Write-Msr([long]$msr, [long]$value) {
     $bw.Write([byte]0xB9); $bw.Write($m8, 0, 4)     # mov ecx, msr
     $bw.Write([byte]0xB8); $bw.Write($v8, 0, 4)     # mov eax, lo32
     $bw.Write([byte]0xBA); $bw.Write($v8, 4, 4)     # mov edx, hi32
-    $bw.Write([byte[]]@(0x0F, 0x30))                # wrmsr
+    # wrmsr
+    $bw.Write([byte[]]@(15, 48))
 }
 
 # 0x40, the consecutive (code64, data) pair appended to the copied GDT above.
@@ -1722,9 +2107,12 @@ Write-Msr $MsrSfmask 512                                        # 0x200, clear I
 # EFER |= SCE. Redundant under codex-vm, which already sets it, but the bare
 # metal path does it and real firmware is not required to.
 $bw.Write([byte]0xB9); $bw.Write(([BitConverter]::GetBytes($MsrEfer)), 0, 4)  # mov ecx, IA32_EFER
-$bw.Write([byte[]]@(0x0F, 0x32))                                # rdmsr
-$bw.Write([byte[]]@(0x48, 0x83, 0xC8, 0x01))                    # or rax, 1
-$bw.Write([byte[]]@(0x0F, 0x30))                                # wrmsr
+# rdmsr
+$bw.Write([byte[]]@(15, 50))
+# or rax, 1
+$bw.Write([byte[]]@(72, 131, 200, 1))
+# wrmsr
+$bw.Write([byte[]]@(15, 48))
 
 # DARK GREEN: the stub is done and the guest is about to run. Placed after the
 # stub's own ClearScreen so it is not wiped by it, and BEFORE the r10 reload
@@ -1735,7 +2123,7 @@ $bw.Write([byte[]]@(0x0F, 0x30))                                # wrmsr
 GopFill $GopDarkGreen
 
 # Reload r10 from deck-pos-addr, and do it AFTER the last firmware call.
-#
+# 
 # r10 is the deck pointer for the whole of generated Codex: every non-leaf
 # prologue opens with `cmp rsp, r10; jb __out_of_memory`. It is also
 # CALLER-SAVED in the Microsoft x64 ABI, so ClearScreen above is entitled to
@@ -1743,14 +2131,16 @@ GopFill $GopDarkGreen
 # entered with a firmware pointer in it (measured 0x7e663238, unaligned and
 # adjacent to r14/r15), the comparison in opening's OWN prologue went the wrong
 # way, and the guest jumped to __out_of_memory before a line of its body ran.
-#
+# 
 # The stack depth is what identified it: RSP at the trip was exactly 48 bytes
 # below the top, one return address plus the five callee-saved pushes, so
 # nothing had run and nothing had allocated. **The OUT OF MEMORY this produced
 # was a false report** -- the heap was untouched.
-$bw.Write([byte[]]@(0x48, 0xBF))                                 # mov rdi, DeckPosAddr
+# mov rdi, DeckPosAddr
+$bw.Write([byte[]]@(72, 191))
 $bw.Write([BitConverter]::GetBytes([long]$DeckPosAddr))
-$bw.Write([byte[]]@(0x4C, 0x8B, 0x17))                          # mov r10, [rdi]
+# mov r10, [rdi]
+$bw.Write([byte[]]@(76, 139, 23))
 
 # 'o' -- everything the stub owes the guest is done and we are about to enter
 # `opening`. Placed AFTER the r10 reload so it cannot disturb the deck pointer,
@@ -1760,13 +2150,16 @@ $bw.Write([byte[]]@(0x4C, 0x8B, 0x17))                          # mov r10, [rdi]
 Mark 'o'
 
 # Call opening: mov rax, ImageBase + openingFuncOff; call rax
-$bw.Write([byte[]]@(0x48, 0xB8))                                 # mov rax, imm64
+# mov rax, imm64
+$bw.Write([byte[]]@(72, 184))
 $bw.Write([BitConverter]::GetBytes([long]($ImageBase + $openingFuncOff)))
-$bw.Write([byte[]]@(0xFF, 0xD0))                                # call rax
+# call rax
+$bw.Write([byte[]]@(255, 208))
 
 # Epilog: halt for good (we replaced the stack so we can't return to UEFI). A payload
 # that ran runtime-init returns with the timer live, and an interrupt resumes a bare hlt.
-$bw.Write([byte[]]@(0xFA, 0xF4, 0xEB, 0xFD))                    # cli; hlt; jmp back to the hlt
+# cli; hlt; jmp back to the hlt
+$bw.Write([byte[]]@(250, 244, 235, 253))
 
 $bw.Close()
 $stub = $ms.ToArray()
@@ -1800,13 +2193,13 @@ $hms = [System.IO.MemoryStream]::new()
 $hbw = [System.IO.BinaryWriter]::new($hms)
 
 # DOS header
-$hbw.Write([byte[]]@(0x4D, 0x5A))
+$hbw.Write([byte[]]@(77, 90))
 $hbw.Write((New-Object byte[] 58))
 $hbw.Write([int]128)
 $hbw.Write((New-Object byte[] (128 - 64)))
 
 # PE signature
-$hbw.Write([byte[]]@(0x50, 0x45, 0x00, 0x00))
+$hbw.Write([byte[]]@(80, 69, 0, 0))
 
 # COFF header
 $hbw.Write([ushort]0x8664); $hbw.Write([ushort]2)

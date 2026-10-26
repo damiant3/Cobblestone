@@ -1,0 +1,352 @@
+Chapter: Sass89Lower
+  cites Sass chapter SassLower
+  cites Sass chapter Sass89Int
+  cites Sass chapter Sass89Sched
+  cites Sass chapter Sass89Hmma
+  cites Sass chapter SassCtrl
+  cites Plug chapter Plug Types
+  cites Foreword chapter Format
+  cites Foreword chapter List
+
+ The SM 8.9 sequences. A 64-bit add is IADD3 of the low words writing its
+ carry to a free predicate, then IADD3.X of the high words reading it; a
+ subtraction negates the second source of both, which in the .X form is the
+ bitwise complement. A left shift by k below 32 is SHF.L.U32 of the low word
+ against RZ and SHF.L.S64.HI of the pair; the type of a left funnel shift
+ does not change its result. A 64-bit comparison is three 32-bit ISETPs, since
+ ISETP.EX has no executable oracle here: the low words unsigned, then AND
+ with high-word equality, then OR with the strict comparison of the signed
+ high words (EQ and NE need only the first two, combined by AND and OR). The
+ comparison runs under the enclosing guard; under one other than PT its
+ predicate is first cleared, so a false guard leaves it false. A 64-bit
+ multiply keeps the low 64 bits of the product: IMAD.WIDE.U32 of the low
+ words, then the two cross products of a low and a high word added into the
+ high word by IMAD. A signed division by 2^k truncates toward zero: the sign
+ of the high word (SHF.R.S32.HI by 31), shifted right logically by 32 - k
+ into the bias 2^k - 1 for a negative dividend and 0 otherwise, added with a
+ carry, and the sum shifted right by k, the low word by SHF.R.U32 of the pair
+ and the high by SHF.R.S32.HI.
+
+ Loads and stores are LDG.E.64 and STG.E.64 at the default memory order,
+ which turingas writes when the instruction names none.
+
+ A loop's back edge is a BRA under its arm's guard, with no convergence
+ barrier: turingas does not encode BSSY's or BSYNC's barrier register, so
+ the nesting a loop inside a loop needs could not be graded. Volta's
+ independent thread scheduling runs a divergent loop correctly without one;
+ a warp-synchronous instruction inside a loop (HMMA) needs a warp-uniform
+ loop condition, as CUDA's wmma does.
+
+Section: Selection
+
+  S89Sel = record {
+   insns : List S89Insn,
+   refusal : Text
+  }
+
+  s89-ctl0 : CtrlCode
+  s89-ctl0 = CtrlCode { stall = 0, yield-bit = 0, write-bar = 7, read-bar = 7, wait-mask = 0, reuse = 0 }
+
+  s89-one : List S89Insn, Integer, S89Body -> List S89Insn
+  s89-one (acc) (g) (b) = list-push acc (S89Insn { body = b, guard = g, guard-neg = 0, control = s89-ctl0 })
+
+  s89-iadd3 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> S89Body
+  s89-iadd3 (d) (a) (b) (neg) (x) (out) (carry) = S89Iadd3 (S89Add {
+   dst = d, a = a, a-neg = 0, b = S89Reg b, b-neg = neg, c = 255, x = x,
+   out0 = out, out1 = 7, in0 = carry, in0-neg = (if carry == 7 then 1 else 0), in1 = 7, in1-neg = 1
+  })
+
+  s89-setp : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> S89Body
+  s89-setp (q) (cmp) (signed) (op) (a) (b) (accum) = S89Isetp (S89Cmp {
+   pred = q, cmp = cmp, signed = signed, bool-op = op, a = a, b = S89Reg b, accum = accum, accum-neg = 0
+  })
+
+  s89-strict : Integer -> Integer
+  s89-strict (c) = if c == 3 then 1 else if c == 6 then 4 else c
+
+  s89-compare : List S89Insn, Integer, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-compare (acc) (q) (c) (a) (b) (outer) =
+    let init = if outer == 7 then acc else s89-one acc 7 (s89-setp q 5 0 0 255 255 7)
+    in let low = s89-one init outer (s89-setp q c 0 0 a b 7)
+    in if c == 2 then s89-one low outer (s89-setp q 2 0 0 (a + 1) (b + 1) q)
+    else if c == 5 then s89-one low outer (s89-setp q 5 0 1 (a + 1) (b + 1) q)
+    else let eq = s89-one low outer (s89-setp q 2 0 0 (a + 1) (b + 1) q)
+    in s89-one eq outer (s89-setp q (s89-strict c) 1 1 (a + 1) (b + 1) q)
+
+  s89-shl : List S89Insn, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-shl (acc) (g) (d) (a) (k) =
+    let low = s89-one acc g (S89Shf (S89Shift { dst = d, right = 0, kind = 3, high-half = 0, low = a, shift = S89Imm k, high = 255 }))
+    in s89-one low g (S89Shf (S89Shift { dst = d + 1, right = 0, kind = 0, high-half = 1, low = a, shift = S89Imm k, high = a + 1 }))
+
+  s89-mad : Integer, Integer, Integer, Integer, Integer -> S89Body
+  s89-mad (d) (a) (b) (c) (wide) = S89Imad (S89Mad { dst = d, a = a, b = S89Reg b, c = c, wide = wide, signed = 0 })
+
+  s89-mul : List S89Insn, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-mul (acc) (g) (d) (a) (b) =
+    let low = s89-one acc g (s89-mad d a b 255 1)
+    in let cross = s89-one low g (s89-mad (d + 1) a (b + 1) (d + 1) 0)
+    in s89-one cross g (s89-mad (d + 1) (a + 1) b (d + 1) 0)
+
+  s89-shf : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> S89Body
+  s89-shf (d) (right) (kind) (hi) (lo) (k) (h) = S89Shf (S89Shift { dst = d, right = right, kind = kind, high-half = hi, low = lo, shift = S89Imm k, high = h })
+
+  s89-div : List S89Insn, Integer, Integer, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-div (acc) (g) (d) (t) (a) (k) (carry) =
+    let sign = s89-one acc g (s89-shf d 1 2 1 255 31 (a + 1))
+    in let bias = s89-one sign g (s89-shf d 1 3 1 255 (32 - k) d)
+    in let low = s89-one bias g (s89-iadd3 t a d 0 0 carry 7)
+    in let high = s89-one low g (s89-iadd3 (t + 1) (a + 1) 255 0 1 7 carry)
+    in let q = s89-one high g (s89-shf d 1 3 0 t k (t + 1))
+    in s89-one q g (s89-shf (d + 1) 1 2 1 255 k (t + 1))
+
+  s89-mem : Integer, Integer -> S89Mem
+  s89-mem (data) (addr) = S89Mem { data = data, addr = addr, offset = 0, width = 64, order = 7 }
+
+  s89-op : List S89Insn, LInsn -> List S89Insn
+  s89-op (acc) (i) =
+    let g = i.guard
+    in when i.op
+     is LoMovImm (r) (v) -> s89-one acc g (S89Mov r (S89Imm v))
+     is LoMovReg (r) (s) -> s89-one acc g (S89Mov r (S89Reg s))
+     is LoMovCb (r) (off) -> s89-one acc g (S89Mov r (S89Cb 0 off))
+     is LoSys (r) (id) -> s89-one acc g (S89S2r r id)
+     is LoAdd64 (d) (a) (b) (neg) (carry) -> s89-one (s89-one acc g (s89-iadd3 d a b neg 0 carry 7)) g (s89-iadd3 (d + 1) (a + 1) (b + 1) neg 1 7 carry)
+     is LoShl64 (d) (a) (k) -> s89-shl acc g d a k
+     is LoMul64 (d) (a) (b) -> s89-mul acc g d a b
+     is LoDivPow2 (d) (t) (a) (k) (carry) -> s89-div acc g d t a k carry
+     is LoCmp64 (q) (c) (a) (b) (outer) -> s89-compare acc q c a b outer
+     is LoLoad64 (d) (addr) -> s89-one acc g (S89Ldg (s89-mem d addr))
+     is LoStore64 (addr) (v) -> s89-one acc g (S89Stg (s89-mem v addr))
+     is LoLoadN (d) (addr) (w) -> s89-one acc g (S89Ldg (S89Mem { data = d, addr = addr, offset = 0, width = w, order = 7 }))
+     is LoStoreN (addr) (v) (w) -> s89-one acc g (S89Stg (S89Mem { data = v, addr = addr, offset = 0, width = w, order = 7 }))
+     is LoLdsN (d) (addr) (w) -> s89-one acc g (S89Lds (S89Mem { data = d, addr = addr, offset = 0, width = w, order = 7 }))
+     is LoStsN (addr) (v) (w) -> s89-one acc g (S89Sts (S89Mem { data = v, addr = addr, offset = 0, width = w, order = 7 }))
+     is LoBar -> s89-one acc g S89Bar
+     is LoPack (d) (lo) (hi) -> s89-one acc g (S89Prmt d lo (S89Imm #5410) hi)
+     is LoHmma (cd) (a) (b) -> s89-one acc g (S89Hmma cd a b cd)
+     is LoFop (k) (d) (a) (b) -> if k == 6 then s89-one (s89-one acc g (S89F2fh d a)) g (S89Lop3 d d (S89Imm #FFFF) 255 #C0) else s89-one acc g (s89-fop k d a b)
+     is LoLdgsts (d) (s) -> s89-one acc g (S89Ldgsts d s)
+     is LoCommit -> s89-one acc g S89LdgDepbar
+     is LoDepbar (n) -> s89-one acc g (S89Depbar n)
+     is LoWarpsync -> s89-one acc g (S89Warpsync #FFFFFFFF)
+     is LoLabel (l) -> acc
+     is LoBra (l) (name) -> s89-one acc g (S89Bra 0)
+     is LoExit -> s89-one acc g S89Exit
+
+  s89-op-refusal : LOp -> Text
+  s89-op-refusal (op) =
+    when op
+     is LoAdd64 (d) (a) (b) (neg) (carry) -> if carry > 6 then "predicates" else ""
+     is LoDivPow2 (d) (t) (a) (k) (carry) -> if carry > 6 then "predicates" else ""
+     is otherwise -> ""
+
+ A label's position is the index of the instruction after it; a BRA is
+ selected with offset 0 and patched once every label is placed, to 16 bytes
+ for each instruction from the one after the BRA to the label.
+
+  S89Fix = record {
+   at : Integer,
+   label : Integer
+  }
+
+  S89Run = record {
+   insns : List S89Insn,
+   label-ids : List Integer,
+   label-pos : List Integer,
+   fixes : List S89Fix
+  }
+
+  s89-step : S89Run, LInsn -> S89Run
+  s89-step (r) (i) =
+    when i.op
+     is LoLabel (l) -> S89Run { insns = r.insns, label-ids = r.label-ids & [l], label-pos = r.label-pos & [list-length r.insns], fixes = r.fixes }
+     is LoBra (l) (name) -> s89-step-bra r i (S89Fix { at = list-length r.insns, label = l })
+     is otherwise -> S89Run { insns = s89-op r.insns i, label-ids = r.label-ids, label-pos = r.label-pos, fixes = r.fixes }
+
+ The fix is taken before the BRA is selected: list-push appends in place, so a
+ length read after it would count the BRA itself.
+
+  s89-step-bra : S89Run, LInsn, S89Fix -> S89Run
+  s89-step-bra (r) (i) (fix) =
+    let fixes = r.fixes & [fix]
+    in S89Run { insns = s89-op r.insns i, label-ids = r.label-ids, label-pos = r.label-pos, fixes = fixes }
+
+  s89-label-pos : S89Run, Integer, Integer -> Integer
+  s89-label-pos (r) (l) (k) =
+    if k >= list-length r.label-ids then -1
+    else if list-at r.label-ids k == l then list-at r.label-pos k
+    else s89-label-pos r l (k + 1)
+
+  s89-patch : S89Run, Integer -> List S89Insn
+  s89-patch (r) (k) =
+    if k >= list-length r.fixes then r.insns
+    else let f = list-at r.fixes k
+    in let old = list-at r.insns f.at
+    in let off = 16 * (s89-label-pos r f.label 0 - (f.at + 1))
+    in let a = list-set-at r.insns f.at (S89Insn { body = S89Bra off, guard = old.guard, guard-neg = old.guard-neg, control = old.control })
+    in s89-patch r (k + 1)
+
+  s89-run : List LInsn, Integer, S89Run -> S89Sel
+  s89-run (ops) (k) (r) =
+    if k >= list-length ops then S89Sel { insns = s89-patch r 0, refusal = "" }
+    else let why = s89-op-refusal (list-at ops k).op
+    in if why /= "" then S89Sel { insns = [], refusal = why }
+    else s89-run ops (k + 1) (s89-step r (list-at ops k))
+
+  sass89-select : List LInsn -> S89Sel
+  sass89-select (ops) = s89-run ops 0 (S89Run { insns = [], label-ids = [], label-pos = [], fixes = [] })
+
+Section: Text
+
+  s89-reg-text : Integer -> Text
+  s89-reg-text (r) = if r == 255 then "RZ" else "R" & show r
+
+  s89-pred-text : Integer, Integer -> Text
+  s89-pred-text (p) (neg) = (if neg == 1 then "!" else "") & (if p == 7 then "PT" else "P" & show p)
+
+  s89-hex : Integer -> Text
+  s89-hex (v) = "0x" & fmt-hex v
+
+  s89-src-text : S89Src, Integer -> Text
+  s89-src-text (s) (neg) =
+    when s
+     is S89Reg (r) -> (if neg == 1 then "-" else "") & s89-reg-text r
+     is S89Imm (v) -> s89-hex (bit-and v #FFFFFFFF)
+     is S89Cb (bank) (off) -> "c[" & s89-hex bank & "][" & s89-hex off & "]"
+
+  s89-cmp-text : Integer -> Text
+  s89-cmp-text (c) =
+    when c
+     is 1 -> ".LT"
+     is 2 -> ".EQ"
+     is 3 -> ".LE"
+     is 4 -> ".GT"
+     is 5 -> ".NE"
+     is otherwise -> ".GE"
+
+  s89-bool-text : Integer -> Text
+  s89-bool-text (op) = if op == 0 then ".AND" else if op == 1 then ".OR" else ".XOR"
+
+  s89-kind-text : Integer -> Text
+  s89-kind-text (k) = if k == 0 then ".S64" else if k == 2 then ".S32" else ".U32"
+
+  s89-offset-text : Integer -> Text
+  s89-offset-text (off) = if off == 0 then "" else if off < 0 then "+-" & s89-hex (0 - off) else "+" & s89-hex off
+
+  s89-width-text : Integer -> Text
+  s89-width-text (w) = if w == 64 then ".64" else if w == 16 then ".U16" else ""
+
+  s89-load-order : Integer -> Text
+  s89-load-order (o) = if o == 0 then ".CONSTANT.CTA" else if o == 4 then ".CTA" else if o == 10 then ".STRONG.GPU" else ""
+
+  s89-store-order : Integer -> Text
+  s89-store-order (o) = if o == 0 then ".CTA.CONSTANT" else if o == 4 then ".CTA" else if o == 10 then ".GPU.STRONG" else ""
+
+  s89-sys-text : Integer -> Text
+  s89-sys-text (id) =
+    when id
+     is 0 -> "SR_LANEID"
+     is 33 -> "SR_TID.X"
+     is 34 -> "SR_TID.Y"
+     is 35 -> "SR_TID.Z"
+     is 37 -> "SR_CTAID.X"
+     is 38 -> "SR_CTAID.Y"
+     is otherwise -> "SR_CTAID.Z"
+
+  s89-add-text : S89Add -> Text
+  s89-add-text (i) =
+    let outs = if i.out1 /= 7 then s89-pred-text i.out0 0 & ", " & s89-pred-text i.out1 0 & ", " else if i.out0 /= 7 then s89-pred-text i.out0 0 & ", " else ""
+    in let ins = if i.x == 1 then ", " & s89-pred-text i.in0 i.in0-neg & ", " & s89-pred-text i.in1 i.in1-neg else ""
+    in "IADD3" & (if i.x == 1 then ".X " else " ") & s89-reg-text i.dst & ", " & outs & s89-src-text (S89Reg i.a) i.a-neg & ", " & s89-src-text i.b i.b-neg & ", " & s89-reg-text i.c & ins & ";"
+
+  s89-body-text : S89Body -> Text
+  s89-body-text (b) =
+    when b
+     is S89Mov (d) (s) -> "MOV " & s89-reg-text d & ", " & s89-src-text s 0 & ";"
+     is S89Iadd3 (i) -> s89-add-text i
+     is S89Imad (i) -> "IMAD" & (if i.wide == 1 then ".WIDE" else "") & (if i.signed == 1 then ".S32 " else ".U32 ") & s89-reg-text i.dst & ", " & s89-reg-text i.a & ", " & s89-src-text i.b 0 & ", " & s89-reg-text i.c & ";"
+     is S89Isetp (i) -> "ISETP" & s89-cmp-text i.cmp & (if i.signed == 1 then ".S32" else ".U32") & s89-bool-text i.bool-op & " " & s89-pred-text i.pred 0 & ", PT, " & s89-reg-text i.a & ", " & s89-src-text i.b 0 & ", " & s89-pred-text i.accum i.accum-neg & ";"
+     is S89Shf (i) -> "SHF" & (if i.right == 1 then ".R" else ".L") & s89-kind-text i.kind & (if i.high-half == 1 then ".HI " else " ") & s89-reg-text i.dst & ", " & s89-reg-text i.low & ", " & s89-src-text i.shift 0 & ", " & s89-reg-text i.high & ";"
+     is S89S2r (d) (id) -> "S2R " & s89-reg-text d & ", " & s89-sys-text id & ";"
+     is S89Ldc (d) (width) (bank) (off) -> "LDC" & s89-width-text width & " " & s89-reg-text d & ", c[" & s89-hex bank & "][" & s89-hex off & "];"
+     is S89Ldg (m) -> "LDG.E" & s89-width-text m.width & s89-load-order m.order & " " & s89-reg-text m.data & ", [" & s89-reg-text m.addr & ".64+URZ" & s89-offset-text m.offset & "];"
+     is S89Stg (m) -> "STG.E" & s89-width-text m.width & s89-store-order m.order & " [" & s89-reg-text m.addr & s89-offset-text m.offset & "], " & s89-reg-text m.data & ";"
+     is S89Prmt (d) (a) (s) (b) -> "PRMT " & s89-reg-text d & ", " & s89-reg-text a & ", " & s89-src-text s 0 & ", " & s89-reg-text b & ";"
+     is S89Lop3 (d) (a) (s) (c) (lut) -> "LOP3.LUT " & s89-reg-text d & ", " & s89-reg-text a & ", " & s89-src-text s 0 & ", " & s89-reg-text c & ", " & s89-hex lut & ", !PT;"
+     is S89Lds (m) -> "LDS" & s89-width-text m.width & " " & s89-reg-text m.data & ", [" & s89-reg-text m.addr & s89-offset-text m.offset & "];"
+     is S89Sts (m) -> "STS" & s89-width-text m.width & " [" & s89-reg-text m.addr & "+URZ" & s89-offset-text m.offset & "], " & s89-reg-text m.data & ";"
+     is S89Bar -> "BAR.SYNC 0x0;"
+     is S89Hmma (d) (a) (b) (c) -> "HMMA.16816.F32 " & s89-reg-text d & ", " & s89-reg-text a & ", " & s89-reg-text b & ", " & s89-reg-text c & ";"
+     is S89Fadd (d) (a) (b) (neg) -> "FADD " & s89-reg-text d & ", " & s89-reg-text a & ", " & s89-src-text (S89Reg b) neg & ";"
+     is S89Fmul (d) (a) (b) -> "FMUL " & s89-reg-text d & ", " & s89-reg-text a & ", " & s89-reg-text b & ";"
+     is S89Fmax (d) (a) (b) -> "FMNMX " & s89-reg-text d & ", " & s89-reg-text a & ", " & s89-reg-text b & ", !PT;"
+     is S89Mufu (d) (f) (s) -> "MUFU" & (if f == 2 then ".EX2 " else ".LG2 ") & s89-reg-text d & ", " & s89-reg-text s & ";"
+     is S89F2fh (d) (s) -> "F2F.F16.F32 " & s89-reg-text d & ", " & s89-reg-text s & ";"
+     is S89Ldgsts (d) (s) -> "LDGSTS.E.BYPASS.128 [" & s89-reg-text d & "], [" & s89-reg-text s & ".64];"
+     is S89LdgDepbar -> "LDGDEPBAR;"
+     is S89Depbar (n) -> "DEPBAR.LE SB0, " & s89-hex n & ";"
+     is S89Warpsync (mask) -> "WARPSYNC " & s89-hex mask & ";"
+     is S89Bra (off) -> "BRA " & (if off < 0 then "-" & s89-hex (0 - off) else s89-hex off) & ";"
+     is S89Exit -> "EXIT;"
+
+  s89-insn-text : S89Insn -> Text
+  s89-insn-text (i) = (if i.guard == 7 then "" else "@" & s89-pred-text i.guard i.guard-neg & " ") & s89-body-text i.body
+
+ turingas's control notation is wait:read:write:yield:stall, the wait mask
+ in two decimal digits, a barrier as its index or -, yield as Y (raw 0) or -
+ (raw 1), and the stall as one hex digit.
+
+  s89-ctrl-text : CtrlCode -> Text
+  s89-ctrl-text (c) =
+    let wait = if c.wait-mask < 10 then "0" & show c.wait-mask else show c.wait-mask
+    in let rd = if c.read-bar == 7 then "-" else show c.read-bar
+    in let wr = if c.write-bar == 7 then "-" else show c.write-bar
+    in wait & ":" & rd & ":" & wr & ":" & (if c.yield-bit == 0 then "Y" else "-") & ":" & fmt-hex c.stall
+
+Section: Listing
+
+  s89-word-hex : Integer -> Text
+  s89-word-hex (w) = fmt-hex-pad (bit-and (bit-shru w 32) #FFFFFFFF) 8 & fmt-hex-pad (bit-and w #FFFFFFFF) 8
+
+  s89-fop : Integer, Integer, Integer, Integer -> S89Body
+  s89-fop (k) (d) (a) (b) =
+    if k == 2 then S89Fmul d a b
+    else if k == 3 then S89Fmax d a b
+    else if k == 4 then S89Mufu d 2 a
+    else if k == 5 then S89Mufu d 3 a
+    else S89Fadd d a b k
+
+  s89-tag : S89Body -> Text
+  s89-tag (b) =
+    when b
+     is S89Warpsync (mask) -> "N"
+     is otherwise -> "I"
+
+  s89-line : CtrlCode, S89Insn -> Text
+  s89-line (c) (raw) =
+    let i = S89Insn { body = raw.body, guard = raw.guard, guard-neg = raw.guard-neg, control = c }
+    in when sass89-encode i
+     is Sass89Words (lo) (hi) -> s89-tag i.body & " " & s89-ctrl-text c & " " & s89-word-hex lo & " " & s89-word-hex hi & " " & s89-insn-text i & "\n"
+     is Sass89Refused (why) -> "REFUSED-INSN " & why & ": " & s89-insn-text i & "\n"
+
+  s89-lines : List S89Insn, List CtrlCode, Integer, List Text -> List Text
+  s89-lines (insns) (codes) (k) (acc) =
+    if k >= list-length insns then acc
+    else s89-lines insns codes (k + 1) (list-push acc (s89-line (list-at codes k) (list-at insns k)))
+
+  sass89-listing : Text, List S89Insn -> Text
+  sass89-listing (name) (insns) =
+    text-concat-list (s89-lines insns (sass89-schedule insns) 0 (list-push [] (".kernel " & name & "\n")))
+
+  s89-emit-defs : List IRDef, Integer, List Text -> List Text
+  s89-emit-defs (defs) (i) (acc) =
+    if i >= list-length defs then acc
+    else let d = list-at defs i
+    in if sass-is-kernel d.name == False then s89-emit-defs defs (i + 1) acc
+    else let k = lw-kernel defs d
+    in let sel = if k.refusal /= "" then S89Sel { insns = [], refusal = k.refusal } else sass89-select k.insns
+    in let out = if sel.refusal /= "" then "REFUSED " & d.name & ": " & sel.refusal & "\n" else sass89-listing d.name sel.insns
+    in s89-emit-defs defs (i + 1) (list-push acc out)
+
+  emit-sass89-chapter : IRChapter -> Text
+  emit-sass89-chapter (ch) = text-concat-list (s89-emit-defs ch.defs 0 [])

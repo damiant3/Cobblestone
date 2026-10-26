@@ -15,7 +15,7 @@ Chapter: CompositeLaunch
  is the static address the NIC answers on (UOAIX.md stage D2); without it the
  server takes QEMU user networking's 10.0.2.15 behind 10.0.2.2.
 
-  CompositeLaunchMode = record { testing : Boolean, dev : Boolean, british : List Integer, admin : List Text, open : Boolean, links : Integer, net : List Integer }
+  CompositeLaunchMode = record { testing : Boolean, dev : Boolean, british : List Integer, admin : List Text, open : Boolean, links : Integer, net : List Integer, ticket : Integer }
  A first line `LINKS <n>` sets the game links: 1 to cl-links-ceiling slots, or 0 for cl-links-ceiling slots admitted at
  login by box load (Damian 2026-10-08; root's policy in GameLinks gl-admission). No line means cl-links-default.
   cl-links-default : Integer = 32
@@ -46,13 +46,13 @@ Chapter: CompositeLaunch
     else if b < 32 | b > 126 then Err "public launch password holds a non-printable character"
     else cl-password bytes (i + 1) (list-push out b)
   cl-parse-mode : List Integer, List Text -> Result CompositeLaunchMode Text
-  cl-parse-mode (bytes) (admin) = if list-length bytes == 0 then Ok (CompositeLaunchMode { testing = False, dev = False, british = [], admin = admin, open = False, links = cl-links-default, net = [] })
-    else if list-length bytes == list-length cl-testing & cl-matches bytes cl-testing 0 then Ok (CompositeLaunchMode { testing = True, dev = True, british = [], admin = admin, open = False, links = cl-links-default, net = [] })
-    else if list-length bytes == list-length cl-testing-open & cl-matches bytes cl-testing-open 0 then Ok (CompositeLaunchMode { testing = True, dev = True, british = [], admin = admin, open = True, links = cl-links-default, net = [] })
-    else if list-length bytes == list-length cl-dev & cl-matches bytes cl-dev 0 then Ok (CompositeLaunchMode { testing = False, dev = True, british = [], admin = admin, open = False, links = cl-links-default, net = [] })
+  cl-parse-mode (bytes) (admin) = if list-length bytes == 0 then Ok (CompositeLaunchMode { testing = False, dev = False, british = [], admin = admin, open = False, links = cl-links-default, net = [], ticket = cl-ticket-default })
+    else if list-length bytes == list-length cl-testing & cl-matches bytes cl-testing 0 then Ok (CompositeLaunchMode { testing = True, dev = True, british = [], admin = admin, open = False, links = cl-links-default, net = [], ticket = cl-ticket-default })
+    else if list-length bytes == list-length cl-testing-open & cl-matches bytes cl-testing-open 0 then Ok (CompositeLaunchMode { testing = True, dev = True, british = [], admin = admin, open = True, links = cl-links-default, net = [], ticket = cl-ticket-default })
+    else if list-length bytes == list-length cl-dev & cl-matches bytes cl-dev 0 then Ok (CompositeLaunchMode { testing = False, dev = True, british = [], admin = admin, open = False, links = cl-links-default, net = [], ticket = cl-ticket-default })
     else if cl-matches bytes cl-public 0 then when cl-password bytes (list-length cl-public) []
       is Err (e) -> Err e
-      is Ok (password) -> Ok (CompositeLaunchMode { testing = False, dev = False, british = password, admin = admin, open = False, links = cl-links-default, net = [] })
+      is Ok (password) -> Ok (CompositeLaunchMode { testing = False, dev = False, british = password, admin = admin, open = False, links = cl-links-default, net = [], ticket = cl-ticket-default })
     else Err "unrecognized composite launch option"
   cl-admin : List Integer = [65,68,77,73,78,32]
   cl-admin-bytes : Integer = 331
@@ -66,8 +66,28 @@ Chapter: CompositeLaunch
     else let at = 6 + k * 65
     in if not (cl-hex bytes at 0) | list-at bytes (at + 64) /= (if k == 4 then 10 else 32) then Err "admin launch line malformed"
     else cl-admin-keys bytes (k + 1) (list-push out (utf8-bytes-to-text (cl-slice bytes at (at + 64) (__list-with-capacity 64))))
+ A first line `TICKET <seconds>`, before any `LINKS` line, sets how long a relay ticket admits its game login: 1 to
+ cl-ticket-ceiling seconds of guest time. No line means cl-ticket-default, the live replay bound (root, 2026-10-19); a
+ launch under codex-vm -clock-scale N passes 120 x N, so the ticket lasts 120 s of wall time.
+  cl-ticket-default : Integer = 120
+  cl-ticket-ceiling : Integer = 12000
+  cl-ticket : List Integer = [84,73,67,75,69,84,32]
+  cl-digits : List Integer, Integer, Integer, Integer -> Integer
+  cl-digits (bytes) (start) (i) (acc) = if i >= list-length bytes | i > start + 5 then -1
+    else let b = list-at bytes i
+    in if b == 10 then (if i == start then -1 else acc)
+    else if b < 48 | b > 57 then -1
+    else cl-digits bytes start (i + 1) (acc * 10 + b - 48)
   cl-parse : List Integer -> Result CompositeLaunchMode Text
-  cl-parse (bytes) = if not (cl-matches bytes cl-links 0) then cl-parse-rest bytes
+  cl-parse (bytes) = if not (cl-matches bytes cl-ticket 0) then cl-parse-links bytes
+    else let n = cl-digits bytes 7 7 0
+    in let stop = cl-line-end bytes 7
+    in if n < 1 | n > cl-ticket-ceiling | stop < 0 then Err "ticket launch line malformed"
+    else when cl-parse-links (cl-slice bytes (stop + 1) (list-length bytes) [])
+      is Err (e) -> Err e
+      is Ok (mode) -> let set = __record-set mode "ticket" n in Ok mode
+  cl-parse-links : List Integer -> Result CompositeLaunchMode Text
+  cl-parse-links (bytes) = if not (cl-matches bytes cl-links 0) then cl-parse-rest bytes
     else let n = cl-number bytes 6 0
     in let stop = cl-line-end bytes 6
     in if n < 0 | n > cl-links-ceiling | stop < 0 then Err "links launch line malformed"

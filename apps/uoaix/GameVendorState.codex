@@ -23,7 +23,7 @@ Chapter: GameVendorState
     sales : List GvSale, vendor-count : Integer, player-count : Integer,
     sale-count : Integer, sequence : Integer,
     owners : List GvOwner, owner-count : Integer, sale-base : Integer, gone : Integer, gone-room : Integer,
-    window : (Integer, Integer -> Integer), closed : Integer, staff : (Integer, Integer -> Integer), serves : (Integer, Integer -> Integer), shun : (Integer, Integer -> Integer), keeps : (Integer -> Boolean) }
+    window : (Integer, Integer -> Integer), closed : Integer, staff : (Integer, Integer -> Integer), serves : (Integer, Integer -> Integer), shun : (Integer, Integer -> Integer), keeps : (Integer -> Boolean), quoting : Integer, player-index : Integer, player-cap : Integer }
  An actor the composite lets hold lots with no owner row: a wild spawn's, whose mobile dies and leaves its lots on the corpse.
   gv-keeps-none : Integer -> Boolean
   gv-keeps-none (actor) = False
@@ -82,7 +82,7 @@ Chapter: GameVendorState
     else let grown = __record-set v "vendors" (list-push v.vendors (GvVendor { serial = 0, actor = 0, stock = 0, extra = 0, buys = 0, prices = ep-buffer (eg-cells v.currency.world.catalog), shut = 0 }))
     in gv-grow-vendors v (left - 1)
   gv-grow-players : GvWorld, Integer -> Integer
-  gv-grow-players (v) (left) = if left <= 0 then list-length v.players
+  gv-grow-players (v) (left) = if left <= 0 then let fitted = gv-index-fit v in list-length v.players
     else let grown = __record-set v "players" (list-push v.players (GvPlayer { serial = 0, actor = 0, pack = 0, connection = -1, vendor = 0, side = 0, expires = 0,
       copper-rate = 0, silver-rate = 0, offers = gv-offers 0 (__list-with-capacity 32), count = 0 }))
     in gv-grow-players v (left - 1)
@@ -103,7 +103,7 @@ Chapter: GameVendorState
     sales = gv-sales 0 (__list-with-capacity 1024),
     vendor-count = 0, player-count = 0, sale-count = 0, sequence = 0,
     owners = gv-owners 0 (__list-with-capacity 128), owner-count = 0, sale-base = 0, gone = gv-gone-new 0, gone-room = gv-gone-limit, window = gv-window-none, closed = 0,
-    staff = gv-staff-none, serves = gv-staff-none, shun = gv-staff-none, keeps = gv-keeps-none }
+    staff = gv-staff-none, serves = gv-staff-none, shun = gv-staff-none, keeps = gv-keeps-none, quoting = 0, player-index = gv-index-new (gv-index-cap gv-player-limit), player-cap = gv-index-cap gv-player-limit }
   gv-gone-bytes : Integer = 64
   gv-gone-limit : Integer = 7
   gv-gone-zero : Integer, Integer -> Integer
@@ -201,8 +201,46 @@ Chapter: GameVendorState
   gv-vendor (v) (serial) (i) = if i == v.vendor-count then -1
     else if (list-at v.vendors i).serial == serial then i else gv-vendor v serial (i + 1)
   gv-player : GvWorld, Integer, Integer -> Integer
-  gv-player (v) (serial) (i) = if i == v.player-count then -1
-    else if (list-at v.players i).serial == serial then i else gv-player v serial (i + 1)
+  gv-player (v) (serial) (i) = if i /= 0 | serial <= 0 | v.player-cap == 0 then gv-player-scan v serial i
+    else gv-player-find v serial (gv-index-hash serial v.player-cap) 0
+  gv-player-scan : GvWorld, Integer, Integer -> Integer
+  gv-player-scan (v) (serial) (i) = if i == v.player-count then -1
+    else if (list-at v.players i).serial == serial then i else gv-player-scan v serial (i + 1)
+ A serial's player row is found through an open-addressed table of (serial, row) pairs, a power of two at least four
+ times the player rows, instead of a walk over every player from each pulse and each player test; an empty cell answers
+ no player. The table is refilled in place when rows move (a release, a decode) and grown with the rows.
+  gv-player-find : GvWorld, Integer, Integer, Integer -> Integer
+  gv-player-find (v) (serial) (at) (n) = if n >= v.player-cap then gv-player-scan v serial 0
+    else let s = peek-qword v.player-index (at * 16)
+    in if s == 0 then -1
+    else if s == serial then (let row = peek-qword v.player-index (at * 16 + 8)
+      in if row >= 0 & row < v.player-count & (list-at v.players (max 0 row)).serial == serial then row else gv-player-scan v serial 0)
+    else gv-player-find v serial (bit-and (at + 1) (v.player-cap - 1)) (n + 1)
+  gv-index-cap : Integer -> Integer
+  gv-index-cap (rows) = gv-index-pow2 16 (rows * 4)
+  gv-index-pow2 : Integer, Integer -> Integer
+  gv-index-pow2 (c) (want) = if c >= want then c else gv-index-pow2 (c * 2) want
+  gv-index-hash : Integer, Integer -> Integer
+  gv-index-hash (serial) (cap) = bit-and (bit-xor serial (bit-shru serial 16)) (cap - 1)
+  gv-index-zero : Integer, Integer, Integer -> Integer
+  gv-index-zero (buf) (i) (n) = if i >= n then buf else let z = poke-qword buf (i * 8) 0 in gv-index-zero buf (i + 1) n
+  gv-index-new : Integer -> Integer
+  gv-index-new (cap) = gv-index-zero (alloc-bytes (cap * 16)) 0 (cap * 2)
+  gv-index-put : GvWorld, Integer, Integer -> Integer
+  gv-index-put (v) (serial) (row) = if serial <= 0 then 0 else gv-index-put-at v serial row (gv-index-hash serial v.player-cap) 0
+  gv-index-put-at : GvWorld, Integer, Integer, Integer, Integer -> Integer
+  gv-index-put-at (v) (serial) (row) (at) (n) = if n >= v.player-cap then -1
+    else let s = peek-qword v.player-index (at * 16)
+    in if s == 0 | s == serial then (let a = poke-qword v.player-index (at * 16) serial in let b = poke-qword v.player-index (at * 16 + 8) row in 0)
+    else gv-index-put-at v serial row (bit-and (at + 1) (v.player-cap - 1)) (n + 1)
+  gv-index-fill : GvWorld, Integer -> Integer
+  gv-index-fill (v) (i) = if i >= v.player-count then 0 else let put = gv-index-put v (list-at v.players i).serial i in gv-index-fill v (i + 1)
+  gv-index-rebuild : GvWorld -> Integer
+  gv-index-rebuild (v) = let z = gv-index-zero v.player-index 0 (v.player-cap * 2) in gv-index-fill v 0
+  gv-index-fit : GvWorld -> Integer
+  gv-index-fit (v) = let want = gv-index-cap (list-length v.players)
+    in let grown = if want <= v.player-cap then 0 else let a = __record-set v "player-index" (gv-index-new want) in let b = __record-set v "player-cap" want in 1
+    in gv-index-rebuild v
   gv-lot : GvWorld, Integer, Integer -> Integer
   gv-lot (v) (serial) (unused) = ep-lot-at v.currency.world.goods serial
   gv-owned : WorldTable, Integer, Integer, Integer -> Boolean
@@ -258,6 +296,7 @@ Chapter: GameVendorState
     in let c = __record-set p "pack" pack
     in let id = v.player-count
     in let count = __record-set v "player-count" (id + 1)
+    in let indexed = gv-index-put v serial id
     in id
   gv-represented : GvWorld, Integer, Integer, Integer -> Integer
   gv-represented (v) (actor) (item) (field) = ep-represented v.currency.world.goods actor item field

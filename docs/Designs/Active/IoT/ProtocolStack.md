@@ -227,14 +227,14 @@ one, no `__record-set` or `list-push` touched it, and its only read was
 `transport-stats` reports `recv-len`, the number of buffered bytes it always
 claimed to be.
 
-**`&` concatenation is 6.5x dearer to READ than a flat list** on the same
-bytes, and the mechanism is unmeasured; the finding is carried on
-`CostModel.md`. It bears on any measurement taken here, because a fixture
-built with `&` prices its own assembly rather than the stack: the same
-function over the same 1,514 bytes measured 107,435 on an `&`-built frame and
-16,400 on a flat one. **A real frame is flat.** `e1000-read-bytes`
-(`codex/os/kernel/E1000e.codex:1198`) is `list-push acc (peek-byte base i)`, one push per
-byte.
+**A heap measurement prices whatever is built inside its window.** Build the
+fixture frame before the first `__heap-save`: built inside, its construction
+is amortized over the run and reads as a stack cost (measured 2026-10-20,
+`codex/test/net-recv-heap`: a recognised 1,514-byte frame reads 56 bytes
+with the frame built outside and 91,091 with it built inside). A list built
+by `&` reads at the same cost as a flat one. **A real frame is flat.**
+`e1000-read-bytes` (`codex/os/kernel/E1000e.codex:1198`) is `list-push acc
+(peek-byte base i)`, one push per byte.
 
 #### Still open on this path
 

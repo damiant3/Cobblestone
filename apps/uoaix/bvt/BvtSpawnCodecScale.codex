@@ -1,0 +1,44 @@
+Chapter: BvtSpawnCodecScale
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawnCodec
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bscs-copy-row : GameWorldSpawn, Integer, Integer, Integer, Integer -> Integer
+  bscs-copy-row (g) (buf) (from) (to) (k) = if k == 7 then poke-qword (gwsc-tail g buf to) 0 (peek-qword (gwsc-tail g buf from) 0)
+    else let put = poke-qword (gwsc-row g buf to + k * 8) 0 (peek-qword (gwsc-row g buf from) (k * 8)) in bscs-copy-row g buf from to (k + 1)
+  bscs-checks : Integer -> Integer
+  bscs-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let profile = gws-claim-profile g "horse" 0
+        in if profile < 0 then -2
+        else when gws-summon g game profile 1420 1700 0 0 (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (horse) -> let now = g.combat.tick
+            in let buf = alloc-bytes (gwsc-size g)
+            in let encoded = gwsc-encode g game.world now buf (gwsc-size g)
+            in let decoded = if is-ok encoded then gwsc-decode g game.world now buf (gwsc-size g) else Err "not encoded"
+            in let slot = gws-slot-of g horse 0
+            in let other = if slot == 0 then 1 else 0
+            in let copied = if slot >= 0 & is-ok decoded then bscs-copy-row g buf slot other 0 else 0
+            in let twice = is-err (gwsc-decode g game.world now buf (gwsc-size g))
+            in (if is-ok encoded then 1 else 0) + (if is-ok decoded then 2 else 0) + (if slot >= 0 & twice then 4 else 0)
+  bscs-set : Integer -> Integer
+  bscs-set (unused) = let table = alloc-bytes (16 * 8)
+    in let z = gwsc-zero table 0 16
+    in let a = gwsc-set-add table 16 1 1
+    in let b = gwsc-set-add table 16 17 17
+    in let c = gwsc-set-add table 16 17 17
+    in let d = gwsc-set-add table 16 1 1
+    in (if a then 1 else 0) + (if b then 2 else 0) + (if c then 0 else 4) + (if d then 0 else 8)
+  bvt-spawn-codec-scale : Integer -> [Console] Integer
+  bvt-spawn-codec-scale (unused) = act
+    n <- bscs-checks 0
+    a <- bvt-check ("the spawn table with a claimed horse saves and loads, and a second row repeating the horse's serial is refused at load (red, UOAIX audit 2026-10-18, code " & show n & ")") (n == 7)
+    s <- bscs-set 0
+    b <- bvt-check ("the serial set keeps two serials whose hashes collide and refuses each a second time (code " & show s & ")") (s == 15)
+    a + b
+  end

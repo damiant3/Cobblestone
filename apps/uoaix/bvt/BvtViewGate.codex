@@ -1,0 +1,38 @@
+Chapter: BvtViewGate
+  cites Uoaix chapter GameSkillsItems
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ A player at 1500,1600, a second 10 tiles east and a third 40 tiles east with gold in its pack: the client is sent only
+ the first two, so a packet naming the third or its gold is refused before any handler runs (val, UOAIX audit 2026-10-18).
+  bvg-made : Result Integer Text -> Integer
+  bvg-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bvg-at : WorldTable, Integer, Integer, Integer, Integer -> Integer
+  bvg-at (w) (kind) (x) (y) (container) = bvg-made (world-create w (WorldObject { serial = 0, kind = kind, x = x, y = y, z = 0, graphic = (if kind == 1 then 400 else #0E75), hue = 0, container = container, amount = 1, health = 1 }))
+  bvg-status : Integer, Integer -> List Integer
+  bvg-status (kind) (serial) = gp-put32 [#34, #ED, #ED, #ED, #ED, kind] serial
+  bvg-aim : Integer, Integer -> List Integer
+  bvg-aim (kind) (serial) = gp-put16 (list-push (list-push (gp-put16 (gp-put16 (gp-put32 (list-push (gp-put32 [#6C, kind] #47530001) 0) serial) 1540) 1600) 0) 0) 0
+  bvg-five : WorldTable, Integer, Integer -> Integer
+  bvg-five (w) (me) (serial) = (if gsi-view-refused w me (gp-put32 [5] serial) then 1 else 0) + (if gsi-view-refused w me (gp-put32 [6] serial) then 1 else 0)
+    + (if gsi-view-refused w me (gp-put32 [9] serial) then 1 else 0) + (if gsi-view-refused w me (bvg-status 4 serial) then 1 else 0)
+    + (if gsi-view-refused w me (bvg-aim 0 serial) then 1 else 0)
+  bvg-codes : Integer -> List Integer
+  bvg-codes (unused) = when world-new 64
+    is Err (_) -> [-1, -1, -1, -1]
+    is Ok (w) -> let me = bvg-at w 1 1500 1600 0
+      in let near = bvg-at w 1 1510 1600 0
+      in let far = bvg-at w 1 1540 1600 0
+      in let pack = bvg-at w 2 0 0 far
+      in let gold = bvg-at w 2 0 0 pack
+      in let admitted = (if gsi-view-refused w me (bvg-status 5 far) then 1 else 0) + (if gsi-view-refused w me (bvg-aim 1 far) then 1 else 0)
+        + (if gsi-view-refused w me (gp-put32 [6] (far + 4096)) then 1 else 0) + (if gsi-view-refused w me (gp-put32 [6] me) then 1 else 0)
+      in [bvg-five w me far, bvg-five w me near, (if gsi-view-refused w me (gp-put32 [6] gold) then 1 else 0) + (if gsi-view-refused w me (gp-put32 [9] pack) then 1 else 0), admitted]
+  bvt-view-gate : Integer -> [Console] Integer
+  bvt-view-gate (unused) = let n = bvg-codes 0 in act
+    a <- bvt-check ("an attack, double-click, single click, status request and object target naming a player 40 tiles off are all refused (5 of 5: " & show (list-at n 0) & ")") (list-at n 0 == 5)
+    b <- bvt-check ("the same five naming a player 10 tiles off are all admitted (0 refused: " & show (list-at n 1) & ")") (list-at n 1 == 0)
+    c <- bvt-check ("a double-click on the gold in the far player's pack and a click on that pack are refused (2: " & show (list-at n 2) & ")") (list-at n 2 == 2)
+    d <- bvt-check ("a skills request (0x34 type 5), a ground target, a serial the world does not hold and the player's own serial are admitted (0: " & show (list-at n 3) & ")") (list-at n 3 == 0)
+    a + b + c + d
+  end

@@ -40,12 +40,13 @@ Section: Send
     in let shared = shared-const-names (m.defs)
     in let types-text = emit-zig-type-defs type-defs 0
     in let main-text = zig-main opening-entry-point (m.defs) (ctx.failing)
-    in let m1 = bit-or (zig-mask-lo ns types-text) (zig-mask-lo ns main-text)
-    in let m2 = bit-or (zig-mask-hi ns types-text) (zig-mask-hi ns main-text)
+    in let m1 = bit-or (zig-mask-of ns types-text 0) (zig-mask-of ns main-text 0)
+    in let m2 = bit-or (zig-mask-of ns types-text 1) (zig-mask-of ns main-text 1)
+    in let m3 = bit-or (zig-mask-of ns types-text 2) (zig-mask-of ns main-text 2)
     in act
      r <- net-io-send-text-checked (transport-arenas ts) (zig-mask-ceiling-check ns & types-text)
      if r.ns-complete then
-       zig-send-defs (r.ns-transport) ctx (m.defs) shared 0 main-text ns m1 m2 (r.ns-sent) __heap-save [] 0
+       zig-send-defs (r.ns-transport) ctx (m.defs) shared 0 main-text ns m1 m2 m3 (r.ns-sent) __heap-save [] 0
      else r
     end
 
@@ -56,25 +57,26 @@ Section: Send
 
   zig-send-batch : Integer = 16384
 
-  zig-send-defs : TcpTransportState, ZigCtx, List IRDef, List Text, Integer, Text, List Text, Integer, Integer, Integer, Integer, List Text, Integer -> [Network.Read, Network.Write] NetSendResult
-  zig-send-defs (ts) (ctx) (defs) (shared) (i) (main-text) (ns) (m1) (m2) (sent) (mark) (pending) (plen) =
+  zig-send-defs : TcpTransportState, ZigCtx, List IRDef, List Text, Integer, Text, List Text, Integer, Integer, Integer, Integer, Integer, List Text, Integer -> [Network.Read, Network.Write] NetSendResult
+  zig-send-defs (ts) (ctx) (defs) (shared) (i) (main-text) (ns) (m1) (m2) (m3) (sent) (mark) (pending) (plen) =
     if i >= list-length defs then act
-     r <- net-io-send-text-checked ts (text-concat-list pending & main-text & zig-postlude-banner & shake-text zig-prelude-parts (zig-roots-of-masks ns m1 m2))
+     r <- net-io-send-text-checked ts (text-concat-list pending & main-text & zig-postlude-banner & shake-text zig-prelude-parts (zig-roots-of-masks ns m1 m2 m3))
      zig-send-result r sent
     end
     else let text = emit-zig-def-or-shared (list-at defs i) ctx shared
-    in let n1 = bit-or m1 (zig-mask-lo ns text)
-    in let n2 = bit-or m2 (zig-mask-hi ns text)
+    in let n1 = bit-or m1 (zig-mask-of ns text 0)
+    in let n2 = bit-or m2 (zig-mask-of ns text 1)
+    in let n3 = bit-or m3 (zig-mask-of ns text 2)
     in let held = list-push pending text
     in let hlen = plen + text-length text
     in if hlen < zig-send-batch then
-      zig-send-defs ts ctx defs shared (i + 1) main-text ns n1 n2 sent mark held hlen
+      zig-send-defs ts ctx defs shared (i + 1) main-text ns n1 n2 n3 sent mark held hlen
     else act
      r <- net-io-send-text-checked ts (text-concat-list held)
      if r.ns-complete then
        let total = sent + r.ns-sent
        in let kept = transport-compact-past (r.ns-transport) mark
-       in zig-send-defs kept ctx defs shared (i + 1) main-text ns n1 n2 total mark [] 0
+       in zig-send-defs kept ctx defs shared (i + 1) main-text ns n1 n2 n3 total mark [] 0
      else zig-send-result r sent
     end
 

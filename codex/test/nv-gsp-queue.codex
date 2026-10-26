@@ -1,0 +1,83 @@
+Chapter: NvGspQueueTest
+  cites Kernel chapter NvGspQueue
+  cites Kernel chapter NvGspMsg
+  cites Foreword chapter Format
+
+ The expected output is tinygrad's own NVRpcQueue methods run by Python:
+ build/nv-gsp-queue-oracle.ps1.
+
+Section: Main
+
+  q-slot : Integer
+  q-slot = 64
+
+  q-count : Integer
+  q-count = 48
+
+  pl : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pl (n) (mul) (add) (i) (acc) = if i >= n then acc else pl n mul add (i + 1) (list-push acc (int-mod (i * mul + add) 256))
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (list-push acc 0)
+
+  hex-parts : List Integer, Integer, List Text -> List Text
+  hex-parts (bs) (i) (acc) = if i >= list-length bs then acc else hex-parts bs (i + 1) (list-push acc (fmt-hex-pad (list-at bs i) 2))
+
+  hex : List Integer -> Text
+  hex (bs) = text-concat-list (hex-parts bs 0 [])
+
+  put-bytes : List Integer, Integer, List Integer, Integer -> List Integer
+  put-bytes (ring) (off) (bs) (i) = if i >= list-length bs then ring else put-bytes (list-set-at ring (off + i) (list-at bs i)) off bs (i + 1)
+
+  put-segs : List Integer, List GspSeg, Integer -> List Integer
+  put-segs (ring) (segs) (k) = if k >= list-length segs then ring else put-segs (put-bytes ring (list-at segs k).off (list-at segs k).bytes 0) segs (k + 1)
+
+  send-line : Integer, Integer, Integer, Integer, List Integer -> Text
+  send-line (k) (wp) (seq) (func) (payload) =
+    let s = nv-gsp-send-rpc wp seq q-slot q-count func payload
+    in let ring = put-segs (zeros (q-slot * q-count) []) s.segs 0
+    in "S " & show k & " " & show s.wp & " " & show s.seq & " " & hex ring
+
+  StatusRec = record {
+   func : Integer,
+   payload : List Integer,
+   result : Integer
+  }
+
+  Ring = record {
+   bytes : List Integer,
+   wp : Integer
+  }
+
+  status : Ring, StatusRec -> Ring
+  status (r) (s) =
+    let p = gsp-queue-put r.wp q-slot q-count (nv-gsp-record s.func s.payload 0 q-slot)
+    in let off = r.wp * q-slot
+    in let b1 = put-segs r.bytes p.segs 0
+    in let b2 = put-bytes b1 (off + 56) (gsp-u32 (80 + list-length s.payload)) 0
+    in Ring { bytes = put-bytes b2 (off + 64) (gsp-u32 s.result) 0, wp = p.wp }
+
+  statuses : Ring, List StatusRec, Integer -> Ring
+  statuses (r) (rs) (i) = if i >= list-length rs then r else statuses (status r (list-at rs i)) rs (i + 1)
+
+  resp-lines : Integer, List GspResp, Integer, Text -> Text
+  resp-lines (k) (rs) (i) (acc) =
+    if i >= list-length rs then acc
+    else let x = list-at rs i
+    in resp-lines k rs (i + 1) (acc & "R " & show k & " " & show i & " " & show x.func & " " & show (list-length x.payload) & " " & hex x.payload & "\n")
+
+  read-lines : Integer, Integer, List StatusRec -> Text
+  read-lines (k) (rp) (recs) =
+    let r = statuses (Ring { bytes = zeros (q-slot * q-count) [], wp = rp }) recs 0
+    in let got = nv-gsp-read r.bytes rp r.wp q-slot q-count
+    in resp-lines k got.resps 0 "" & "D " & show k & " " & show got.rp & " " & show r.wp & " " & (if got.failed then "failed" else if got.refused then "refused" else "none")
+
+  opening : [Console] Nothing = act
+   print-line-uni (send-line 0 0 0 #49 (pl 10 7 1 0 []))
+   print-line-uni (send-line 1 46 3 #41 (pl 100 13 5 0 []))
+   print-line-uni (send-line 2 10 7 #67 (pl 2000 3 11 0 []))
+   print-line-uni (send-line 3 40 1 #48 (pl 1000 29 2 0 []))
+   print-line-uni (read-lines 0 0 [StatusRec { func = #41, payload = pl 20 3 1 0 [], result = 0 }, StatusRec { func = #1002, payload = pl 200 7 2 0 [], result = 0 }])
+   print-line-uni (read-lines 1 46 [StatusRec { func = #41, payload = pl 100 5 9 0 [], result = 0 }, StatusRec { func = #67, payload = pl 60 11 4 0 [], result = 0 }])
+   print-line-uni (read-lines 2 5 [StatusRec { func = #49, payload = pl 30 2 7 0 [], result = 0 }, StatusRec { func = #48, payload = pl 40 9 1 0 [], result = #51 }, StatusRec { func = #41, payload = pl 10 1 1 0 [], result = 0 }])
+  end

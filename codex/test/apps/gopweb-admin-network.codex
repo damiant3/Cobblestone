@@ -10,8 +10,11 @@ Chapter: GopWebAdminNetworkTest
   wan-peer-mac : List Integer = [2, 60, 70, 80, 90, 100]
 
   wan-frame : Integer, Integer, Integer, List Integer -> List Integer
-  wan-frame (source) (sequence) (flags) (payload) =
-    let tcp = tcp-with-checksum (tcp-build-segment source gopweb-port sequence 1001 flags 8192 payload) wan-peer wan-ip
+  wan-frame (source) (sequence) (flags) (payload) = wan-frame-acking source sequence 1001 flags payload
+
+  wan-frame-acking : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wan-frame-acking (source) (sequence) (ack) (flags) (payload) =
+    let tcp = tcp-with-checksum (tcp-build-segment source gopweb-port sequence ack flags 8192 payload) wan-peer wan-ip
     in eth-build-frame wan-mac wan-peer-mac eth-type-ipv4 (ip-build-packet wan-peer wan-ip ip-proto-tcp tcp)
 
   wan-get : Text -> List Integer
@@ -45,7 +48,7 @@ Chapter: GopWebAdminNetworkTest
       let syn = wan-frame 50000 1000 tcp-flag-syn []
       in act
         m2 <- web-mux-feed-observed gopweb-route web-observe-none observe [255, 255, 255, 0] m1 syn (list-length syn) gopweb-port
-        let get = wan-frame 50000 1001 (bit-or tcp-flag-psh tcp-flag-ack) (wan-get "/api/health")
+        let get = wan-frame-acking 50000 1001 ((((list-at (m2.conns) 0).transport).session).conn).send-next (bit-or tcp-flag-psh tcp-flag-ack) (wan-get "/api/health")
         in act
           m3 <- web-mux-feed-observed gopweb-route web-observe-none observe [255, 255, 255, 0] m2 get (list-length get) gopweb-port
           let slot = gopweb-slot-at blk 0

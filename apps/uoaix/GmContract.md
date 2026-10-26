@@ -16,8 +16,9 @@ transaction rules below remain independent of storage effects.
 The composite server admits every game account into its stand-in before it
 answers each admin request (`cgs-admit`): account index i is GM account id
 i + 1 with the account's name, and every account except British is human, so
-Lord British can dub any player account but not British. The stand-in holds
-128 accounts; accounts past 128 are not admitted.
+Lord British can dub any player account but not British. The stand-in grows
+with the accounts; only the first 128 hold a credential role (below), and a key
+command naming a later account answers `credential-slot`.
 
 In game (`cgs-gm-allow`, `cp-route`), a dubbed GM's `[go x y` and `[goto` run
 as `go-to-player` through `gm-memory-act` with the GM as actor and target and

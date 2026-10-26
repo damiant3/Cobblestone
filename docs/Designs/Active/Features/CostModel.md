@@ -332,8 +332,13 @@ the class beside the name and the type, and `cost-builtin-nonalloc` reads
 `builtin-alloc-by-name` rather than a hand-kept list, so a measurement widens
 what `bounded none` accepts by editing one row.
 
-**Measured 2026-09-07 off `Builtins.codex` at head, 265 rows: `none` 161,
-`unknown` 80, `fixed` 14, `input` 8, `budgeted` 1, `budgeted:3` 1.**
+**Measured 2026-10-26 off `Builtins.codex`, 317 rows: `none` 218,
+`unknown` 64, `fixed` 25, `input` 8, `budgeted` 1, `budgeted:3` 1.**
+`vec-eq`, `vec-ne`, `vec-approx-eq`, `vec-approx-exact`, `vec4-approx-eq` and
+`vec4-approx-exact` are `fixed` at 16 bytes at both sizes
+(`codex/test/cost/builtin-alloc`, 2026-10-20): each returns one boxed mask,
+allocated by `emit-vec-cmp-call` (`emit-bivy-alloc st2 16`) and filled by the
+helper `emit-vec-cmp-helper` writes.
 Re-measure before quoting (L-COUNT); this moves a long way while nobody is
 reading it. `unknown` is the refusing side, so every row still reading it is a
 builtin read as allocating without bound.
@@ -362,9 +367,10 @@ at 256 bits (`vec8-` and `vec4d-` splat through `emit-wide-splat`, select
 through `emit-wide-select-builtin`, each `emit-bivy-alloc ... 32`). The table
 is hand-written because crawling the emitters pins `emit-expr`, which every
 builtin calls to evaluate arguments, and a check that reds on unrelated
-codegen churn teaches people to re-pin without looking. Only the full gate
-(`build/build.ps1`) runs it, so a `fixed` row landed between releases is
-first graded at the release (L-NOGATE).
+codegen churn teaches people to re-pin without looking. It runs in the full
+gate (`build/build.ps1`) and in `build/cite-gate.ps1` on any change under
+`codex/compiler`, which is where every pinned body and `bs-alloc` itself
+live, so a lane's seed-affecting change is graded by it before it lands.
 
 **`bs-varies` must not be pressed into service here.** It is consumed by
 `const-name-invariant` for constant-expression invariance, not by the cost
@@ -412,15 +418,34 @@ model, so it says nothing about allocation.
 The GPU four (`gpu-in`, `gpu-out`, `gpu-mem-read`, `gpu-mem-write`): an arm
 for `gpu-mem-write` at offset 0 of the window writes over `DeviceBuffer`'s
 allocation cursor, which is corrupting an allocator in order to measure one.
-The two 16-bit port block forms and `runtime-init`. `chan-text-recv`, because
+Eight rows carry no `bs-type` and no `bs-emit`: `True`, `False`, `Nothing`,
+`open-file`, `close-file`, `read-all`, `now`, `random-integer`. No call resolves
+to them, so the checker never reads their class: `bounded none` accepts a body
+returning `True` and `False` (measured 2026-10-20, seed 9D87E951). Their
+`unknown` is unread, not a refusal. The two 16-bit port block forms and `runtime-init`. `force`, which calls the
+thunk it is handed, so its allocation is the thunk's and no per-name class can
+state it. `chan-text-recv`, because
 what it retains is proportional to the MESSAGE and the message size appears in
 no argument, so no rung in this lattice describes it. `process-get-scope` and
 `process-get-network-scope` return Text and both answer the EMPTY string on
 this bed, so a zero length is a fact about a process with no scope set rather
-than about the builtin. And the five sized-vector names are BROKEN rather than
+than about the builtin. `read-line`, `read-line-cce`, `read-file-raw` and
+`read-file-uni` write the serial stream at `r10` until the line or the stream
+ends (`__read_line`, `__bare_metal_read_serial`), so what they retain is the
+input's size, which no argument carries: `chan-text-recv`'s case, and an arm
+would block on stdin. `fork` is `fixed` in fact and stays `unknown`: its first
+call in a program reserves the task pool on the main heap
+(`emit-fork-init-main`, 64 + 4,194,304 = 4,194,368 bytes, the `fork cold`
+line), every later call takes a task from the free list or the pool and
+retains 0, but both bumps are named constants (`task-desc-size`,
+`fork-pool-reservation`), and `check-builtin-alloc.ps1` rule 1 judges only a
+literal. And the five sized-vector names are BROKEN rather than
 unmeasured: `vec-empty` is CDX2040 unresolved, `vec-singleton` answers wrong,
 `vec-cons` faults, with the account under the unowned registers in
-`docs/PM/CurrentPlan.md`.
+`docs/PM/CurrentPlan.md`. So are `par` and `race` (CDX2040 unresolved, no
+lowering: COMPILER-133) and the five `s-*` session rows, which no chapter
+calls: `s-send` and `s-recv` hand back the helper's answer where their type
+promises the channel, and `s-close` on that faults (COMPILER-134).
 
 ### 5.5 Published results that changed what can be built
 
@@ -461,23 +486,21 @@ unmeasured: `vec-empty` is CDX2040 unresolved, `vec-singleton` answers wrong,
   type is the RESOLVED LEFT OPERAND, so the Text and List routes are
   distinguishable to any later rule.
 
-### 5.6 A LIST BUILT BY `&` COSTS 6.5x MORE TO READ, and the mechanism is not measured
+### 5.6 A list's read cost does not depend on how it was built; a window prices what is built inside it
 
-Measured 2026-09-08 (`codex/test/net-recv-heap`, `eth-payload-cost` against
-`eth-payload-flat-cost`): the same function over the same 1,514 bytes measures
-**107,435** when the list was assembled as `zeros 12 [] & [8, 0] & zeros 1500
-[]` and **16,400** when assembled by one `list-push` per byte. Nothing else
-differs -- same loop, same count, same `list-at` reads -- and `list-at` itself
-is free, since a loop reading every element costs the same as one pushing a
-constant.
+Measured 2026-10-20 (`codex/test/net-recv-heap`): `eth-payload` over a
+1,514-byte frame built by `zeros 12 [] & [8, 0] & zeros 1500 []` costs
+16,400 bytes a call, the same as over one built by a single `zeros` call,
+and the same as a plain 1,486-element copy loop. A concatenated list is an
+ordinary flat list to read.
 
-**So the READ cost of a list depends on how it was BUILT, which no row in the
-table above expresses, and a cost stated per operation cannot capture it.**
-What the concatenated representation is, and whether the multiplier grows with
-the number of concatenations or with their sizes, is NOT measured. It has
-already bitten a real measurement: a per-frame figure published from a
-`&`-built fixture was 6.5x what the driver's own flat build costs
-(`ProtocolStack.md`).
+**A `__heap-save` window charges everything constructed between its two
+reads.** A fixture built inside the window is its own construction amortized
+over n, and it reads as a cost of the code under test: the same `eth-payload`
+read 107,435 with its frame built inside, and a recognised frame through the
+whole stack read 91,091 against 56. Build every input before the first
+`__heap-save`; `frame-build-cost` is the one window that measures
+construction on purpose.
 
 ## 7. The kill-rate corpus
 
@@ -642,13 +665,8 @@ than a claim made here.
 
 ## 5.7 What is open
 
-- **The `&`-built list read multiplier of 5.6**: the representation, and
-  whether the multiplier grows with the number of concatenations or their
-  sizes.
-- **`build/check-builtin-alloc.ps1` runs nowhere** (L-NOGATE), and wiring it
-  in means changing the generator under `codex/build/`.
-- **80 registry rows read `unknown`** (2026-09-07), each refusing one
-  declaration at one call site. 5.4 names the ones that are deliberate.
+- **64 registry rows read `unknown`** (2026-10-26), eight of them unread (5.4); each of the other 56 refusing one
+  declaration at one call site. 5.4 names the ones that are deliberate or broken.
 - **`bs-alloc` cannot key on instantiation**, which is what `show` and
   `__list_tail` need, and 5.2 is the account.
 
@@ -659,43 +677,17 @@ than a claim made here.
 - Not a claim that the three defects share a root cause in the code. They do
   not; they share a root cause in what the language promises.
 
-## 3.5 Measured 2026-08-14: reading a character through `to-unicode` costs 1,040 bytes
-
-**This section was headed "character-level Text access costs 1,040 bytes per
-character" and that attribution was wrong. Corrected 2026-08-15 by isolating
-the terms.** The two rows below that carried the cost BOTH called
-`to-unicode`, so the measurement never separated the accessor from the
-converter, and it charged the whole figure to the accessor. `to-unicode` is
-the entire cost. The accessors allocate nothing at all.
+## 3.5 Character access and `to-unicode` allocate nothing
 
 | operation | bytes retained per character | measured |
 |---|---|---|
-| `char-code-at` | **0** | 08-15 |
-| `char-at` then `char-code` | **0** | 08-15 |
-| `text-length` | **0** | 08-15 |
-| `to-unicode` | **1,040** | 08-14, confirmed 08-15 |
+| `char-code-at` | **0** | 2026-08-15 |
+| `char-at` then `char-code` | **0** | 2026-08-15 |
+| `text-length` | **0** | 2026-08-15 |
+| `to-unicode` | **0** | 2026-10-20, seed 9D87E951 |
 
-Measured on a 4,752-character line, constant per call rather than
-proportional to position. The 08-15 run carried a null arm reading exactly 0
-and a `to-unicode` arm reading 4,942,080, so the instrument is shown able to
-report both ends in the same run.
-
-**The correction matters because it inverts the advice.** The original
-reading says character access is ruinous and sends the reader to
-`text-split`, which cannot be substituted directly and which the section
-itself admits every integer parser in the tree defeats. The corrected reading
-is that character access is free and the fix is to stop calling `to-unicode`
-per character, which is a one-line change at every site and is what R-CCE
-already required.
-
-**The fleet had already measured this and it did not travel.**
-`BrotliDict.codex`'s Corpus prose says "DO NOT REACH FOR to-unicode HERE",
-having measured 120,000 characters at 125 MB through `to-unicode` against
-EIGHTY BYTES through `char-code-at` alone -- 1,041 bytes per character, the
-same constant, correctly attributed, written down in a chapter nobody
-re-reads. That is R-PROSE's complaint from the other side: the finding was
-true, it was in the right file, and it reached no one. It is in
-`DevelopersGuide.md` now.
+`to-unicode` reads `cce-to-unicode-table`, a list of integer literals, and such a
+list is shared rather than rebuilt at each mention (`codex/test/const-share`).
 
 ## 3.6 Measured 2026-08-15: `&` is quadratic in an accumulator
 

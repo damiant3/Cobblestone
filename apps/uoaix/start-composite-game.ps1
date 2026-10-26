@@ -37,6 +37,8 @@ $err=Join-Path ([IO.Path]::GetTempPath()) ('uoaix-guest-'+[guid]::NewGuid().ToSt
 $vm=if($Vm){(Resolve-Path -LiteralPath $Vm).Path}else{Join-Path $repo 'tools/codex-vm.exe'}
 $vmArgs=@('-kernel',('"'+$Artifact+'"'),'-disk',('"'+$StateFile+'"'),'-output',('"'+$log+'"'),'-headless','-mem','3072','-e1000-nat','-portfwd',"${Port}:2593")
 if($ClockScale -gt 1){$vmArgs+=@('-clock-scale',"$ClockScale")}
+# A forwarded port listens on 127.0.0.1 only; a hosted shard's players and panel reach it from other machines.
+if($Hosted){$vmArgs+=@('-portfwd-any')}
 $option=Join-Path $OutDir 'launch.input'
 $record=if($Testing -and $Open){"UOAIX TESTING OPEN`n"}elseif($Testing){"UOAIX TESTING`n"}elseif($Dev){"UOAIX DEV`n"}elseif($british){"UOAIX PUBLIC $british`n"}else{''}
 if($Admin){
@@ -47,6 +49,8 @@ if($Admin){
     [IO.File]::WriteAllText($ownerKey,$keys[3]+"`n",[Text.Encoding]::ASCII)
 }
 if($Links -ne 32){$record="LINKS $Links`n"+$record}
+# A relay ticket lives 120 s of guest time (cl-ticket-default); under -clock-scale it is stretched back to 120 s of wall time.
+if($ClockScale -gt 1){$record="TICKET $(120*$ClockScale)`n"+$record}
 if($record){
     [IO.File]::WriteAllText($option,$record,[Text.Encoding]::ASCII)
     $vmArgs+=@('-input',('"'+$option+'"'))

@@ -233,9 +233,10 @@ Chapter: CityWorkers
     shore = cw-box "Sands" 3600 1264 3615 1279, place-base = 8000, vendors = cw-vendors cities shops roles 8 (list-length gvb-role-words) 0 [],
     stations = [BbSpot { x = 3554, y = 1204, z = 0 }, BbSpot { x = 3554, y = 1204, z = 0 }, BbSpot { x = 3554, y = 1204, z = 0 },
       BbSpot { x = 3554, y = 1204, z = 0 }, BbSpot { x = 3554, y = 1204, z = 0 }] }
- Britain (city 0) founds only the reagent gatherers as city workers (UOAIX-248); they lodge in the herbalist's building,
- not the inn, and take no house.
-  cw-britain : CgCity = CgCity { city = 0, inn = list-at bb-shops bb-herbalist, houses = [], lodges = [], ore = cgg-node-region,
+ Britain (city 0) founds only the reagent gatherers as city workers (UOAIX-248). They live in the town's houses
+ (cg-city-beds) and keep the herbalist's building only as the bed of a worker no house takes; houses is empty so that
+ cw-own-bed leaves the housing to cg-city-beds.
+  cw-britain : CgCity = CgCity { city = 0, inn = list-at bb-shops bb-herbalist, houses = [], lodges = cgg-lodges, ore = cgg-node-region,
     rock = BbSpot { x = cgg-rock-x, y = cgg-rock-y, z = 0 }, woods = cgg-lumber-region, field = cw-none, pasture = cw-none, gardens = [],
     shore = cgg-britain.shore, place-base = 0, vendors = cgg-roles 0 [], stations = cgg-britain.stations }
   cw-city : List CtCity, List BbShop, List Integer, Integer -> Maybe CgCity
@@ -304,28 +305,30 @@ Chapter: CityWorkers
   CwFound = record { workers : List CgGatherer, founded : Integer, refused : Text }
   cw-refuse : CwFound, Text -> CwFound
   cw-refuse (out) (why) = CwFound { workers = out.workers, founded = out.founded, refused = out.refused & " " & why & ";" }
-  cw-found : List CgCity, List TownLive, List WalkMap, Integer, Integer, CwFound -> CwFound
-  cw-found (cities) (towns) (maps) (i) (k) (out) = if i >= list-length cities | i >= list-length towns then out
-    else if k >= list-length cw-places then cw-found cities towns maps (i + 1) 0 out
+  cw-found : List CgCity, List TownLive, List WalkMap, Integer, Integer, Integer, CwFound -> CwFound
+  cw-found (cities) (towns) (maps) (tp) (i) (k) (out) = if i >= list-length cities | i >= list-length towns then out
+    else if k >= list-length cw-places then cw-found cities towns maps tp (i + 1) 0 out
     else let c = list-at cities i
     in let place = list-at cw-places k
-    in if cw-has out.workers c.city place 0 | not (cw-wants c place) then cw-found cities towns maps i (k + 1) out
+    in if cw-has out.workers c.city place 0 | not (cw-wants c place) then cw-found cities towns maps tp i (k + 1) out
     else when ct-map-of maps c.city
-      is None -> cw-found cities towns maps (i + 1) 0 out
-      is Just (map) -> when (if place == cgg-herb-farm then cw-sale-reach c (list-at towns i) map bb-herbalist else Ok 0)
-        is Err (e) -> cw-found cities towns maps i (k + 1) (cw-refuse out ("city " & show c.city & " herb farmer not founded: " & e))
+      is None -> cw-found cities towns maps tp (i + 1) 0 out
+      is Just (map) -> when (if place == cgg-herb-farm then cw-sale-reach c (list-at towns i) map tp bb-herbalist else Ok 0)
+        is Err (e) -> cw-found cities towns maps tp i (k + 1) (cw-refuse out ("city " & show c.city & " herb farmer not founded: " & e))
         is Ok (_) -> when cw-found-one c (list-at towns i) map place k
-          is Err (e) -> cw-found cities towns maps i (k + 1) (cw-refuse out ("city " & show c.city & " place " & show place & ": " & e))
-          is Ok (w) -> cw-found cities towns maps i (k + 1) (CwFound { workers = out.workers & [w], founded = out.founded + 1, refused = out.refused })
-  cw-sale-reach : CgCity, TownLive, WalkMap, Integer -> Result Integer Text
-  cw-sale-reach (c) (t) (map) (role) = let v = t.vendors
+          is Err (e) -> cw-found cities towns maps tp i (k + 1) (cw-refuse out ("city " & show c.city & " place " & show place & ": " & e))
+          is Ok (w) -> cw-found cities towns maps tp i (k + 1) (CwFound { workers = out.workers & [w], founded = out.founded + 1, refused = out.refused })
+  cw-hops : List CgGatherer, Integer, Integer -> Integer
+  cw-hops (xs) (tp) (i) = if i >= list-length xs then 0 else let set = __record-set (list-at xs i) "tp" tp in cw-hops xs tp (i + 1)
+  cw-sale-reach : CgCity, TownLive, WalkMap, Integer, Integer -> Result Integer Text
+  cw-sale-reach (c) (t) (map) (tp) (role) = let v = t.vendors
     in let index = cw-vendor c role
     in if index < 0 | index >= v.vendor-count then Err "no keeper of its buyer's trade"
     else when world-get v.game.world (list-at v.vendors index).serial
       is Err (e) -> Err ("its buyer's keeper: " & e)
       is Ok (keeper) -> when bb-placement v.game.world map (cgg-sale-box keeper.x keeper.y index) 0
         is Err (e) -> Err ("no sale tile beside its buyer: " & e)
-        is Ok (spot) -> if cgg-reaches t map None spot then Ok 0
+        is Ok (spot) -> if cgg-hop-reaches t map tp t.entrance spot & cgg-hop-reaches t map tp spot t.entrance then Ok 0
           else Err ("its buyer's sale tile " & show spot.x & "," & show spot.y & "," & show spot.z & " does not route from the town entrance")
 
  City worker i beds in house i of its city (wrapping), on the first free floor tile its inn door routes to both ways;

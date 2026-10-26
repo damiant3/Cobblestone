@@ -95,6 +95,9 @@ Chapter: GameCraftReplay
         in let lot = gv-add-lot h.vendor serial player.actor item quality wear share
         in let known = gsi-register h.items serial (gcr-layer item) 0 True False
         in if lot < 0 | known /= 0 then 0 else serial
+  gct-gm : Integer, List Integer, Integer, Integer -> Integer
+  gct-gm (row) (skills) (value) (i) = if i == list-length skills then 0
+    else let set = poke-qword row (list-at skills i * 8) value in gct-gm row skills value (i + 1)
   gct-material : GameHarvest, GvPlayer, Integer, Integer -> Boolean
   gct-material (h) (player) (item) (graphic) =
     let p = ep-actor h.vendor.currency.world player.actor
@@ -129,6 +132,8 @@ Chapter: GameCraftReplay
     player <- list-at h.vendor.players 0
     w <- h.vendor.currency.world
     p <- ep-actor w player.actor
+    skills <- gs-skill-row h.vendor.game player.serial
+    gm <- gct-gm skills [7, 8, 11, 34, 37] 1000 0
     state <- gcr-state h
     hammer <- gct-item h player 62 #13E3 1 1000 (ep-at p.wear 62)
     axe <- gct-item h player 26 #0F49 1 1000 (ep-at p.wear 26)
@@ -173,9 +178,21 @@ Chapter: GameCraftReplay
     cbr-check "carpentry consumes boards and nails" (cbr-opcode carpenter #25 0 & ep-at p.stock 47 == 1 & ep-at p.stock 39 == 2)
     boards-left <- ep-at p.stock 38
     axe-wear <- ep-at p.wear 26
+    nails-left <- ep-at p.stock 39
     fail-roll <- __record-set p "attempts" 1
+    unskilled <- gct-gm skills [11] 0 0
     failed <- gct-use state input map saw 2 4000
-    cbr-check "failed craft preserves materials but practices and wears tool" (is-ok failed & ep-at p.stock 47 == 1 & ep-at p.stock 38 == boards-left & ep-at p.wear 26 == axe-wear - 1)
+    reskilled <- gct-gm skills [11] 1000 0
+    cbr-check "a failed carpentry craft (1998 loss 0) keeps its materials, makes nothing, wears the tool and claims no loss" (is-ok failed & ep-at p.stock 47 == 1 & ep-at p.stock 38 == boards-left & ep-at p.stock 39 == nails-left & ep-at p.wear 26 == axe-wear - 1 & gct-said failed "You fail to create the item.")
+    cloth-more <- eh-add-yield w p 37 10 1000
+    cloth10 <- gct-item h player 37 #175D 10 1000 32
+    cloth-before <- ep-at p.stock 37
+    shirts-before <- ep-at p.stock 46
+    tailor-roll <- __record-set p "attempts" 1
+    tailor-unskilled <- gct-gm skills [34] 0 0
+    tailor-failed <- gct-use state input map sewing 2 4500
+    tailor-reskilled <- gct-gm skills [34] 1000 0
+    cbr-check "a failed tailoring craft loses part of its cloth (1998), makes nothing and names the loss" (cloth10 > 0 & is-ok tailor-failed & ep-at p.stock 37 < cloth-before & ep-at p.stock 46 == shirts-before & gct-said tailor-failed "You failed, and lost some ")
     roll4 <- __record-set p "attempts" 0
     tinkered <- gct-use state input map tinker 1 5000
     cbr-check "tinkering creates a quality-backed tool lot and practises once" (cbr-opcode tinkered #25 0 & ep-at p.stock 42 == 4 & p.attempts == 1)
@@ -189,7 +206,7 @@ Chapter: GameCraftReplay
     cbr-check "tailoring plays the sewing sound" (cbr-opcode tailor #54 0)
     cbr-check "carpentry plays the saw" (cbr-opcode carpenter #54 0)
     cbr-check "tinkering plays the tinker sound" (cbr-opcode tinkered #54 0)
-    cbr-check "a craft speaks UOX3's lines: created into the backpack, or failed" (gct-said smith "You create the item and place it in your backpack." & gct-said failed "You fail to create the item.")
+    cbr-check "a craft speaks the 1998 lines: the made item named into the backpack, or a plain failure" (gct-said smith "You create " & gct-said failed "You fail to create the item.")
     hammer-wear <- ep-at p.wear 62
     ingots <- ep-at p.stock 31
     roll7 <- __record-set p "attempts" 0
@@ -214,7 +231,9 @@ Chapter: GameCraftReplay
     more <- eh-add-yield w p 38 3 1000
     boards3 <- gct-item h player 38 #1BD7 3 1000 32
     break-roll <- __record-set p "attempts" 1
+    break-unskilled <- gct-gm skills [11] 0 0
     broke <- gct-use state input map saw 2 10000
+    break-reskilled <- gct-gm skills [11] 1000 0
     print-line-uni ("BREAK last=" & show last & " note=" & gct-note broke & " alive=" & (if is-ok (world-get h.items.world last) then "yes" else "no")
       & " lot=" & show (gv-lot h.vendor last 0) & " removed=" & (if gct-removed broke last then "yes" else "no"))
     cbr-check "a working tool on its last use breaks: the craft reply removes it and its lot retires" (last > 0 & worn == 1

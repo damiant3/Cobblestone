@@ -6,9 +6,11 @@ Chapter: TownRoutes
  Sphere-LICENSE.txt.
 
   RteWalk = record { route : Integer, generation : Integer, step : Integer, x : Integer, y : Integer,
-    stalls : Integer, fails : Integer, rest : Integer, blocked : Integer, facing : Integer, moves : Integer }
+    stalls : Integer, fails : Integer, rest : Integer, blocked : Integer, facing : Integer, moves : Integer,
+    sidestep : Integer, detour : Integer, pressed : Integer }
   rte-walk : Integer -> RteWalk
-  rte-walk (unused) = RteWalk { route = 0 - 1, generation = 0, step = 0, x = 0, y = 0, stalls = 0, fails = 0, rest = 0, blocked = 0, facing = 4, moves = 0 }
+  rte-walk (unused) = RteWalk { route = 0 - 1, generation = 0, step = 0, x = 0, y = 0, stalls = 0, fails = 0, rest = 0, blocked = 0, facing = 4, moves = 0,
+    sidestep = 0, detour = 0 - 1, pressed = 0 }
  Eight blocked attempts at one step abandon the shared route and plan from where the walker stands.
   rte-stall-limit : Integer = 8
  After three blocked attempts at one step a walker steps past the mobile in its way: two walkers meeting in a one-tile
@@ -34,11 +36,19 @@ Chapter: TownRoutes
       & rte-key p i 3 == tx & rte-key p i 4 == ty & rte-key p i 5 == tz then True
     else rte-failed p m tx ty tz (i + 1)
   rte-plan-budget : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer -> Integer
-  rte-plan-budget (p) (world) (map) (doors) (m) (tx) (ty) (tz) (budget) = let found = rte-find p m tx ty tz 0
-    in if found >= 0 then found
-    else if rte-failed p m tx ty tz 0 then 0 - 1
-    else let full = p.route-count == tl-route-limit
-    in let id = if full then p.route-cursor else p.route-count
+  rte-plan-budget (p) (world) (map) (doors) (m) (tx) (ty) (tz) (budget) = rte-plan-clip p world map doors m tx ty tz budget False
+ A keeper's budget end stores count 0, neither found nor failed, because its RteJob finishes the search in slices. A
+ probe has no job, so clip-fails stores its budget end as failed: stored as 0, every tick's candidate scan re-ran the
+ probe to its full budget (trial-46829, UOAIX-267).
+  rte-plan-clip : TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer, Boolean -> Integer
+  rte-plan-clip (p) (world) (map) (doors) (m) (tx) (ty) (tz) (budget) (clip-fails) = let found = rte-find p m tx ty tz 0
+    in if found >= 0 then let hit = rte-why p 5 in rte-touch p found
+    else if rte-failed p m tx ty tz 0 then let refused = rte-why p 6 in 0 - 1
+    else let searched = rte-why p 7
+    in let cells0 = p.cells
+    in let full = p.route-count == tl-route-limit
+    in let evicted = if full then rte-why p 11 else 0
+    in let id = if full then rte-victim p 1 0 else p.route-count
     in let at = id * tl-route-key-bytes
     in let generation = (if full then peek-qword p.route-keys (at + 56) else 0) + 1
     in let count = tl-plan-budget p world map doors m tx ty tz (p.route-steps + id * (tl-route-step-bytes p)) (tl-route-step-bytes p) budget
@@ -48,10 +58,20 @@ Chapter: TownRoutes
     in let d = poke-qword p.route-keys (at + 24) tx
     in let e = poke-qword p.route-keys (at + 32) ty
     in let f = poke-qword p.route-keys (at + 40) tz
-    in let g = poke-qword p.route-keys (at + 48) (if count > 0 then count else if p.ended == tl-ended-budget then 0 else 0 - max 1 p.epoch)
+    in let g = poke-qword p.route-keys (at + 48) (if count > 0 then count else if p.ended == tl-ended-budget & not clip-fails then 0 else 0 - max 1 p.epoch)
     in let h = poke-qword p.route-keys (at + 56) generation
+    in let used = poke-qword p.route-keys (at + 64) hpet-ticks
     in let taken = rte-take p full id
+    in let costed = poke-qword p.why 80 (peek-qword p.why 80 + p.cells - cells0)
     in if count <= 0 then 0 - 1 else id
+ UOAIX-267: a full table overwrote its slots in turn, so a route still being walked was taken by the next plan anywhere
+ in town and its walker planned again at its next step (trial-45907: the gatherer and farmer, timer kind 12, cost about
+ one full plan a step). A full table takes the slot used longest ago; a walker's every step marks its route used.
+  rte-touch : TlPath, Integer -> Integer
+  rte-touch (p) (id) = let used = poke-qword p.route-keys (id * tl-route-key-bytes + 64) hpet-ticks in id
+  rte-victim : TlPath, Integer, Integer -> Integer
+  rte-victim (p) (i) (best) = if i >= p.route-count then best
+    else rte-victim p (i + 1) (if rte-key p i 8 < rte-key p best 8 then i else best)
  A keeper search longer than rte-slice cells runs as the one RteJob, a slice a town step on its own planner (root,
  2026-10-16: a whole-window search in one step stalled the shard about 10 s guest); the keeper waits meanwhile, and a
  found route is adopted into its town's route table, where the keeper's next plan finds it. result: 1 running, 2 found
@@ -92,7 +112,7 @@ Chapter: TownRoutes
   rte-adopt : TlPath, TlPath, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   rte-adopt (p) (slow) (found) (start) (fx) (fy) (fz) (tx) (ty) (tz) = if slow.width /= p.width | slow.height /= p.height then 0 - 1
     else let full = p.route-count == tl-route-limit
-    in let id = if full then p.route-cursor else p.route-count
+    in let id = if full then rte-victim p 1 0 else p.route-count
     in let at = id * tl-route-key-bytes
     in let generation = (if full then peek-qword p.route-keys (at + 56) else 0) + 1
     in let path = p.route-steps + id * (tl-route-step-bytes p)
@@ -108,12 +128,13 @@ Chapter: TownRoutes
     in let f = poke-qword p.route-keys (at + 40) tz
     in let g = poke-qword p.route-keys (at + 48) length
     in let h = poke-qword p.route-keys (at + 56) generation
+    in let used = poke-qword p.route-keys (at + 64) hpet-ticks
     in let taken = rte-take p full id in id
   rte-take : TlPath, Boolean, Integer -> Integer
   rte-take (p) (full) (id) = if full then let a = __record-set p "route-cursor" (int-mod (id + 1) tl-route-limit) in 0
     else let b = __record-set p "route-count" (id + 1) in 0
   rte-drop : RteWalk -> Integer
-  rte-drop (w) = let a = __record-set w "route" (0 - 1) in let b = __record-set w "stalls" 0 in 0
+  rte-drop (w) = let a = __record-set w "route" (0 - 1) in let b = __record-set w "stalls" 0 in let c = __record-set w "detour" (0 - 1) in 0
  A failed plan waits 2, 4 .. 64 steps before the next (F30).
   rte-pace : RteWalk, Integer -> Integer
   rte-pace (w) (id) = if id >= 0 then let a = __record-set w "fails" 0 in let b = __record-set w "rest" 0 in 0
@@ -126,6 +147,32 @@ Chapter: TownRoutes
   rte-bound (p) (w) (m) (tx) (ty) (tz) = if w.route < 0 | m.x /= w.x | m.y /= w.y then False
     else rte-key p w.route 7 == w.generation & w.step < rte-key p w.route 6
       & rte-key p w.route 3 == tx & rte-key p w.route 4 == ty & rte-key p w.route 5 == tz
+ UOAIX-267: why a walker plans again, and what each plan cost, counted on its planner (`p.why`, reset each WHEEL TOTAL):
+ 0 no route, 1 displaced off its route, 2 route slot reused, 3 route walked to its end, 4 goal changed; 5 table hit,
+ 6 refused as recently failed, 7 searched, 8 searched for rte-toward; cells searched for rte-toward (9) and by rte-plan (10); 11 a search that took a slot from a full table.
+ 12 + 2k and 13 + 2k: searches and cells by direct rte-plan site k (0 lumber shun, 1 miner node, 2 gatherer spot,
+ 3 cgg-plans for cgg-reaches, 4 rock try); 22 probes rte-probe-budget ended; 23 and 24 the serial of the last walker
+ replanned for reason 3 and for reason 4 (UOAIX-267: names the walker behind a 3-and-4 loop).
+  rte-plan-at : Integer, TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer -> Integer
+  rte-plan-at (site) (p) (world) (map) (doors) (m) (tx) (ty) (tz) = rte-plan-at-budget site p world map doors m tx ty tz (p.width * p.height)
+ A probe that cannot reach expands every cell its start reaches (Britain's map is 127,872); a reaching probe averaged
+ about 5k cells (trial-46788).
+  rte-probe-budget : Integer = 32768
+  rte-plan-at-budget : Integer, TlPath, WorldTable, WalkMap, Maybe WdState, WorldObject, Integer, Integer, Integer, Integer -> Integer
+  rte-plan-at-budget (site) (p) (world) (map) (doors) (m) (tx) (ty) (tz) (budget) = let s0 = peek-qword p.why 56
+    in let c0 = p.cells
+    in let id = rte-plan-clip p world map doors m tx ty tz budget True
+    in let clipped = if id < 0 & peek-qword p.why 56 > s0 & p.ended == tl-ended-budget then rte-why p 22 else 0
+    in let a = poke-qword p.why ((12 + site * 2) * 8) (peek-qword p.why ((12 + site * 2) * 8) + peek-qword p.why 56 - s0)
+    in let b = poke-qword p.why ((13 + site * 2) * 8) (peek-qword p.why ((13 + site * 2) * 8) + p.cells - c0) in id
+  rte-why : TlPath, Integer -> Integer
+  rte-why (p) (slot) = poke-qword p.why (slot * 8) (peek-qword p.why (slot * 8) + 1)
+  rte-unbound : TlPath, RteWalk, WorldObject -> Integer
+  rte-unbound (p) (w) (m) = if w.route < 0 then 0
+    else if m.x /= w.x | m.y /= w.y then 1
+    else if rte-key p w.route 7 /= w.generation then 2
+    else if w.step >= rte-key p w.route 6 then 3
+    else 4
   rte-stall : RteWalk -> List (List Integer)
   rte-stall (w) = let stalls = w.stalls + 1
     in let a = __record-set w "blocked" (w.blocked + 1)
@@ -134,7 +181,60 @@ Chapter: TownRoutes
   rte-any : Integer, Integer -> Boolean
   rte-any (x) (y) = True
   rte-step : TlPath, WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject -> Result (List (List Integer)) Text
-  rte-step (p) (world) (game) (map) (doors) (admit) (w) (m) = rte-try-in world game map doors admit w m (peek-byte p.route-steps (w.route * (tl-route-step-bytes p) + w.step))
+  rte-step (p) (world) (game) (map) (doors) (admit) (w) (m) = let used = rte-touch p w.route
+    in if w.detour >= 0 then rte-rejoin world game map doors admit w m
+    else let direction = rte-route-step p w w.step
+    in let side = if w.sidestep == 0 | w.stalls >= rte-pass-stalls | w.step + 1 >= rte-key p w.route 6 then 0 - 1
+      else rte-side world map doors admit m direction (rte-route-step p w (w.step + 1)) 0
+    in if side < 0 then rte-try-in world game map doors admit w m direction
+    else rte-detour world map w m direction (rte-route-step p w (w.step + 1)) side
+  rte-route-step : TlPath, RteWalk, Integer -> Integer
+  rte-route-step (p) (w) (i) = peek-byte p.route-steps (w.route * (tl-route-step-bytes p) + i)
+ Damian, 2026-10-20: "a guard's path shouldn't be blocked by players or other dynamic blocking items. they should
+ navigate around". A walker with sidestep set, whose next route tile holds a mobile that blocks it, steps instead to a
+ free tile beside it that touches the route's tile after the blocked one, and rejoins the route there; with no such tile
+ it stalls as before. Candidates turn from the route's direction by 1 then by 2, either way.
+  rte-turns : List Integer = [1, 7, 2, 6]
+  rte-dir : Integer, Integer, Integer -> Integer
+  rte-dir (dx) (dy) (i) = if i == 8 then 0 - 1 else if walk-dx i == dx & walk-dy i == dy then i else rte-dir dx dy (i + 1)
+  rte-side : WorldTable, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), WorldObject, Integer, Integer, Integer -> Integer
+  rte-side (world) (map) (doors) (admit) (m) (direction) (after) (i) = if i == 0 & not (rte-blocked world map m direction) then 0 - 1
+    else if i >= list-length rte-turns then 0 - 1
+    else let d = int-mod (direction + list-at rte-turns i) 8
+    in let sx = m.x + walk-dx d
+    in let sy = m.y + walk-dy d
+    in let tx = m.x + walk-dx direction + walk-dx after
+    in let ty = m.y + walk-dy direction + walk-dy after
+    in let touches = walk-abs (sx - tx) <= 1 & walk-abs (sy - ty) <= 1
+    in let free = touches & tl-door doors sx sy m.z < 0 & admit sx sy & tl-probe-in world map doors m.serial m.x m.y m.z d True >= -128
+      & (when walk-step map m.x m.y m.z d is Err (_) -> False is Ok (z) -> not (tl-occupied world (world-tile-first world sx sy) m.serial z))
+    in if free then d else rte-side world map doors admit m direction after (i + 1)
+  rte-blocked : WorldTable, WalkMap, WorldObject, Integer -> Boolean
+  rte-blocked (world) (map) (m) (direction) = when walk-step map m.x m.y m.z direction
+    is Err (_) -> False
+    is Ok (z) -> tl-occupied world (world-tile-first world (m.x + walk-dx direction) (m.y + walk-dy direction)) m.serial z
+ The side step counts as the blocked route step; the rejoining step, from the side tile to the route's next tile, counts
+ as the step after it. A side tile that is itself the route's next tile skips both at once.
+  rte-detour : WorldTable, WalkMap, RteWalk, WorldObject, Integer, Integer, Integer -> Result (List (List Integer)) Text
+  rte-detour (world) (map) (w) (m) (direction) (after) (side) = let was = w.pressed
+    in when walk-step map m.x m.y m.z side
+      is Err (e) -> Err e
+      is Ok (z) -> let sx = m.x + walk-dx side
+        in let sy = m.y + walk-dy side
+        in let tx = m.x + walk-dx direction + walk-dx after
+        in let ty = m.y + walk-dy direction + walk-dy after
+        in when rte-moved world w m sx sy z side []
+          is Err (e) -> Err e
+          is Ok (packets) -> let pressed = __record-set w "pressed" (if was == 0 then 1 else was)
+            in let rejoin = if sx == tx & sy == ty then let skipped = __record-set w "step" (w.step + 1) in 0 - 1 else rte-dir (tx - sx) (ty - sy) 0
+            in let set = __record-set w "detour" rejoin in Ok packets
+  rte-rejoin : WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject -> Result (List (List Integer)) Text
+  rte-rejoin (world) (game) (map) (doors) (admit) (w) (m) = let direction = w.detour
+    in let cleared = __record-set w "detour" (0 - 1)
+    in let moves = w.moves
+    in when rte-try-in world game map doors admit w m direction
+      is Err (e) -> Err e
+      is Ok (packets) -> let lost = if w.moves == moves then rte-drop w else 0 in Ok packets
   rte-try : GameShard, WalkMap, Maybe WdState, RteWalk, WorldObject, Integer -> Result (List (List Integer)) Text
   rte-try (game) (map) (doors) (w) (m) (direction) = rte-try-in game.world (Just game) map doors rte-any w m direction
   rte-try-in : WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject, Integer -> Result (List (List Integer)) Text
@@ -142,7 +242,9 @@ Chapter: TownRoutes
     let x = m.x + walk-dx direction
     in let y = m.y + walk-dy direction
     in let crowd = w.stalls >= rte-pass-stalls
-    in if tl-probe-in world map doors m.serial m.x m.y m.z direction (not crowd) < -128 then Ok (rte-stall w)
+    in if tl-probe-in world map doors m.serial m.x m.y m.z direction (not crowd) < -128 then
+      let pressed = if not crowd & rte-blocked world map m direction then __record-set w "pressed" (if w.pressed == 0 then 1 else w.pressed) else w
+      in Ok (rte-stall w)
     else let row = tl-door doors x y m.z
     in let opened = if row < 0 then Ok (gs-reply [] "") else when doors
       is None -> Ok (gs-reply [] "")
@@ -152,7 +254,7 @@ Chapter: TownRoutes
       is Ok (door-reply) -> when walk-step map m.x m.y m.z direction
         is Err (_) -> let stalled = rte-stall w in Ok door-reply.packets
         is Ok (z) -> if not crowd & tl-occupied world (world-tile-first world x y) m.serial z then
-          let stalled = rte-stall w in Ok door-reply.packets
+          let stalled = rte-stall w in let pressed = __record-set w "pressed" (if w.pressed == 0 then 1 else w.pressed) in Ok door-reply.packets
         else if not (admit x y) then Err "route step refused"
         else rte-moved world w m x y z direction door-reply.packets
   rte-moved : WorldTable, RteWalk, WorldObject, Integer, Integer, Integer, Integer, List (List Integer) -> Result (List (List Integer)) Text
@@ -167,6 +269,7 @@ Chapter: TownRoutes
         in let d = __record-set w "stalls" 0
         in let f = __record-set w "facing" direction
         in let n = __record-set w "moves" (w.moves + 1)
+        in let eased = __record-set w "pressed" 0
         in let touched = world-touch world
         in Ok (list-push packets (cbp-move moved direction 0 1))
   rte-toward : TlPath, GameShard, WalkMap, Maybe WdState, RteWalk, WorldObject, Integer, Integer, Integer -> Result (List (List Integer)) Text
@@ -176,9 +279,16 @@ Chapter: TownRoutes
   rte-toward-budget : TlPath, WorldTable, Maybe GameShard, WalkMap, Maybe WdState, (Integer, Integer -> Boolean), RteWalk, WorldObject, Integer, Integer, Integer, Integer -> Result (List (List Integer)) Text
   rte-toward-budget (p) (world) (game) (map) (doors) (admit) (w) (m) (tx) (ty) (tz) (budget) =
     if rte-bound p w m tx ty tz then rte-step p world game map doors admit w m
-    else let dropped = rte-drop w
+    else let reason = rte-unbound p w m
+    in let dropped = rte-drop w
     in if w.rest > 0 then let waited = __record-set w "rest" (w.rest - 1) in Ok []
-    else let id = rte-plan-budget p world map doors m tx ty tz budget
+    else let counted = rte-why p reason
+    in let named = if reason == 3 | reason == 4 then poke-qword p.why ((20 + reason) * 8) m.serial else 0
+    in let before = peek-qword p.why 56
+    in let cells0 = p.cells
+    in let id = rte-plan-budget p world map doors m tx ty tz budget
+    in let toward = if peek-qword p.why 56 > before then rte-why p 8 else 0
+    in let costed = poke-qword p.why 72 (peek-qword p.why 72 + p.cells - cells0)
     in let paced = rte-pace w id
     in if id < 0 then Ok []
     else let a = __record-set w "route" id

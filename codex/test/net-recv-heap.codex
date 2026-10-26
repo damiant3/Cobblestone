@@ -180,25 +180,25 @@ Section: Fixtures
   recognised-big : Integer -> Integer
   recognised-big (n) =
     let ts = fresh-transport 0
+    in let fr = ipv4-frame-big 0
     in let a = __heap-save
-    in let k = spin-net (ts.session) (ipv4-frame-big 0) n 0
+    in let k = spin-net (ts.session) fr n 0
     in let b = __heap-save
     in if k < n then 0 - 1 else (b - a) / n
 
   recognised-cost : Integer -> Integer
   recognised-cost (n) =
     let ts = fresh-transport 0
+    in let fr = ipv4-frame 0
     in let a = __heap-save
-    in let k = spin-net (ts.session) (ipv4-frame 0) n 0
+    in let k = spin-net (ts.session) fr n 0
     in let b = __heap-save
     in if k < n then 0 - 1 else (b - a) / n
 
- WHERE THE 107,475 GOES. A total is not an attribution, and two copies at 8
- bytes a byte with doubling do not account for that figure, so the terms are
- measured here rather than reasoned about. `eth-payload` is the first copy and
- is called once per recognised frame; `net-process-ip` is everything below it.
- The residual against `recognised-big` is asserted, so a term this
- decomposition MISSES cannot hide behind a tidy sum.
+ Every window in this file opens AFTER its frame is built. A frame built
+ inside a window is its construction, amortized over n, and reads as a cost
+ of the stack it is fed to. `eth-payload` is the first copy and is called once
+ per recognised frame; `net-process-ip` is everything below it.
 
   spin-eth : List Integer, Integer, Integer -> Integer
   spin-eth (frame) (n) (acc) =
@@ -208,8 +208,9 @@ Section: Fixtures
 
   eth-payload-cost : Integer -> Integer
   eth-payload-cost (n) =
-    let a = __heap-save
-    in let k = spin-eth (ipv4-frame-big 0) n 0
+    let fr = ipv4-frame-big 0
+    in let a = __heap-save
+    in let k = spin-eth fr n 0
     in let b = __heap-save
     in if k < n then 0 - 1 else (b - a) / n
 
@@ -228,16 +229,9 @@ Section: Fixtures
     in let b = __heap-save
     in if k < n then 0 - 1 else (b - a) / n
 
- WHICH BUILTIN THE 107,435 BELONGS TO, and the answer is NOT the loop.
- `eth-payload-loop` is the same `list-push` this arm prices at 16,400 for the
- same count, and the only other term in it is `list-at frame i`. `copy-cost`
- is that exact loop, reading each element with `list-at` instead of pushing a
- constant, and it measures 16,400 as well: the read is free, and the two loops
- agree. So `eth-payload` costing 107,435 is UNEXPLAINED by its own body, which
- is a finding rather than a gap in this arm, and the difference has to be in
- what its argument IS -- the frame here is built by `&` concatenation of three
- lists, and no measurement in this file yet says what that representation
- costs to read. Whoever takes the inbound conversion starts there.
+ `eth-payload-loop` is one `list-push` per byte and one `list-at frame i`, and
+ `copy-cost` is that exact loop: both measure 16,400 for 1,486 elements, so
+ `eth-payload` costs one copy of the payload and its reads are free.
 
   copy-from-list : List Integer, Integer, Integer, List Integer -> List Integer
   copy-from-list (src) (i) (len) (acc) =
@@ -260,11 +254,9 @@ Section: Fixtures
     in let b = __heap-save
     in b - a
 
- AND THE ARGUMENT IS THE ANSWER. The two loops above agree at 16,400 on a
- list built by ONE `zeros` call; the frame `eth-payload` is given is built by
- `&` concatenation of three lists. This runs the SAME `eth-payload` over the
- same 1,514 bytes in both representations, so the only term that changes is
- how the frame was assembled.
+ The same `eth-payload` over the same 1,514 bytes, built by one `zeros` call
+ against `ipv4-frame-big`'s three-way `&`: what a list costs to read does not
+ depend on how it was assembled.
 
   flat-frame : Integer -> List Integer
   flat-frame (dummy) = zeros 1514 []
@@ -285,8 +277,7 @@ Section: Fixtures
  `eth-payload-cost + ip-stage-cost == recognised-big` holds because the second
  term is nearly zero. The frame below is built by the stack's own builders,
  carries the session's local port so `net-session-owns-segment` admits it, and
- is FLATTENED, because `e1000-read-bytes` delivers a flat list and reading a
- concatenated one costs 6.5x (`CostModel.md`).
+ is FLATTENED, because `e1000-read-bytes` delivers a flat list.
 
   flat-of : List Integer -> List Integer
   flat-of (l) = copy-from-list l 0 (list-length l) []
@@ -569,12 +560,12 @@ Section: Entry
       print-line-uni ("the three stages of the path account for the whole, with no residual: " & show (net-stage-cost small 100 + feed-from-stage-cost 100 + try-stage-cost 100 == r-small))
       print-line-uni ("ONE transport record per frame: feeding builds exactly one: " & show (feed-from-stage-cost 100 == rebuild-stage-cost 100))
       print-line-uni ("both feeds build one record, so the saving was the CALLER's construction: " & show (feed-stage-cost 100 == feed-from-stage-cost 100))
-      print-line-uni ("a frame the stack RECOGNISES costs more than one it drops: " & show (recognised-cost 100 > net-stage-cost small 100))
-      print-line-uni ("and the reading still grows with frame length on this fixture, which is NOT a copy in the stack because the IPv4 branch no longer makes one, and is unattributed: " & show (recognised-big 100 > recognised-cost 100))
+      print-line-uni ("a frame the stack RECOGNISES costs the same as one it drops, each frame built before its window opens: " & show (recognised-cost 100 == net-stage-cost small 100))
+      print-line-uni ("and the reading does not grow with frame length: " & show (recognised-big 100 == recognised-cost 100))
       print-line-uni ("eth-payload, which the IPv4 branch no longer calls, would alone have cost more than a whole refused frame now does: " & show (eth-payload-cost 100 > recognised-big 100))
       print-line-uni ("reading each element with list-at costs the same as pushing a constant, so list-at is not the difference: " & show (copy-cost 1486 == frame-build-cost 1486))
-      print-line-uni ("and eth-payload still costs MORE than that same loop, so its cost is NOT in the loop: " & show (eth-payload-cost 100 > copy-cost 1486))
-      print-line-uni ("the SAME eth-payload over the same bytes costs more when the frame was built by concatenation: " & show (eth-payload-cost 100 > eth-payload-flat-cost 100))
+      print-line-uni ("and eth-payload costs exactly that loop, so its cost is one copy of the payload: " & show (eth-payload-cost 100 == copy-cost 1486))
+      print-line-uni ("the SAME eth-payload over the same bytes costs the same whether the frame was built by concatenation or by pushes: " & show (eth-payload-cost 100 == eth-payload-flat-cost 100))
       print-line-uni ("the zeros fixture's IP stage costs LESS than one payload copy, so it cannot have copied the payload and its reading is a refusal: " & show (ip-stage-cost 100 < copy-cost 1480))
       print-line-uni ("an ACCEPTED frame's IP stage still costs MORE than a refused one, which is the reach control now that no copy is left to make it dear: the pseudo-header is built only past ip-header-valid: " & show (accepted-ip-stage-cost 1460 100 > net-stage-cost small 100))
       print-line-uni ("the IPv4 branch no longer copies the frame, so an accepted frame and the IP stage over the same bytes cost the SAME: " & show (accepted-cost 1460 100 == accepted-ip-stage-cost 1460 100))

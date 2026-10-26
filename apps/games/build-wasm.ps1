@@ -246,6 +246,10 @@ $Games = @{
             @{ Name = 'sp_mto';    Fn = 'sp_wasm_move_to';    Arity = 1 }
             @{ Name = 'sp_run';    Fn = 'sp_wasm_run';        Arity = 1 }
             @{ Name = 'sp_swapdown'; Fn = 'sp_wasm_swap_down'; Arity = 3 }
+            @{ Name = 'sp_blank';  Fn = 'sp_wasm_blank';      Arity = 0 }
+            @{ Name = 'sp_put';    Fn = 'sp_wasm_put';        Arity = 3 }
+            @{ Name = 'sp_hide';   Fn = 'sp_wasm_hide';       Arity = 3 }
+            @{ Name = 'sp_sput';   Fn = 'sp_wasm_stock_put';  Arity = 2 }
             @{ Name = 'sp_rsuits'; Fn = 'sp_wasm_res_suits';  Arity = 1 }
             @{ Name = 'sp_rmoves'; Fn = 'sp_wasm_res_moves';  Arity = 1 }
             @{ Name = 'sp_rwon';   Fn = 'sp_wasm_res_won';    Arity = 1 }
@@ -367,6 +371,7 @@ $Games = @{
             @{ Name = 'pv_wild';    Fn = 'pvw_wasm_wild_rank';  Arity = 6 }
             @{ Name = 'pv_wildn';   Fn = 'pvw_wasm_wild_count'; Arity = 6 }
             @{ Name = 'pv_wild7';   Fn = 'pvw_wasm_wild7';      Arity = 8 }
+            @{ Name = 'pv_wild7h';  Fn = 'pvw_wasm_wild7_hand'; Arity = 8 }
             @{ Name = 'pv_eval5';   Fn = 'pvw_wasm_eval5';      Arity = 5 }
             @{ Name = 'pv_cmp';     Fn = 'pvw_wasm_cmp';        Arity = 2 }
             @{ Name = 'pv_rank';    Fn = 'pvw_wasm_rank';       Arity = 1 }
@@ -505,6 +510,7 @@ $Games = @{
             @{ Name = 'pn_hands';    Fn = 'pn_wasm_hands';       Arity = 1 }
             @{ Name = 'pn_cards0';   Fn = 'pn_wasm_cards0';      Arity = 1 }
             @{ Name = 'pn_cardsadd'; Fn = 'pn_wasm_cards_add';   Arity = 2 }
+            @{ Name = 'pn_scorecase'; Fn = 'pn_wasm_score_case'; Arity = 9 }
             @{ Name = 'pn_meldof';   Fn = 'pn_wasm_meld_of';     Arity = 2 }
         )
     }

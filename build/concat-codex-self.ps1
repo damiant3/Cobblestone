@@ -16,10 +16,10 @@ $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 . (Join-Path $PSScriptRoot 'quire-map.ps1')
 if ((-not $CodexDir)) {
-    $CodexDir = Join-Path $Repo 'codex\compiler'
+    $CodexDir = Join-Path $Repo 'codex/compiler'
 }
 $CodexDir = (Resolve-Path $CodexDir).Path
-$ForewordDir = Join-Path $Repo 'codex\foreword\core'
+$ForewordDir = Join-Path $Repo 'codex/foreword/core'
 
 $lines = [System.Collections.Generic.List[string]]::new()
 
@@ -138,10 +138,10 @@ function Sort-ByDeps {
 
 
 # 2. The concatenation order, read from build/compiler-order.txt.
-$orderPath = Join-Path $Repo 'build\compiler-order.txt'
+$orderPath = Join-Path $Repo 'build/compiler-order.txt'
 if (-not (Test-Path -PathType Leaf $orderPath)) { throw "concat-codex-self: missing $orderPath, which is the compiler's concatenation order" }
-$orderRows = @(Get-Content $orderPath | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })
-$onDisk = @(Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object { $_.FullName.Substring($Repo.Length + 1) })
+$orderRows = @(Get-Content $orderPath | ForEach-Object { $_.Trim().Replace('\', '/') } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })
+$onDisk = @(Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object { $_.FullName.Substring($Repo.Length + 1).Replace('\', '/') })
 $orderMissing = @($onDisk | Where-Object { $orderRows -notcontains $_ })
 $orderExtra = @($orderRows | Where-Object { $onDisk -notcontains $_ })
 if ($orderMissing.Count -gt 0 -or $orderExtra.Count -gt 0) {
@@ -154,7 +154,7 @@ if ($orderMissing.Count -gt 0 -or $orderExtra.Count -gt 0) {
 
 # 3. Every compiler file, in the manifest's order.
 foreach ($rel in $orderRows) {
-    $full = Join-Path $Repo $rel
+    $full = [System.IO.Path]::GetFullPath((Join-Path $Repo $rel))
     $parent = Split-Path $full -Parent
     $quire = if ($parent -eq $CodexDir) { '' } else { Split-Path $parent -Leaf }
     Add-WithQuire -Path $full -Quire $quire

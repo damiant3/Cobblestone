@@ -417,11 +417,15 @@ Chapter: AdminPanel
       day = p.world.world.hour / 24, reason = "", before = "null", after = "null",
       detail = detail, subject = 0, amount = 0 }) False
 
+ Every account has a GM memory slot, but only the first 128 have a credential role (5 to 132) and a panel session row.
+  panel-credential-slot : AdminAuth, AdminPanel, Integer -> Boolean
+  panel-credential-slot (auth) (p) (slot) = slot >= 0 & slot + 5 <= list-length auth.enabled & slot * 3 + 2 < list-length p.gm-sessions
   panel-gm-key : AdminAuth, AdminPanel, JsonValue, Integer -> Text
   panel-gm-key (auth) (p) (v) (now) =
     if not (panel-live p (admin-int v "session") now) then admin-error "session"
     else let slot = gm-find p.gms (admin-int v "account")
     in if slot < 0 then admin-error "unknown-account"
+    else if not (panel-credential-slot auth p slot) then admin-error "credential-slot"
     else let a = list-at p.gms.accounts slot
     in let operation = json-get-str v "command" ""
     in let revoked = operation == "gm-key-revoke"
@@ -503,7 +507,7 @@ Chapter: AdminPanel
       if role /= 4 then admin-error "role" else panel-gm-key auth p parsed.value get-ticks
     else let reply = panel-dispatch p role body
     in let slot = gm-find p.gms (admin-int parsed.value "account")
-    in let disabled = if role == 4 & command == "gm-revoke" & slot >= 0 then
+    in let disabled = if role == 4 & command == "gm-revoke" & slot >= 0 & panel-credential-slot auth p slot then
       if (list-at p.gms.accounts slot).gm == 0 then
         let key = list-set-at auth.enabled (slot + 4) 0
         in let session = list-set-at p.gm-sessions (slot * 3 + 2) 0 in 0

@@ -195,6 +195,18 @@
       "replacement": "Retain install-time boundary; server boots read only the installed cache"
     },
     {
+      "id": "uoaix.deploy-setup",
+      "path": "apps/uoaix/deploy/setup-uoaix.ps1",
+      "source": "apps/uoaix/CompositeGameServer.codex",
+      "disposition": "host-adapter",
+      "owner": "UOAIX",
+      "callers": "A player setting up UOAIX on Windows (docs/Designs/Active/Apps/UoaixWindowsDeployment.md)",
+      "inputs": "The player's own 1.25 client directory; ServUO and UOX3 fetched by git at pinned commits",
+      "outputs": "Under %LOCALAPPDATA%\\uoaix: the compiled server, decoration, flora, world disk, a client copy and play-uoaix.ps1",
+      "capabilities": "Read original MULs, git fetch of two public repositories, run compile.ps1 and the UOAIX install scripts, write only outside the repository and the player's client",
+      "replacement": "Retain: the player-side install boundary"
+    },
+    {
       "id": "uoaix.composite-game-launch",
       "path": "apps/uoaix/start-composite-game.ps1",
       "source": "apps/uoaix/CompositeGameServer.codex",
@@ -1019,7 +1031,7 @@
       "callers": "Root, in front of the live shard when a client-side defect needs the wire",
       "inputs": "A client on the listen port and the shard's forwarded port",
       "outputs": "Forwarded traffic and a timestamped log of both directions, passwords masked",
-      "capabilities": "TCP listen and connect on the host; log file under build-output",
+      "capabilities": "TCP listen on loopback (every interface with -Any) and connect on the host; log file under build-output",
       "replacement": "Retain while client-visible defects are diagnosed by wire capture"
     },
     {
@@ -1033,6 +1045,78 @@
       "outputs": "Relayed traffic with 0x8C redirected to the relay, and a rotated log of both directions, passwords masked",
       "capabilities": "TCP listen on loopback and connect on the host; log files under build-output",
       "replacement": "Retain; replaces UOAssist for Damian"
+    },
+    {
+      "id": "uoaix.assist.run-report",
+      "path": "apps/uoaix/assist/run-report.ps1",
+      "source": "apps/uoaix/assist/run-report.ps1",
+      "disposition": "host-adapter",
+      "owner": "UOAIX",
+      "callers": "The lane tuning the Assist's circuits (tailoring-circuit.md Next)",
+      "inputs": "The newest relay log under build-output/uoaix/assist and an optional -Since/-Until time window",
+      "outputs": "One circuit run's sewing pace, refusals, idle gaps, recalls, and thread buys and sales per vendor, on the console",
+      "capabilities": "Reads relay log files; writes nothing",
+      "replacement": "Retain while the circuits are tuned live"
+    },
+    {
+      "id": "uoaix.assist.thread-report",
+      "path": "apps/uoaix/assist/thread-report.ps1",
+      "source": "apps/uoaix/assist/thread-report.ps1",
+      "disposition": "host-adapter",
+      "owner": "UOAIX",
+      "callers": "The lane driving the Assist with Damian, for his thread vendor reports",
+      "inputs": "trades-<server>.csv and attempts-<server>.txt under %LOCALAPPDATA%\\uoaix-assist",
+      "outputs": "Each tailor's last thread buy-out, last visit, growth deadline and fitted next restock, on the console",
+      "capabilities": "Reads the Assist's record files; writes nothing",
+      "replacement": "Retire once the Assist orders Keep thread by learned restock periods"
+    },
+    {
+      "id": "uoaix.assist.watch-relay",
+      "path": "apps/uoaix/assist/watch-relay.ps1",
+      "source": "apps/uoaix/assist/watch-relay.ps1",
+      "disposition": "host-adapter",
+      "owner": "UOAIX",
+      "callers": "The lane watching the uo1998 relay with a Monitor (CurrentPlan blu row)",
+      "inputs": "-RelayPid and -Log, the newest assist-2650-*.log under build-output/uoaix/assist",
+      "outputs": "One console line per circuit, Keep, Tools, house or weave note, timing report, alarm, takeover, carry-limit crossing, or the relay gone",
+      "capabilities": "Reads the relay log shared and the relay's process; writes nothing",
+      "replacement": "Retain while the Assist is driven live"
+    },
+    {
+      "id": "uoaix.assist.test-assist",
+      "path": "apps/uoaix/assist/test-assist.ps1",
+      "source": "apps/uoaix/assist/test-assist.ps1",
+      "disposition": "independent-witness",
+      "owner": "UOAIX",
+      "callers": "Any lane changing the Assist, before it lands (docs/Designs/Active/Apps/AssistTesting.md)",
+      "inputs": "The sources named by assist.ps1's Add-Type line and apps/uoaix/assist/tests/*.cs",
+      "outputs": "PASS or FAIL per case and the counts on the console; exit 1 on a failure or a compile error",
+      "capabilities": "Compiles in process with Add-Type; in-memory streams and a virtual clock; no network, no files written",
+      "replacement": "Retain"
+    },
+    {
+      "id": "uoaix.assist.cover-assist",
+      "path": "apps/uoaix/assist/cover-assist.ps1",
+      "source": "apps/uoaix/assist/cover-assist.ps1",
+      "disposition": "independent-witness",
+      "owner": "UOAIX",
+      "callers": "Any lane changing the Assist, for its line and branch coverage (AssistTesting.md); coverage/test-cover.ps1",
+      "inputs": "The Assist's sources and suites, or -Sources, -Tests and -Entry; -OutDir",
+      "outputs": "Per-file line and branch coverage on the console; probes.tsv, the instrumented copy and coverage.txt (every unhit and unmeasured probe) in OutDir",
+      "capabilities": "Roslyn from the PowerShell install, Add-Type in process; writes only under OutDir (default the temp folder)",
+      "replacement": "Retain"
+    },
+    {
+      "id": "uoaix.assist.test-cover",
+      "path": "apps/uoaix/assist/coverage/test-cover.ps1",
+      "source": "apps/uoaix/assist/coverage/test-cover.ps1",
+      "disposition": "independent-witness",
+      "owner": "UOAIX",
+      "callers": "Any lane changing coverage/Instrumenter.cs or cover-assist.ps1",
+      "inputs": "coverage/fixture/Fixture.cs, FixtureDriver.cs and expected.txt",
+      "outputs": "PASS when the unhit probes equal expected.txt exactly, else FAIL per difference; exit 1 on any",
+      "capabilities": "Runs cover-assist.ps1 in a child pwsh; writes only under the temp folder",
+      "replacement": "Retain"
     },
     {
       "id": "diffusion.noise-bank-grade",
@@ -1969,6 +2053,18 @@
       "replacement": "Retain: the oracle must be the foreign implementation, not a Codex one."
     },
     {
+      "id": "build.nv-gsp-queue-oracle.ps1",
+      "path": "build/nv-gsp-queue-oracle.ps1",
+      "disposition": "repository-tool",
+      "owner": "Test",
+      "source": "build/nv-gsp-queue-oracle.ps1",
+      "callers": "operator, when codex/test/nv-gsp-queue.expected is regenerated",
+      "inputs": "tinygrad at a pinned commit (ip.py, autogen/nv.py, runtime/support/c.py, helpers.py), cloned to TEMP outside the depot, run by Diffusion Forge's Python",
+      "outputs": "the command rings and status-ring walks tinygrad's own NVRpcQueue send_rpc and read_resp produce for the subject's cases, on stdout",
+      "capabilities": "filesystem, process, network, git, python",
+      "replacement": "Retain: the oracle must be the foreign implementation, not a Codex one."
+    },
+    {
       "id": "build.nv-mmu-oracle.ps1",
       "path": "build/nv-mmu-oracle.ps1",
       "disposition": "repository-tool",
@@ -2013,6 +2109,18 @@
       "callers": "operator, when codex/test/sass89-hmma-turingas.expected is regenerated",
       "inputs": "unmodified pinned turingas, Python, and the HMMA/control test vectors",
       "outputs": "128 pairs of physical-order instruction words from turingas GenCode",
+      "capabilities": "filesystem, process, network, python, git",
+      "replacement": "Retain: independent foreign encoder; no cubin or GPU execution."
+    },
+    {
+      "id": "build.sass89-int-oracle.ps1",
+      "path": "build/sass89-int-oracle.ps1",
+      "disposition": "repository-tool",
+      "owner": "Test",
+      "source": "build/sass89-int-oracle.ps1",
+      "callers": "operator, when codex/test/sass89-int-turingas.expected is regenerated",
+      "inputs": "unmodified pinned turingas, Python, and the integer, move, memory and exit test vectors",
+      "outputs": "51 pairs of physical-order instruction words from turingas GenCode",
       "capabilities": "filesystem, process, network, python, git",
       "replacement": "Retain: independent foreign encoder; no cubin or GPU execution."
     },
@@ -3183,6 +3291,18 @@
       "disposition": "legacy-pending",
       "owner": "pending",
       "source": "apps/landing/serve.ps1"
+    },
+    {
+      "id": "apps.landing.serve-compile.ps1",
+      "path": "apps/landing/serve-compile.ps1",
+      "source": "apps/landing/CompileServer.codex",
+      "disposition": "host-adapter",
+      "owner": "landing",
+      "callers": "operator serving the compile page locally; its -Test grade",
+      "inputs": "apps/landing/web/compile and an explicit compiler kernel",
+      "outputs": "site disk image, compiled server, owned guest on a forwarded port; with -Test, PASS or FAIL per check",
+      "capabilities": "local filesystem, compiler guest, TCP forwarding, owned child processes",
+      "replacement": "Retain Windows launch adapter; serving stays in Codex."
     },
     {
       "id": "apps.mathbook.build-wasm.ps1",
@@ -4676,18 +4796,52 @@
       "source": "build/manifest-pin-test.ps1"
     },
     {
+      "id": "agents.measure-context",
+      "path": "tools/agents/measure-context.ps1",
+      "source": "tools/agents/measure-context.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "init, commander-init and handoff skills; status.json writes (CoordinationProtocol.md)",
+      "inputs": "Claude Code transcripts under the user profile projects directory, one lane or all",
+      "outputs": "Context percent per lane on the console",
+      "capabilities": "Read local transcript files; no Perforce, no guest, no writes",
+      "replacement": "Retain as a repository tool for the agent harness; it measures the harness, not the build"
+    },
+    {
       "id": "build.measure-context.ps1",
       "path": "build/measure-context.ps1",
-      "disposition": "legacy-pending",
-      "owner": "pending",
-      "source": "build/measure-context.ps1"
+      "source": "build/measure-context.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "Callers of the old path: init, commander-init and handoff skills; status.json writes (CoordinationProtocol.md)",
+      "inputs": "The arguments of the implementation, passed through",
+      "outputs": "Whatever agents.measure-context prints, and its exit code",
+      "capabilities": "Reads build/tool-catalog.json and runs agents.measure-context in process",
+      "replacement": "Remove when no operator runbook, skill or fleet tool names build/measure-context.ps1"
+    },
+    {
+      "id": "agents.merge-down-all",
+      "path": "tools/agents/merge-down-all.ps1",
+      "source": "tools/agents/merge-down-all.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "Damian or root by hand (PerforceProcess.md, OperatorsManual.md); mindmeld skill",
+      "inputs": "Perforce streams and clients on localhost:1666; -ApprovedBy damian for a real run",
+      "outputs": "Merge-down changelists on every dev stream, inbox directives for streams left behind",
+      "capabilities": "Perforce writes to dev streams only, workspace syncs, mailbox file writes",
+      "replacement": "Retain as a repository tool; it orchestrates the fleet, not the build"
     },
     {
       "id": "build.merge-down-all.ps1",
       "path": "build/merge-down-all.ps1",
-      "disposition": "legacy-pending",
-      "owner": "pending",
-      "source": "build/merge-down-all.ps1"
+      "source": "build/merge-down-all.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "Callers of the old path: Damian or root by hand (PerforceProcess.md, OperatorsManual.md); mindmeld skill",
+      "inputs": "The arguments of the implementation, passed through",
+      "outputs": "Whatever agents.merge-down-all prints, and its exit code",
+      "capabilities": "Reads build/tool-catalog.json and runs agents.merge-down-all in process",
+      "replacement": "Remove when no operator runbook, skill or fleet tool names build/merge-down-all.ps1"
     },
     {
       "id": "build.mint-factlog-fixture.ps1",
@@ -4788,25 +4942,52 @@
       "source": "build/ota-server.py"
     },
     {
-      "id": "build.p4-metal-diffs.ps1",
-      "path": "build/p4-metal-diffs.ps1",
-      "disposition": "legacy-pending",
-      "owner": "pending",
-      "source": "build/p4-metal-diffs.ps1"
+      "id": "agents.p4-metal-diffs",
+      "path": "tools/agents/p4-metal-diffs.ps1",
+      "source": "tools/agents/p4-metal-diffs.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "Register archaeology by hand (TheLostParadise ledgers)",
+      "inputs": "One depot file path, a line pattern, a revision window, an optional -Repo",
+      "outputs": "Console counts and an optional markdown table under -Repo",
+      "capabilities": "Read-only Perforce filelog, print and diff2; one optional file write",
+      "replacement": "Retain as a repository tool for register history"
     },
     {
-      "id": "build.p4-purify.ps1",
-      "path": "build/p4-purify.ps1",
-      "disposition": "legacy-pending",
-      "owner": "pending",
-      "source": "build/p4-purify.ps1"
+      "id": "agents.p4-purify",
+      "path": "tools/agents/p4-purify.ps1",
+      "source": "tools/agents/p4-purify.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "Damian or root by hand (PerforceProcess.md); -ApprovedBy damian for a real run",
+      "inputs": "One named Perforce client",
+      "outputs": "A workspace holding only tracked files, synced and merged down",
+      "capabilities": "Deletes untracked files under one client root; Perforce sync, merge and submit on that client",
+      "replacement": "Retain as a repository tool; it maintains workspaces, not the build"
+    },
+    {
+      "id": "agents.p4-stale-check",
+      "path": "tools/agents/p4-stale-check.ps1",
+      "source": "tools/agents/p4-stale-check.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "build/build.ps1 through the build/p4-stale-check.ps1 forwarder; the gate dance in PerforceProcess.md",
+      "inputs": "The current Perforce client: opened files, fstat, status -a",
+      "outputs": "OK or FAIL on the console, exit 0 or 1",
+      "capabilities": "Read-only Perforce queries against the current client",
+      "replacement": "Retain as a repository tool; a native Perforce client is outside the build closure"
     },
     {
       "id": "build.p4-stale-check.ps1",
       "path": "build/p4-stale-check.ps1",
-      "disposition": "legacy-pending",
-      "owner": "pending",
-      "source": "build/p4-stale-check.ps1"
+      "source": "build/p4-stale-check.ps1",
+      "disposition": "repository-tool",
+      "owner": "Fleet tooling (val, Build.md first family move)",
+      "callers": "Callers of the old path: build/build.ps1 through the build/p4-stale-check.ps1 forwarder; the gate dance in PerforceProcess.md",
+      "inputs": "The arguments of the implementation, passed through",
+      "outputs": "Whatever agents.p4-stale-check prints, and its exit code",
+      "capabilities": "Reads build/tool-catalog.json and runs agents.p4-stale-check in process",
+      "replacement": "Remove when codex/build/BuildScript.codex and build/build.ps1 call tools/agents/p4-stale-check.ps1"
     },
     {
       "id": "build.plug-build.ps1",
@@ -6287,6 +6468,18 @@
       "inputs": "codex/plugs/sass/test/first-slice.codex; maxas at a pinned commit, cloned to TEMP outside the depot, run by Git for Windows' perl.exe",
       "outputs": "PASS, or each instruction word and control word maxas encodes differently, and any missing kernel or refusal",
       "capabilities": "filesystem, process, network, perl, git, codex-vm",
+      "replacement": "Retain: the grader must be the foreign implementation, not a Codex one."
+    },
+    {
+      "id": "codex.plugs.sass.test-turingas.ps1",
+      "path": "codex/plugs/sass/test-turingas.ps1",
+      "disposition": "repository-tool",
+      "owner": "Plugs",
+      "source": "codex/plugs/sass/test-turingas.ps1",
+      "callers": "operator, after any change to codex/plugs/sass",
+      "inputs": "codex/plugs/sass/test/first-slice.codex listed for SM 8.9; turingas at a pinned commit, cloned to TEMP outside the depot, run by Python",
+      "outputs": "PASS, or each instruction whose two words turingas encodes differently, and any missing kernel or refusal",
+      "capabilities": "filesystem, process, network, python, git, codex-vm",
       "replacement": "Retain: the grader must be the foreign implementation, not a Codex one."
     },
     {

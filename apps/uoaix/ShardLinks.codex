@@ -10,13 +10,17 @@ Chapter: ShardLinks
   cites Foreword chapter Result
 
   ShardLink = record { port : Integer, epoch : Integer, occupied : Boolean,
-    failed : Boolean, transport : TcpTransportState, tx : ShardTx }
+    failed : Boolean, transport : TcpTransportState, tx : ShardTx, spill : ShardTx }
   ShardLinks = record { slots : List ShardLink, mac : List Integer,
     ip : List Integer, gateway : List Integer, mask : List Integer, mark : Integer }
  Up to 256 game slots (CompositeLaunch cl-links-ceiling) plus three admin-panel slots: a browser holds a speculative
  second connection open, and one panel slot stalled every page load until the 30 s idle close.
   sl-max-links : Integer = 259
   sl-recv-bytes : Integer = 8192
+ A game link's response past its 64 KiB tx buffer waits in its spill, made at boot below the serving mark (L-BELOWMARK),
+ and refills tx as it drains (root ruling 2026-10-20: a link never closes for size). 4 x 64 KiB a game link is 8 MiB at the
+ default 32 links, 64 MiB at the 256 ceiling; an admin slot's 2 MiB tx needs none.
+  sl-spill-bytes : Integer = 4 * stx-max-bytes
 
   sl-ports-valid : List Integer, Integer -> Boolean
   sl-ports-valid (ports) (i) = if i >= list-length ports then True
@@ -27,11 +31,13 @@ Chapter: ShardLinks
     if i >= list-length ports then Ok slots
     else when stx-new (if list-at ports i == 2594 then stx-admin-bytes else stx-max-bytes)
       is Err (e) -> Err e
-      is Ok (tx) ->
+      is Ok (tx) -> when stx-new (if list-at ports i == 2594 then 1 else sl-spill-bytes)
+      is Err (e) -> Err e
+      is Ok (spill) ->
         let session = net-session-new mac ip gateway (list-at ports i) 0 gateway 1000
         in let transport = transport-arenas (transport-new-with-cap session sl-recv-bytes)
         in let slot = ShardLink { port = list-at ports i, epoch = 0, occupied = False,
-          failed = False, transport = transport, tx = tx }
+          failed = False, transport = transport, tx = tx, spill = spill }
         in sl-slots ports mac ip gateway (i + 1) (list-push slots slot)
 
   sl-new : List Integer, List Integer, List Integer, List Integer, List Integer -> Result ShardLinks Text
@@ -78,13 +84,21 @@ Chapter: ShardLinks
     in let reset = __record-set slot "failed" False
     in let used = __record-set slot.tx "used" 0
     in let offset = __record-set slot.tx "offset" 0
+    in let spilled = stx-clear slot.spill
     in index
 
+ The stack advertises a fixed 8192-byte window (Tcp send-window) whatever the link's receive buffer still holds, so a
+ client may send a segment that does not fit. Such a segment is dropped before the stack sees it, unacknowledged, and
+ the client's TCP sends it again once the game has drained the buffer.
+  sl-payload-length : List Integer, Integer -> Integer
+  sl-payload-length (frame) (stop) = if eth-ethertype-within frame stop /= eth-type-ipv4 then 0
+    else let segment = frame-seg-within frame stop in segment.payload-stop - segment.payload-off
   sl-feed-slot : ShardLinks, Integer, List Integer, Integer -> Integer
   sl-feed-slot (owner) (index) (frame) (stop) =
     let slot = list-at owner.slots index
     in if net-outbox-count slot.transport.session /= 0 then
       let failed = __record-set slot "failed" True in index
+    else if not slot.failed & sl-payload-length frame stop > slot.transport.recv-cap - slot.transport.recv-len then index
     else let result = net-process-frame-within slot.transport.session frame stop
     in let count = result.data-stop - result.data-off
     in if slot.failed then
@@ -125,9 +139,27 @@ Chapter: ShardLinks
   sl-send (owner) (i) = if i < 0 | i >= list-length owner.slots then Err "shard link index invalid"
     else let slot = list-at owner.slots i
     in if not slot.occupied | slot.failed then Err "shard link unavailable"
-    else when stx-step slot.tx slot.transport
+    else let refilled = if slot.tx.offset == slot.tx.used then stx-refill slot.tx slot.spill else 0
+    in when stx-step slot.tx slot.transport
       is Err (e) -> Err e
       is Ok (step) -> let saved = __record-set slot "transport" step.transport in Ok step.sent
+ A link has bytes to send while either its tx or its spill holds unsent bytes.
+  sl-pending : ShardLink -> Boolean
+  sl-pending (slot) = slot.tx.offset /= slot.tx.used | slot.spill.offset /= slot.spill.used
+ A response goes into tx as far as tx holds it and the rest into the spill; while the spill holds bytes the whole
+ response goes behind them, so the link sends in order.
+  sl-enqueue : ShardLinks, Integer, List Integer -> Result Integer Text
+  sl-enqueue (owner) (i) (bytes) = if i < 0 | i >= list-length owner.slots then Err "shard link index invalid"
+    else let slot = list-at owner.slots i
+    in if slot.spill.offset /= slot.spill.used then stx-enqueue slot.spill bytes
+    else let room = slot.tx.capacity - (slot.tx.used - slot.tx.offset)
+    in if list-length bytes <= room then stx-enqueue slot.tx bytes
+    else if list-length bytes - room > slot.spill.capacity then Err "shard transmit response exceeds capacity"
+    else when stx-enqueue slot.tx (list-take bytes room)
+      is Err (e) -> Err e
+      is Ok (head) -> when stx-enqueue slot.spill (list-drop bytes room)
+        is Err (e) -> Err e
+        is Ok (tail) -> Ok (head + tail)
 
   sl-tick : ShardLinks, Integer -> Result Integer Text
   sl-tick (owner) (i) = if i >= list-length owner.slots then Ok 0
@@ -145,6 +177,7 @@ Chapter: ShardLinks
     in let failed = __record-set slot "failed" False
     in let used = __record-set slot.tx "used" 0
     in let offset = __record-set slot.tx "offset" 0
+    in let spilled = stx-clear slot.spill
     in Ok i
 
   sl-close : ShardLinks, Integer, Boolean -> Result Boolean Text
@@ -155,6 +188,7 @@ Chapter: ShardLinks
     else let discarded = if abort then
       let used = __record-set slot.tx "used" 0
       in let offset = __record-set slot.tx "offset" 0
+      in let spilled = stx-clear slot.spill
       in let failed = __record-set slot "failed" True
       in let received = __record-set slot "transport" (transport-drop-recv slot.transport) in 0
       else 0
@@ -166,7 +200,7 @@ Chapter: ShardLinks
       is TcpTimeWait -> True
       is otherwise -> False
     in if closing then Ok True
-    else if slot.tx.offset /= slot.tx.used | net-rexmit-full slot.transport.session then Ok False
+    else if sl-pending slot | net-rexmit-full slot.transport.session then Ok False
     else let transport = transport-close slot.transport
     in let saved = __record-set slot "transport" transport in Ok True
 

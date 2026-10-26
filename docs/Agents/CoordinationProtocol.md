@@ -96,13 +96,16 @@ Valid states: `Idle`, `Working`, `Building`, `WaitingForBuild`, `Error`.
 
 **`context` is mandatory on every write** (Damian, 2026-09-07): the lane's
 context used, a whole-number percent, e.g. `"context": 62`. The commander
-reads it on every pulse and ORDERS `/handoff` at 75, never earlier; a lane
-that reads 75 or more hands off on its own without waiting to be told. A lane whose `context`
+reads it on every pulse and ORDERS `/handoff` past 75, never earlier; a lane
+past 75 starts no new large unit and hands off on its own once the unit in hand
+lands, without waiting to be told. 75 is a start threshold, not an end one
+(Damian, 2026-10-24: "75% is a start project threshold, not an end project
+threshold"; agents work well into the low 80s). A lane whose `context`
 has not moved across two pulses while its state says `Working` is checked
 for exhaustion first, before its terminal or its run.
 
 **MEASURE IT, DO NOT ESTIMATE IT.** The one formula is
-`build/measure-context.ps1 -Lane <lane> -Percent`, read from the transcript
+`tools/agents/measure-context.ps1 -Lane <lane> -Percent`, read from the transcript
 files. A feeling about how long the session has run is not this number, and
 AgentGrid's display and a lane's own estimate are both wrong after a
 `/compact`. Write what you measured, and if you have not measured since your

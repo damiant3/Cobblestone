@@ -1,0 +1,42 @@
+Chapter: BvtLinkSpill
+  cites Uoaix chapter ShardTx
+  cites Uoaix chapter ShardLinks
+  cites Uoaix chapter BvtCheck
+
+ UOAIX part 2b (root ruling 2026-10-20: a link never closes for size): a game link's response past its 64 KiB tx goes
+ on into its spill and refills tx as tx drains, in order. Bits: 1 a 100,000-byte response fills tx and spills the rest,
+ the link pending; 2 a response queued behind a spill goes behind it; 4 tx drained refills from the spill's front, in
+ order, and a spill emptied this way starts over; 8 a response past tx and spill together is refused and queues
+ nothing; 16 an admin slot's spill is one byte. 31 is all.
+  bls-bytes : Integer, Integer, List Integer -> List Integer
+  bls-bytes (n) (i) (out) = if i >= n then out else bls-bytes n (i + 1) (list-push out (int-mod (i * 7 + i / 256) 256))
+  bls-drain : ShardTx -> Integer
+  bls-drain (q) = let a = __record-set q "offset" q.used in 0
+  bls-checks : Integer -> Integer
+  bls-checks (unused) = when sl-new [2593, 2594] [2, 0, 0, 0, 0, 1] [10, 0, 2, 15] [10, 0, 2, 2] [255, 255, 255, 0]
+    is Err (_) -> 0 - 1
+    is Ok (links) -> let slot = list-at links.slots 0
+      in let big = bls-bytes 100000 0 (__list-with-capacity 100000)
+      in let put = sl-enqueue links 0 big
+      in let filled = (when put is Err (_) -> False is Ok (n) -> n == 100000) & slot.tx.used == stx-max-bytes
+        & slot.spill.used - slot.spill.offset == 100000 - stx-max-bytes & sl-pending slot
+      in let more = sl-enqueue links 0 [1, 2, 3]
+      in let behind = (when more is Err (_) -> False is Ok (n) -> n == 3) & slot.tx.used == stx-max-bytes
+        & slot.spill.used - slot.spill.offset == 100003 - stx-max-bytes
+      in let sent = bls-drain slot.tx
+      in let moved = stx-refill slot.tx slot.spill
+      in let first = peek-byte slot.tx.buffer 0 == list-at big stx-max-bytes
+      in let refilled = moved == 100003 - stx-max-bytes & slot.tx.used == moved & slot.spill.used == 0 & slot.spill.offset == 0
+        & first & peek-byte slot.tx.buffer (moved - 1) == 3
+      in let sent2 = bls-drain slot.tx
+      in let idle = not (sl-pending slot)
+      in let over = sl-enqueue links 0 (bls-bytes (stx-max-bytes + sl-spill-bytes + 1) 0 (__list-with-capacity (stx-max-bytes + sl-spill-bytes + 1)))
+      in let refused = (when over is Err (_) -> True is Ok (_) -> False) & not (sl-pending slot)
+      in (if filled then 1 else 0) + (if behind then 2 else 0) + (if refilled & idle then 4 else 0) + (if refused then 8 else 0)
+        + (if (list-at links.slots 1).spill.capacity == 1 then 16 else 0)
+  bvt-link-spill : Integer -> [Console] Integer
+  bvt-link-spill (unused) = act
+    n <- bls-checks 0
+    a <- bvt-check ("part 2b: a game response past 64 KiB spills, queues in order and refills tx as it drains; past tx and spill it is refused (code " & show n & ")") (n == 31)
+    a
+  end

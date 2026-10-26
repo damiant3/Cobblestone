@@ -1,7 +1,13 @@
+using System.Collections.Immutable;
+#nullable enable
 // The 1998 server's weapon table (uo-reference rundir/weapons/weapon.<id>: id|name|damage dice|speed|type), indexed by
 // the TILEDATA Misc of a weapon's art (OUO weapon.c:305). Generated from those files; not edited by hand.
-public static class UoWeapons {
-    public static readonly string[] Rows = {
+
+namespace Uoaix.Assist;
+
+public static class UoWeapons
+{
+    static readonly ImmutableArray<string> s_rows = [
         "0|Default wearable|0|0|Shield",
         "1|Cutlass|2d7+2|45|Slashing",
         "2|Scimitar|2d7+2|47|Slashing",
@@ -218,5 +224,6 @@ public static class UoWeapons {
         "371|War Axe|5d6+3|35|Bashing",
         "372|Evil Axe|4d7+3|35|Slashing",
         "373|Magic Wand|2d3|35|Bashing",
-    };
+    ];
+    public static ImmutableArray<string> Rows => s_rows;
 }

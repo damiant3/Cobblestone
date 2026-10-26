@@ -113,8 +113,10 @@ only the town's abstract counters and make no catalog item.
 | 120 | pitchfork | C st9, 1 iron ingot and 1 board, Tinkering | the tinker (restock, from a bought ingot); the farmer and the flax picker make their own at founding | miners, lumberjack |
 | 148 | hinge | C st9, 2 iron ingots, Tinkering | the tinker (restock, from bought ingots; also sold) | none since houses come from deeds |
 | 149 | stone block | C st1, 1 stone and a stone hammer, Masonry (economy skill 11) | the provisioner (restock, from stone it bought from the quarrier; also sold) | none since houses come from deeds |
+| 211-214 | axle, gears, springs, clock frame | C st9, Tinkering: 2 boards, 2 iron ingots, 2 iron ingots, 6 boards (1998 tinker.m) | none (players) | none |
+| 215-219 | axle with gears, clock parts, sextant parts, clock, sextant | C st9, Tinkering, one of each part: axle and gears; axle with gears and springs; axle with gears and a hinge; clock frame and clock parts; sextant parts | none (players) | none |
 
-No NPC maker: 8, 16-24, 43, 44, 49, 57-61, 78-103.
+No NPC maker: 8, 16-24, 43, 44, 49, 57-61, 78-103, 211-219.
 A restock (bb-restock) makes a good only from stone, logs and boards the shop holds (`bb-restock-input`).
 No NPC gatherer of its own: water,
 cabbages (each producer harvests them itself), and meat (no harvester at

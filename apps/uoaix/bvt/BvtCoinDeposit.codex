@@ -7,7 +7,9 @@ Chapter: BvtCoinDeposit
  D-10: carried coin enters a purse as a currency deposit (kind 16: a crown decree, then a payout). On the Britain
  economy with shop 1001's actor: 1 a deposit of 5 copper and 2 gold raises the purse by exactly that, 2 the currency
  validates after it (the replay applies kind 16), 4 a deposit to the treasury and one to another actor's purse are
- refused; -1 a fixture that failed.
+ refused; 8 withdrawing the same coin (kind 17, the change a purchase pays back into the pack) returns the purse to where
+ it began, 16 the currency validates after it, 32 withdrawing more copper than the purse holds is refused and moves
+ nothing; -1 a fixture that failed.
   bcd-run : EuCurrency -> Integer
   bcd-run (x) = let opened = bsl-open x
     in let actor = cg-label-actor x 1001
@@ -20,12 +22,16 @@ Chapter: BvtCoinDeposit
     in let raised = if done == 0 & (em-purse x.copper purse).coin == c0 + 5 & (em-purse x.world.money purse).coin == g0 + 2 then 1 else 0
     in let valid = if euv-valid x then 2 else 0
     in let refused = if eu-deposit x actor 1 5 0 0 < 0 & eu-deposit x actor (ep-actor x.world other).purse 5 0 0 < 0 then 4 else 0
-    in raised + valid + refused
+    in let back = eu-withdraw x actor purse 5 0 2
+    in let withdrawn = if back == 0 & (em-purse x.copper purse).coin == c0 & (em-purse x.world.money purse).coin == g0 then 8 else 0
+    in let replayed = if euv-valid x then 16 else 0
+    in let overdrawn = if eu-withdraw x actor purse (c0 + 1) 0 0 < 0 & (em-purse x.copper purse).coin == c0 then 32 else 0
+    in raised + valid + refused + withdrawn + replayed + overdrawn
   bvt-coin-deposit : Integer -> [Console] Integer
   bvt-coin-deposit (unused) = when bb-economy 0
     is Err (e) -> bvt-check ("coin deposit fixture: " & e) False
     is Ok (x) -> act
       n <- bcd-run x
-      a <- bvt-check ("D-10: carried coin deposits into the purse as a replayable currency event (code " & show n & ")") (n == 7)
+      a <- bvt-check ("D-10: carried coin deposits into the purse and withdraws back out as replayable currency events (code " & show n & ")") (n == 63)
       a
     end

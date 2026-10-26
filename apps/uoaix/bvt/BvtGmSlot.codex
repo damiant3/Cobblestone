@@ -1,0 +1,47 @@
+Chapter: BvtGmSlot
+  cites Uoaix chapter AdminPanel
+  cites Uoaix chapter AdminWorld
+  cites Uoaix chapter AdminProtocol
+  cites Uoaix chapter GmMemory
+  cites Uoaix chapter Townsfolk
+  cites Uoaix chapter TownMind
+  cites Uoaix chapter BvtCheck
+
+ 131 accounts in GM memory, one per game account as cgs-admit registers them, the 3rd and the 131st dubbed GM: only the
+ first 128 carry a credential role (5 to 132) and a session row, so the owner's key commands on the 131st indexed past
+ both lists and halted the shard; they now answer credential-slot (val, UOAIX audit 2026-10-18).
+  bgs-key : Text = "0000000000000000000000000000000000000000000000000000000000000001"
+  bgs-fill : GmMemory, Integer, Integer -> Integer
+  bgs-fill (m) (i) (n) = if i >= n then m.used
+    else let grown = if gm-due m then gm-grow m else 0
+    in let made = gm-memory-register m (i + 1) ("p" & show (i + 1)) True
+    in bgs-fill m (i + 1) n
+  bgs-gm : GmMemory, Integer -> Integer
+  bgs-gm (m) (slot) = let a = list-at m.accounts slot in let g = __record-set a "gm" 1 in a.id
+  bgs-key-command : Text, Integer -> Text
+  bgs-key-command (command) (account) = "{\"command\":\"" & command & "\",\"account\":" & show account & ",\"key\":\"" & bgs-key & "\",\"session\":1}"
+  bgs-replies : Integer -> List Text
+  bgs-replies (unused) = when admin-auth-new [bgs-key, bgs-key, bgs-key, bgs-key] bgs-key
+    is None -> ["fixture"]
+    is Just (auth) -> let p = panel-new (admin-world-new (tf-new 0) (tm-new 0)) "Owner"
+      in let login = panel-open p get-ticks
+      in let filled = bgs-fill p.gms 0 131
+      in let near = bgs-gm p.gms 2
+      in let far = bgs-gm p.gms 130
+      in let set-near = panel-dispatch-auth auth p 4 (bgs-key-command "gm-key-set" near)
+      in let revoke-near = panel-dispatch-auth auth p 4 (bgs-key-command "gm-key-revoke" near)
+      in let set-far = panel-dispatch-auth auth p 4 (bgs-key-command "gm-key-set" far)
+      in let revoke-far = panel-dispatch-auth auth p 4 (bgs-key-command "gm-key-revoke" far)
+      in let demote-far = panel-dispatch-auth auth p 4 ("{\"command\":\"gm-revoke\",\"account\":" & show far & ",\"session\":1}")
+      in [show filled, set-near, revoke-near, set-far, revoke-far, demote-far]
+  bgs-at : List Text, Integer -> Text
+  bgs-at (n) (i) = if i < list-length n then list-at n i else "?"
+  bvt-gm-slot : Integer -> [Console] Integer
+  bvt-gm-slot (unused) = let n = bgs-replies 0
+    in let near = bgs-at n 0 == "131" & text-contains (bgs-at n 1) "\"ok\":1" & text-contains (bgs-at n 2) "\"ok\":1"
+    in let far = text-contains (bgs-at n 3) "credential-slot" & text-contains (bgs-at n 4) "credential-slot" & list-length n == 6 & bgs-at n 5 /= ""
+    in act
+    a <- bvt-check ("the owner sets and revokes the key of the 3rd account's GM: " & bgs-at n 1 & " " & bgs-at n 2) near
+    b <- bvt-check ("the 131st account's GM has no credential role: setting or revoking its key answers credential-slot, and revoking its GM grant answers, none of the three halting: " & bgs-at n 3 & " " & bgs-at n 4) far
+    a + b
+  end

@@ -1,0 +1,156 @@
+Chapter: Sass89IntTuringas
+  cites Sass chapter Sass89Int
+  cites Sass chapter Sass89Hmma
+  cites Sass chapter SassCtrl
+  cites Foreword chapter Format
+
+  bar-at : Integer -> Integer
+  bar-at (n) = if int-mod n 7 == 0 then 7 else int-mod n 7 - 1
+
+  ctl : Integer, Integer -> CtrlCode
+  ctl (j) (reuse) = CtrlCode {
+   stall = int-mod j 16,
+   yield-bit = int-mod j 2,
+   write-bar = bar-at j,
+   read-bar = bar-at (j * 3),
+   wait-mask = int-mod (j * 5) 64,
+   reuse = reuse
+  }
+
+  at : Integer, Integer, Integer, Integer, S89Body -> S89Insn
+  at (j) (g) (gn) (reuse) (b) = S89Insn { body = b, guard = g, guard-neg = gn, control = ctl j reuse }
+
+  add : Integer, Integer, Integer, S89Src, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> S89Body
+  add (d) (a) (an) (b) (bn) (c) (x) (o0) (o1) (i0) (i0n) (i1) (i1n) = S89Iadd3 (S89Add {
+   dst = d, a = a, a-neg = an, b = b, b-neg = bn, c = c, x = x,
+   out0 = o0, out1 = o1, in0 = i0, in0-neg = i0n, in1 = i1, in1-neg = i1n
+  })
+
+  plain : Integer, Integer, Integer, S89Src, Integer, Integer -> S89Body
+  plain (d) (a) (an) (b) (bn) (c) = add d a an b bn c 0 7 7 7 1 7 1
+
+  setp : Integer, Integer, Integer, Integer, Integer, S89Src, Integer, Integer -> S89Body
+  setp (p) (cmp) (s) (op) (a) (b) (q) (qn) = S89Isetp (S89Cmp {
+   pred = p, cmp = cmp, signed = s, bool-op = op, a = a, b = b, accum = q, accum-neg = qn
+  })
+
+  shf : Integer, Integer, Integer, Integer, Integer, S89Src, Integer -> S89Body
+  shf (d) (r) (kind) (hi) (lo) (s) (h) = S89Shf (S89Shift {
+   dst = d, right = r, kind = kind, high-half = hi, low = lo, shift = s, high = h
+  })
+
+  mad : Integer, Integer, S89Src, Integer, Integer, Integer -> S89Body
+  mad (d) (a) (b) (c) (wide) (s) = S89Imad (S89Mad { dst = d, a = a, b = b, c = c, wide = wide, signed = s })
+
+  mem : Integer, Integer, Integer, Integer, Integer -> S89Mem
+  mem (data) (addr) (off) (w) (order) = S89Mem { data = data, addr = addr, offset = off, width = w, order = order }
+
+  case-at : Integer -> S89Insn
+  case-at (j) =
+    when j
+     is 0 -> at j 7 0 0 (S89Mov 1 (S89Reg 2))
+     is 1 -> at j 7 0 0 (S89Mov 3 (S89Imm #12345678))
+     is 2 -> at j 7 0 0 (S89Mov 4 (S89Cb 0 #160))
+     is 3 -> at j 1 0 2 (S89Mov 5 (S89Reg 6))
+     is 4 -> at j 7 0 0 (S89Mov 7 (S89Imm -1))
+     is 5 -> at j 7 0 0 (plain 0 2 0 (S89Reg 4) 0 255)
+     is 6 -> at j 7 0 0 (add 0 2 0 (S89Reg 4) 0 255 0 0 7 7 1 7 1)
+     is 7 -> at j 7 0 0 (add 1 3 0 (S89Reg 5) 0 255 1 7 7 0 0 7 1)
+     is 8 -> at j 7 0 0 (plain 0 2 1 (S89Reg 4) 0 6)
+     is 9 -> at j 7 0 0 (plain 0 2 0 (S89Reg 4) 1 255)
+     is 10 -> at j 7 0 0 (plain 8 9 0 (S89Imm #100) 0 10)
+     is 11 -> at j 7 0 0 (plain 8 9 0 (S89Cb 0 #168) 0 255)
+     is 12 -> at j 7 0 7 (add 0 2 0 (S89Reg 4) 0 6 0 1 2 7 1 7 1)
+     is 13 -> at j 7 0 0 (add 1 3 0 (S89Reg 5) 1 255 1 7 7 0 1 3 0)
+     is 14 -> at j 2 1 0 (add 11 12 0 (S89Reg 13) 0 14 1 4 7 5 0 6 1)
+     is 15 -> at j 7 0 0 (setp 0 1 1 0 2 (S89Reg 4) 7 0)
+     is 16 -> at j 7 0 0 (setp 1 2 0 1 3 (S89Imm 7) 2 1)
+     is 17 -> at j 7 0 0 (setp 2 3 1 2 5 (S89Cb 0 0) 3 0)
+     is 18 -> at j 7 0 3 (setp 3 4 0 0 6 (S89Reg 7) 7 0)
+     is 19 -> at j 7 0 0 (setp 4 5 1 0 8 (S89Reg 255) 7 0)
+     is 20 -> at j 7 0 0 (setp 6 6 0 0 9 (S89Imm #FFFFFFFF) 7 0)
+     is 21 -> at j 7 0 0 (shf 0 0 3 0 2 (S89Imm 3) 255)
+     is 22 -> at j 7 0 0 (shf 1 0 0 1 2 (S89Imm 3) 3)
+     is 23 -> at j 7 0 0 (shf 4 1 2 1 255 (S89Imm 31) 5)
+     is 24 -> at j 7 0 0 (shf 6 1 3 0 7 (S89Reg 8) 9)
+     is 25 -> at j 7 0 7 (shf 10 1 3 1 11 (S89Reg 12) 13)
+     is 26 -> at j 7 0 0 (S89S2r 0 33)
+     is 27 -> at j 7 0 0 (S89S2r 1 37)
+     is 28 -> at j 7 0 0 (S89S2r 2 0)
+     is 29 -> at j 3 0 0 (S89S2r 3 35)
+     is 30 -> at j 7 0 0 (S89Ldc 0 32 0 0)
+     is 31 -> at j 7 0 0 (S89Ldc 2 64 0 #160)
+     is 32 -> at j 7 0 0 (S89Ldc 4 32 3 #FFFC)
+     is 33 -> at j 7 0 0 (S89Ldg (mem 2 4 0 64 7))
+     is 34 -> at j 7 0 0 (S89Ldg (mem 6 8 #10 32 7))
+     is 35 -> at j 7 0 0 (S89Ldg (mem 2 4 -8 64 0))
+     is 36 -> at j 7 0 0 (S89Ldg (mem 2 4 #7FFFF8 64 4))
+     is 37 -> at j 7 0 0 (S89Ldg (mem 2 4 0 64 10))
+     is 38 -> at j 7 0 0 (S89Ldg (mem 10 12 -8388608 64 7))
+     is 39 -> at j 7 0 0 (S89Ldg (mem 10 12 0 64 7))
+     is 40 -> at j 1 1 0 (S89Ldg (mem 0 2 4 32 7))
+     is 41 -> at j 7 0 0 (S89Stg (mem 2 4 #10 64 7))
+     is 42 -> at j 7 0 0 (S89Stg (mem 8 6 0 32 7))
+     is 43 -> at j 7 0 0 (S89Stg (mem 2 4 -8 64 0))
+     is 44 -> at j 7 0 0 (S89Stg (mem 2 4 0 64 10))
+     is 45 -> at j 7 0 0 (S89Stg (mem 9 4 #7FFFFC 32 4))
+     is 46 -> at j 7 0 0 (S89Stg (mem 12 10 0 64 7))
+     is 47 -> at j 6 0 0 (S89Stg (mem 3 2 0 32 7))
+     is 48 -> at j 7 0 0 S89Exit
+     is 49 -> at j 0 0 0 S89Exit
+     is 50 -> at j 5 1 0 S89Exit
+     is 51 -> at j 7 0 0 (mad 0 2 (S89Reg 4) 6 0 1)
+     is 52 -> at j 7 0 0 (mad 1 3 (S89Reg 5) 255 0 0)
+     is 53 -> at j 7 0 0 (mad 8 9 (S89Imm #10) 10 0 1)
+     is 54 -> at j 7 0 0 (mad 8 9 (S89Cb 0 #160) 255 0 0)
+     is 55 -> at j 2 0 7 (mad 3 4 (S89Reg 7) 3 0 1)
+     is 56 -> at j 7 0 0 (mad 2 4 (S89Reg 6) 255 1 0)
+     is 57 -> at j 7 0 0 (mad 10 12 (S89Reg 14) 16 1 1)
+     is 58 -> at j 7 0 0 (mad 2 4 (S89Imm 8) 6 1 0)
+     is 59 -> at j 7 0 0 (mad 2 4 (S89Cb 0 #168) 255 1 1)
+     is 60 -> at j 0 1 0 (mad 20 21 (S89Reg 22) 24 1 0)
+     is 61 -> at j 7 0 0 (S89Bra #10)
+     is 62 -> at j 0 0 0 (S89Bra -128)
+     is 63 -> at j 3 1 0 (S89Bra #7FFFFFF0)
+     is 64 -> at j 7 0 0 (S89Bra -2147483648)
+     is 65 -> at j 7 0 0 (S89Bra 0)
+     is 66 -> at j 6 0 0 (S89Bra -16)
+     is 67 -> at j 7 0 0 (S89Ldg (mem 3 4 2 16 7))
+     is 68 -> at j 7 0 0 (S89Stg (mem 7 4 -2 16 7))
+     is 69 -> at j 1 0 0 (S89Ldg (mem 9 10 0 16 4))
+     is 70 -> at j 7 0 0 (S89Lds (mem 3 4 #10 32 7))
+     is 71 -> at j 7 0 0 (S89Lds (mem 6 8 0 64 7))
+     is 72 -> at j 2 0 0 (S89Lds (mem 9 10 -4 32 7))
+     is 73 -> at j 7 0 0 (S89Sts (mem 7 4 #10 32 7))
+     is 74 -> at j 7 0 0 (S89Sts (mem 7 4 0 16 7))
+     is 75 -> at j 7 0 0 (S89Sts (mem 8 6 -8 64 7))
+     is 76 -> at j 7 0 0 S89Bar
+     is 77 -> at j 1 0 0 S89Bar
+     is 78 -> at j 7 0 0 (S89Prmt 0 2 (S89Imm #5410) 3)
+     is 79 -> at j 7 0 0 (S89Prmt 4 5 (S89Reg 6) 7)
+     is 80 -> at j 1 0 0 (S89Prmt 8 9 (S89Imm #7632) 255)
+     is 81 -> at j 7 0 0 (S89Lop3 0 2 (S89Reg 3) 255 #C0)
+     is 82 -> at j 7 0 0 (S89Lop3 1 4 (S89Imm 3) 255 #C0)
+     is 83 -> at j 7 0 0 (S89Lop3 5 6 (S89Cb 0 #10) 7 #FE)
+     is 84 -> at j 2 1 7 (S89Lop3 8 9 (S89Reg 10) 11 #96)
+     is otherwise -> at j 7 0 0 (S89Lds (mem 3 4 2 16 7))
+
+  word-hex : Integer -> Text
+  word-hex (w) = fmt-hex-pad (bit-and (bit-shru w 32) #FFFFFFFF) 8 & fmt-hex-pad (bit-and w #FFFFFFFF) 8
+
+  print-case : Integer -> [Console] Nothing
+  print-case (j) = act
+    when sass89-encode (case-at j)
+     is Sass89Words (lo) (hi) -> print-line-uni (show j & " " & word-hex lo & " " & word-hex hi)
+     is Sass89Refused (why) -> print-line-uni ("REFUSED " & show j & " " & why)
+  end
+
+  print-cases : Integer -> [Console] Nothing
+  print-cases (j) = act
+   if j >= 86 then print-text "" else act
+    print-case j
+    print-cases (j + 1)
+   end
+  end
+
+  opening : [Console] Nothing = print-cases 0

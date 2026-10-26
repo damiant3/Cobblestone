@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Why this check exists, and it is trust rather than correctness.
-#
+# 
 # QEMU is a third-party binary and its Authenticode signature cannot tell a
 # good build from a hostile one. The publisher's signing certificate expired
 # 2023-09-12 and the binaries are still signed with it, so verification
@@ -23,17 +23,17 @@ $ErrorActionPreference = 'Stop'
 # publisher's hands. Revocation is the mechanism that would normally carry
 # the news, and there is nothing left to revoke. A check that answers
 # identically in both worlds carries no information.
-#
+# 
 # Two independent VM hosts agreeing on the output byte for byte does carry
 # information. codex-vm is ours and QEMU is theirs; they share no code, no
 # accelerator and no author. A QEMU altered to corrupt compiler output has to
 # reproduce the exact bytes our own hypervisor produces from the same source
 # on the same machine.
-#
+# 
 # This is not a proof. It is one sample, and it does not catch an attacker
 # who corrupts only a seed rebuild. It is an assertion with a runner, which
 # is more than the certificate has ever been.
-#
+# 
 # Exit 0 on match, and 0 on a skip: a machine with only one host is the
 # normal case, not a failure. Exit 1 on a byte mismatch, which is the whole
 # reason the script exists.

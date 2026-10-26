@@ -3,6 +3,7 @@ Chapter: PageCompiler
   cites UI chapter Layout
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
   cites Browser chapter BrowserTheme
 
 Section: Compilation Result
@@ -25,6 +26,7 @@ Section: Token Types
     | TkDot
     | TkEq
     | TkAmp
+    | TkBadNum
     | TkEof
 
 Section: Tokenizer
@@ -54,13 +56,34 @@ Section: Tokenizer
     in if cc == 72 then page-tokenize src (i + 1) len (list-push acc (TkStr acc-str))
     else page-tokenize-string src (i + 1) len (acc-str & char-to-text (char-at src i)) acc
 
+ CCE digits are codes 3 to 12. 9223372036854775807 is 2^63 - 1, and
+ `n * 10 + cc` is formed before the 3 comes off, so an accumulator above
+ (that - cc) / 10 makes the number `TkBadNum`.
+
   page-tokenize-number : Text, Integer, Integer, Integer, List PageTok -> List PageTok
   page-tokenize-number (src) (i) (len) (n) (acc) =
     if i >= len then list-push acc (TkNum n)
     else let cc = char-code (char-at src i)
-    in if cc >= 3 then if cc <= 12 then page-tokenize-number src (i + 1) len (n * 10 + cc - 3) acc
+    in if cc >= 3 then if cc <= 12 then
+        if n > (9223372036854775807 - cc) / 10 then page-skip-digits src i len (list-push acc TkBadNum)
+        else page-tokenize-number src (i + 1) len (n * 10 + cc - 3) acc
+      else page-tokenize src i len (list-push acc (TkNum n))
     else page-tokenize src i len (list-push acc (TkNum n))
-    else page-tokenize src i len (list-push acc (TkNum n))
+
+  page-skip-digits : Text, Integer, Integer, List PageTok -> List PageTok
+  page-skip-digits (src) (i) (len) (acc) =
+    if i >= len then acc
+    else let cc = char-code (char-at src i)
+    in if cc >= 3 then if cc <= 12 then page-skip-digits src (i + 1) len acc
+      else page-tokenize src i len acc
+    else page-tokenize src i len acc
+
+  toks-have-bad-number : List PageTok, Integer -> Boolean
+  toks-have-bad-number (toks) (i) =
+    if i >= list-length toks then False
+    else when list-at toks i
+      is TkBadNum -> True
+      is otherwise -> toks-have-bad-number toks (i + 1)
 
   page-tokenize-word : Text, Integer, Integer, Text, List PageTok -> List PageTok
   page-tokenize-word (src) (i) (len) (w) (acc) =
@@ -593,7 +616,8 @@ Section: Entry Point
     in if text-length body-text == 0
       then PcError "No page or app function found in source"
     else let toks = page-tokenize body-text 0 (text-length body-text) []
-    in let parsed = page-parse-body toks 0
+    in if toks-have-bad-number toks 0 then PcError "A number in the page is too large"
+    else let parsed = page-parse-body toks 0
     in let env = env-bind (env-bind env-empty "vw" (PvInt vw)) "vh" (PvInt vh)
     in let result = page-eval (parsed.pp-expr) env
     in when result

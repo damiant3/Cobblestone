@@ -1,0 +1,40 @@
+Chapter: BvtNpcRound
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter WorldTimers
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ UOAIX-268 (root's ruling, 2026-10-18: NPC swings on the timing wheel at world-tick pace, never per session pulse): with
+ a wheel a pulse steps only its own player's swing; the owner's combat round (cb-swings with no session) swings the NPCs.
+ Two NPCs on one tile reach each other with no walk map.
+  bnr-map : WalkMap = WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0, refused = 0 }
+  bnr-made : Result Integer Text -> Integer
+  bnr-made (r) = when r is Ok (serial) -> serial is Err (_) -> 0
+  bnr-due : GameCombat, GameShard, Integer -> Integer
+  bnr-due (c) (shard) (serial) = (list-at c.actors (world-slot shard.world serial)).due
+  bnr-ready : GameCombat, GameShard, Integer -> Integer
+  bnr-ready (c) (shard) (serial) = let a = __record-set (list-at c.actors (world-slot shard.world serial)) "due" 0 in 0
+  bvt-npc-round : Integer -> [Console] Integer
+  bvt-npc-round (unused) = when gs-new 64
+    is Err (e) -> bvt-check ("npc round fixture: " & e) False
+    is Ok (shard) -> act
+      c <- cb-new shard 7
+      clock <- (when wtm-new 64 64 0 is Err (_) -> 0 is Ok (w) -> let wheeled = __record-set c "wheel" (Just w) in 1)
+      now <- __record-set c "tick" 1000
+      one <- bnr-made (world-create shard.world (gs-mobile 0 1430 1700 0 17 0))
+      two <- bnr-made (world-create shard.world (gs-mobile 0 1430 1700 0 17 0))
+      picked <- (when cb-ensure c shard one is Err (_) -> False is Ok (x) -> when cb-ensure c shard two is Err (_) -> False is Ok (y) -> cb-select c shard x y)
+      first <- bnr-ready c shard one
+      pulsed <- cb-pulse-ready c shard (gn-input 1) bnr-map
+      waited <- bnr-due c shard one == 0
+      round <- cb-swings c shard (gn-input 0) bnr-map 0 []
+      swung <- bnr-due c shard one > 0
+      second <- bnr-ready c shard one
+      own <- gn-input 2
+      named <- __record-set own.session "serial" one
+      mine <- cb-pulse-ready c shard own bnr-map
+      stepped <- bnr-due c shard one > 0
+      a <- bvt-check "with a wheel, a pulse walks no other combatant: a due NPC's swing waits for the round (UOAIX-268)" (clock == 1 & picked & is-ok pulsed & waited)
+      b <- bvt-check "the combat round swings the NPC, and a pulse still steps its own combatant's swing" (is-ok round & swung & is-ok mine & stepped)
+      a + b
+    end

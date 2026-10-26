@@ -1,0 +1,72 @@
+Chapter: BvtLoginThrottle
+  cites Uoaix chapter GameAccounts
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ A wire login's PBKDF2 runs on the game loop (root's ruling, 2026-10-18): a refused password cools its account 1 s, then
+ 2 s, until a success; refused passwords spend a 4-run budget a 4 s window that, spent, refuses every login before any
+ hash; an account is created at most once in 10 s (val, UOAIX audit 2026-10-18). Times are explicit ticks from t0.
+  blt-pad : List Integer, Integer, List Integer -> List Integer
+  blt-pad (bytes) (i) (out) = if i == 30 then out
+    else blt-pad bytes (i + 1) (list-push out (if i < list-length bytes then list-at bytes i else 0))
+  blt-login : List Integer, List Integer -> List Integer
+  blt-login (name) (password) = [128] & blt-pad name 0 [] & blt-pad password 0 [] & [0]
+  blt-game : List Integer, List Integer -> List Integer
+  blt-game (name) (password) = [145, 0, 0, 0, 1] & blt-pad name 0 [] & blt-pad password 0 []
+  blt-said : Result Integer Text -> Text
+  blt-said (r) = when r is Err (e) -> e is Ok (_) -> ""
+  blt-bob : List Integer = [98, 111, 98]
+  blt-right : List Integer = [112, 119]
+  blt-wrong : List Integer = [112, 120]
+  blt-in : Integer, Integer -> Text
+  blt-in (table) (now) = blt-said (ga-admit-gated table (blt-login blt-bob blt-right) 1 31 now)
+  blt-out : Integer, Integer -> Text
+  blt-out (table) (now) = blt-said (ga-admit-gated table (blt-login blt-bob blt-wrong) 1 31 now)
+  blt-new : Integer, List Integer, Integer -> Text
+  blt-new (table) (name) (now) = blt-said (ga-login-gated table (blt-game name blt-right) 5 35 now)
+  bvt-login-throttle : Integer -> [Console] Integer
+  bvt-login-throttle (unused) = let table = ga-new ga-dev
+    in let made = ga-create table blt-bob blt-right
+    in let s = ga-ticks 1000
+    in let t0 = 1000 * s
+    in let a1 = blt-out table t0
+    in let a2 = blt-in table (t0 + s / 2)
+    in let a3 = blt-in table (t0 + s + 1)
+    in let t1 = t0 + 10 * s
+    in let b1 = blt-out table t1
+    in let b2 = blt-out table (t1 + s + 1)
+    in let b3 = blt-in table (t1 + 2 * s + 2)
+    in let b4 = blt-in table (t1 + 4 * s + 3)
+    in let t2 = t0 + 30 * s
+    in let amy = ga-create table [97, 109, 121] blt-right
+    in let cy = ga-create table [99, 121] blt-right
+    in let c1 = blt-said (ga-admit-gated table (blt-login [97, 109, 121] blt-wrong) 1 31 t2)
+    in let c2 = blt-said (ga-admit-gated table (blt-login [99, 121] blt-wrong) 1 31 t2)
+    in let c3 = blt-in table t2
+    in let t2b = t2 + 4 * s + 1
+    in let c4 = blt-in table t2b
+    in let c5 = blt-in table t2b
+    in let c6 = blt-in table t2b
+    in let c = [c1, c2, c3, c4, c5, c6]
+    in let t3 = t0 + 60 * s
+    in let d1 = blt-new table [99, 97, 114, 108] t3
+    in let d2 = blt-new table [100, 97, 118, 101] (t3 + s)
+    in let d3 = blt-new table [100, 97, 118, 101] (t3 + 11 * s)
+    in let t4 = t0 + 90 * s
+    in let e1 = ga-verify-gated table 1 blt-wrong t4
+    in let e2 = ga-verify-gated table 1 blt-right (t4 + s / 2)
+    in let e3 = ga-verify-gated table 1 blt-right (t4 + s + 1)
+    in let cooled = is-ok made & a1 == "account password refused" & a2 == "account login cooling down" & a3 == ""
+    in let doubled = b1 == "account password refused" & b2 == "account password refused" & b3 == "account login cooling down" & b4 == ""
+    in let budget = is-ok amy & is-ok cy & list-at c 0 == "account password refused" & list-at c 1 == "account password refused" & list-at c 2 == "account login busy"
+      & list-at c 3 == "" & list-at c 4 == "" & list-at c 5 == ""
+    in let created = d1 == "" & d2 == "account creation limited" & d3 == "" & ga-count table == 6
+    in let deleting = not e1 & not e2 & e3
+    in act
+    a <- bvt-check ("a wrong password cools the account 1 s, a right one inside it is refused before any hash, after it admitted: " & a1 & "; " & a2 & "; " & a3) cooled
+    b <- bvt-check ("a second refusal cools it 2 s: " & b1 & "; " & b2 & "; " & b3 & "; " & b4) doubled
+    w <- bvt-check ("two refused passwords on two accounts spend the 4 s budget, so a right password on a third is refused before hashing, and in the next window three logins in a row are all admitted: " & list-at c 2 & "; " & list-at c 3) budget
+    d <- bvt-check ("a game login creates an account, a second within 10 s is refused, one after 10 s is made: " & d1 & "; " & d2 & "; " & d3) created
+    e <- bvt-check "the delete's password check cools and admits the same way" deleting
+    a + b + w + d + e
+  end

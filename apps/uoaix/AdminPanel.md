@@ -13,8 +13,11 @@ The [GM contract](GmContract.md) adds human-only grant, limit and revocation
 controls and paged GM action rows. The GM section explicitly names its
 in-memory stand-in; database and real game effects remain integration work.
 
-Development uses the guest's admin port forwarded to `127.0.0.1`. The browser
-requires a secure context. The loopback fixture is accepted; serving the login
+Development reaches the guest's admin port through codex-vm's `-portfwd`, which listens on `127.0.0.1` only; a hosted
+shard (`start-composite-game.ps1 -Hosted`) passes `-portfwd-any`, and Windows Firewall allows inbound codex-vm, so its
+admin and game ports are reachable from the network. Every admin action still needs a role key (a cross-site or
+network POST without one gets an empty 401); the login page and `GET /handshake` are served to anyone who can reach
+the port. The browser requires a secure context, which it grants only on `127.0.0.1`. The loopback fixture is accepted; serving the login
 code over untrusted plain HTTP on a rented host is not an accepted deployment.
 The image/host integration must authenticate that bootstrap delivery before a
 human enters a key. AES-GCM protects protocol messages, not a login script an

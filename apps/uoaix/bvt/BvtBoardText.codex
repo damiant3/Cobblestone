@@ -1,0 +1,33 @@
+Chapter: BvtBoardText
+  cites Uoaix chapter BulletinBoard
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ A post's subject and lines reach every reader's client as the poster sent them: a bell (7) or a byte past 126 in either
+ went out to every reader. A stored field now ends at its first byte outside 32 to 126, as a book line does (val, UOAIX
+ audit 2026-10-18).
+  bvbt-post : Integer, List Integer, List Integer -> List Integer
+  bvbt-post (board) (subject) (line) = let body = gp-put32 (gp-put32 [#71, 0, 0, 5] board) 0 & [list-length subject] & subject & [1, list-length line] & line
+    in let a = list-set-at body 1 (list-length body / 256) in let b = list-set-at body 2 (int-mod (list-length body) 256) in body
+  bvbt-same : List Integer, List Integer -> Boolean
+  bvbt-same (a) (b) = list-length a == list-length b & (list-length a == 0 | bvbt-same-at a b 0)
+  bvbt-same-at : List Integer, List Integer, Integer -> Boolean
+  bvbt-same-at (a) (b) (i) = if i >= list-length a then True else if list-at a i /= list-at b i then False else bvbt-same-at a b (i + 1)
+  bvbt-codes : Integer -> Integer
+  bvbt-codes (unused) = when world-new 64
+    is Err (_) -> -1
+    is Ok (w) -> let items = gsi-new w
+      in let made = bbs-install items
+      in let board = bbs-board w
+      in let s = bbs-new 0
+      in let clean = bbs-post s items board 9001 "Poster" "noon" (bvbt-post board [72, 101, 108, 108, 111] [111, 107])
+      in let dirty = bbs-post s items board 9001 "Poster" "noon" (bvbt-post board [72, 105, 7, 200, 33] [111, 107, 1, 120])
+      in if made /= 1 | board == 0 | bbs-count s /= 2 then -2
+      else (if bvbt-same (bbs-subject s 0) [72, 101, 108, 108, 111] & bvbt-same (bbs-field s.buf (bbs-row 0 + 160) 96) [111, 107] then 1 else 0)
+        + (if bvbt-same (bbs-subject s 1) [72, 105] & bvbt-same (bbs-field s.buf (bbs-row 1 + 160) 96) [111, 107] then 2 else 0)
+        + (if list-length clean == 1 & list-at (list-at clean 0) 0 == #25 then 4 else 0)
+  bvt-board-text : Integer -> [Console] Integer
+  bvt-board-text (unused) = let n = bvbt-codes 0 in act
+    a <- bvt-check ("a printable subject and line are kept whole (bit 1), and a subject and line holding a bell or a byte past 126 are cut there (bit 2), and a post answers its poster with the message item alone, no header (bit 4): code " & show n & ", 7 is all") (n == 7)
+    a
+  end

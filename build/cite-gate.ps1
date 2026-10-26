@@ -309,6 +309,11 @@ if ($compilerChanged) {
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot $h) -Kernel $Kernel
         if ($LASTEXITCODE -ne 0) { Write-Host "[cite-gate] FAIL: $h"; $failed++ }
     }
+
+    # The evidence behind each `fixed` row of the builtin registry is emitter
+    # code no cite reaches (CostModel.md 5.2). Text only, no guest.
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'check-builtin-alloc.ps1')
+    if ($LASTEXITCODE -ne 0) { Write-Host '[cite-gate] FAIL: check-builtin-alloc (a bounded fixed row''s evidence moved; re-measure against CostModel.md 5.1, then re-pin)'; $failed++ }
 }
 if ($failed -gt 0) { exit 1 }
 Write-Host "[cite-gate] OK: $($rel.Count) cited test chapter(s), $($runnable.Count) of them against an .expected"

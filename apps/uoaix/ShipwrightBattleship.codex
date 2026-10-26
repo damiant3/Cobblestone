@@ -182,12 +182,17 @@ Chapter: ShipwrightBattleship
         else if player == swb-seat t 0 then swb-say serial 0 "" [swb-gump t serial 0 (if phase == 2 then "Your shot." else "The Pirates' shot.")]
         else if player == swb-seat t 1 then swb-say serial 1 "" [swb-gump t serial 1 (if phase == 3 then "Your shot." else "The Navy's shot.")]
         else swb-say serial side "This game is in play; you are watching." [swb-gump t serial -1 ""]
+ The button is the client's own 32 bits (0xB1 bytes 11 to 14): one past square 100 indexed the row letters out of range
+ and halted the shard (red, UOAIX audit 2026-10-18).
+  swb-square-button : Integer -> Boolean
+  swb-square-button (button) = button >= 1 & button <= 100
   swb-answer : GsiState, Integer, GameInput, Integer, Integer, Integer -> Maybe GameReply
   swb-answer (items) (t) (input) (serial) (button) (now) = let player = input.session.serial
     in let side = if player == swb-seat t 0 & player /= 0 then 0 else if player == swb-seat t 1 & player /= 0 then 1 else -1
     in if button == 0 | swb-side-of items.world serial < 0 then Just (gs-reply [] "shipwright:closed")
     else if side < 0 then Just (gsi-denied "You are watching this game.")
     else if swb-phase t /= 2 + side then swb-say serial side "It is the other fleet's shot." [swb-gump t serial side "Wait for your turn."]
+    else if not (swb-square-button button) then swb-say serial side "That is not a square." [swb-gump t serial side "Your shot."]
     else let result = swb-fire t side (button - 1) now
     in let square = list-at ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"] ((button - 1) / 10) & show (int-mod (button - 1) 10 + 1)
     in if result < 0 then swb-say serial side "That square was fired on before." [swb-gump t serial side "Your shot."]

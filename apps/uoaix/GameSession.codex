@@ -155,7 +155,7 @@ Chapter: GameSession
   gs-byte-range (packet) (i) =
     if i >= list-length packet then True
     else let value = list-at packet i
-    in value >= 0 & value <= 255 & gs-byte-range packet (i + 1)
+    in if value < 0 | value > 255 then False else gs-byte-range packet (i + 1)
 
   gs-name : List Integer, Integer, Boolean -> Boolean
   gs-name (packet) (i) (ended) =
@@ -328,7 +328,7 @@ Chapter: GameSession
   gs-delete-verified : GameShard, List Integer -> Boolean
   gs-delete-verified (shard) (packet) = when ga-packet-password packet 1 0 []
     is Err (_) -> False
-    is Ok (password) -> ga-verify-either shard.accounts (ga-bound shard.accounts) password
+    is Ok (password) -> ga-verify-gated shard.accounts (ga-bound shard.accounts) password get-ticks
   gs-clear-slot : Integer, Integer, Integer -> Integer
   gs-clear-slot (characters) (slot) (i) = if i == 160 then 0
     else let z = poke-byte characters (slot * 160 + i) 0 in gs-clear-slot characters slot (i + 1)
@@ -351,7 +351,7 @@ Chapter: GameSession
     in let consumed = __record-set shard "pending-key" 0
     in if key == 0 | session.key /= key | gp-u32 packet 1 /= key then Err "relay key absent or consumed"
     else if shard.active /= 0 then Err "an account is already in world"
-    else when ga-login shard.accounts packet 5 35
+    else when ga-login-gated shard.accounts packet 5 35 get-ticks
       is Err (e) -> Err e
       is Ok (index) ->
         let rebound = gs-bind shard index

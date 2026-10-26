@@ -13,7 +13,7 @@ Chapter: ConcatCodexSelfScript
  emitted script is byte-identical to the one that shipped before the migration.
 
  `ForewordDir` IS PRODUCED AND READ BY NOTHING. Line 22 of the shipped script
- assigns `codex\foreword\core` and no later line mentions the name, verified at
+ assigns `codex/foreword/core` and no later line mentions the name, verified at
  head. It is vestigial: foreword directories are resolved through `$QuireDirs`
  from `quire-map.ps1` now, so the hardcoded path is a second, stale answer to a
  question the quire table already answers, and a reader would take it as
@@ -33,7 +33,7 @@ Section: The pipeline, declared before it is spelled
 
   repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path") }
 
-  foreword-dir-art : PipeArtifact = PipeArtifact { pa-name = "ForewordDir", pa-kind = PkDir, pa-expr = SeVar "ForewordDir", pa-from = Just (SeRaw "Join-Path $Repo 'codex\\foreword\\core'") }
+  foreword-dir-art : PipeArtifact = PipeArtifact { pa-name = "ForewordDir", pa-kind = PkDir, pa-expr = SeVar "ForewordDir", pa-from = Just (SeRaw "Join-Path $Repo 'codex/foreword/core'") }
 
   lines-art : PipeArtifact = PipeArtifact { pa-name = "lines", pa-kind = PkValue, pa-expr = SeVar "lines", pa-from = None }
 
@@ -49,7 +49,7 @@ Section: The pipeline, declared before it is spelled
 
 Section: S01 -- Preamble
 
-  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScIf (SeNot (pipe-ref ccs-arts concat-params "CodexDir")) [ScAssign "CodexDir" (SeBare (SePathJoinN [SeVar "Repo", SeLit "codex\\compiler"]))] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), pipe-produce foreword-dir-art, ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
+  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce repo-art, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'quire-map.ps1')"), ScIf (SeNot (pipe-ref ccs-arts concat-params "CodexDir")) [ScAssign "CodexDir" (SeBare (SePathJoinN [SeVar "Repo", SeLit "codex/compiler"]))] [], ScAssign "CodexDir" (SeRaw "(Resolve-Path $CodexDir).Path"), pipe-produce foreword-dir-art, ScBlank, ScDotNetCallAssign "lines" "System.Collections.Generic.List[string]" "new" []]
 
   s01 : PipeStage = PipeStage { ps-name = "preamble", ps-why = "resolve the repository root and the source directory, load the quire registry, and take the output accumulator", ps-in = ["CodexDir"], ps-out = [repo-art, foreword-dir-art, lines-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
@@ -112,7 +112,7 @@ Section: S07 -- The Order Manifest
  `Chapter: X86-64 Code Generator`, and `Parser`, `Lowering` and `Type Checker`
  span several each. No cite graph can order files inside one chapter.
 
-  s07-body : List ShellCmd = [ScBlank, ScComment "2. The concatenation order, read from build/compiler-order.txt.", ScRaw "$orderPath = Join-Path $Repo 'build\\compiler-order.txt'", ScRaw "if (-not (Test-Path -PathType Leaf $orderPath)) { throw \"concat-codex-self: missing $orderPath, which is the compiler's concatenation order\" }", ScRaw "$orderRows = @(Get-Content $orderPath | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })", ScRaw "$onDisk = @(Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object { $_.FullName.Substring($Repo.Length + 1) })", ScRaw "$orderMissing = @($onDisk | Where-Object { $orderRows -notcontains $_ })", ScRaw "$orderExtra = @($orderRows | Where-Object { $onDisk -notcontains $_ })", ScRaw "if ($orderMissing.Count -gt 0 -or $orderExtra.Count -gt 0) {", ScRaw "    $orderWhy = ''", ScRaw "    if ($orderMissing.Count -gt 0) { $orderWhy += \"under codex/compiler with no row in build/compiler-order.txt: $($orderMissing -join ', '). \" }", ScRaw "    if ($orderExtra.Count -gt 0) { $orderWhy += \"rows in build/compiler-order.txt with no file: $($orderExtra -join ', ').\" }", ScRaw "    throw \"concat-codex-self: the order manifest and codex/compiler disagree, so the unit is not the one the manifest describes. $orderWhy\"", ScRaw "}"]
+  s07-body : List ShellCmd = [ScBlank, ScComment "2. The concatenation order, read from build/compiler-order.txt.", ScRaw "$orderPath = Join-Path $Repo 'build/compiler-order.txt'", ScRaw "if (-not (Test-Path -PathType Leaf $orderPath)) { throw \"concat-codex-self: missing $orderPath, which is the compiler's concatenation order\" }", ScRaw "$orderRows = @(Get-Content $orderPath | ForEach-Object { $_.Trim().Replace('\\', '/') } | Where-Object { $_ -ne '' -and (-not $_.StartsWith('#')) })", ScRaw "$onDisk = @(Get-ChildItem $CodexDir -Recurse -Depth 2 -Filter '*.codex' -File | ForEach-Object { $_.FullName.Substring($Repo.Length + 1).Replace('\\', '/') })", ScRaw "$orderMissing = @($onDisk | Where-Object { $orderRows -notcontains $_ })", ScRaw "$orderExtra = @($orderRows | Where-Object { $onDisk -notcontains $_ })", ScRaw "if ($orderMissing.Count -gt 0 -or $orderExtra.Count -gt 0) {", ScRaw "    $orderWhy = ''", ScRaw "    if ($orderMissing.Count -gt 0) { $orderWhy += \"under codex/compiler with no row in build/compiler-order.txt: $($orderMissing -join ', '). \" }", ScRaw "    if ($orderExtra.Count -gt 0) { $orderWhy += \"rows in build/compiler-order.txt with no file: $($orderExtra -join ', ').\" }", ScRaw "    throw \"concat-codex-self: the order manifest and codex/compiler disagree, so the unit is not the one the manifest describes. $orderWhy\"", ScRaw "}"]
 
   s07 : PipeStage = PipeStage { ps-name = "the order manifest", ps-why = "read build/compiler-order.txt and refuse any disagreement with the directory, because an order derived from filenames made every rename a change to the build", ps-in = ["CodexDir"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s07-body }
 
@@ -122,7 +122,7 @@ Section: S08 -- Compiler Files In Manifest Order
  subdirectory carries that subdirectory's name, which is what makes `Emit` and
  `Semantics` quires at all.
 
-  s08-body : List ShellCmd = [ScBlank, ScComment "3. Every compiler file, in the manifest's order.", ScRaw "foreach ($rel in $orderRows) {", ScRaw "    $full = Join-Path $Repo $rel", ScRaw "    $parent = Split-Path $full -Parent", ScRaw "    $quire = if ($parent -eq $CodexDir) { '' } else { Split-Path $parent -Leaf }", ScRaw "    Add-WithQuire -Path $full -Quire $quire", ScRaw "}"]
+  s08-body : List ShellCmd = [ScBlank, ScComment "3. Every compiler file, in the manifest's order.", ScRaw "foreach ($rel in $orderRows) {", ScRaw "    $full = [System.IO.Path]::GetFullPath((Join-Path $Repo $rel))", ScRaw "    $parent = Split-Path $full -Parent", ScRaw "    $quire = if ($parent -eq $CodexDir) { '' } else { Split-Path $parent -Leaf }", ScRaw "    Add-WithQuire -Path $full -Quire $quire", ScRaw "}"]
 
   s08 : PipeStage = PipeStage { ps-name = "compiler files in manifest order", ps-why = "emit every compiler file in the order the manifest gives, with its subdirectory as its quire", ps-in = ["orderRows", "CodexDir"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s08-body }
 

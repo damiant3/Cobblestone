@@ -210,9 +210,20 @@ Section: IPv4
   ip-header-valid-at : List Integer, Integer -> Boolean
   ip-header-valid-at (pkt) (off) = ip-header-valid-within pkt off (list-length pkt)
 
+ The shape test reads the version and IHL byte and the fragment word: anything but
+ version 4 with IHL 5 is refused, and so is a fragment (more-fragments set, or a
+ nonzero offset), because nothing here reassembles and a fragment read as a whole
+ datagram is a different datagram. Don't-fragment (0x4000) is allowed.
+
+  ip-header-shape-valid-within : List Integer, Integer, Integer -> Boolean
+  ip-header-shape-valid-within (pkt) (off) (stop) =
+    if stop - off < ip-header-size then False
+    else if list-at pkt off /= ip-version-ihl then False
+    else bit-and (read-be16 pkt (off + 6)) #3FFF == 0
+
   ip-header-valid-within : List Integer, Integer, Integer -> Boolean
   ip-header-valid-within (pkt) (off) (stop) =
-    if stop - off < ip-header-size then False
+    if ip-header-shape-valid-within pkt off stop == False then False
     else ip-checksum pkt off (off + ip-header-size) 0 == 0
 
   ip-header-valid : List Integer -> Boolean

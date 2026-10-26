@@ -1,0 +1,43 @@
+Chapter: BvtWalkGrow
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtNpcMove
+  cites Uoaix chapter BvtCheck
+
+ L-REFUSED: a walk cell full of colliders refused one more and the walks that lay houses, multis, planted trees and flora
+ dropped the refusal, so the piece was walk-through. On an 8 by 8 map of 2 colliders a cell: the third collider on a cell
+ is refused and counted, the map is due (1); walk-grow gives 10 a cell and the third places (2); every earlier collider of
+ that cell and of another keeps its fields (4); a grown map is not due, and a map at walk-most never is (8); a due map grows only while its next buffer fits the walk budget left (16).
+  bwlk-at : WalkMap, Integer, Integer, Integer -> Integer
+  bwlk-at (map) (x) (y) (field) = peek-qword map.solids (walk-cell map x y * map.stride + 8 + field * 8)
+  bwlk-checks : Integer -> Integer
+  bwlk-checks (unused) = when walk-map-sized 100 100 8 8 2
+    is Err (_) -> -1
+    is Ok (map) -> let a = walk-add-solid map 101 101 5 20 64
+      in let b = walk-add-solid map 101 101 30 4 512
+      in let other = walk-add-solid map 106 106 7 9 64
+      in let refused = walk-add-solid map 101 101 50 2 64
+      in let counted = if is-err refused & map.refused == 1 & walk-due map then 1 else 0
+      in let grown = walk-grow map
+      in let placed = walk-add-solid map 101 101 50 2 64
+      in let room = if grown == 2 + walk-room & is-ok placed & peek-qword map.solids (walk-cell map 101 101 * map.stride) == 3 then 2 else 0
+      in let kept = if bwlk-at map 101 101 0 == 5 & bwlk-at map 101 101 1 == 20 & bwlk-at map 101 101 2 == 64 & bwlk-at map 101 101 3 == 30 & bwlk-at map 101 101 4 == 4
+          & bwlk-at map 101 101 5 == 512 & bwlk-at map 106 106 0 == 7 & bwlk-at map 106 106 1 == 9 & peek-qword map.solids (walk-cell map 106 106 * map.stride) == 1 then 4 else 0
+      in let settled = when walk-map-sized 0 0 2 2 walk-most
+        is Err (_) -> 0
+        is Ok (full) -> let marked = __record-set full "refused" 1 in if not (walk-due map) & map.refused == 0 & not (walk-due full) & walk-grow full == 0 then 8 else 0
+      in let budget = when walk-map-sized 0 0 8 8 2
+        is Err (_) -> 0
+        is Ok (small) -> let marked = __record-set small "refused" 1
+          in when bnm-founded 0
+            is Err (_) -> 0
+            is Ok (owner) -> let idle = cg-walk-due owner
+              in let fits = cg-walk-fits owner small
+              in let spent = __record-set owner "walk-spent" cg-walk-budget
+              in if walk-next-bytes small == 15872 & not idle & fits & not (cg-walk-fits owner small) then 16 else 0
+      in counted + room + kept + settled + budget
+  bvt-walk-grow : Integer -> [Console] Integer
+  bvt-walk-grow (unused) = act
+    n <- bwlk-checks 0
+    bvt-check ("a walk cell full of colliders counts the refusal and grows at the growth point, keeping every collider, up to walk-most (L-REFUSED; code " & show n & ")") (n == 31)
+  end

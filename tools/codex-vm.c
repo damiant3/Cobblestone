@@ -3817,6 +3817,17 @@ static double now_ms_for_timer(void) {
     return (double)pc.QuadPart * 1000.0 * (double)clock_scale / (double)freq.QuadPart;
 }
 
+/* Host milliseconds at wall rate. The NAT's peers are host sockets, which
+   live in real time whatever -clock-scale does to the guest, so every NAT
+   timer reads this one (UOAIX-273). */
+static double nat_now_ms(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER pc;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&pc);
+    return (double)pc.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
 static void lapic_write_cpu(int cpu, unsigned long long offset, unsigned int val) {
     if (cpu >= 0 && cpu < SMP_MAX_CORES) {
         if (offset == 0x320) { lapic_timers[cpu].lvt_timer = val; return; }
@@ -7669,6 +7680,9 @@ typedef struct {
 } PortFwd;
 static PortFwd portfwds[PORTFWD_MAX];
 static int portfwd_count = 0;
+/* A forward listens on 127.0.0.1 unless -portfwd-any is given: on every interface the Windows firewall's Allow rule
+   for codex-vm put a guest's admin and game ports on the local network (root, 2026-10-19). */
+static int portfwd_any = 0;
 
 /* Outbound destination-port remap, the opposite direction to -portfwd above.
    A guest dials a port compiled into it -- every transpiler plug carries one
@@ -7790,6 +7804,12 @@ typedef struct {
    client, which has its own timeout, retries). */
 #define NAT_RTO_MS 50.0
 #define NAT_MAX_RTX 240
+/* Established data backs off from NAT_RTO_MS, doubling to a 1.6 s cap, and
+   gives up after NAT_DATA_RTX resends: 50+100+200+400+800 then 19 x 1600 ms
+   is about 32 s, so a guest that drains its receive buffer within 30 s keeps
+   the link. */
+#define NAT_DATA_RTX_SHIFT_MAX 5
+#define NAT_DATA_RTX 24
 
 static NatConn nat_conns[NAT_MAX_CONN];
 static int nat_packet_trace = 0;
@@ -7804,7 +7824,8 @@ static NatConn *nat_find(unsigned short guest_port, unsigned short dst_port, uns
     return NULL;
 }
 
-static void nat_conn_free(NatConn *c);
+static void nat_conn_free_at(NatConn *c, int site);
+#define nat_conn_free(c) nat_conn_free_at((c), __LINE__)
 
 /* Guest-to-host byte census. Every site on this path that can discard a
    byte increments one of these, and they are printed at exit. A send that
@@ -7858,7 +7879,12 @@ static NatConn *nat_alloc(void) {
    closed -- the slot stayed active with its socket open, so 64 ordinary
    closes exhausted the table and every connection after that was dropped
    in silence. */
-static void nat_conn_free(NatConn *c) {
+static void nat_conn_free_at(NatConn *c, int site) {
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(stderr, "NAT FREE site=%d at=%02d:%02d:%02d.%03d gport=%u dport=%u fwd=%d state=%d unsent=%d unacked=%d rtx=%d half=%d\n",
+            site, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, c->guest_port, c->dst_port,
+            c->forwarded, c->state, c->txlen, c->rtxlen, c->rtx_count, c->shutdown_pending | (c->free_pending << 1));
     if (c->sock != INVALID_SOCKET && c->sock != 0) closesocket(c->sock);
     c->sock = INVALID_SOCKET;
     if (c->txlen > 0) nat_freed_unsent += (unsigned long long)c->txlen;
@@ -8359,7 +8385,7 @@ static void nat_handle_udp_tx(unsigned short sport, unsigned short dport,
        nothing is listening on and drop the reply. */
     UdpInFlow *in = udp_in_find_synth(dport);
     if (in) {
-        in->last_ms = now_ms_for_timer();
+        in->last_ms = nat_now_ms();
         int sent = sendto(in->sock, (const char*)payload, payload_len, 0,
                           (struct sockaddr*)&in->client, sizeof(in->client));
         if (sent < 0)
@@ -8386,7 +8412,7 @@ static void nat_handle_udp_tx(unsigned short sport, unsigned short dport,
         fprintf(stderr, "NAT UDP: flow guest:%d -> %d.%d.%d.%d:%d\n",
                 sport, dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3], dport);
     }
-    f->last_ms = now_ms_for_timer();
+    f->last_ms = nat_now_ms();
 
     struct sockaddr_in addr;
     nat_host_addr(dst_ip, &addr);
@@ -8402,7 +8428,7 @@ static void nat_handle_udp_tx(unsigned short sport, unsigned short dport,
    starving the others and keeps the rx queue bounded. */
 static void udp_poll_rx(void) {
     unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
-    double now = now_ms_for_timer();
+    double now = nat_now_ms();
     for (int i = 0; i < UDP_MAX_FLOW; i++) {
         UdpFlow *f = &udp_flows[i];
         if (!f->active) continue;
@@ -8657,12 +8683,12 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                 nat_tx_flush(c);
                 if (c->txlen > 0) {
                     c->shutdown_pending = 1;
-                    if (c->state == 4) { c->free_pending = 1; c->closed_at_ms = now_ms_for_timer(); }
-                    else { c->state = 3; c->closed_at_ms = now_ms_for_timer(); }
+                    if (c->state == 4) { c->free_pending = 1; c->closed_at_ms = nat_now_ms(); }
+                    else { c->state = 3; c->closed_at_ms = nat_now_ms(); }
                 } else {
                     shutdown(c->sock, SD_SEND);
                     if (c->state == 4) nat_conn_free(c);
-                    else { c->state = 3; c->closed_at_ms = now_ms_for_timer(); }
+                    else { c->state = 3; c->closed_at_ms = nat_now_ms(); }
                 }
             }
         }
@@ -8695,7 +8721,7 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                        is not idle, and the reaper must not cut it off
                        mid-send. Activity pushes the deadline out, so what
                        times out is silence rather than duration. */
-                    if (c->state == 4) c->closed_at_ms = now_ms_for_timer();
+                    if (c->state == 4) c->closed_at_ms = nat_now_ms();
                     /* ACK the data: we have taken responsibility for it. */
                     nat_build_tcp_frame(nat_guest_mac(), dst_ip, guest_ip,
                                         dport, sport,
@@ -8784,7 +8810,7 @@ static void nat_poll_rx(void) {
            VM by a peer that has simply gone away, which is the ordinary
            case for a client that disconnects after one request. */
         if ((c->state == 3 || c->state == 4) &&
-            now_ms_for_timer() - c->closed_at_ms > NAT_HALF_CLOSED_TIMEOUT_MS) {
+            nat_now_ms() - c->closed_at_ms > NAT_HALF_CLOSED_TIMEOUT_MS) {
             if (c->txlen > 0) nat_freed_reap += (unsigned long long)c->txlen;
             nat_conn_free(c);
             continue;
@@ -8801,7 +8827,7 @@ static void nat_poll_rx(void) {
                to collect silence. Without this a half-closed connection
                feeding a slow reader is reaped mid-drain and the rest of
                the guest's output is freed. */
-            if (c->txlen < before) c->closed_at_ms = now_ms_for_timer();
+            if (c->txlen < before) c->closed_at_ms = nat_now_ms();
         }
         if (c->shutdown_pending && c->txlen <= 0) {
             shutdown(c->sock, SD_SEND);
@@ -8876,7 +8902,7 @@ static void nat_poll_rx(void) {
             /* Hold it for retransmission until the guest ACKs. */
             if (c->forwarded) {
                 nat_rtx_append(c, data_seq, buf, n);
-                c->last_tx_ms = now_ms_for_timer();
+                c->last_tx_ms = nat_now_ms();
                 c->rtx_count = 0;
             }
         } else if (n == 0) {
@@ -8901,7 +8927,7 @@ static void nat_poll_rx(void) {
                                     0x11, /* FIN+ACK */
                                     NULL, 0);
                 c->state = 4;
-                c->closed_at_ms = now_ms_for_timer();
+                c->closed_at_ms = nat_now_ms();
             }
         }
     }
@@ -8919,7 +8945,7 @@ static void nat_poll_rx(void) {
 static void nat_poll_retransmit(void) {
     unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
     unsigned char gw_ip[4] = {NAT_GW_IP0, NAT_GW_IP1, NAT_GW_IP2, NAT_GW_IP3};
-    double now = now_ms_for_timer();
+    double now = nat_now_ms();
     for (int i = 0; i < NAT_MAX_CONN; i++) {
         NatConn *c = &nat_conns[i];
         if (!c->active || !c->forwarded) continue;
@@ -8954,10 +8980,21 @@ static void nat_poll_retransmit(void) {
                                 NULL, 0);
             c->last_tx_ms = now;
         } else if (c->state == 2 && c->rtxlen > 0) {
-            /* Un-ACKed data, resent from the first un-ACKed byte. Data on an
-               established connection is delivered fast, so no backoff. */
-            if (now - c->last_tx_ms < NAT_RTO_MS) continue;
-            if (c->rtx_count++ >= NAT_MAX_RTX) { nat_conn_free(c); continue; }
+            /* Un-ACKed data, resent from the first un-ACKed byte, backing off.
+               On give-up the guest gets a FIN at the first byte it has not
+               ACKed, so its server closes and logs the link rather than
+               holding a connection whose host socket is gone. */
+            int shift = c->rtx_count < NAT_DATA_RTX_SHIFT_MAX ? c->rtx_count : NAT_DATA_RTX_SHIFT_MAX;
+            if (now - c->last_tx_ms < NAT_RTO_MS * (double)(1 << shift)) continue;
+            if (c->rtx_count++ >= NAT_DATA_RTX) {
+                nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
+                                    c->dst_port, c->guest_port,
+                                    c->rtx_base, c->seq_offset + 1,
+                                    0x11, /* FIN+ACK */
+                                    NULL, 0);
+                nat_conn_free(c);
+                continue;
+            }
             int n = c->rtxlen > 1400 ? 1400 : c->rtxlen;
             nat_build_tcp_frame(nat_guest_mac(), c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
@@ -8985,7 +9022,7 @@ static void portfwd_init(void) {
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_addr.s_addr = htonl(portfwd_any ? INADDR_ANY : INADDR_LOOPBACK);
         addr.sin_port = htons(pf->host_port);
         if (bind(pf->listen_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
             fprintf(stderr, "portfwd: bind failed for host:%d\n", pf->host_port);
@@ -8995,8 +9032,8 @@ static void portfwd_init(void) {
         u_long nb = 1;
         ioctlsocket(pf->listen_sock, FIONBIO, &nb);
         pf->active = 1;
-        fprintf(stderr, "portfwd: %s host:%d -> guest:%d\n",
-                pf->proto == PF_UDP ? "udp" : "tcp", pf->host_port, pf->guest_port);
+        fprintf(stderr, "portfwd: %s %s:%d -> guest:%d\n",
+                pf->proto == PF_UDP ? "udp" : "tcp", portfwd_any ? "0.0.0.0" : "127.0.0.1", pf->host_port, pf->guest_port);
     }
 }
 
@@ -9034,7 +9071,7 @@ static void portfwd_poll(void) {
                 fprintf(stderr, "portfwd udp: host client -> guest:%d as gw:%d\n",
                         pf->guest_port, f->synth_port);
             }
-            f->last_ms = now_ms_for_timer();
+            f->last_ms = nat_now_ms();
             nat_build_udp_frame(nat_guest_mac(), gw_ip, guest_ip, f->synth_port, pf->guest_port, buf, n);
             continue;
         }
@@ -9065,7 +9102,7 @@ static void portfwd_poll(void) {
                             c->ack_offset, 0,
                             0x02, /* SYN */
                             NULL, 0);
-        c->last_tx_ms = now_ms_for_timer();
+        c->last_tx_ms = nat_now_ms();
         c->rtx_count = 0;
     }
 }
@@ -9079,12 +9116,17 @@ static void portfwd_handle_synack(NatConn *c, unsigned long seq, unsigned long a
        other way round, the very next frame nat_poll_rx built for this
        connection swapped both fields. */
     c->seq_offset = seq;
-    c->ack_offset = ack;
+    /* ack_offset is the last sequence number WE used (the outbound path
+       sends its SYN-ACK at ack_offset and its first data at ack_offset + 1).
+       The guest's ack is one past our SYN, so the last number used is
+       ack - 1; storing ack itself started every forwarded data stream at
+       ISN + 2, a one-byte gap the guest refuses. */
+    c->ack_offset = ack - 1;
     c->state = 2;
     c->guest_ack = seq + 1;
     nat_build_tcp_frame(nat_guest_mac(), gw_ip, guest_ip,
                         c->dst_port, c->guest_port,
-                        c->ack_offset, c->seq_offset + 1,
+                        c->ack_offset + 1, c->seq_offset + 1,
                         0x10, /* ACK */
                         NULL, 0);
     fprintf(stderr, "portfwd: connection established (guest port %d)\n", c->guest_port);
@@ -10628,7 +10670,9 @@ static void poll_output_dump(void) {
     static double last_ms = 0;
     static size_t last_len = 0;
     if (!output_file || !output_buf) return;
-    double now = now_ms_for_timer();
+    /* The capture file is the host's, so the 500 ms is wall time: on the scaled
+       timer clock -clock-scale 30 rewrote it every 17 ms. */
+    double now = nat_now_ms();
     if (now - last_ms < 500.0) return;
     last_ms = now;
     if (output_len == last_len || output_len == 0) return;
@@ -10779,7 +10823,8 @@ static void ide_flush(IdeState *d, size_t off, size_t len) {
     if (!d->data) { ide_flush_nodata++; return; }
     if (off + len > d->size) { ide_flush_oob++; return; }
     if (d->wfp_failed) { ide_flush_openfail++; return; }
-    double t0 = now_ms_for_timer();
+    /* flush-ms reports host disk time, so it is read at wall rate, not -clock-scale's. */
+    double t0 = nat_now_ms();
     if (!d->wfp) {
         d->wfp = fopen(d->path, "r+b");
         if (!d->wfp) {
@@ -10795,7 +10840,7 @@ static void ide_flush(IdeState *d, size_t off, size_t len) {
     fflush(d->wfp);
     ide_flush_calls++;
     ide_flush_bytes += (unsigned long long)len;
-    ide_flush_ms += now_ms_for_timer() - t0;
+    ide_flush_ms += nat_now_ms() - t0;
 }
 
 static unsigned int ide_get_lba(IdeState *d) {
@@ -16618,6 +16663,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "Bad -portfwd spec: %s (expected [udp:]host:guest)\n", spec);
             }
         }
+        else if (!strcmp(argv[i], "-portfwd-any")) portfwd_any = 1;
         else if (!strcmp(argv[i], "-natmap") && i+1 < argc) {
             char *spec = argv[++i];
             int gp = 0, hp = 0;
@@ -16648,7 +16694,7 @@ int main(int argc, char **argv) {
                         "       [-disk file.img] [-mem MB] [-mem-nocap] [-args STRING]\n"
                         "       [-watch 0xADDR] [-watch-size N] [-headless] [-uefi] [-uefi-strict]\n"
                         "       [-gop] [-gop-width N] [-gop-height N] [-gop-stride N] [-gop-max-mode N] [-keys sc,sc,..]\n"
-                        "       [-portfwd hostport:guestport] ...\n"
+                        "       [-portfwd hostport:guestport] [-portfwd-any] ...\n"
                         "   or: codex-vm -run-list file.txt [-run-list-wall MS]\n"
                         "       one line per run, each line the flags a single run takes;\n"
                         "       '#' comments and blank lines ignored\n");
@@ -17930,9 +17976,9 @@ done:
                nowhere else, so whatever the one send() in the FIN handler
                could not take died here. Drain every connection, bounded,
                and only then take the send side down. */
-            double drain_until = now_ms_for_timer() + NAT_EXIT_DRAIN_MS;
+            double drain_until = nat_now_ms() + NAT_EXIT_DRAIN_MS;
             nat_tx_flush(&nat_conns[i]);
-            while (nat_conns[i].txlen > 0 && now_ms_for_timer() < drain_until) {
+            while (nat_conns[i].txlen > 0 && nat_now_ms() < drain_until) {
                 /* Wait for writability rather than spinning on a
                    non-blocking socket: the peer here is a reader that is
                    slow, not one that is gone, and a spin would burn a core

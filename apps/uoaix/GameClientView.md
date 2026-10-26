@@ -68,10 +68,15 @@ environment and reconnect. It uses a16384-slot indexed world with16000 distant
 items and checks unavailable-index refusal. Native packet checks do not prove
 client rendering.
 
-Retained memory is O(world capacity): preallocated observed-mobile records,
-an eight-byte slot per possible visible mobile, and one66-byte status buffer.
-No packet list or world-read record escapes request scratch; fields are copied
-into preallocated records. Departure checks walk the previous visible set;
+Retained memory per view: two eight-byte slot arrays over the world capacity
+(the row index and the visible list), a pool of observed-object rows
+(`gcv-pool-rows` at first, doubled by `gcv-pool-grow`), and one 66-byte status
+buffer. A slot holds a row only while the client is shown its object
+(`gcv-take` on drawing, `gcv-drop` on departure or reset). The pool grows only at
+the composite's growth point (`cs-pool-grow`, `WORLD GROWN` due bit 32, once fewer
+than `gcv-pool-slack` rows are free); inside a reply an empty pool draws nothing
+more for that reply. No packet list or world-read record escapes request
+scratch; fields are copied into the pooled rows. Departure checks walk the previous visible set;
 discovery walks world-tile-first/next within the sight square. Each reconcile
 costs O(reply packets + previous visible mobiles + sight tiles + local tile
 occupants), independent of distant world capacity. Indexed GameMobileBank

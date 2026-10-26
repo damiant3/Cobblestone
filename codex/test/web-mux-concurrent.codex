@@ -25,11 +25,9 @@ Section: Wire Fixtures
     in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
 
   a-syn : List Integer = mk-frame 50000 a-ip 1000 0 tcp-flag-syn []
-  a-ack : List Integer = mk-frame 50000 a-ip 1001 5000 tcp-flag-ack []
   a-get : List Integer = mk-frame 50000 a-ip 1001 5000 (bit-or tcp-flag-psh tcp-flag-ack) get-bytes
 
   b-syn : List Integer = mk-frame 50001 b-ip 2000 0 tcp-flag-syn []
-  b-ack : List Integer = mk-frame 50001 b-ip 2001 6000 tcp-flag-ack []
   b-get : List Integer = mk-frame 50001 b-ip 2001 6000 (bit-or tcp-flag-psh tcp-flag-ack) get-bytes
 
 Section: Route
@@ -37,6 +35,9 @@ Section: Route
   test-route (req) = http-json "{\"ok\":true}"
 
 Section: Observation
+  server-next : WebMux, Integer -> Integer
+  server-next (m) (i) = ((((list-at (m.conns) i).transport).session).conn).send-next
+
   conn-count : WebMux, Integer -> Integer
   conn-count (m) (i) =
     if i >= list-length (m.conns) then -1
@@ -49,8 +50,8 @@ Section: Entry
     in act
       m1 <- web-mux-feed test-route (\line -> 0) m0 a-syn 80
       m2 <- web-mux-feed test-route (\line -> 0) m1 b-syn 80
-      m3 <- web-mux-feed test-route (\line -> 0) m2 a-ack 80
-      m4 <- web-mux-feed test-route (\line -> 0) m3 b-ack 80
+      m3 <- web-mux-feed test-route (\line -> 0) m2 (mk-frame 50000 a-ip 1001 (server-next m2 0) tcp-flag-ack []) 80
+      m4 <- web-mux-feed test-route (\line -> 0) m3 (mk-frame 50001 b-ip 2001 (server-next m3 1) tcp-flag-ack []) 80
       m5 <- web-mux-feed test-route (\line -> 0) m4 a-get 80
       m6 <- web-mux-feed test-route (\line -> 0) m5 b-get 80
       print-line-uni ("conns=" & show (list-length (m6.conns)))

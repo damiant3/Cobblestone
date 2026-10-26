@@ -4,21 +4,21 @@ Section: Probe
 
   cost-emit : LState, Integer, Integer -> LState
   cost-emit (st) (n) (i) =
-    if i >= n then st else cost-emit (lw-emit st (SMov32i 0 i)) n (i + 1)
+    if i >= n then st else cost-emit (lw-emit st (LoMovImm 0 i)) n (i + 1)
 
-  cost-check : List SassInsn, Integer -> Boolean
+  cost-check : List LInsn, Integer -> Boolean
   cost-check (xs) (i) =
     if i >= list-length xs then True
     else let insn = list-at xs i
-    in when insn.body
-     is SMov32i (d) (v) -> if d /= 0 then False else if v /= i then False else cost-check xs (i + 1)
+    in when insn.op
+     is LoMovImm (d) (v) -> if d /= 0 then False else if v /= i then False else cost-check xs (i + 1)
      is otherwise -> False
 
   cost-run : Integer -> [Console, Concurrent] Nothing
   cost-run (n) = act
     t0 <- get-ticks
     let h0 = __heap-save
-    in let st = LState { code = Nil, next-reg = 0, next-pred = 0, env = [], guard = 7, inlining = [], defs = [] }
+    in let st = LState { code = Nil, regs = LRegs { lo = 0, hi = 0 }, busy-preds = 0, env = [], guard = 7, inlining = [], defs = [], labels = 0, frag = LFrag { c0 = 200, a0 = 232, b0 = 240 } }
     in let out = lw-code-list (cost-emit st n 0).code
     in let valid = cost-check out 0
     in let size = list-length out
@@ -31,10 +31,10 @@ Section: Probe
 
   cost-fork : Boolean
   cost-fork =
-    let st = LState { code = Nil, next-reg = 0, next-pred = 0, env = [], guard = 7, inlining = [], defs = [] }
+    let st = LState { code = Nil, regs = LRegs { lo = 0, hi = 0 }, busy-preds = 0, env = [], guard = 7, inlining = [], defs = [], labels = 0, frag = LFrag { c0 = 200, a0 = 232, b0 = 240 } }
     in let prefix = cost-emit st 3 0
-    in let left = lw-emit prefix (SMov32i 0 3)
-    in let right = lw-emit-at prefix 2 (SMov32i 0 3)
+    in let left = lw-emit prefix (LoMovImm 0 3)
+    in let right = lw-emit-at prefix 2 (LoMovImm 0 3)
     in let a = lw-code-list left.code
     in let b = lw-code-list right.code
     in if list-length (lw-code-list prefix.code) /= 3 then False
@@ -44,10 +44,34 @@ Section: Probe
     else if cost-check b 0 == False then False
     else (list-at a 3).guard == 7 & (list-at b 3).guard == 2
 
+  cost-body : Integer -> SassBody
+  cost-body (i) = if int-mod i 4 == 0 then SS2r (2 * int-mod i 8) 33 else SMov32i (2 * int-mod i 8 + 1) i
+
+  cost-insns : Integer, Integer, List SassInsn -> List SassInsn
+  cost-insns (n) (i) (acc) = if i >= n then acc else cost-insns n (i + 1) (list-push acc (sass-always (cost-body i)))
+
+  cost-plug : Integer -> [Console, Concurrent] Nothing
+  cost-plug (n) = act
+    let insns = cost-insns n 0 []
+    in let h0 = __heap-save
+    in let codes = sass-schedule insns
+    in let h1 = __heap-save
+    in let listing = sass-listing "k" insns
+    in let h2 = __heap-save
+    in act
+     print-line-uni ("SCHED " & show n & " " & show (h1 - h0) & " " & show (list-length codes))
+     print-line-uni ("LIST " & show n & " " & show (h2 - h1) & " " & show (text-length listing))
+    end
+  end
+
   opening : [Console, Concurrent] Nothing = act
     print-line-uni ("FORK " & show cost-fork)
     cost-run 1024
     cost-run 2048
     cost-run 4096
     cost-run 8192
+    cost-plug 512
+    cost-plug 1024
+    cost-plug 2048
+    cost-plug 4096
   end

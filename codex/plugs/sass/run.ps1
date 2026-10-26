@@ -1,6 +1,6 @@
-# Run SASS plug: source -> IR-CCE -> plug CDX -> SM 5.2 listing
+# Run SASS plug: source -> IR-CCE -> plug CDX -> SM 5.2 listing, or SM 8.9 with -Sm 89
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '', [int]$MemMB = 3072)
+param([Parameter(Mandatory=$true)][string]$Src, [Parameter(Mandatory=$true)][string]$Out, [string]$Compiler = '', [int]$MemMB = 3072, [ValidateSet(52, 89)][int]$Sm = 52)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
@@ -24,14 +24,17 @@ Write-Host "[sass-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"
 
 $irBytes = [System.IO.File]::ReadAllBytes($IrFile)
 
-# Phase 2: Build input -- CCE mode header + CCE IR + null terminator
+# Phase 2: Build input -- [SM89 line] + CCE mode header + CCE IR + null terminator
 $inputFile = [System.IO.Path]::GetTempFileName()
 $hdrList = [System.Collections.Generic.List[byte]]::new()
-foreach ($ch in "IR-CCE".ToCharArray()) {
-    $u = [int]$ch
-    if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }
+$header = if ($Sm -eq 89) { @('SM89', 'IR-CCE') } else { @('IR-CCE') }
+foreach ($line in $header) {
+    foreach ($ch in $line.ToCharArray()) {
+        $u = [int]$ch
+        if ($u -lt 256) { $hdrList.Add([byte]$script:UnicodeToCce[$u]) }
+    }
+    $hdrList.Add([byte]1)  # CCE newline
 }
-$hdrList.Add([byte]1)  # CCE newline
 $modeHeader = $hdrList.ToArray()
 $combined = New-Object byte[] ($modeHeader.Length + $irBytes.Length + 1)
 [Buffer]::BlockCopy($modeHeader, 0, $combined, 0, $modeHeader.Length)

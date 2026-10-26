@@ -1,0 +1,46 @@
+Chapter: NetIsn
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ Every session in the tree is built with initial sequence number 1000; the number a
+ peer sees must not be that, and two opens must not share one. Only comparisons are
+ printed, as the numbers themselves differ on every run.
+
+Section: Arms
+
+  isn-me : List Integer = [10, 0, 2, 15]
+  isn-peer : List Integer = [10, 0, 2, 2]
+
+  isn-listener : Integer -> NetSession
+  isn-listener (n) = (net-listen (net-session-new [2, 0, 0, 0, 0, 1] isn-me isn-peer 9443 0 isn-peer 1000)).session
+
+  isn-frame : Integer, Integer, Integer -> List Integer
+  isn-frame (seq) (ack) (flags) =
+    let tcp = tcp-with-checksum (tcp-build-segment 50000 9443 seq ack flags 8192 []) isn-peer isn-me
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (ip-build-packet isn-peer isn-me ip-proto-tcp tcp)
+
+  isn-seq-sent : NetResult -> Integer
+  isn-seq-sent (r) = read-be32 (net-outbox-frame (r.session) 0) (eth-header-size + ip-header-size + 4)
+
+  isn-yes : Boolean -> Text
+  isn-yes (b) = if b then "yes" else "no"
+
+ A module-level binding is evaluated at each mention, so each open is bound once
+ here and every line reads the same one.
+
+  opening : [Console] Nothing =
+    let first = net-process-frame (isn-listener 0) (isn-frame 7000 0 tcp-flag-syn)
+    in let second = net-process-frame (isn-listener 1) (isn-frame 7000 0 tcp-flag-syn)
+    in let sent = isn-seq-sent first
+    in let done = net-process-frame (first.session) (isn-frame 7001 (tcp-seq-wrap (sent + 1)) tcp-flag-ack)
+    in let client = net-connect (net-session-new [2, 0, 0, 0, 0, 1] isn-me isn-peer 50001 80 isn-peer 1000)
+    in act
+      print-line-uni ("syn-ack sequence is not 1000: " & isn-yes (sent /= 1000))
+      print-line-uni ("two opens from one peer differ: " & isn-yes (sent /= isn-seq-sent second))
+      print-line-uni ("send-next is the syn-ack's plus one: " & isn-yes (first.session.conn.send-next == tcp-seq-wrap (sent + 1)))
+      print-line-uni ("ack of it completes the handshake: " & tcp-state-name (done.session.conn.state))
+      print-line-uni ("connect's syn sequence is not 1000: " & isn-yes (isn-seq-sent client /= 1000))
+    end
+
+Page 1

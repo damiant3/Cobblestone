@@ -3,14 +3,14 @@ Chapter: PokerVariants
   cites Games chapter Poker
 
  Variants:
-   FiveCardDraw   -- deal 5, draw up to 3 (4 if holding ace), showdown
+   FiveCardDraw   -- deal 5, draw up to 3, showdown
    FiveCardStud   -- 1 down + 4 up, betting each street
    SevenCardStud  -- 2 down + 4 up + 1 down, best 5 of 7
    Baseball       -- 3s and 9s wild, 4 dealt face-up gets extra card
    HiChicago      -- highest spade in hole wins half pot
    LowChicago     -- lowest spade in hole wins half pot
    FollowTheQueen -- card after each queen dealt face-up is wild
-   JacksOrBetter  -- need a pair of jacks or better to open; no minimum to win
+   JacksOrBetter  -- need a pair of jacks or better to open; unopened, thrown in
 
  We say:
 
@@ -379,8 +379,13 @@ Section: A Table You Can Sit At, Per Variant
     bets    : Integer,
     bring   : Integer,
     up0     : Integer,
-    up1     : Integer
+    up1     : Integer,
+    first   : Integer
   }
+
+ `first` is the seat at the dealer's left, who speaks first and draws first
+ in a draw game; it passes to the other seat when a jacks-or-better hand is
+ thrown in.
 
   pvt-cards-per-hand : Integer -> Integer
   pvt-cards-per-hand (v) =
@@ -642,7 +647,8 @@ Section: Dealing The Table
          bets = 0,
          bring = bring,
          up0 = d0.up,
-         up1 = d1.up
+         up1 = d1.up,
+         first = 0
        }
 
   pvt-next-street : PvTable -> PvTable
@@ -663,20 +669,21 @@ Section: Dealing The Table
          bets = 0,
          bring = (-1),
          up0 = d0.up,
-         up1 = d1.up
+         up1 = d1.up,
+         first = p.first
        }
 
   pvt-with : PvTable, PokerTable -> PvTable
   pvt-with (p) (t) =
     PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade,
               street = p.street, bet-unit = p.bet-unit, bets = p.bets, bring = p.bring,
-              up0 = p.up0, up1 = p.up1 }
+              up0 = p.up0, up1 = p.up1, first = p.first }
 
   pvt-with-bet : PvTable, PokerTable, Integer, Integer -> PvTable
   pvt-with-bet (p) (t) (bets) (bet-unit) =
     PvTable { table = t, variant = p.variant, wilds = p.wilds, spade = p.spade,
               street = p.street, bet-unit = bet-unit, bets = bets, bring = (-1),
-              up0 = p.up0, up1 = p.up1 }
+              up0 = p.up0, up1 = p.up1, first = p.first }
 
   pvt-best-hand : PvTable, Integer -> PokerHand
   pvt-best-hand (p) (who) =
@@ -726,18 +733,12 @@ Section: Ranking A Hand Of Any Size
     else if n == 5 then pvt-eval-5 p cards
     else pvt-best-five p cards 0 [] pv-no-hand
 
-  pvt-compare : PvTable, HandRank, HandRank -> Integer
-  pvt-compare (p) (a) (b) =
-    if pvt-has-wilds (p.variant) then pvt-compare-wild a b
-    else compare-hands a b
+ pagat's hand ranking: "wild cards are as good as the natural cards they
+ represent", so a wild hand ties and breaks ties card by card like a natural
+ one; that a natural hand beats an equal wild one is a house rule, not played.
 
-  pvt-compare-wild : HandRank, HandRank -> Integer
-  pvt-compare-wild (a) (b) =
-    if a.rank > b.rank then 1
-    else if b.rank > a.rank then 2
-    else if a.primary > b.primary then 1
-    else if b.primary > a.primary then 2
-    else 0
+  pvt-compare : PvTable, HandRank, HandRank -> Integer
+  pvt-compare (p) (a) (b) = compare-hands a b
 
  pagat's Chicagos (https://www.pagat.com/poker/variants/chicago.html): the
  pot is split between the highest hand and the highest spade in the hole
@@ -794,7 +795,7 @@ Section: Ranking A Hand Of Any Size
     in PvTable { table = t, variant = p.variant,
                  wilds = p.wilds, spade = sw,
                  street = p.street, bet-unit = p.bet-unit, bets = p.bets, bring = (-1),
-                 up0 = p.up0, up1 = p.up1 }
+                 up0 = p.up0, up1 = p.up1, first = p.first }
 
   pvt-half-to : Integer, Integer, Integer -> Integer
   pvt-half-to (amount) (w) (who) =
@@ -817,8 +818,12 @@ Section: Ranking A Hand Of Any Size
       last = t.last, done = True, opener = t.opener
     }
 
- Jacks or better: a seat may not open the betting without a pair of jacks or
- better.
+ Jacks or better (pagat, 5draw.html): "if no one has yet bet, a player who
+ does not have a pair of jacks or better is obliged to pass"; the gate is on
+ opening the first betting round, and the round after the draw is open to
+ any hand. When nobody opens, "the cards are thrown in and it is the next
+ player's turn to deal": the pot stays, each seat antes again, and the other
+ seat is at the new dealer's left.
 
   pvt-can-open : PvTable, Integer -> Boolean
   pvt-can-open (p) (who) =
@@ -830,7 +835,46 @@ Section: Ranking A Hand Of Any Size
     if pvt-is-stud (p.variant) then pvt-can-raise-to p who (pvt-target p (p.bet-unit))
     else if pk-can-raise (p.table) who == False then False
     else if pk-to-call (p.table) who > 0 then True
+    else if (p.table).stage /= 0 then True
     else pvt-can-open p who
+
+  pvt-throw-in : PvTable -> PvTable
+  pvt-throw-in (p) =
+    let t = p.table
+    in let a0 = if t.chips0 < pk-ante then t.chips0 else pk-ante
+    in let a1 = if t.chips1 < pk-ante then t.chips1 else pk-ante
+    in let deck = poker-shuffle poker-deck-new (rng-new (pvt-redeal-seed t))
+    in let d0 = pvt-deal-first (p.variant) deck 0
+    in let d1 = pvt-deal-first (p.variant) deck (d0.pos)
+    in let first = 1 - p.first
+    in PvTable {
+         table = PokerTable {
+           deck = deck, pos = d1.pos, h0 = d0.cards, h1 = d1.cards,
+           chips0 = t.chips0 - a0, chips1 = t.chips1 - a1,
+           bet0 = 0, bet1 = 0, pot = t.pot + a0 + a1,
+           stage = 0, turn = first, acted = 0, marked = 0,
+           folded = (-1), winner = (-1), last = (-1), done = False, opener = (-1)
+         },
+         variant = p.variant, wilds = p.wilds, spade = p.spade, street = 0,
+         bet-unit = pk-bet-size, bets = 0, bring = (-1),
+         up0 = d0.up, up1 = d1.up, first = first
+       }
+
+ The new shuffle's seed is read off the old deck, so a replay redeals alike.
+
+  pvt-redeal-seed : PokerTable -> Integer
+  pvt-redeal-seed (t) = ((list-at (t.deck) 0 * 52 + list-at (t.deck) 1) * 52 + list-at (t.deck) 2) * 64 + t.pot + 1
+
+ A draw game's draw begins at the dealer's left.
+
+  pvt-to-act : PokerTable, Integer -> PokerTable
+  pvt-to-act (t) (who) =
+    PokerTable {
+      deck = t.deck, pos = t.pos, h0 = t.h0, h1 = t.h1,
+      chips0 = t.chips0, chips1 = t.chips1, bet0 = t.bet0, bet1 = t.bet1, pot = t.pot,
+      stage = t.stage, turn = who, acted = t.acted, marked = t.marked,
+      folded = t.folded, winner = t.winner, last = t.last, done = t.done, opener = t.opener
+    }
 
  A stud bet or raise brings the seat's stake to a target: the unit when
  nothing has been bet (which is how a bring-in is completed), else one unit
@@ -877,8 +921,9 @@ Section: The Moves, Over The Same Table
 
   pvt-advance-now : PvTable -> PvTable
   pvt-advance-now (p) =
-    if (p.table).stage == 0 & pvt-is-draw (p.variant)
-      then pvt-with p (pk-open-stage (p.table) 1)
+    if (p.table).stage == 0 & p.variant == 7 & (p.table).opener < 0 then pvt-throw-in p
+    else if (p.table).stage == 0 & pvt-is-draw (p.variant)
+      then pvt-with p (pvt-to-act (pk-open-stage (p.table) 1) (p.first))
     else if p.street < pvt-last-street (p.variant) then pvt-next-street p
     else pvt-showdown p
 
@@ -984,6 +1029,7 @@ Section: The Moves, Over The Same Table
     let strength = (pvt-eval p who).rank
     in let owed = pk-to-call (p.table) who
     in if strength >= 2 & pvt-can-raise p who then pvt-raise p who
+    else if p.variant == 7 & owed == 0 & (p.table).stage == 0 & pvt-can-raise p who then pvt-raise p who
     else if owed == 0 then pvt-call p who
     else if strength >= 1 then pvt-call p who
     else pvt-fold p who

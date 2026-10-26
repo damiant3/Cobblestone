@@ -24,18 +24,22 @@ Section: Wire Fixtures
   psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
 
   mk : Integer, List Integer, Integer, Integer, List Integer -> List Integer
-  mk (src-port) (src-ip) (seq) (flags) (payload) =
-    let seg = tcp-with-checksum (tcp-build-segment src-port 80 seq 5000 flags 8192 payload) src-ip srv-ip
+  mk (src-port) (src-ip) (seq) (flags) (payload) = mk-acking src-port src-ip seq 5000 flags payload
+
+  mk-acking : Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mk-acking (src-port) (src-ip) (seq) (ack) (flags) (payload) =
+    let seg = tcp-with-checksum (tcp-build-segment src-port 80 seq ack flags 8192 payload) src-ip srv-ip
     in let ip = ip-build-packet src-ip srv-ip ip-proto-tcp seg
     in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
 
+  server-next : WebMux -> Integer
+  server-next (m) = ((((list-at (m.conns) (list-length (m.conns) - 1)).transport).session).conn).send-next
+
   a-syn : List Integer = mk 50000 a-ip 1000 tcp-flag-syn []
-  a-partial : List Integer = mk 50000 a-ip 1001 psh get-partial
-  a-rest : List Integer = mk 50000 a-ip 1030 psh get-rest
+  a-rest : List Integer = mk 50000 a-ip 1026 psh get-rest
 
   b-syn : List Integer = mk 50001 b-ip 2000 tcp-flag-syn []
-  b-posthdr : List Integer = mk 50001 b-ip 2001 psh post-hdr
-  b-body : List Integer = mk 50001 b-ip 2050 psh post-body
+  b-body : List Integer = mk 50001 b-ip 2040 psh post-body
 
 Section: Route
   test-route : HttpRequest -> HttpResponse
@@ -46,12 +50,12 @@ Section: Entry
     let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
     in act
       m1 <- web-mux-feed test-route (\line -> 0) m0 a-syn 80
-      m2 <- web-mux-feed test-route (\line -> 0) m1 a-partial 80
+      m2 <- web-mux-feed test-route (\line -> 0) m1 (mk-acking 50000 a-ip 1001 (server-next m1) psh get-partial) 80
       print-line-uni ("afterPartial=" & show (m2.served))
       m3 <- web-mux-feed test-route (\line -> 0) m2 a-rest 80
       print-line-uni ("afterRest=" & show (m3.served))
       m4 <- web-mux-feed test-route (\line -> 0) m3 b-syn 80
-      m5 <- web-mux-feed test-route (\line -> 0) m4 b-posthdr 80
+      m5 <- web-mux-feed test-route (\line -> 0) m4 (mk-acking 50001 b-ip 2001 (server-next m4) psh post-hdr) 80
       print-line-uni ("afterPostHdr=" & show (m5.served))
       m6 <- web-mux-feed test-route (\line -> 0) m5 b-body 80
       print-line-uni ("afterBody=" & show (m6.served))

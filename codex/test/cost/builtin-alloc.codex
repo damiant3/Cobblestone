@@ -32,6 +32,8 @@ Chapter: BuiltinAlloc
 
 Section: The Instrument
 
+  RsCell = record { rc-x : Integer, rc-y : Integer }
+
   keep : List Integer -> Integer
   keep (xs) = list-length xs
 
@@ -79,6 +81,58 @@ Section: Arms
     let xs = mk-list n 0 []
     in let b = __heap-save
     in let r = list-length xs
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-list-len : Integer -> Integer
+  m-list-len (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = __list-len xs
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-list-head : Integer -> Integer
+  m-list-head (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = __list-head xs
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-record-set : Integer -> Integer
+  m-record-set (n) =
+    let c = RsCell { rc-x = n, rc-y = 0 }
+    in let b = __heap-save
+    in let d = __record-set c "rc-y" (n + 1)
+    in let a = __heap-save
+    in (a - b) + d.rc-y - d.rc-y
+
+  m-run-state : Integer -> Integer
+  m-run-state (n) =
+    let b = __heap-save
+    in let r = run-state n (n + 1)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-get-state : Integer -> Integer
+  m-get-state (n) =
+    let b = __heap-save
+    in let r = run-state n (get-state + 1)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-set-state : Integer -> Integer
+  m-set-state (n) =
+    let b = __heap-save
+    in let r = run-state n (let u = set-state (n * 2) in get-state)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-deck-pos : Integer -> Integer
+  m-deck-pos (n) =
+    let b = __heap-save
+    in let r = __deck-pos
     in let a = __heap-save
     in (a - b) + r - r
 
@@ -429,6 +483,26 @@ Section: Predicates And Conversions
     let s = show n
     in let b = __heap-save
     in let r = text-to-integer s
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  mk-ones : Integer, Integer, Text -> Text
+  mk-ones (n) (i) (acc) =
+    if i >= n then acc
+    else mk-ones n (i + 1) (acc & "1")
+
+  m-text-to-double-bits : Integer -> Integer
+  m-text-to-double-bits (n) =
+    let s = mk-ones n 0 "" & ".5"
+    in let b = __heap-save
+    in let r = text-to-double-bits s
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-self-type-defs : Integer -> Integer
+  m-self-type-defs (n) =
+    let b = __heap-save
+    in let r = list-length __self-type-defs
     in let a = __heap-save
     in (a - b) + r - r
 
@@ -823,6 +897,58 @@ Section: The SIMD Family
     in let a = __heap-save
     in (a - b) + r - r
 
+  m-vec-approx-eq : Integer -> Integer
+  m-vec-approx-eq (n) =
+    let x = vec-splat (real-from-int n)
+    in let y = vec-splat (real-from-int (n + 1))
+    in let b = __heap-save
+    in let m = vec-approx-eq x y
+    in let a = __heap-save
+    in (a - b) + 0 * real-to-int (vec-extract (vec-select m x y) 0)
+
+  m-vec-approx-exact : Integer -> Integer
+  m-vec-approx-exact (n) =
+    let x = vec-splat (real-from-int n)
+    in let y = vec-splat (real-from-int (n + 1))
+    in let b = __heap-save
+    in let m = vec-approx-exact x y
+    in let a = __heap-save
+    in (a - b) + 0 * real-to-int (vec-extract (vec-select m x y) 0)
+  m-vec-eq : Integer -> Integer
+  m-vec-eq (n) =
+    let x = vec-splat n
+    in let y = vec-splat (n + 1)
+    in let b = __heap-save
+    in let m = x == y
+    in let a = __heap-save
+    in (a - b) + (if mask-all m then 0 else 0)
+
+  m-vec-ne : Integer -> Integer
+  m-vec-ne (n) =
+    let x = vec-splat n
+    in let y = vec-splat (n + 1)
+    in let b = __heap-save
+    in let m = x /= y
+    in let a = __heap-save
+    in (a - b) + (if mask-all m then 0 else 0)
+
+  m-vec4-approx-eq : Integer -> Integer
+  m-vec4-approx-eq (n) =
+    let x = vec4-splat (real-approx-from-int n)
+    in let y = vec4-splat (real-approx-from-int (n + 1))
+    in let b = __heap-save
+    in let m = vec4-approx-eq x y
+    in let a = __heap-save
+    in (a - b) + 0 * real-to-int (from-real-approx (vec4-extract (vec4-select m x y) 0))
+
+  m-vec4-approx-exact : Integer -> Integer
+  m-vec4-approx-exact (n) =
+    let x = vec4-splat (real-approx-from-int n)
+    in let y = vec4-splat (real-approx-from-int (n + 1))
+    in let b = __heap-save
+    in let m = vec4-approx-exact x y
+    in let a = __heap-save
+    in (a - b) + 0 * real-to-int (from-real-approx (vec4-extract (vec4-select m x y) 0))
   m-vec-select : Integer -> Integer
   m-vec-select (n) =
     let x = vec-splat (real-from-int n)
@@ -1371,6 +1497,67 @@ Section: The Read-Only Process And Identity Rows
     in let a = __heap-save
     in (a - b) + r - r
 
+  m-key-status : Integer -> [Identity] Integer
+  m-key-status (n) =
+    let b = __heap-save
+    in act
+      s <- key-status
+      let a = __heap-save in (a - b) + s - s
+    end
+
+  m-block-sector-count : Integer -> [Device.Block] Integer
+  m-block-sector-count (n) =
+    let b = __heap-save
+    in act
+      s <- block-sector-count
+      let a = __heap-save in (a - b) + s - s
+    end
+
+  m-net-status : Integer -> [Network.Read] Integer
+  m-net-status (n) =
+    let b = __heap-save
+    in act
+      s <- net-status
+      let a = __heap-save in (a - b) + s - s
+    end
+
+  m-net-get-hwaddr : Integer -> [Network.Read] Integer
+  m-net-get-hwaddr (n) =
+    let i = int-mod n 6
+    in let b = __heap-save
+    in act
+      s <- net-get-hwaddr i
+      let a = __heap-save in (a - b) + s - s
+    end
+
+  m-block-select : Integer -> [Device.Block] Integer
+  m-block-select (n) =
+    let b = __heap-save
+    in act
+      s <- block-select 0
+      let a = __heap-save in (a - b) + s - s
+    end
+
+  m-fork : Integer -> [Concurrent] Integer
+  m-fork (n) =
+    let f = \u -> n
+    in let b = __heap-save
+    in act
+      t <- fork f
+      let a = __heap-save in a - b
+    end
+
+  m-await : Integer -> [Concurrent] Integer
+  m-await (n) =
+    let f = \u -> n
+    in act
+      t <- fork f
+      let b = __heap-save in act
+        s <- await t
+        let a = __heap-save in (a - b) + s - s
+      end
+    end
+
   m-identity : Integer -> [Identity] Integer
   m-identity (n) =
     let b = __heap-save
@@ -1385,9 +1572,17 @@ Section: Entry
 
   base : Integer = 64
 
-  opening : [Console, Device.Mmio, Device.Port, Identity] Nothing = act
+  opening : [Console, Device.Mmio, Device.Port, Device.Block, Network.Read, Identity, Concurrent] Nothing = act
     print-line-uni (row "control       " (m-control base) (m-control (base * 4)))
     print-line-uni (row "list-length   " (m-length base) (m-length (base * 4)))
+    print-line-uni (row "__list-len    " (m-list-len base) (m-list-len (base * 4)))
+    print-line-uni (row "__list-head   " (m-list-head base) (m-list-head (base * 4)))
+    print-line-uni (row "__deck-pos    " (m-deck-pos base) (m-deck-pos (base * 4)))
+    print-line-uni (row "__record-set  " (m-record-set base) (m-record-set (base * 4)))
+    print-line-uni (row "run-state     " (m-run-state base) (m-run-state (base * 4)))
+    print-line-uni (row "get-state     " (m-get-state base) (m-get-state (base * 4)))
+    print-line-uni (row "set-state     " (m-set-state base) (m-set-state (base * 4)))
+    print-line-uni ("state reads   " & show (run-state 5 (get-state + 1)) & " " & show (run-state 5 (let u = set-state 11 in get-state)))
     print-line-uni (row "list-at       " (m-at base) (m-at (base * 4)))
     print-line-uni (row "push-topmost  " (m-push-topmost base) (m-push-topmost (base * 4)))
     print-line-uni (row "push-buried   " (m-push-buried base) (m-push-buried (base * 4)))
@@ -1424,6 +1619,8 @@ Section: Entry
     print-line-uni (row "is-whitespace " (m-is-whitespace base) (m-is-whitespace (base * 4)))
     print-line-uni (row "code-to-char  " (m-code-to-char base) (m-code-to-char (base * 4)))
     print-line-uni (row "text-to-intege" (m-text-to-integer base) (m-text-to-integer (base * 4)))
+    print-line-uni (row "text-to-dbl-bt" (m-text-to-double-bits base) (m-text-to-double-bits (base * 4)))
+    print-line-uni (row "__self-type-df" (m-self-type-defs base) (m-self-type-defs (base * 4)))
     print-line-uni (row "compare       " (m-compare-int base) (m-compare-int (base * 4)))
     print-line-uni (row "show          " (m-show base) (m-show (base * 4)))
     print-line-uni (row "text-split    " (m-text-split base) (m-text-split (base * 4)))
@@ -1461,6 +1658,12 @@ Section: Entry
     print-line-uni (row "vec-reduce-add" (m-vec-reduce base) (m-vec-reduce (base * 4)))
     print-line-uni (row "mask-four     " (m-vec-mask base) (m-vec-mask (base * 4)))
     print-line-uni (row "vec-select    " (m-vec-select base) (m-vec-select (base * 4)))
+    print-line-uni (row "vec-eq        " (m-vec-eq base) (m-vec-eq (base * 4)))
+    print-line-uni (row "vec-ne        " (m-vec-ne base) (m-vec-ne (base * 4)))
+    print-line-uni (row "vec-approx-eq " (m-vec-approx-eq base) (m-vec-approx-eq (base * 4)))
+    print-line-uni (row "vec-approx-ex " (m-vec-approx-exact base) (m-vec-approx-exact (base * 4)))
+    print-line-uni (row "vec4-approx-eq" (m-vec4-approx-eq base) (m-vec4-approx-eq (base * 4)))
+    print-line-uni (row "vec4-approx-ex" (m-vec4-approx-exact base) (m-vec4-approx-exact (base * 4)))
     print-line-uni (row "vec-load-at   " (m-vec-load base) (m-vec-load (base * 4)))
     print-line-uni (row "vec-store-at  " (m-vec-store base) (m-vec-store (base * 4)))
     print-line-uni (row "vec4-pair     " (m-vec4 base) (m-vec4 (base * 4)))
@@ -1517,6 +1720,29 @@ Section: Entry
     id0 <- m-identity base
     id1 <- m-identity (base * 4)
     print-line-uni (row "identity-three" id0 id1)
+    ks0 <- m-key-status base
+    ks1 <- m-key-status (base * 4)
+    print-line-uni (row "key-status    " ks0 ks1)
+    bs0 <- m-block-sector-count base
+    bs1 <- m-block-sector-count (base * 4)
+    print-line-uni (row "block-sectors " bs0 bs1)
+    ns0 <- m-net-status base
+    ns1 <- m-net-status (base * 4)
+    print-line-uni (row "net-status    " ns0 ns1)
+    hw0 <- m-net-get-hwaddr base
+    hw1 <- m-net-get-hwaddr (base * 4)
+    print-line-uni (row "net-hwaddr    " hw0 hw1)
+    sel0 <- m-block-select base
+    sel1 <- m-block-select (base * 4)
+    print-line-uni (row "block-select  " sel0 sel1)
+    fk0 <- m-fork base
+    print-line-uni ("fork cold     bytes=" & show fk0)
+    fk1 <- m-fork base
+    fk2 <- m-fork (base * 4)
+    print-line-uni (row "fork warm     " fk1 fk2)
+    aw0 <- m-await base
+    aw1 <- m-await (base * 4)
+    print-line-uni (row "await         " aw0 aw1)
     print-line-uni (row "print-line    " (m-print-line base) (m-print-line (base * 4)))
     print-line-uni (row "print-line-uni" (m-print-line-uni base) (m-print-line-uni (base * 4)))
     print-line-uni (row "print-error   " (m-print-error base) (m-print-error (base * 4)))

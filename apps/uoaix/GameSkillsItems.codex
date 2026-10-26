@@ -423,9 +423,37 @@ Chapter: GameSkillsItems
           else if op == #13 then gsi-equip state shard actor slot packet now
           else when world-get state.world (gp-u32 packet 1)
             is Err (e) -> gsi-denied "That object is gone."
-            is Ok (item) -> if item.kind == 1 then gsi-look-mobile shard item else if item.kind == 2 then gs-reply [sip-message item.serial item.graphic 6 ((if item.amount > 1 & item.graphic /= #2006 then show item.amount & " " else "") & gsi-name state item)] "items:look" else gsi-denied "That is out of reach."
+            is Ok (item) -> if not (gsi-in-view state.world mobile item 8) then gsi-denied "That is too far away."
+              else if item.kind == 1 then gsi-look-mobile shard item else if item.kind == 2 then gs-reply [sip-message item.serial item.graphic 6 ((if item.amount > 1 & item.graphic /= #2006 then show item.amount & " " else "") & gsi-name state item)] "items:look" else gsi-denied "That is out of reach."
         in Ok (Just reply)
-  gsi-handle : GsiState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
+ A single click (0x09) names what its serial holds, so it answers only for an object whose outermost holder (a mobile, or
+ an item on the ground) is within the 1998 client's 18-tile view: any serial in the world was named, another player's
+ pack gold with it (red, UOAIX audit 2026-10-18).
+  gsi-look-range : Integer = 18
+  gsi-in-view : WorldTable, WorldObject, WorldObject, Integer -> Boolean
+  gsi-in-view (world) (me) (obj) (left) = if left <= 0 then False
+    else if obj.kind == 1 | obj.container == 0 then abs (obj.x - me.x) <= gsi-look-range & abs (obj.y - me.y) <= gsi-look-range
+    else when world-get world obj.container
+      is Err (_) -> False
+      is Ok (parent) -> gsi-in-view world me parent (left - 1)
+ The serial a client packet names as its object: an attack (0x05), double-click (0x06) or single click (0x09) at 1, a
+ status request (0x34 type 4) at 6, an object target (0x6C type 0) at 7; 0 for anything else.
+  gsi-view-serial : List Integer -> Integer
+  gsi-view-serial (packet) = let op = list-at packet 0
+    in if (op == 5 | op == 6 | op == 9) & list-length packet == 5 then bit-and (gp-u32 packet 1) #7FFFFFFF
+    else if op == #34 & list-length packet == 10 & list-at packet 5 == 4 then gp-u32 packet 6
+    else if op == #6C & list-length packet == 19 & list-at packet 1 == 0 then bit-and (gp-u32 packet 7) #7FFFFFFF
+    else 0
+  gsi-view-refused : WorldTable, Integer, List Integer -> Boolean
+  gsi-view-refused (world) (viewer) (packet) = if list-length packet == 0 then False
+    else let serial = gsi-view-serial packet
+    in if serial == 0 | serial == viewer then False
+    else when world-get world serial
+      is Err (_) -> False
+      is Ok (obj) -> when world-get world viewer
+        is Err (_) -> False
+        is Ok (me) -> not (gsi-in-view world me obj 65)
+  gsi-handle :GsiState, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   gsi-handle (state) (shard) (input) (map) (host-port) (packet) = gsi-handle-at state shard input map host-port packet get-ticks
 
   gsi-ground-view : GsiState, GsiActor, Integer, List (List Integer) -> List (List Integer)

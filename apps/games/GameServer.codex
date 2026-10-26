@@ -37,6 +37,7 @@ Chapter: GameServer
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
   cites Foreword chapter StringUtils
+  cites Games chapter GameQuery
 
  We say:
 
@@ -615,7 +616,7 @@ Section: Board JSON Serializers
 
   yh-to-json : YahtzeeState, Integer -> Text
   yh-to-json (st) (turn) =
-    let dice = int-list-to-json (st.dice) 0 5 []
+    let dice = int-list-to-json (st.dice) 0 (list-length (st.dice)) []
     in let scorecard = int-list-to-json (st.scorecard) 0 13 []
     in let scored = int-list-to-json (st.scored) 0 13 []
     in let total = yh-total (st.scorecard)
@@ -1062,6 +1063,17 @@ Section: Request Dispatch
 
   dispatch-request : GameStore, Text -> [Console] GameStore
   dispatch-request (store) (line) =
+    if query-overflows line then refuse-overlong store
+    else dispatch-path store line
+
+  refuse-overlong : GameStore -> [Console] GameStore
+  refuse-overlong (store) = act
+    pm0 <- respond-error "a numeric parameter does not fit in 64 bits"
+    store
+  end
+
+  dispatch-path : GameStore, Text -> [Console] GameStore
+  dispatch-path (store) (line) =
     let path = extract-path line
     in if text-starts-with path "/api/backgammon/" then handle-bg store line path
     else if text-starts-with path "/api/tictactoe/" then handle-ttt store line path
@@ -1800,13 +1812,9 @@ Section: Request Dispatch
           pm0 <- respond-json (sp-to-json st2)
           ns
         end
-      else let from-col = mv / 100
-      in let rem = mv - from-col * 100
-      in let seq-start = rem / 10
-      in let to-col = rem - seq-start * 10
-      in let move = SpiderMove { from-col = from-col, seq-start = seq-start, to-col = to-col }
+      else let move = sp-decode-move mv
       in let next = sp-apply-move (store.sp-state) move
-      in let checked = sp-check-complete next (to-col)
+      in let checked = sp-check-complete next (move.to-col)
       in let ns = set-sp store checked (if checked.completed-suits >= 8 then False else True)
       in act
         pm0 <- respond-json (sp-to-json checked)

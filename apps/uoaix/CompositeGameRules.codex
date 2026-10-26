@@ -18,6 +18,7 @@ Chapter: CompositeGameRules
   cites Uoaix chapter BankCommands
   cites Uoaix chapter GameHarvestCodec
   cites Uoaix chapter CastleGate
+  cites Uoaix chapter BookcaseLibrary
   cites Uoaix chapter GameSkillsItems
   cites Uoaix chapter GameCombat
   cites Uoaix chapter GameHunger
@@ -62,6 +63,7 @@ Chapter: CompositeGameRules
   cites Uoaix chapter CompositePlanting
   cites Uoaix chapter CompositeMinter
   cites Uoaix chapter RoyalStable
+  cites Uoaix chapter RoyalSecretary
   cites Uoaix chapter CityStables
   cites Uoaix chapter Teleporters
   cites Uoaix chapter WorldSpawnIntData
@@ -108,18 +110,18 @@ Chapter: CompositeGameRules
     active : ActiveSkills, shows : Integer, speech : Maybe NpcSpeech, production : CprState,
     spawns : Maybe GameWorldSpawn, spawn-hold : Integer, spawn-held : Integer,
     speech-hold : Integer, speech-held : Integer, gatherer : Maybe CgGatherer, fighter : Maybe CgFighter, hunter : Maybe CgFighter, british : Maybe CbErrand, british-spare : Maybe CbErrand, miners : List CgGatherer, farmer : Maybe CgGatherer, smith : CsnSmith, baker : CsnSmith, tailor : CsnSmith, tinker : CsnSmith, carpenter : CsnSmith, glassblower : CsnSmith, potter : CsnSmith, bowyer : CsnSmith, tanner : CsnSmith, leatherworker : CsnSmith, cobbler : CsnSmith, camps : Integer, labor : Boolean, pages : HelpPages, known : NnKnown,
-    gate-cover : Maybe (Integer, Integer, Integer -> [Device.Block] Result WalkMap Text), stages : Integer, decay : Integer, decay-at : Integer, save-faults : Text, load-faults : Text, faults-said : Integer, alarms : Integer, dead : Integer,
+    gate-cover : Maybe (Integer, Integer, Integer -> [Device.Block] Result WalkMap Text), stages : Integer, decay : Integer, decay-at : Integer, save-faults : Text, load-faults : Text, faults-said : Integer, alarms : Integer, dead : Integer, incidents : Boolean, quests : Integer,
     tick-map : WalkMap, tick-held : Boolean, tick-watcher : Integer, store-due : Integer, lumber-shun : Integer, rot-log : Integer, death-log : Integer, plays : PlrStore,
     overlay : GmOverlay, land : GmLand, alarm-log : Integer, history : Integer, tavern : Integer, fleet : Integer, pins : MpnState, books : WbkState, cards : Integer, cities : List CtCity, city-maps : List WalkMap, city-navs : List TlPath, leisure : Integer,
-    worker-cities : List CgCity, city-towns : List TownLive, city-workers : List CgGatherer, city-held : Integer, kind-time : Integer, keeper-said : Integer, teleports : Integer, housing : HsState, durability : IdState, fleet-hour : Integer, foot-said : Integer, city-keepers : List CkKeeper, city-leisure : Integer, powder-tally : Integer, weather : Integer, gov-hour : Integer, economy-hour : Integer, light : Integer, reports : Integer }
+    worker-cities : List CgCity, city-towns : List TownLive, city-workers : List CgGatherer, city-held : Integer, kind-time : Integer, keeper-said : Integer, teleports : Integer, housing : HsState, durability : IdState, fleet-hour : Integer, foot-said : Integer, city-keepers : List CkKeeper, city-leisure : Integer, powder-tally : Integer, fleet-tally : Integer, weather : Integer, gov-hour : Integer, economy-hour : Integer, light : Integer, reports : Integer, lots-seen : Integer, flora-fills : Integer, walk-spent : Integer, wheel-total : Integer, wheel-ticks : Integer, entry-cells : Integer, appointments : Integer }
   CgMoved = record { shown : List (List Integer), names : List Text }
   CgSwap = record { a : Integer, b : Integer, box-a : Integer, box-b : Integer, ok-a : Integer, ok-b : Integer }
   CgCrew = record { serial : Integer, actor : Integer, person : Integer, order : Integer, tried : Integer,
     home-x : Integer, home-y : Integer, home-z : Integer, site-x : Integer, site-y : Integer, site-z : Integer, walk : RteWalk }
  cg-pulse stamps HPET ticks at its stage boundaries so a slow WORLD PULSE names its stage (F30). Stamps: 0 start,
- 5 vendors, 6 monsters, 7 decoration and flora (1 the base done), 8 labor, 9 town moves, 10 town live, 11 lineup,
+ 5 vendors, 6 monsters, 7 decoration, 13 the timer wheel, 14 the views (1 the base done), 8 labor, 9 town moves, 10 town live, 11 lineup,
  12 NPC speech (2 the town done), 3 magic, 4 active skills.
-  cg-stage-count : Integer = 13
+  cg-stage-count : Integer = 15
   cg-stage : CompositeGame, Integer -> Integer
   cg-stage (owner) (at) = poke-qword owner.stages (at * 8) hpet-ticks
   cg-stage-reset : CompositeGame, Integer, Integer -> Integer
@@ -250,6 +252,9 @@ Chapter: CompositeGameRules
       in let stable = rst-install owner.production.harvest.items
       in let stableman = rst-serial owner.production.harvest.items.world
       in let stable-named = cg-dress-bare owner stableman cst-shopkeeper (nn-name cst-guard stableman)
+      in let secretary = rsc-install owner.production.harvest.items
+      in let scribe = rsc-serial owner.production.harvest.items.world
+      in let secretary-named = cg-dress-bare owner scribe cst-shopkeeper (nn-name cst-shopkeeper scribe)
       in let stables = csm-install owner.production.harvest.items
       in let stablemasters = cg-dress-all owner (csm-serials owner.production.harvest.items.world (csm-spots 0) 0 []) 0
       in let fleet = cg-fleet-install owner 0
@@ -455,10 +460,10 @@ Chapter: CompositeGameRules
           magic = None, gates = None, clock = 0, timers = timers, magic-hold = 0, magic-held = 0, town = None, town-map = None,
           town-seconds = 0, town-ms = 0, town-tick = 0, day-hook = cg-day-default, day-saved = 0, network = None, town-doors = None, shops = None, staff = None, civic = None, duels = cg-duel-slots 32 [], rounds = cg-rounds-new 0, bbs = bbs-new 0, construction = cn-new 0, decor = dc-new 0, designs = md-new 0, cast-actors = cb-zeroed (plr-slots * pls-max-cast * 8), ships = shp-new 0, gov = None, crew = None, raid-seen = 0, trades = cg-trade-block cg-trade-grow-by [], lineup = None, rebinds = 0, hidden = 0, moving = 0, active = active, shows = shows, speech = None, production = cpr-new vendor items,
           spawns = None, spawn-hold = 0, spawn-held = 0 , speech-hold = 0, speech-held = 0, gatherer = None, fighter = None, hunter = None, british = None, british-spare = Just (cbe-new 0 (BbSpot { x = 0, y = 0, z = 0 })), miners = [], farmer = None, smith = csn-smith 0, baker = csn-baker 0, tailor = csn-tailor 0, tinker = csn-tinker 0, carpenter = csn-carpenter 0, glassblower = csn-glassblower 0, potter = csn-potter 0, bowyer = csn-bowyer 0, tanner = csn-tanner 0, leatherworker = csn-leatherworker 0, cobbler = csn-cobbler 0, camps = cf-new 0, labor = False, pages = hp-new 0, known = nn-new 0,
-          gate-cover = None, stages = alloc-bytes (cg-stage-count * 8), decay = sa-new 16 items.world.capacity, decay-at = cb-zeroed 8, save-faults = "", load-faults = "", faults-said = 0, alarms = cb-zeroed (cg-alarm-rows * 16), dead = cb-zeroed (cg-dead-rows * cg-dead-bytes),
-          tick-map = WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0 }, tick-held = False, tick-watcher = 0, store-due = 0, lumber-shun = cb-zeroed (cgl-shun-cells * 8), rot-log = cb-zeroed (8 + cg-rot-rows * 64), death-log = cb-zeroed (16 + cg-death-rows * 64), plays = plr-new 0,
+          gate-cover = None, stages = alloc-bytes (cg-stage-count * 8), decay = sa-new 16 items.world.capacity, decay-at = cb-zeroed 8, save-faults = "", load-faults = "", faults-said = 0, alarms = cb-zeroed (cg-alarm-rows * 16), dead = sa-new cg-dead-bytes cg-dead-rows, incidents = True, quests = sa-new cg-quest-bytes cg-dead-rows,
+          tick-map = WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0, refused = 0 }, tick-held = False, tick-watcher = 0, store-due = 0, lumber-shun = cb-zeroed (cgl-shun-cells * 8), rot-log = cb-zeroed (8 + cg-rot-rows * 64), death-log = cb-zeroed (16 + cg-death-rows * 64), plays = plr-new 0,
           overlay = gmo-new 0, land = gld-new 0, alarm-log = cb-zeroed (16 + cg-alarm-log-rows * 72), history = 0, tavern = cb-zeroed (tbd-tavern-bytes + tch-tavern-bytes), fleet = cb-zeroed swb-bytes, pins = mpn-new 0, books = wbk-new 0, cards = cb-zeroed tcd-bytes, cities = ct-table 0, city-maps = [], city-navs = [], leisure = kl-new 0,
-          worker-cities = [], city-towns = [], city-workers = [], city-held = 0, kind-time = cb-zeroed cg-kind-bytes, keeper-said = cb-zeroed (bb-shop-count * 8), teleports = tp-load 0, housing = hs-new 0, durability = id-new checkpoint.game.world.capacity, fleet-hour = 0 - 1, foot-said = cb-zeroed (cg-foot-rows * 8), city-keepers = [], city-leisure = cb-zeroed ck-tally-bytes, powder-tally = cb-zeroed 64, weather = wx-new 0, gov-hour = 0 - 1, economy-hour = 0 - 1, light = 0 - 1, reports = cb-zeroed (16 + cg-report-rows * 64) }
+          worker-cities = [], city-towns = [], city-workers = [], city-held = 0, kind-time = cb-zeroed cg-kind-bytes, keeper-said = cb-zeroed (bb-shop-count * 8), teleports = tp-load 0, housing = hs-new 0, durability = id-new checkpoint.game.world.capacity, fleet-hour = 0 - 1, foot-said = cb-zeroed (cg-foot-rows * 8), city-keepers = [], city-leisure = cb-zeroed ck-tally-bytes, powder-tally = cb-zeroed 64, fleet-tally = cb-zeroed 104, weather = wx-new 0, gov-hour = 0 - 1, economy-hour = 0 - 1, light = 0 - 1, reports = cb-zeroed (16 + cg-report-rows * 64), lots-seen = 0, flora-fills = 0 - 1, walk-spent = 0, wheel-total = cb-zeroed cg-kind-bytes, wheel-ticks = 0, entry-cells = cb-zeroed 40, appointments = cb-zeroed rsc-bytes }
           in let traded = __record-set made.plays "trade" (cg-play-trade made)
           in let doored = __record-set made.plays "doors" (cg-play-doors made)
           in let venomous = __record-set combat "venom-hook" (cg-as-envenom made)
@@ -734,12 +739,15 @@ Chapter: CompositeGameRules
     in p.kind == 2 & ((p.owner >= cg-wild-owner & p.owner < cg-wild-owner + 1000000) | (p.owner >= 2000 & p.owner < 2128)
       | (p.owner >= cg-cast-owner & p.owner < cg-cast-owner + plr-slots * pls-max-cast))
   cg-play-near : GvWorld, WorldTable, Integer, Integer, Integer -> Integer
-  cg-play-near (v) (world) (x) (y) (i) = if i >= v.player-count then 0 - 1
-    else let p = list-at v.players i
-    in let close = when world-get world p.serial
+  cg-play-near (v) (world) (x) (y) (i) = cg-play-first v world x y (cg-players-near v world x y 3) i
+  cg-play-first : GvWorld, WorldTable, Integer, Integer, List Integer, Integer -> Integer
+  cg-play-first (v) (world) (x) (y) (near) (k) = if k >= list-length near then 0 - 1
+    else let i = gv-player v (list-at near k) 0
+    in let p = list-at v.players (max 0 i)
+    in let close = i >= 0 & (when world-get world p.serial
       is Err (_) -> False
-      is Ok (m) -> m.health > 0 & m.x >= x - 3 & m.x <= x + 3 & m.y >= y - 3 & m.y <= y + 3
-    in if close & p.actor > 0 & p.pack > 0 then i else cg-play-near v world x y (i + 1)
+      is Ok (m) -> m.health > 0 & m.x >= x - 3 & m.x <= x + 3 & m.y >= y - 3 & m.y <= y + 3)
+    in if close & p.actor > 0 & p.pack > 0 then i else cg-play-first v world x y near (k + 1)
   cg-play-pack : GsiState, Integer -> Integer
   cg-play-pack (items) (npc) = let held = gsi-pack-find items.world npc 0
     in if held > 0 then held
@@ -866,6 +874,8 @@ Chapter: CompositeGameRules
       in let venomous = __record-set spawns.combat "poison-hook" (gws-poison spawns)
       in let hunting = __record-set spawns "prey" (cg-prey owner)
       in let sparing = __record-set spawns "spared" (cg-town-worker owner)
+      in let waking = __record-set spawns "awake" (cg-spawn-awake owner)
+      in let rousing = __record-set spawns.combat "struck-hook" (cg-struck owner spawns)
       in let wild = when cg-bind-spawns owner spawns 0 is Err (e) -> let noted = __record-set owner "load-faults" (owner.load-faults & "spawn actors: " & e & "; ") in 0 is Ok (n) -> n
       in if owner.spawn-held == 0 then Ok 0
       else if owner.spawn-held >= 64 & peek-qword owner.spawn-hold 16 /= spawns.catalog.revision then
@@ -891,7 +901,7 @@ Chapter: CompositeGameRules
     is Ok (_) -> cg-drain owner game tick
  Spawns (key 0) and the NPC combat round (key 1) step on the wheel once a second around the world tick's watcher, over
  the map cache's walk window the tick last held (allocated at boot, below the compaction mark); an entry that falls due
- before the first world tick waits for the next drain. Their packets have no recipient, as the tick's had.
+ before the first world tick waits for the next drain.
   cgr-kind : Integer = 14
   cgr-ticks : Integer = gm-ticks 1000
   cg-arm-rounds : CompositeGame -> Result Integer Text
@@ -900,8 +910,7 @@ Chapter: CompositeGameRules
   cg-round-fire (owner) (game) (key) (tick) = let map = owner.tick-map
     in if not owner.tick-held then (if wtm-add owner.timers (tick + 1) cgr-kind key < 0 then Err "round timer pool full" else Ok 0)
     else if wtm-add owner.timers (tick + cgr-ticks) cgr-kind key < 0 then Err "round timer pool full"
-        else if owner.tick-watcher == 0 then Ok 0
-        else if key == 0 then cg-spawn-round owner game map tick
+        else if key == 0 then (if owner.tick-watcher == 0 then Ok 0 else cg-spawn-round owner game map tick)
         else when cb-swings owner.combat game (gn-input 0) map 0 []
           is Err (e) -> Err e
           is Ok (struck) -> let corpses = gr-corpse-packets owner.items struck 0 in Ok 1
@@ -915,6 +924,20 @@ Chapter: CompositeGameRules
   cg-store-fire : CompositeGame, Integer, Integer -> Result Integer Text
   cg-store-fire (owner) (key) (tick) = if wtm-add owner.timers (tick + (if key == 0 then cgd-save-ticks else cgd-report-ticks)) cgd-kind key < 0 then Err "store timer pool full"
     else let due = __record-set owner "store-due" (bit-or owner.store-due (bit-shl 1 key)) in Ok 1
+ 40 tiles per axis: a creature past 32 stands outside its player's 64-tile walk window and cannot step, and 8 more is
+ the spill reach (gws-spill-reach), so a creature wakes before it can come into the window.
+  cg-awake-reach : Integer = 40
+ A ghost keeps nothing awake: no creature hunts the dead (trial-47481, two ghosts held the mine's spawn awake for half
+ an hour).
+  cg-spawn-awake : CompositeGame, Integer, Integer -> Boolean
+  cg-spawn-awake (owner) (x) (y) = cg-player-within owner.vendor owner.checkpoint.game.world x y 0
+  cg-player-within : GvWorld, WorldTable, Integer, Integer, Integer -> Boolean
+  cg-player-within (v) (world) (x) (y) (i) = if i >= v.player-count then False
+    else when world-get world (list-at v.players i).serial
+      is Err (_) -> cg-player-within v world x y (i + 1)
+      is Ok (m) -> if m.health > 0 & m.graphic /= 402 & m.graphic /= 403 & gm-near m.x m.y x y cg-awake-reach then True else cg-player-within v world x y (i + 1)
+  cg-struck : CompositeGame, GameWorldSpawn, Integer -> Integer
+  cg-struck (owner) (spawns) (serial) = let revealed = as-reveal-serial owner.active serial in let roused = gws-rouse spawns serial in revealed
   cg-spawn-wake : CompositeGame, GameShard, Integer, Integer -> Result Integer Text
   cg-spawn-wake (owner) (game) (key) (tick) = when owner.spawns
     is None -> Ok 0
@@ -931,6 +954,8 @@ Chapter: CompositeGameRules
   cg-tick : CompositeGame, GameShard, WalkMap, Integer, Integer -> Result Integer Text
   cg-tick (owner) (game) (map) (watcher) (tick) = if watcher /= 0 then cg-world-tick owner game map watcher tick
     else let unseen = __record-set owner "tick-watcher" 0
+    in let held = __record-set owner "tick-map" map
+    in let holding = __record-set owner "tick-held" True
     in when cg-british-arm owner tick
       is Err (e) -> Err e
       is Ok (_) -> cg-drain owner game tick
@@ -1002,7 +1027,8 @@ Chapter: CompositeGameRules
  the fighter loots the victim.
   cg-deaths : CompositeGame, GameWorldSpawn, Integer, Integer -> Integer
   cg-deaths (owner) (spawns) (source) (victim) =
-    let unmounted = cg-unmount-dead owner victim
+    let roused = gws-rouse spawns victim
+    in let unmounted = cg-unmount-dead owner victim
     in let logged = cg-death-note owner source victim (cg-death-role owner victim)
     in let murdered = cg-crime owner source victim 3
     in let mourned = cg-dead-note owner victim source
@@ -1349,7 +1375,7 @@ Chapter: CompositeGameRules
     else let site = list-at h.sites k
     in when bb-placement h.vendor.game.world route (BbShop { title = "Tree", premises = "Forest", x1 = site.x - 1, y1 = site.y - 1, x2 = site.x + 1, y2 = site.y + 1 }) 0
       is Err (_) -> 0
-      is Ok (spot) -> if rte-plan nav h.vendor.game.world route None (WorldObject { serial = 0, kind = 1, x = trail.x, y = trail.y, z = trail.z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) spot.x spot.y spot.z < 0 then cg-lumber-shun owner.lumber-shun site.x site.y 0
+      is Ok (spot) -> if rte-plan-at 0 nav h.vendor.game.world route None (WorldObject { serial = 0, kind = 1, x = trail.x, y = trail.y, z = trail.z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }) spot.x spot.y spot.z < 0 then cg-lumber-shun owner.lumber-shun site.x site.y 0
         else let a = __record-set c.gatherer "node" site.node
         in let b = __record-set c.node "x" spot.x
         in let d = __record-set c.node "y" spot.y
@@ -1478,13 +1504,26 @@ Chapter: CompositeGameRules
     in let logs = c.gatherer.gathered
     in let role = if serial == 0 then 0 else cg-death-role owner serial
     in if (if serial /= 0 then False else cg-home-threatened owner c.home) then Ok (cg-worker-pace c True)
-    else when (if c.leg == 12 | c.leg == 13 then cg-lumber-walk owner c town else cgg-step c town britain owner.town-doors)
+    else when (if cg-incident-runner owner.dead serial 0 then cg-witness-walk owner c town britain
+      else if c.leg == 12 | c.leg == 13 then cg-lumber-walk owner c town else cgg-step c town britain owner.town-doors)
       is Err (e) -> Err e
       is Ok (packets) -> let fell = if serial /= 0 & c.serial == 0 then cg-death-note owner -1 serial role else 0
         in let felled = if c.trade.raw == 15 & c.gatherer.gathered > logs then cg-worker-tree owner c.serial else 0
         in let synced = cg-door-sync owner packets 0
         in let still = c.serial == serial & c.leg == leg & c.via == via & c.visit == visit & c.trips == trips & c.made == made & c.sold == sold & c.walk.moves == moves & c.walk.blocked == stalls
         in Ok (cg-strike-pace c (cg-worker-pace c (still | (c.blocked > blocked & c.walk.fails >= cgw-plan-fails))))
+ UOAIX-275: a worker running to the mayor with news of a death walks to a tile beside him and waits there.
+  cg-witness-walk : CompositeGame, CgGatherer, TownLive, WalkMap -> Result (List (List Integer)) Text
+  cg-witness-walk (owner) (c) (town) (britain) = when owner.civic
+    is None -> Ok []
+    is Just (cv) -> when world-get owner.checkpoint.game.world c.serial
+      is Err (_) -> Ok []
+      is Ok (m) -> when world-get owner.checkpoint.game.world cv.mayor
+        is Err (_) -> Ok []
+        is Ok (mayor) -> if max (walk-abs (mayor.x - m.x)) (walk-abs (mayor.y - m.y)) <= 2 then Ok []
+          else when cv-approach cv britain m mayor 0
+            is Err (_) -> Ok []
+            is Ok (spot) -> rte-toward-in town.nav town.vendors.game.world (Just town.vendors.game) britain owner.town-doors rte-any c.walk m spot.x spot.y spot.z
  A dead worker rises at home only while no hostile creature stands within cg-guard-reach of it (root, 2026-10-09).
   cg-home-threatened : CompositeGame, BbSpot -> Boolean
   cg-home-threatened (owner) (home) = when owner.spawns
@@ -1544,6 +1583,21 @@ Chapter: CompositeGameRules
  UOAIX-217 W2: the workers of the cities past Britain, founded at boot after the city shops (cgs-cities) and stepped on
  their own wheel errand (key: the index in owner.city-workers) on their city's map and planner, with no doors.
   cg-city-kind : Integer = 20
+ Britain's reagent gatherers (city 0's workers) live in the town's houses as its own workers do (UOAIX-239; UOAIX-163,
+ Damian 2026-10-09: no worker lives in a shop). They are founded after cg-lodge-all, so each unhoused one takes the
+ least-loaded reachable house past every NPC already lodged; the houses' reach is planned only while one is unhoused.
+  cg-city-beds : CompositeGame, List CgGatherer -> Integer
+  cg-city-beds (owner) (xs) = let out = cg-unhoused xs 0 []
+    in if list-length out == 0 then 0
+    else when owner.town
+      is None -> 0
+      is Just (town) -> when owner.town-map
+        is None -> 0
+        is Just (britain) -> let homes = cg-fighter-homes owner (cg-npc-homes owner town)
+          in cg-own-bed owner town britain (cg-house-reach town britain owner.town-doors 0 []) homes out 0 homes (\s -> cgg-reaches town britain owner.town-doors s)
+  cg-unhoused : List CgGatherer, Integer, List CgGatherer -> List CgGatherer
+  cg-unhoused (xs) (i) (out) = if i >= list-length xs then out
+    else let c = list-at xs i in cg-unhoused xs (i + 1) (if c.city.city == 0 & cgg-house-of c.home 0 < 0 then out & [c] else out)
   cg-city-workers : CompositeGame -> Text
   cg-city-workers (owner) = when owner.town
     is None -> "CITY WORKERS off: no townsfolk"
@@ -1551,7 +1605,9 @@ Chapter: CompositeGameRules
       in let a = __record-set owner "worker-cities" built.cities
       in let b = __record-set owner "city-towns" built.towns
       in let restored = cw-restore built.cities owner.vendor owner.items owner.city-held 0 (CwFound { workers = [], founded = 0, refused = "" })
-      in let found = cw-found built.cities built.towns owner.city-maps 0 0 restored
+      in let found = cw-found built.cities built.towns owner.city-maps owner.teleports 0 0 restored
+      in let hops = cw-hops found.workers owner.teleports 0
+      in let housed = cg-city-beds owner found.workers
       in let kept = __record-set owner "city-workers" found.workers
       in let held = if list-length built.cities == 0 then 0 else let d = __record-set owner "city-held" 0 in 0
       in let beds = cw-own-beds found.workers built.cities built.towns owner.city-maps 0
@@ -1561,7 +1617,7 @@ Chapter: CompositeGameRules
       in let keepers = ck-build owner.vendor (ct-city-shops 0) owner.cities built.cities built.towns owner.city-maps bb-shop-count []
       in let stepping = __record-set owner "city-keepers" keepers
       in "CITY WORKERS cities=" & show (list-length built.cities) & " keepers=" & show (list-length keepers) & " restored=" & show (list-length restored.workers) & " founded=" & show found.founded
-        & " housed=" & show beds & " spots=" & show spots & " regardened=" & show regardened & (if armed < 0 then " timer pool full" else "") & (if text-length found.refused == 0 then "" else " refused:" & found.refused)
+        & " housed=" & show beds & " britain-housed=" & show housed & " spots=" & show spots & " regardened=" & show regardened & (if armed < 0 then " timer pool full" else "") & (if text-length found.refused == 0 then "" else " refused:" & found.refused)
  UOAIX-217: a city's lumberjack at home (leg 0) whose node is spent fells its woods' map trees as Britain's fells its
  forest's: the next ready tree site of its place in its woods, else one planted from the flora there while fewer than
  cw-spots stand, at a standable tile beside it that its door plans to (a tree no plan reaches is shunned); with neither
@@ -1807,7 +1863,8 @@ Chapter: CompositeGameRules
   cg-mount (owner) (game) (input) (packet) = when cg-slephnir owner game input packet
     is Just (r) -> Just r
     is None -> if list-length packet < 5 | list-at packet 0 /= 6 | input.mode /= 2 | input.session.phase /= 2 then None
-    else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
+    else if bit-and (gp-u32 packet 1) #80000000 /= 0 then None
+    else let serial = gp-u32 packet 1
     in let rider = input.session.serial
     in when owner.spawns
       is None -> None
@@ -1908,7 +1965,11 @@ Chapter: CompositeGameRules
             in if slot < 0 then None
             else Just (as-snoop (cg-as-services owner) owner.active (as-session owner.active game input me slot) me beast)
   cg-family : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
-  cg-family (owner) (game) (input) (map) (port) (packet) = when cg-mount owner game input packet
+  cg-family (owner) (game) (input) (map) (port) (packet) = when cg-audience-asked owner game input packet
+    is Just (asked) -> Ok (Just asked)
+    is None -> when rsc-heard owner.appointments game input packet (owner.town-seconds / 86400)
+    is Just (booked) -> Ok (Just booked)
+    is None -> when cg-mount owner game input packet
     is Just (mounted) -> Ok (Just mounted)
     is None -> when cg-pack-animal owner game input packet
     is Just (opened) -> Ok (Just opened)
@@ -1917,6 +1978,29 @@ Chapter: CompositeGameRules
     is None -> when cg-family-said owner game input map port packet
       is Err (e) -> Err e
       is Ok (reply) -> Ok (cg-speakers owner input.session.serial reply)
+ UOAIX-274 (Damian, 2026-10-20: "the appointment should be allowed automatically, not require british. reasons are like
+ reporting town news, mayorial issues, etc. reasons like "i am bored" not. so there has to be some in-game-world event or
+ condition it relates to."; "for now, lets kiss"): a player saying "appointment" near the secretary is booked for the game
+ day when one of a fixed set of reasons holds, each a live world condition: a crime the player witnessed still open in
+ Britain's law (a witness row on a case not yet jailed, status below 3), or a townsperson's death in the dead ring.
+  cg-audience-asked : CompositeGame, GameShard, GameInput, List Integer -> Maybe GameReply
+  cg-audience-asked (owner) (game) (input) (packet) = if list-length packet < 10 | list-at packet 0 /= 3 | input.mode /= 2 | input.session.phase /= 2 then None
+    else if not (text-contains (text-to-lower (gp-speech-text packet)) "appointment") | not (rsc-near game.world input.session.serial) then None
+    else let reason = cg-audience owner input.session.serial
+    in if reason == "" then Just (rsc-say game.world "His lordship hears matters of the realm: a crime thou hast witnessed, a death in the town. Bring such news and I shall write thee in." "secretary:no-reason")
+    else if rsc-appoint owner.appointments input.session.serial (owner.town-seconds / 86400) < 0 then Just (rsc-say game.world "The book is full for today." "secretary:full")
+    else Just (rsc-say game.world ("His lordship will hear thee today on " & reason & ". The doors are open to thee.") "secretary:appointed")
+  cg-audience : CompositeGame, Integer -> Text
+  cg-audience (owner) (serial) = let witnessed = when owner.civic is None -> False is Just (c) -> cg-audience-witness c.law serial 0
+    in if witnessed then "the crime thou didst witness"
+    else if cg-audience-death owner.dead 0 then "the death in the town"
+    else ""
+  cg-audience-witness : LawWorld, Integer, Integer -> Boolean
+  cg-audience-witness (w) (serial) (i) = if i >= w.witness-count then False
+    else let row = list-at w.witnesses i
+    in (row.serial == serial & lw-valid-case w row.case-id & (lw-case w row.case-id).status < 3) | cg-audience-witness w serial (i + 1)
+  cg-audience-death : Integer, Integer -> Boolean
+  cg-audience-death (ring) (i) = if i >= sa-capacity ring then False else peek-qword (sa-at ring i) 0 /= 0 | cg-audience-death ring (i + 1)
  UOAIX-68: NPC hearing is judged on the Britain map the residents walk, which covers every shop and the bank lineup.
   cg-city-map : CompositeGame, Integer, Integer -> Maybe WalkMap
   cg-city-map (owner) (x) (y) = ct-map-at owner.cities owner.city-maps x y
@@ -1936,7 +2020,7 @@ Chapter: CompositeGameRules
    is None -> let ordered = cg-pet-orders owner game input packet in when cmr-treasury owner.production.harvest owner.banks game input packet
    is Err (e) -> Err e
    is Ok (Just (told)) -> Ok (Just told)
-   is Ok (None) -> when (when cg-gift-said owner game input packet is Just (gift) -> Ok (Just gift) is None -> when hs-cmd owner.housing owner.construction owner.items (cg-house-people owner game map) game input packet is Just (housed) -> Ok (Just housed) is None -> when cg-repair-said owner game input packet is Just (mended) -> Ok (Just mended) is None -> when cg-pet-command owner game input packet is Just (aimed) -> Ok (Just aimed) is None -> when cg-pet-aimed owner game input packet is Just (commanded) -> Ok (Just commanded) is None -> when cg-duel-said owner game input packet is Just (dueled) -> Ok (Just dueled) is None -> when cg-testify-said owner game input packet is Just (testified) -> Ok (Just testified) is None -> when cg-arrest-answer owner game input packet is Just (answered) -> Ok (Just answered) is None -> when cg-monster-call owner game input packet is Just (called) -> Ok (Just called) is None -> when owner.civic is None -> Ok None is Just (c) -> cv-handler c game input (cg-sight-map owner map) port packet)
+   is Ok (None) -> when (when cg-gift-said owner game input packet is Just (gift) -> Ok (Just gift) is None -> when hs-cmd owner.housing owner.construction owner.items (cg-house-people owner game map) game input packet is Just (housed) -> Ok (Just housed) is None -> when cg-repair-said owner game input packet is Just (mended) -> Ok (Just mended) is None -> when cg-pet-command owner game input packet is Just (aimed) -> Ok (Just aimed) is None -> when cg-pet-aimed owner game input packet is Just (commanded) -> Ok (Just commanded) is None -> when cg-duel-said owner game input packet is Just (dueled) -> Ok (Just dueled) is None -> when cg-testify-said owner game input packet is Just (testified) -> Ok (Just testified) is None -> when cg-arrest-answer owner game input packet is Just (answered) -> Ok (Just answered) is None -> when cg-incident-accept owner game input packet is Just (accepted) -> Ok (Just accepted) is None -> when cg-monster-call owner game input packet is Just (called) -> Ok (Just called) is None -> when owner.civic is None -> Ok None is Just (c) -> cv-handler c game input (cg-sight-map owner map) port packet)
     is Err (e) -> Err e
     is Ok (Just (civic)) -> Ok (Just civic)
     is Ok (None) -> when owner.speech
@@ -1945,13 +2029,13 @@ Chapter: CompositeGameRules
       is Just (named) -> Ok (Just named)
       is None -> when cg-role-said owner speech game input (cg-sight-map owner map) packet
        is Just (role) -> Ok (Just role)
-       is None -> when (when cg-worker-said owner game input packet is Just (sold) -> Ok (Just sold) is None -> ns-handler speech game input (cg-sight-map owner map) port packet)
+       is None -> when (when cg-worker-said owner game input packet is Just (sold) -> Ok (Just (cg-change-out owner game input sold)) is None -> ns-handler speech game input (cg-sight-map owner map) port packet)
         is Err (e) -> Err e
         is Ok (Just (reply)) -> Ok (Just reply)
         is Ok (None) -> cg-family-town owner game input map port packet
   cg-family-town : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   cg-family-town (owner) (game) (input) (map) (port) (packet) = when cg-worker-trade owner game input packet get-ticks
-    is Just (sold) -> Ok (Just sold)
+    is Just (sold) -> Ok (Just (cg-change-out owner game input sold))
     is None -> when cg-trade-click owner game input packet
     is Just (named) -> Ok (Just named)
     is None -> cg-family-folk owner game input map port packet
@@ -2006,7 +2090,8 @@ Chapter: CompositeGameRules
     in let at = gv-tail speech "buy"
     in if at < 0 then False else gv-speech-role speech at == 0 - 1
   cg-worker-menu : GvWorld, GvPlayer, GvVendor, WorldObject, Integer, Integer -> GameReply
-  cg-worker-menu (v) (p) (vendor) (npc) (connection) (tick) = let a = __record-set p "count" 0
+  cg-worker-menu (v) (p) (vendor) (npc) (connection) (tick) = let quoted = __record-set v "quoting" 1
+    in let a = __record-set p "count" 0
     in let b = __record-set p "vendor" vendor.serial
     in let c = __record-set p "side" 1
     in let d = __record-set p "connection" connection
@@ -2059,6 +2144,7 @@ Chapter: CompositeGameRules
         else hs-house-at-sign owner.housing (wd-field state index 0) (wd-field state index 1) 0
       in if orchard >= 0 then (if input.mode /= 2 | input.session.phase /= 2 then Ok None else cpl-care owner.production.harvest input orchard)
       else if house >= 0 then (if input.mode /= 2 | input.session.phase /= 2 then Ok None else Ok (Just (hs-sign owner.housing game input house)))
+      else if rsc-shut owner.appointments state game input packet index (owner.town-seconds / 86400) then Ok (Just (gsi-denied "The door is locked. The Lord's secretary keeps his appointments."))
       else let freed = cg-shop-door-inside owner state game input packet index
       in let before = if index < 0 | index >= state.count then -1 else peek-byte state.opened index
       in when wd-handler state game input map port packet
@@ -2338,6 +2424,7 @@ Chapter: CompositeGameRules
         in Just (gs-reply (if i < 0 then [head] else [head, wbk-page-packet owner.books serial]) "book opened")
   cg-wbook-write : CompositeGame, GameShard, Integer, List Integer -> Maybe GameReply
   cg-wbook-write (owner) (game) (viewer) (packet) = if list-length packet < 9 | (list-at packet 0 /= #93 & list-at packet 0 /= #66) then None
+    else if lib-asked packet >= 0 then Just (gs-reply [lib-page (bit-and (gp-u32 packet 3) #7FFFFFFF) (lib-asked packet)] "decoration:book-page")
     else if list-at packet 0 == #93 & list-length packet /= 98 then None
     else let serial = bit-and (gp-u32 packet (if list-at packet 0 == #93 then 1 else 3)) #7FFFFFFF
     in let i = if viewer > 0 & cg-wbook-is game serial & gv-owned game.world serial viewer 65 then wbk-ensure owner.books serial else -1
@@ -2476,18 +2563,58 @@ Chapter: CompositeGameRules
       is Err (e) -> Err e
       is Ok (Just (made)) -> Ok (Just made)
       is Ok (None) -> cg-vendor-base owner game input map port packet
+ A player's coin lives in the pack, as in 1998 (Damian, 2026-10-20: "after purchase and change made of 10k gold, no money
+ is in my backpack"): a purchase deposits only the coin its price needs (gv-deposit), and after every vendor trade the
+ player's purse, the change of a purchase or the takings of a sale, is withdrawn (eu-withdraw) into coin piles in the
+ pack, each added to the pack's pile of its metal up to cg-pile-most, then new piles. Nothing is withdrawn unless the
+ world has room for every pile, so no coin leaves the purse without reaching the pack.
+  cg-pile-most : Integer = 60000
+  cg-piles-for : Integer -> Integer
+  cg-piles-for (amount) = (amount + cg-pile-most - 1) / cg-pile-most
+  cg-change-out : CompositeGame, GameShard, GameInput, GameReply -> GameReply
+  cg-change-out (owner) (game) (input) (reply) = if not (text-starts-with reply.note "vendor trade side=") then reply
+    else let at = gv-player owner.vendor input.session.serial 0
+    in if at < 0 then reply
+    else let p = list-at owner.vendor.players at
+    in let x = owner.vendor.currency
+    in if p.pack == 0 | not (ep-valid-actor x.world p.actor) then reply
+    else let purse = (ep-actor x.world p.actor).purse
+    in let c = (em-purse x.copper purse).coin
+    in let s = (em-purse x.silver purse).coin
+    in let g = (em-purse x.world.money purse).coin
+    in if c + s + g == 0 | world-room game.world < cg-piles-for c + cg-piles-for s + cg-piles-for g then reply
+    else if eu-withdraw x p.actor purse c s g /= 0 then reply
+    else let shown = cg-coin-out owner game p.pack 1 c & cg-coin-out owner game p.pack 2 s & cg-coin-out owner game p.pack 3 g
+    in let touched = world-touch game.world
+    in GameReply { packets = reply.packets & shown, close = reply.close, note = reply.note }
+  cg-coin-out : CompositeGame, GameShard, Integer, Integer, Integer -> List (List Integer)
+  cg-coin-out (owner) (game) (pack) (metal) (amount) = if amount <= 0 then []
+    else let art = tl-coin-art metal
+    in let pile = gsi-child-art game.world (world-first-child game.world pack) art 0
+    in let room = if pile == 0 then 0 else (when world-get game.world pile is Err (_) -> 0 is Ok (o) -> max 0 (cg-pile-most - o.amount))
+    in if room > 0 then (when world-get game.world pile
+        is Err (_) -> []
+        is Ok (o) -> let put = min room amount
+          in when world-update game.world (__record-set o "amount" (o.amount + put))
+            is Err (_) -> []
+            is Ok (_) -> [sip-item o] & cg-coin-out owner game pack metal (amount - put))
+    else let put = min cg-pile-most amount
+    in when world-create game.world (__record-set (__record-set (__record-set (gs-item pack art 0) "amount" put) "x" 60) "y" 80)
+      is Err (_) -> []
+      is Ok (made) -> let known = gsi-register owner.items made 0 0 True True
+        in (when world-get game.world made is Err (_) -> [] is Ok (m) -> [sip-item m]) & cg-coin-out owner game pack metal (amount - put)
   cg-vendor-base : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   cg-vendor-base (owner) (game) (input) (map) (port) (packet) = when gv-handler owner.vendor game input map port packet
     is Err (e) -> Err e
     is Ok (answer) -> when answer
-      is Just (reply) -> Ok (Just (gmb-reply owner.items reply))
+      is Just (reply) -> Ok (Just (cg-change-out owner game input (gmb-reply owner.items reply)))
       is None -> when cbd-handler owner.combat owner.items game input map port packet
         is Err (e) -> Err e
         is Ok (answer) -> when answer
           is Just (reply) -> Ok (Just (cg-status-names owner game input.session.serial reply))
           is None -> when (when cg-corpse-label owner game packet is Just (r) -> Just r is None -> (when cpl-mint-label game packet is Just (r) -> Just r is None -> tbd-name owner.production.harvest.items packet))
             is Just (named) -> Ok (Just named)
-            is None -> when (when cg-stranger-label owner game input.session.serial packet is Just (s) -> Just s is None -> (when rst-label game.world packet is Just (k) -> Just k is None -> (when csm-label game.world packet is Just (m) -> Just m is None -> cg-creature-label owner game input.session.serial packet)))
+            is None -> when (when cg-stranger-label owner game input.session.serial packet is Just (s) -> Just s is None -> (when rst-label game.world packet is Just (k) -> Just k is None -> (when rsc-label game.world packet is Just (k) -> Just k is None -> (when csm-label game.world packet is Just (m) -> Just m is None -> cg-creature-label owner game input.session.serial packet))))
               is Just (stranger) -> Ok (Just stranger)
               is None -> when cg-npc-paperdoll owner game input.session.serial packet
                 is Just (doll) -> Ok (Just doll)
@@ -2706,8 +2833,9 @@ Chapter: CompositeGameRules
   cg-face (owner) (serial) = let own = gs-facing owner.checkpoint.game serial
     in if own >= 0 then own
     else let slot = world-slot owner.checkpoint.game.world serial
-    in if slot < 0 | slot >= list-length owner.view.seen then 0 - 1
-    else let row = list-at owner.view.seen slot in if row.object.serial == serial then bit-and row.direction 7 else 0 - 1
+    in let held = gcv-row-at owner.view slot
+    in if held == 0 then 0 - 1
+    else let row = gcv-row owner.view held in if row.object.serial == serial then bit-and row.direction 7 else 0 - 1
   cg-guard-row : List CvPatrol, Integer, Integer -> Integer
   cg-guard-row (ps) (serial) (i) = if i >= list-length ps then -1
     else if (list-at ps i).serial == serial then i else cg-guard-row ps serial (i + 1)
@@ -2757,6 +2885,7 @@ Chapter: CompositeGameRules
       in cg-decay-again owner s serial (tick + gm-ticks (if bit-and (peek-qword at 72) 2 /= 0 then cg-player-corpse-ms else cg-corpse-ms)))
     else if tick < peek-qword (sa-at owner.decay s) 8 then cg-decay-again owner s serial (peek-qword (sa-at owner.decay s) 8)
     else if bit-and (peek-qword at 72) 2 /= 0 & world-first-child w serial /= 0 then cg-decay-again owner s serial (tick + gm-ticks cg-player-corpse-ms)
+    else if cg-incident-keep owner.dead serial 0 then cg-decay-again owner s serial (tick + gm-ticks cg-corpse-ms)
     else let cleared = poke-qword (sa-at owner.decay s) 0 0
     in let dead = cg-corpse-owner owner.combat serial 0
     in let n = cg-rot owner serial
@@ -2850,7 +2979,7 @@ Chapter: CompositeGameRules
  The world and every per-slot table grow together by one world-grow (UoaixDynamicTables.md, stage 2d step 3); the
  caller keeps the heap (the post-compaction growth point). Every holder of the world must share the one table record.
   cg-grow-due : CompositeGame -> Boolean
-  cg-grow-due (owner) = cg-world-due owner | cg-actors-due owner | cg-network-due owner | ep-trades-due owner.vendor.currency.world | wtm-tight owner.timers | cg-purses-due owner | cg-stations-due owner | cg-nodes-due owner | cg-loans-due owner | eu-start-short owner.vendor.currency | gv-tables-due owner.vendor | ga-due owner.checkpoint.game.accounts | (when owner.civic is None -> False is Just (c) -> lw-due c.law) | cg-gov-due owner | cg-town-due owner | list-length owner.production.harvest.sites - owner.production.harvest.count < ghc-block / 4 | (when owner.spawns is None -> False is Just (g) -> gws-due g) | cn-due owner.construction | hp-due owner.pages | bbs-due owner.bbs | dc-due owner.decor | mpn-due owner.pins | wbk-due owner.books | hs-due owner.housing | cg-cast-due owner | cg-trades-due owner
+  cg-grow-due (owner) = cg-world-due owner | cg-actors-due owner | cg-network-due owner | ep-trades-due owner.vendor.currency.world | wtm-tight owner.timers | cg-purses-due owner | cg-stations-due owner | cg-nodes-due owner | cg-loans-due owner | eu-start-short owner.vendor.currency | gv-tables-due owner.vendor | ga-due owner.checkpoint.game.accounts | (when owner.civic is None -> False is Just (c) -> lw-due c.law) | cg-gov-due owner | cg-town-due owner | list-length owner.production.harvest.sites - owner.production.harvest.count < ghc-block / 4 | (when owner.spawns is None -> False is Just (g) -> gws-due g) | cn-due owner.construction | hp-due owner.pages | bbs-due owner.bbs | dc-due owner.decor | mpn-due owner.pins | wbk-due owner.books | hs-due owner.housing | cg-cast-due owner | cg-trades-due owner | cg-dead-due owner
  The census grows a block at a time; the government's per-person and per-actor cells and its sites follow their tables.
   cg-town-due : CompositeGame -> Boolean
   cg-town-due (owner) = let w = owner.checkpoint.state.townsfolk
@@ -2897,6 +3026,37 @@ Chapter: CompositeGameRules
   cg-loans-tight (m) = list-length m.loans - m.loan-count < em-loan-block / 4
   cg-stations-due : CompositeGame -> Boolean
   cg-stations-due (owner) = let w = owner.vendor.currency.world in list-length w.stations - w.station-count < ep-station-limit / 4
+ Britain's map, every city's and the paged window grow when one refused a collider for room (walk-grow), and a
+ decoration bound to the old buffer follows it. A grow allocates the whole new buffer and the old one is never freed
+ (no GC), so every grow is counted against cg-walk-budget, all maps together: filling one Britain cell to walk-most
+ would take 30 grows and 13,543,179,264 bytes (432 x 296 cells from 23 colliders), past the 3 GiB guest; the budget,
+ 256 MiB, gives Britain two grows (to 31 and 39 colliders a cell, 216,870,912 bytes; a third would reach 362,133,504). Past it a refusal stays counted
+ and no growth is due.
+  cg-walk-budget : Integer = 268435456
+  cg-walk-maps : CompositeGame -> List WalkMap
+  cg-walk-maps (owner) = (when owner.town-map is None -> [] is Just (m) -> [m]) & owner.city-maps & [owner.tick-map]
+  cg-walk-due : CompositeGame -> Boolean
+  cg-walk-due (owner) = cg-walk-any owner (cg-walk-maps owner) 0
+  cg-walk-fits : CompositeGame, WalkMap -> Boolean
+  cg-walk-fits (owner) (map) = walk-due map & owner.walk-spent + walk-next-bytes map <= cg-walk-budget
+  cg-walk-any : CompositeGame, List WalkMap, Integer -> Boolean
+  cg-walk-any (owner) (maps) (i) = if i >= list-length maps then False else if cg-walk-fits owner (list-at maps i) then True else cg-walk-any owner maps (i + 1)
+  cg-walk-grow : CompositeGame -> Integer
+  cg-walk-grow (owner) = cg-walk-grow-each owner (cg-walk-maps owner) 0
+  cg-walk-grow-each : CompositeGame, List WalkMap, Integer -> Integer
+  cg-walk-grow-each (owner) (maps) (i) = if i >= list-length maps then 0
+    else let map = list-at maps i
+    in let old = map.solids
+    in let bytes = walk-next-bytes map
+    in let grown = if cg-walk-fits owner map then walk-grow map else 0
+    in let spent = if grown > 0 then __record-set owner "walk-spent" (owner.walk-spent + bytes) else owner
+    in let doors = if grown > 0 then cg-wd-follow owner.town-doors old map else 0
+    in let shown = if grown > 0 then cg-wd-follow owner.decoration old map else 0
+    in (if grown > 0 then 1 else 0) + cg-walk-grow-each owner maps (i + 1)
+  cg-wd-follow : Maybe WdState, Integer, WalkMap -> Integer
+  cg-wd-follow (state) (old) (map) = when state
+    is None -> 0
+    is Just (d) -> if d.solids /= old then 0 else let a = __record-set d "solids" map.solids in let b = __record-set d "stride" map.stride in 1
   cg-nodes-due : CompositeGame -> Boolean
   cg-nodes-due (owner) = let w = owner.vendor.currency.world in list-length w.nodes < ep-node-ceiling & list-length w.nodes - w.node-count < ep-node-limit / 4
   cg-purses-due : CompositeGame -> Boolean
@@ -3035,6 +3195,16 @@ Chapter: CompositeGameRules
     in if l.actor == actor then 0
     else let handed = ep-hand v.currency.world at actor (ep-amount v.currency.world.goods l.serial) l.serial (0 - 1)
     in let invalidated = gh-invalidate-quotes v 0 in handed
+ A lift from a bag inside a trade box changes the offer as one from the box does: the offer counts coin cg-trade-depth
+ bags deep (cg-trade-coin), and gold lifted from a pouch in the box after the other side accepted left that accept
+ standing, so the swap gave an empty pouch (red, UOAIX audit 2026-10-18).
+  cg-trade-depth : Integer = 4
+  cg-box-ancestor : WorldTable, (Integer -> Boolean), Integer, Integer -> Boolean
+  cg-box-ancestor (world) (is-box) (container) (left) = if container == 0 | left <= 0 then False
+    else if is-box container then True
+    else when world-get world container
+      is Err (_) -> False
+      is Ok (c) -> cg-box-ancestor world is-box c.container (left - 1)
   cg-lift : CompositeGame, GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   cg-lift (owner) (game) (input) (map) (port) (packet) = let item = gp-u32 packet 1
     in let origin = when world-get game.world item is Err (_) -> -1 is Ok (o) -> o.container
@@ -3043,7 +3213,7 @@ Chapter: CompositeGameRules
       is Ok (answer) -> let slot = gsi-slot game input.session.serial 0
         in let held = slot >= 0 & (gsi-session owner.items game input slot).holding == item
         in let claimed = if held & origin == 0 then cg-lot-claim owner item input.session.serial else 0
-        in let boxed = held & origin /= 0 & (cg-trade-boxed owner origin)
+        in let boxed = held & origin /= 0 & cg-box-ancestor game.world (\c -> cg-trade-boxed owner c) origin cg-trade-depth
         in if not boxed then Ok answer
         else let told = cg-trade-changed owner game input.session.serial item True
         in Ok (when answer is None -> Just (gs-reply told "trade:lift") is Just (r) -> Just (GameReply { packets = r.packets & told, close = r.close, note = r.note }))
@@ -3335,7 +3505,7 @@ Chapter: CompositeGameRules
   cg-shift-players (v) (i) = if i + 1 >= v.player-count then 0
     else let moved = list-set-at v.players i (list-at v.players (i + 1)) in cg-shift-players v (i + 1)
   cg-quiet-quotes : GvWorld, Integer -> Integer
-  cg-quiet-quotes (v) (i) = if i == v.player-count then 0
+  cg-quiet-quotes (v) (i) = if i == v.player-count | (i == 0 & v.quoting == 0) then 0
     else let p = list-at v.players i
     in let a = __record-set p "vendor" 0
     in let b = __record-set p "side" 0
@@ -3357,11 +3527,15 @@ Chapter: CompositeGameRules
       in let d = __record-set p "connection" (0 - 1)
       in let e = __record-set p "expires" 0
       in let n = __record-set v "player-count" (v.player-count - 1)
+      in let reindexed = gv-index-rebuild v
       in let quiet = cg-quiet-quotes v 0
       in world-item-touch game.world
 
   cg-items : CompositeGame, Integer -> Integer
-  cg-items (owner) (unused) = cg-items-from owner (ep-lots-first owner.vendor.currency.world.goods)
+  cg-items (owner) (unused) = let goods = owner.vendor.currency.world.goods
+    in let newest = peek-qword (ep-head goods 0) 8
+    in if newest /= 0 & newest == owner.lots-seen then 0
+    else let seen = __record-set owner "lots-seen" newest in cg-items-from owner (ep-lots-first goods)
   cg-items-from : CompositeGame, Integer -> Integer
   cg-items-from (owner) (serial) = if serial == 0 then 0
     else let registered = if gsi-known owner.items serial then 0 else gsi-register owner.items serial 0 0 True False
@@ -3379,6 +3553,9 @@ Chapter: CompositeGameRules
     in serial == input.session.serial | (serial /= 0 & (serial == owner.resurrection.shrine | serial == owner.resurrection.other))
   cg-ghost-denied : GameInput -> GameReply
   cg-ghost-denied (input) = GameReply { packets = (gsi-denied "You cannot do that while dead.").packets, close = False, note = "ghost:denied" }
+  cg-far-denied : List Integer -> GameReply
+  cg-far-denied (packet) = let told = gsi-denied "That is too far away."
+    in GameReply { packets = (if list-at packet 0 == 5 then [cbp-target 0] else []) & told.packets, close = False, note = "view:refused" }
  A ghost's speech reaches no NPC: only the default handler echoes it.
   cg-ghost-family : GameShard, GameInput, WalkMap, Integer, List Integer -> Result (Maybe GameReply) Text
   cg-ghost-family (game) (input) (map) (port) (packet) = Ok None
@@ -3400,6 +3577,7 @@ Chapter: CompositeGameRules
     in let was-dead = if input.session.phase /= 2 then False else when world-get game.world input.session.serial is Err (_) -> False is Ok (mobile) -> mobile.health == 0
     in let ghosting = was-dead & list-length packet == 2 & list-at packet 0 == 44 & list-at packet 1 /= 0
     in if was-dead & list-length packet > 0 & not (cg-ghost-may owner input packet) then act Ok (cg-ghost-denied input) end
+    else if input.mode == 2 & input.session.phase == 2 & gsi-view-refused game.world input.session.serial packet then act Ok (cg-far-denied packet) end
     else let rebound = if ghosting then cg-rebind owner input else 0
     in let walking = list-length packet > 0 & list-at packet 0 == 2 & input.mode == 2 & input.session.phase == 2
     in let before = if walking then world-get game.world input.session.serial else Err "not walking"
@@ -3902,7 +4080,7 @@ Chapter: CompositeGameRules
     else let serial = bit-and (gp-u32 packet 1) #7FFFFFFF
     in when world-get owner.items.world serial
       is Err (_) -> Ok None
-      is Ok (food) -> if food.kind /= 2 | gh-fill food.graphic == 0 then Ok None
+      is Ok (food) -> if food.kind /= 2 | cg-food-fill food.graphic == 0 then Ok None
         else let me = input.session.serial
         in let slot = gs-char-slot game.characters me 0
         in if slot < 0 then Ok None
@@ -3916,11 +4094,22 @@ Chapter: CompositeGameRules
             is Err (e) -> Err e
             is Ok (spent) -> when world-get game.world me
               is Err (e) -> Err e
-              is Ok (eater) -> let now = min 20 (fed + gh-fill food.graphic)
+              is Ok (eater) -> let now = min 20 (fed + cg-food-fill food.graphic)
                 in let set = gh-set row now
                 in let venom = if gh-venom food.health < 0 then False else cg-as-envenom owner me (gh-venom food.health) 0
                 in let touched = world-touch game.world
                 in Ok (Just (gs-reply (spent & [cbp-sound (#003A + int-mod get-ticks 3) eater, gs-system (gh-eaten now)]) "hunger:eat"))
+ Every food the economy makes eats (Damian, 2026-10-20: "bread loaf can't be eaten. need to sweep all the foods for
+ edibility"): an art gh-fill does not list is food when the catalog takes it for a food item (ep-food), sold or bought
+ by its art (gvb-item-of), made by a recipe (gcr-graphic) or harvested (gh-output-graphic), and fills as bread does.
+  cg-food-default : Integer = 3
+  cg-food-fill : Integer -> Integer
+  cg-food-fill (g) = let listed = gh-fill g
+    in if listed > 0 then listed
+    else if ep-food (gvb-item-of g) | cg-food-made g 1 then cg-food-default
+    else 0
+  cg-food-made : Integer, Integer -> Boolean
+  cg-food-made (g) (item) = if item > 200 then False else (ep-food item & (gcr-graphic item == g | gh-output-graphic item == g)) | cg-food-made g (item + 1)
   cg-eat-one : CompositeGame, WorldObject -> Result (List (List Integer)) Text
   cg-eat-one (owner) (food) = if food.amount <= 1 then when world-delete owner.items.world food.serial
       is Err (e) -> Err e
@@ -4108,7 +4297,7 @@ Chapter: CompositeGameRules
       is Err (e) -> Err e
       is Ok (kept) -> let governing = cg-kind-switch owner.kind-time (cg-kinds + 15) in let patrolled = when owner.civic
           is None -> []
-          is Just (c) -> let retired = (if c.law.count < 96 & c.law.witness-count < 192 then 0 else let n = lw-retire c.law in if n == 0 then 0 else world-touch owner.checkpoint.game.world) in let ruled = cg-law-cases owner c 0 in let guarded = cg-guard-raiders owner c 0 in let raid = cg-raid-open owner in let mustered = (if not raid then 0 else when owner.town is None -> 0 is Just (t) -> cg-militia owner (cg-folk-serials t 0 []) 0) in let s0 = cg-kind-switch owner.kind-time (cg-civic-slot 0) in let alarmed = (if raid then [] else when owner.spawns is None -> [] is Just (s) -> cg-alarm owner c s seconds 0 (cg-npc-count owner) []) in let s1 = cg-kind-switch owner.kind-time (cg-civic-slot 1) in let chased = (when owner.spawns is None -> [] is Just (s) -> cg-guard-chase owner c s britain seconds 0 []) in let s2 = cg-kind-switch owner.kind-time (cg-civic-slot 2) in let raided = (when owner.spawns is None -> 0 is Just (s) -> cg-raid-take owner s 0) in let picked = (when owner.spawns is None -> 0 is Just (s) -> cg-pickup owner s 0) in let mined = (when owner.spawns is None -> 0 is Just (s) -> cg-spawn-mine owner s britain 0) in let wrecked = (when owner.spawns is None -> 0 is Just (s) -> cg-raid-wreck owner s) in let shut = cg-wreck-close owner town in let walled = cg-jail-walls owner c in let s3 = cg-kind-switch owner.kind-time (cg-civic-slot 3) in let buried = cg-dead-step owner c britain seconds 0 [] in let s4 = cg-kind-switch owner.kind-time (cg-civic-slot 4) in let advanced = cv-advance c britain owner.town-doors seconds 8 in let s5 = cg-kind-switch owner.kind-time (cg-civic-slot 5) in let walks = cg-city-patrols owner c 4 in when advanced is Err (_) -> alarmed & chased & buried & walks is Ok (p) -> alarmed & chased & buried & p.packets & walks
+          is Just (c) -> let retired = (if c.law.count < 96 & c.law.witness-count < 192 then 0 else let n = lw-retire c.law in if n == 0 then 0 else world-touch owner.checkpoint.game.world) in let ruled = cg-law-cases owner c 0 in let foes = cg-foes owner in let guarded = cg-guard-raiders owner c foes 0 in let raid = cg-raid-open owner in let mustered = (if not raid then 0 else when owner.town is None -> 0 is Just (t) -> cg-militia owner foes (cg-folk-serials t 0 []) 0) in let s0 = cg-kind-switch owner.kind-time (cg-civic-slot 0) in let alarmed = (if raid then [] else cg-alarm owner c foes seconds 0 (cg-npc-count owner) []) in let s1 = cg-kind-switch owner.kind-time (cg-civic-slot 1) in let chased = (when owner.spawns is None -> [] is Just (s) -> cg-guard-chase owner c s britain seconds 0 []) in let s2 = cg-kind-switch owner.kind-time (cg-civic-slot 2) in let raided = (when owner.spawns is None -> 0 is Just (s) -> cg-raid-take owner s 0) in let picked = (when owner.spawns is None -> 0 is Just (s) -> cg-pickup owner s 0) in let mined = (when owner.spawns is None -> 0 is Just (s) -> cg-spawn-mine owner s britain 0) in let wrecked = (when owner.spawns is None -> 0 is Just (s) -> cg-raid-wreck owner s) in let shut = cg-wreck-close owner town in let walled = cg-jail-walls owner c in let s3 = cg-kind-switch owner.kind-time (cg-civic-slot 3) in let buried = cg-dead-step owner c britain seconds 0 [] in let s4 = cg-kind-switch owner.kind-time (cg-civic-slot 4) in let advanced = cv-advance c britain owner.town-doors seconds 8 in let s5 = cg-kind-switch owner.kind-time (cg-civic-slot 5) in let walks = cg-city-patrols owner c 4 in when advanced is Err (_) -> alarmed & chased & buried & walks is Ok (p) -> alarmed & chased & buried & p.packets & walks
         in let s6 = cg-kind-switch owner.kind-time (cg-civic-slot 6)
         in let civil = when owner.civic is None -> [] is Just (c) -> cg-gov-step owner town britain c
         in let s7 = cg-kind-switch owner.kind-time (cg-civic-slot 7)
@@ -4167,7 +4356,8 @@ Chapter: CompositeGameRules
             is Err (e) -> Err e
             is Ok (decoration) -> let s7 = cg-stage owner 7 in when (if input.mode /= 2 | input.session.phase /= 2 | not (wd-bound state) then Ok [] else cg-timers owner state game tick (cg-worker-say owner.farmer game & cg-worker-say owner.gatherer game))
               is Err (e) -> Err e
-              is Ok (closed) -> let both = cg-combine (cg-combine combined decoration) (cg-flora-view owner game input map)
+              is Ok (closed) -> let s13 = cg-stage owner 13 in let viewed = cg-flora-view owner game input map
+                in let s14 = cg-stage owner 14 in let both = cg-combine (cg-combine combined decoration) viewed
                 in Ok (if list-length closed == 0 then both else cg-combine both (Just (gs-reply closed "decoration:autoclose")))
   cg-flora-view : CompositeGame, GameShard, GameInput, WalkMap -> Maybe GameReply
   cg-flora-view (owner) (game) (input) (map) = if input.mode /= 2 | input.session.phase /= 2 then None
@@ -4175,10 +4365,7 @@ Chapter: CompositeGameRules
       is Err (_) -> None
       is Ok (mobile) -> let flora = when owner.flora
           is None -> []
-          is Just (s) -> let synced = cg-flora-sync owner.production.harvest s owner.items.tiles map owner.town-map 0
-            in wf-view s input.connection mobile.x mobile.y
-        in let grounded = cpl-collide owner.production.harvest owner.items.tiles map 0 + (when owner.town-map is None -> 0 is Just (britain) -> cpl-collide owner.production.harvest owner.items.tiles britain 0)
-        in let housed = cn-collide owner.construction owner.designs owner.items.tiles map 0 + (when owner.town-map is None -> 0 is Just (britain) -> cn-collide owner.construction owner.designs owner.items.tiles britain 0)
+          is Just (s) -> wf-view s input.connection mobile.x mobile.y
         in let packets = flora & cpl-view owner.planting owner.production.harvest input.connection mobile.x mobile.y & cn-view owner.construction owner.designs input.connection mobile.x mobile.y
           & shp-view owner.ships input.connection mobile.x mobile.y owner.town-seconds & mfv-view (shp-viewer owner.ships input.connection) mobile.x mobile.y owner.vendor.currency.world.hour owner.town-seconds 0
           & gmo-view owner.overlay owner.civic (when owner.spawns is None -> [] is Just (g) -> g.catalog.regions) owner.land map input.connection mobile
@@ -4196,6 +4383,20 @@ Chapter: CompositeGameRules
         in when town is None -> here is Just (britain) -> here + wf-ground s tiles britain site.x site.y (stage == 2)
       else 0
     in cg-flora-sync h s tiles map town (i + 1)
+ UOAIX-267: the flora sync and the planted and building collider walks are world state, so the world tick runs them
+ once on the Britain map and the paged window (trial-45735: run in every session's pulse they were about 95% of it, a
+ cost of sessions times sites). The paged window is one 64-tile window wmc-cover refills wherever a session stands,
+ and a refill drops what was laid on it, so a cover lays again on the window only when its fill count moved.
+  cg-flora-lay : CompositeGame, WalkMap, Maybe WalkMap -> Integer
+  cg-flora-lay (owner) (map) (town) = let synced = when owner.flora is None -> 0 is Just (s) -> cg-flora-sync owner.production.harvest s owner.items.tiles map town 0
+    in let grounded = cpl-collide owner.production.harvest owner.items.tiles map 0 + (when town is None -> 0 is Just (britain) -> cpl-collide owner.production.harvest owner.items.tiles britain 0)
+    in let housed = cn-collide owner.construction owner.designs owner.items.tiles map 0 + (when town is None -> 0 is Just (britain) -> cn-collide owner.construction owner.designs owner.items.tiles britain 0)
+    in 1
+  cg-flora-world : CompositeGame, WalkMap, Integer -> Integer
+  cg-flora-world (owner) (map) (fills) = let laid = cg-flora-lay owner map owner.town-map in let marked = __record-set owner "flora-fills" fills in laid
+  cg-flora-page : CompositeGame, WalkMap, Integer -> Integer
+  cg-flora-page (owner) (map) (fills) = if fills == owner.flora-fills then 0
+    else let laid = cg-flora-lay owner map None in let marked = __record-set owner "flora-fills" fills in laid
   cg-flora-target : CompositeGame, List Integer -> List Integer
   cg-flora-target (owner) (packet) = let planted = cpl-target-packet owner.production.harvest packet
     in let grown = when owner.flora is None -> planted is Just (s) -> wf-target-packet s planted
@@ -4216,7 +4417,11 @@ Chapter: CompositeGameRules
   cg-miner-base : Integer = cg-kinds + 20 + bb-shop-count + cg-civic-slots
   cg-city-base : Integer = cg-miner-base + cg-worker-slots
   cg-kind-slots : Integer = cg-city-base + cg-worker-slots
-  cg-kind-bytes : Integer = 16 + cg-kind-slots * 16
+ UOAIX-267: after the slots, the planners' meter (route cells expanded, bumped by every bound TlPath) at cg-kind-meter,
+ its value at the last charge 8 bytes on, then each slot's cells charged at cg-kind-cells + k * 8.
+  cg-kind-meter : Integer = 16 + cg-kind-slots * 16
+  cg-kind-cells : Integer = cg-kind-meter + 16
+  cg-kind-bytes : Integer = cg-kind-cells + cg-kind-slots * 8
   cg-kind-slot : Integer, Integer -> Integer
   cg-kind-slot (kind) (key) = if kind == cgs-kind & key >= 0 & key < 16 then cg-kinds + key
     else if kind == cgm-kind & key >= 0 & key < cg-worker-slots then cg-miner-base + key
@@ -4228,16 +4433,53 @@ Chapter: CompositeGameRules
     else if k >= cg-kinds then show cgs-kind & "." & show (k - cg-kinds) else show k
   cg-kind-charge : Integer -> Integer
   cg-kind-charge (b) = let k = peek-qword b 0
+    in let now = peek-qword b cg-kind-meter
+    in let cells = now - peek-qword b (cg-kind-meter + 8)
+    in let marked = poke-qword b (cg-kind-meter + 8) now
     in if k <= 0 then 0
     else if k >= cg-kind-slots then poke-qword b 0 0
     else let at = 16 + k * 16
     in let spent = poke-qword b at (peek-qword b at + hpet-ticks - peek-qword b 8)
     in let counted = poke-qword b (at + 8) (peek-qword b (at + 8) + 1)
+    in let planned = poke-qword b (cg-kind-cells + k * 8) (peek-qword b (cg-kind-cells + k * 8) + cells)
     in poke-qword b 0 0
+ The town's, the cities' and the keepers' planners and the staff's job planner count their cells on the meter; all are
+ built at boot, so binding them on first use stores no play-time pointer.
+  cg-meter-bind : CompositeGame -> Integer
+  cg-meter-bind (owner) = let m = owner.kind-time + cg-kind-meter
+    in let a = when owner.town is None -> 0 is Just (t) -> cg-meter-set t.nav m
+    in let b = cg-meter-towns owner.city-towns m 0
+    in let c = cg-meter-navs owner.city-navs m 0
+    in when owner.staff is None -> 0 is Just (st) -> (when st.job is None -> 0 is Just (j) -> cg-meter-set j.nav m)
+  cg-meter-set : TlPath, Integer -> Integer
+  cg-meter-set (p) (m) = if p.meter == m then 0 else let a = __record-set p "meter" m in 1
+  cg-meter-towns : List TownLive, Integer, Integer -> Integer
+  cg-meter-towns (ts) (m) (i) = if i >= list-length ts then 0 else let a = cg-meter-set (list-at ts i).nav m in cg-meter-towns ts m (i + 1)
+  cg-meter-navs : List TlPath, Integer, Integer -> Integer
+  cg-meter-navs (ps) (m) (i) = if i >= list-length ps then 0 else let a = cg-meter-set (list-at ps i) m in cg-meter-navs ps m (i + 1)
   cg-kind-begin : Integer, Integer, Integer -> Integer
   cg-kind-begin (b) (kind) (key) = let a = poke-qword b 0 (cg-kind-slot kind key) in poke-qword b 8 hpet-ticks
   cg-kind-switch : Integer, Integer -> Integer
   cg-kind-switch (b) (slot) = if peek-qword b 0 <= 0 then 0 else let charged = cg-kind-charge b in let a = poke-qword b 0 slot in poke-qword b 8 hpet-ticks
+ UOAIX-267: the kind times reset at every world tick, so the wheel's fires inside session pulses were never printed.
+ Each tick folds them into wheel-total before the reset, and every cg-wheel-ticks ticks a WHEEL TOTAL line names each
+ kind that took at least 1% of the wheel's time, as kind:microseconds/count.
+  cg-wheel-ticks : Integer = 600
+  cg-kind-fold : Integer, Integer, Integer -> Integer
+  cg-kind-fold (b) (total) (k) = if k >= cg-kind-slots then 0
+    else let at = 16 + k * 16
+    in let a = poke-qword total at (peek-qword total at + peek-qword b at)
+    in let c = poke-qword total (at + 8) (peek-qword total (at + 8) + peek-qword b (at + 8))
+    in let d = poke-qword total (cg-kind-cells + k * 8) (peek-qword total (cg-kind-cells + k * 8) + peek-qword b (cg-kind-cells + k * 8)) in cg-kind-fold b total (k + 1)
+  cg-kind-sum : Integer, Integer -> Integer
+  cg-kind-sum (b) (k) = if k >= cg-kind-slots then 0 else peek-qword b (16 + k * 16) + cg-kind-sum b (k + 1)
+  cg-kind-top : Integer, Integer, Integer, Integer, Text -> Text
+  cg-kind-top (b) (rate) (floor) (k) (out) = if k >= cg-kind-slots then out
+    else let t = peek-qword b (16 + k * 16)
+    in cg-kind-top b rate floor (k + 1) (if t == 0 | t < floor then out else out & " " & cg-kind-name k & ":" & show (t * 1000000 / max 1 rate) & "/" & show (peek-qword b (16 + k * 16 + 8))
+      & (if peek-qword b (cg-kind-cells + k * 8) == 0 then "" else "/" & show (peek-qword b (cg-kind-cells + k * 8)) & "c"))
+  cg-wheel-text : Integer, Integer -> Text
+  cg-wheel-text (b) (rate) = let sum = cg-kind-sum b 0 in "total-us=" & show (sum * 1000000 / max 1 rate) & cg-kind-top b rate (max 1 (sum / 100)) 0 ""
   cg-kind-reset : Integer, Integer -> Integer
   cg-kind-reset (b) (i) = if i >= cg-kind-bytes / 8 then 0 else let z = poke-qword b (i * 8) 0 in cg-kind-reset b (i + 1)
  Each kind that fired, as kind:microseconds/count (rate: HPET ticks a second).
@@ -4246,7 +4488,7 @@ Chapter: CompositeGameRules
     else let n = peek-qword b (16 + k * 16 + 8)
     in cg-kind-said b rate (k + 1) (if n == 0 then out else out & " " & cg-kind-name k & ":" & show (peek-qword b (16 + k * 16) * 1000000 / max 1 rate) & "/" & show n)
   cg-timers : CompositeGame, WdState, GameShard, Integer, List (List Integer) -> Result (List (List Integer)) Text
-  cg-timers (owner) (state) (game) (tick) (packets) = let charged = cg-kind-charge owner.kind-time
+  cg-timers (owner) (state) (game) (tick) (packets) = let metered = cg-meter-bind owner in let charged = cg-kind-charge owner.kind-time
     in let e = wtm-next owner.timers tick
     in let begun = if e < 0 then 0 else cg-kind-begin owner.kind-time owner.timers.kind owner.timers.key
     in if e < 0 then Ok packets
@@ -4395,12 +4637,14 @@ Chapter: CompositeGameRules
   cg-duel-clear (ds) (serial) (i) = if i >= list-length ds then 0
     else let d = list-at ds i in (if d.a == serial | d.b == serial then cg-duel-end d else 0) + cg-duel-clear ds serial (i + 1)
   cg-duel-near : CompositeGame, WorldObject, Integer, Integer, Integer -> Integer
-  cg-duel-near (owner) (me) (i) (best) (distance) = if i >= owner.vendor.player-count then best
-    else let serial = (list-at owner.vendor.players i).serial
+  cg-duel-near (owner) (me) (i) (best) (distance) = cg-duel-nearest owner me (cg-players-near owner.vendor owner.checkpoint.game.world me.x me.y 8) i best distance
+  cg-duel-nearest : CompositeGame, WorldObject, List Integer, Integer, Integer, Integer -> Integer
+  cg-duel-nearest (owner) (me) (near) (i) (best) (distance) = if i >= list-length near then best
+    else let serial = list-at near i
     in when (if serial == me.serial then Err "self" else world-get owner.checkpoint.game.world serial)
-      is Err (_) -> cg-duel-near owner me (i + 1) best distance
+      is Err (_) -> cg-duel-nearest owner me near (i + 1) best distance
       is Ok (m) -> let d = max (walk-abs (m.x - me.x)) (walk-abs (m.y - me.y))
-        in if m.kind == 1 & m.health > 0 & d <= 8 & (best == 0 | d < distance) then cg-duel-near owner me (i + 1) serial d else cg-duel-near owner me (i + 1) best distance
+        in if m.kind == 1 & m.health > 0 & d <= 8 & (best == 0 | d < distance) then cg-duel-nearest owner me near (i + 1) serial d else cg-duel-nearest owner me near (i + 1) best distance
   cg-duel-said : CompositeGame, GameShard, GameInput, List Integer -> Maybe GameReply
   cg-duel-said (owner) (game) (input) (packet) = if list-length packet < 9 | list-at packet 0 /= 3 | input.mode /= 2 | input.session.phase /= 2 | not (gp-speech-valid packet) then None
     else let text = gp-speech-text packet
@@ -4632,7 +4876,7 @@ Chapter: CompositeGameRules
         in let shops = cg-witness-list owner c doer seen id (cg-vendor-serials v 0 []) 0
         in let folk = cg-witness-list owner c doer seen id (cg-folk-serials c.town 0 []) 0
         in let civic = cg-witness-list owner c doer seen id (cg-civic-serials c 0 [c.mayor] & cg-city-serials c 0 []) 0
-        in let players = cg-witness-list owner c doer seen id (cg-player-serials v 0 []) 0
+        in let players = cg-witness-list owner c doer seen id (cg-players-near v owner.checkpoint.game.world doer.x doer.y 12) 0
         in shops + folk + civic + players
   cg-living-count : WorldTable, List Integer, Integer, Integer -> Integer
   cg-living-count (world) (serials) (i) (n) = if i >= list-length serials then n
@@ -4651,8 +4895,19 @@ Chapter: CompositeGameRules
       & [cmr-serial s.production.harvest.items.world, cg-silas s]
   cg-vendor-serials : GvWorld, Integer, List Integer -> List Integer
   cg-vendor-serials (v) (i) (out) = if i >= v.vendor-count then out else cg-vendor-serials v (i + 1) (list-push out (list-at v.vendors i).serial)
-  cg-player-serials : GvWorld, Integer, List Integer -> List Integer
-  cg-player-serials (v) (i) (out) = if i >= v.player-count then out else cg-player-serials v (i + 1) (list-push out (list-at v.players i).serial)
+ The players standing within r tiles of x, y, from the world's tile index, so an event asks its region and not every
+ player.
+  cg-players-near : GvWorld, WorldTable, Integer, Integer, Integer -> List Integer
+  cg-players-near (v) (world) (x) (y) (r) = cg-near-rows v world x r (max 0 (y - r)) (min 4095 (y + r)) []
+  cg-near-rows : GvWorld, WorldTable, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cg-near-rows (v) (world) (x) (r) (row) (last) (out) = if row > last then out
+    else cg-near-rows v world x r (row + 1) last (cg-near-cols v world row (max 0 (x - r)) (min 6143 (x + r)) out)
+  cg-near-cols : GvWorld, WorldTable, Integer, Integer, Integer, List Integer -> List Integer
+  cg-near-cols (v) (world) (row) (col) (last) (out) = if col > last then out
+    else cg-near-cols v world row (col + 1) last (cg-near-tile v world (world-tile-first world col row) out)
+  cg-near-tile : GvWorld, WorldTable, Integer, List Integer -> List Integer
+  cg-near-tile (v) (world) (serial) (out) = if serial == 0 then out
+    else cg-near-tile v world (world-tile-next world serial) (if gv-player v serial 0 >= 0 then list-push out serial else out)
   cg-witness-list : CompositeGame, CivicLive, WorldObject, WalkMap, Integer, List Integer, Integer -> Integer
   cg-witness-list (owner) (c) (doer) (map) (id) (serials) (i) = if i >= list-length serials then 0
     else let serial = list-at serials i
@@ -4710,23 +4965,34 @@ Chapter: CompositeGameRules
  (UOAIX.md stage M, the living wilds).
   cg-guard-reach : Integer = 10
   cg-raider : GameWorldSpawn, GameShard, WorldObject, Integer, Integer, Integer -> Integer
-  cg-raider (g) (shard) (guard) (i) (best) (dist) = if i >= list-length g.slots then best
+  cg-raider (g) (shard) (guard) (i) (best) (dist) = cg-raider-in (cg-hostiles g shard i []) guard 0 best dist
+ The live hostile spawns, each [serial, x, y], in slot order, gathered once per town step: the patrol guards, the militia
+ and every street NPC each walked all the spawn slots ten times a second (red, UOAIX audit 2026-10-18).
+  cg-hostiles : GameWorldSpawn, GameShard, Integer, List (List Integer) -> List (List Integer)
+  cg-hostiles (g) (shard) (i) (acc) = if i >= list-length g.slots then acc
     else let slot = list-at g.slots i
-    in if slot.serial == 0 | slot.profile < 0 | slot.profile >= list-length g.catalog.profiles then cg-raider g shard guard (i + 1) best dist
+    in if slot.serial == 0 | slot.profile < 0 | slot.profile >= list-length g.catalog.profiles then cg-hostiles g shard (i + 1) acc
     else let p = list-at g.catalog.profiles slot.profile
-    in let d = if slot.owner /= 0 | (p.ai /= 2 & p.ai /= 11) then 9999
-      else when world-get shard.world slot.serial is Err (_) -> 9999 is Ok (m) -> if m.health <= 0 then 9999 else max (walk-abs (m.x - guard.x)) (walk-abs (m.y - guard.y))
-    in if d <= cg-guard-reach & d < dist then cg-raider g shard guard (i + 1) slot.serial d else cg-raider g shard guard (i + 1) best dist
-  cg-guard-raiders : CompositeGame, CivicLive, Integer -> Integer
-  cg-guard-raiders (owner) (c) (i) = if i >= c.law.guard-count then 0
+    in if slot.owner /= 0 | (p.ai /= 2 & p.ai /= 11) then cg-hostiles g shard (i + 1) acc
+    else when world-get shard.world slot.serial
+      is Err (_) -> cg-hostiles g shard (i + 1) acc
+      is Ok (m) -> if m.health <= 0 then cg-hostiles g shard (i + 1) acc else cg-hostiles g shard (i + 1) (list-push acc [slot.serial, m.x, m.y])
+  cg-raider-in : List (List Integer), WorldObject, Integer, Integer, Integer -> Integer
+  cg-raider-in (foes) (guard) (i) (best) (dist) = if i >= list-length foes then best
+    else let f = list-at foes i
+    in let d = max (walk-abs (list-at f 1 - guard.x)) (walk-abs (list-at f 2 - guard.y))
+    in if d <= cg-guard-reach & d < dist then cg-raider-in foes guard (i + 1) (list-at f 0) d else cg-raider-in foes guard (i + 1) best dist
+  cg-foes : CompositeGame -> List (List Integer)
+  cg-foes (owner) = when owner.spawns is None -> [] is Just (s) -> cg-hostiles s owner.checkpoint.game 0 []
+  cg-guard-raiders : CompositeGame, CivicLive, List (List Integer), Integer -> Integer
+  cg-guard-raiders (owner) (c) (foes) (i) = if i >= c.law.guard-count then 0
     else let g = list-at c.law.guards i
-    in let struck = if g.state /= 0 | not (lw-live c.law g.serial) then 0 else when owner.spawns
-      is None -> 0
-      is Just (s) -> when world-get owner.checkpoint.game.world g.serial
+    in let struck = if g.state /= 0 | not (lw-live c.law g.serial) | list-length foes == 0 then 0
+      else when world-get owner.checkpoint.game.world g.serial
         is Err (_) -> 0
         is Ok (m) -> if cg-in-fight owner g.serial then 0
-          else let r = cg-raider s owner.checkpoint.game m 0 0 9999 in if r == 0 then 0 else let trained = cg-guard-trained owner g.serial in cg-attack owner g.serial r
-    in struck + cg-guard-raiders owner c (i + 1)
+          else let r = cg-raider-in foes m 0 0 9999 in if r == 0 then 0 else let trained = cg-guard-trained owner g.serial in cg-attack owner g.serial r
+    in struck + cg-guard-raiders owner c foes (i + 1)
  A guard fighting a creature fights on until it dies (Law.md): it is not drawn off to a nearer one.
   cg-in-fight : CompositeGame, Integer -> Boolean
   cg-in-fight (owner) (serial) = let world = owner.checkpoint.game.world
@@ -4736,15 +5002,13 @@ Chapter: CompositeGameRules
     in a.serial == serial & a.war & a.target /= 0 & (when world-get world a.target is Err (_) -> False is Ok (t) -> t.health > 0)
  The townsfolk are Britain's militia (UOAIX.md, the living wilds): a living resident within cg-guard-reach of a hostile
  spawned creature turns on it as the patrol guards do.
-  cg-militia : CompositeGame, List Integer, Integer -> Integer
-  cg-militia (owner) (folk) (i) = if i >= list-length folk then 0
+  cg-militia : CompositeGame, List (List Integer), List Integer, Integer -> Integer
+  cg-militia (owner) (foes) (folk) (i) = if i >= list-length folk | list-length foes == 0 then 0
     else let serial = list-at folk i
-    in let struck = when owner.spawns
-      is None -> 0
-      is Just (s) -> when world-get owner.checkpoint.game.world serial
+    in let struck = when world-get owner.checkpoint.game.world serial
         is Err (_) -> 0
-        is Ok (m) -> if m.health <= 0 then 0 else let r = cg-raider s owner.checkpoint.game m 0 0 9999 in if r == 0 then 0 else cg-attack owner serial r
-    in struck + cg-militia owner folk (i + 1)
+        is Ok (m) -> if m.health <= 0 then 0 else let r = cg-raider-in foes m 0 0 9999 in if r == 0 then 0 else cg-attack owner serial r
+    in struck + cg-militia owner foes folk (i + 1)
  Britain's street NPCs in one index space: the residents, the lineup copy, the gatherer, the farmer, the miners, the
  shopkeepers and the five crafters.
   cg-npc-count : CompositeGame -> Integer
@@ -4864,23 +5128,29 @@ Chapter: CompositeGameRules
             else let r = cg-raider s game me 0 0 9999
             in if r == 0 then None else if cg-call-guard owner c me r == 0 then Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 "No guard is near enough to hear you."] "civic guard call: monster unheard")
             else Just (gs-reply [sip-message #FFFFFFFF #FFFF 6 "A guard answers the call."] "civic guard call: monster")
-  cg-alarm : CompositeGame, CivicLive, GameWorldSpawn, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
-  cg-alarm (owner) (c) (s) (seconds) (k) (n) (packets) = if k >= n then packets
+  cg-alarm : CompositeGame, CivicLive, List (List Integer), Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cg-alarm (owner) (c) (foes) (seconds) (k) (n) (packets) = if k >= n | list-length foes == 0 then packets
     else let serial = cg-npc-serial owner k
     in let heard = if serial == 0 then [] else when world-get owner.checkpoint.game.world serial
       is Err (_) -> []
-      is Ok (m) -> if m.kind /= 1 | m.health <= 0 then [] else let r = cg-raider s owner.checkpoint.game m 0 0 9999
+      is Ok (m) -> if m.kind /= 1 | m.health <= 0 then [] else let r = cg-raider-in foes m 0 0 9999
         in if r == 0 then [] else let fled = cg-flee owner k
         in let called = cg-call-guard owner c m r
         in let fresh = cg-alarm-fresh owner.alarms serial seconds
         in let noted = if fresh then cg-alarm-note owner c m r called else 0
         in if not fresh then [] else if world-announce-text owner.checkpoint.game.world m.serial (cg-alarm-line serial) then [gvp-speech m "" (cg-alarm-line serial)] else []
-    in cg-alarm owner c s seconds (k + 1) n (packets & heard)
+    in cg-alarm owner c foes seconds (k + 1) n (packets & heard)
  A foot guard on patrol that is fighting (a spawned creature, or whoever struck it: D-20, Damian 2026-10-13: "attacked
  guards continue on their path") runs to a tile beside its foe, a step every 6 game seconds
  (twice the patrol's walk), while the foe is within cg-chase-reach, and holds there off its patrol route while
  the fight lasts; the route resumes when the fight ends.
   cg-chase-reach : Integer = cv-earshot + cg-guard-reach
+ A guard that has not come within a tile of its foe in cg-chase-give-up steps drops the fight and resumes its patrol
+ (L-FUTILITY, root 2026-10-21; trial-47739: guards 2196 and 2204 trailed a moving foe for the whole run, two replans a
+ step). The 6 game-second step is half a real second at the 7200-second day; OUO's attack-state NPC steps every 50000 /
+ speed ms, speed min(dex * 40 / 100 + 35, 163) (npc.c:2250-2251, 2293-2296; mobile.c:892-894; 250 ms ticks, main.c:86):
+ 0.67 s at dex 100.
+  cg-chase-give-up : Integer = 10
   cg-chase-step : CompositeGame, CivicLive, GameWorldSpawn, WalkMap, CvPatrol, Integer -> List (List Integer)
   cg-chase-step (owner) (c) (s) (map) (p) (seconds) = let world = owner.checkpoint.game.world
     in let at = world-slot world p.serial
@@ -4892,8 +5162,10 @@ Chapter: CompositeGameRules
         is Err (_) -> []
         is Ok (prey) -> let d = max (walk-abs (prey.x - guard.x)) (walk-abs (prey.y - guard.y))
           in if prey.health <= 0 | d > cg-chase-reach then []
-          else if d <= 1 then let held = __record-set p "next-step" (seconds + 6) in []
-          else when cv-approach c map guard prey 0
+          else if d <= 1 then let held = __record-set p "next-step" (seconds + 6) in let closed = __record-set p "chase" 0 in []
+          else if p.chase >= cg-chase-give-up then (let stopped = cb-stop owner.combat a in let reset = __record-set p "chase" 0 in [])
+          else let counted = __record-set p "chase" (p.chase + 1)
+          in when cv-approach c map guard prey 0
             is Err (_) -> []
             is Ok (spot) -> when cv-walk c p guard map owner.town-doors spot
               is Err (_) -> []
@@ -5017,9 +5289,12 @@ Chapter: CompositeGameRules
             else nl-guard-join p.serial first (list-at s.catalog.profiles (list-at s.slots slot).profile).name
           in if world-announce-text world p.serial line then [gvp-speech guard (nn-name cst-guard p.serial) line] else []
  A body in Britain's street (Damian, 2026-10-08: townsfolk walked past a slain miner): every non-player death within
- cg-prey-range of Britain notes the tile and body art in a ring of cg-dead-rows (56 bytes a row: x, y, body, the guard
+ cg-prey-range of Britain notes the tile and body art in a SlotArray of cg-dead-bytes rows (qwords: x, y, body, the guard
  that took the report, a townsperson's killer until a guard has cried it, -1 for none known, and for a worker a wild
- creature killed, that creature and its spawn region until the threat is cleared), in memory only. Each
+ creature killed, that creature and its spawn region until the threat is cleared; then the UOAIX-275 incident: corpse,
+ stage, victim, witness, holder, two coroners, the mayor's post x * 65536 + y and z, the house design the holder named,
+ the grave x * 65536 + y and z, 1 once the holder is paid or 2 once told the purse cannot pay, the decay periods a
+ corpse has been held unseen, and the stage last reported and the reports since, CompositeStore cs-incident-rows). Each
  town step, until a guard has taken the report (Damian, 2026-10-08: a corpse in the Sweet Dreams was reported forever),
  street NPCs within cg-dead-sight of a noted corpse yell and residents run home; the nearest foot guard on patrol and not
  fighting takes the report, walks to it and removes it with its contents (cg-rot).
@@ -5027,28 +5302,51 @@ Chapter: CompositeGameRules
  walked right past the corpse of the mayor and said nothing") speaks, and raises the hue and cry: the killer's open
  murder or assault case becomes known, and with no guard on it yet that guard takes it and goes after the killer.
   cg-dead-rows : Integer = 16
-  cg-dead-bytes : Integer = 56
+  cg-dead-bytes : Integer = 184
   cg-dead-heard : Integer -> Boolean
   cg-dead-heard (row) = peek-qword row 24 /= 0
   cg-dead-hear : Integer, Integer -> Integer
   cg-dead-hear (row) (guard) = if guard == 0 then 0 else poke-qword row 24 guard
   cg-dead-sight : Integer = 8
   cg-dead-free : Integer, Integer -> Integer
-  cg-dead-free (ring) (i) = if i >= cg-dead-rows then -1 else if peek-qword ring (i * cg-dead-bytes) == 0 then i else cg-dead-free ring (i + 1)
+  cg-dead-free (ring) (i) = if i >= sa-capacity ring then -1 else if peek-qword (sa-at ring i) 0 == 0 then i else cg-dead-free ring (i + 1)
+ With every row in use, a death takes a row holding no incident; with none, it is not noted. Growth is due once a
+ quarter or fewer of the rows are free, so a full table needs more deaths in one round than a quarter of its rows.
+  cg-dead-plain : Integer, Integer -> Integer
+  cg-dead-plain (ring) (i) = if i >= sa-capacity ring then -1 else if peek-qword (sa-at ring i) 64 == 0 then i else cg-dead-plain ring (i + 1)
+  cg-dead-used : Integer, Integer, Integer -> Integer
+  cg-dead-used (ring) (i) (n) = if i >= sa-capacity ring then n else cg-dead-used ring (i + 1) (if peek-qword (sa-at ring i) 0 /= 0 then n + 1 else n)
+  cg-dead-due : CompositeGame -> Boolean
+  cg-dead-due (owner) = cg-dead-used owner.dead 0 0 * 4 > sa-capacity owner.dead * 3 | cg-quest-used owner.quests 0 0 * 4 > sa-capacity owner.quests * 3
+  cg-dead-grow : CompositeGame -> Integer
+  cg-dead-grow (owner) = let a = if cg-dead-used owner.dead 0 0 * 4 > sa-capacity owner.dead * 3 then sa-grow owner.dead (sa-capacity owner.dead * 2) else 0
+    in if cg-quest-used owner.quests 0 0 * 4 > sa-capacity owner.quests * 3 then sa-grow owner.quests (sa-capacity owner.quests * 2) else a
+  cg-dead-zero : Integer, Integer -> Integer
+  cg-dead-zero (row) (at) = if at >= cg-dead-bytes then 0 else let z = poke-qword row at 0 in cg-dead-zero row (at + 8)
+ Q3 (Damian, 2026-10-20): every innocent character's death is an incident: a player, a town NPC, a keeper or a guard
+ with no murder count and no open case, never a spawn.
+  cg-innocent : CompositeGame, Integer -> Boolean
+  cg-innocent (owner) (serial) = cg-notoriety owner serial == 0
+    & (when owner.spawns is None -> True is Just (s) -> gws-slot-of s serial 0 < 0)
   cg-dead-note : CompositeGame, Integer, Integer -> Integer
-  cg-dead-note (owner) (victim) (killer) = if gv-player owner.vendor victim 0 >= 0 then 0
+  cg-dead-note (owner) (victim) (killer) = let incident = owner.incidents & cg-innocent owner victim
+    in if gv-player owner.vendor victim 0 >= 0 & not incident then 0
     else when world-get owner.checkpoint.game.world victim
       is Err (_) -> 0
       is Ok (m) -> if m.kind /= 1 | not (cg-in-britain m.x m.y) then 0
         else let free = cg-dead-free owner.dead 0
-        in let row = owner.dead + (if free >= 0 then free else int-mod victim cg-dead-rows) * cg-dead-bytes
+        in let taken = if free >= 0 then free else cg-dead-plain owner.dead 0
+        in if taken < 0 then 0
+        else let row = sa-at owner.dead taken
+        in let blank = cg-dead-zero row 0
+        in let fallen = poke-qword row 72 (if incident then victim else 0)
         in let townsman = when owner.civic is None -> False is Just (c) -> cg-townsman owner c victim
         in let cried = poke-qword row 32 (if not townsman then 0 else if killer > 0 then killer else 0 - 1)
         in let wild = cg-wild-slot owner killer
         in let worker = cg-death-worker (cg-death-role owner victim) | cg-death-miner owner.city-workers victim 0 >= 0
         in let threat = poke-qword row 40 (if worker & wild >= 0 then killer else 0)
         in let region = poke-qword row 48 (if worker & wild >= 0 then cg-slot-region owner wild else 0 - 1)
-        in let x = poke-qword row 0 m.x in let y = poke-qword row 8 m.y in let body = poke-qword row 16 m.graphic in let unheard = poke-qword row 24 0 in 1
+        in let x = poke-qword row 0 m.x in let y = poke-qword row 8 m.y in let body = poke-qword row 16 m.graphic in 1
   cg-dead-guard : CompositeGame, CivicLive, WalkMap, WorldObject, Integer, Integer, Integer -> Integer
   cg-dead-guard (owner) (c) (map) (corpse) (i) (best) (dist) = if i >= c.law.guard-count then best
     else let g = list-at c.law.guards i
@@ -5083,15 +5381,19 @@ Chapter: CompositeGameRules
   cg-corpse-at (world) (serial) (body) = if serial == 0 then 0
     else if (when world-get world serial is Err (_) -> False is Ok (o) -> o.kind == 2 & o.graphic == 8198 & o.container == 0 & o.amount == body) then serial
     else cg-corpse-at world (world-tile-next world serial) body
-  cg-dead-witness : CompositeGame, WorldObject, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
-  cg-dead-witness (owner) (corpse) (seconds) (k) (n) (packets) = if k >= n then packets
+ An innocent's corpse (the row's victim, UOAIX-275) is never cheered: a brigand's profile hunts with a human body, so
+ the body alone named every human corpse a monster's (trial-47111: townsfolk cheered at a murdered player).
+  cg-cheers : CompositeGame, Boolean, Integer -> Boolean
+  cg-cheers (owner) (innocent) (body) = not innocent & cg-monster-body owner body
+  cg-dead-witness : CompositeGame, WorldObject, Boolean, Integer, Integer, Integer, List (List Integer) -> List (List Integer)
+  cg-dead-witness (owner) (corpse) (innocent) (seconds) (k) (n) (packets) = if k >= n then packets
     else let serial = cg-npc-serial owner k
     in let heard = if cg-npc-distance owner corpse.x corpse.y serial > cg-dead-sight then [] else when world-get owner.checkpoint.game.world serial
       is Err (_) -> []
-      is Ok (m) -> if cg-monster-body owner corpse.amount then cg-dead-cheer owner m k seconds
+      is Ok (m) -> if cg-cheers owner innocent corpse.amount then cg-dead-cheer owner m k seconds
         else let fled = cg-flee owner k
         in if not (cg-alarm-fresh owner.alarms serial seconds) then [] else if world-announce-text owner.checkpoint.game.world m.serial "A body in the street! Guards! Guards!" then [gvp-speech m "" "A body in the street! Guards! Guards!"] else []
-    in cg-dead-witness owner corpse seconds (k + 1) n (packets & heard)
+    in cg-dead-witness owner corpse innocent seconds (k + 1) n (packets & heard)
  A dead monster in the street (Damian, 2026-10-09: "when a townsfolk sees a dead monster in the street, they should be
  happy and concerned", UOAIX-171): a witness does not run, says so, and a resident's mood rises cg-cheer-lift (of 100,
  the threat is dead) and its alarm cg-cheer-alarm (of 1000, monsters reach the streets). A monster's body is the body of
@@ -5133,7 +5435,7 @@ Chapter: CompositeGameRules
     in let d = if g.state /= 0 | fighting | not (lw-live c.law g.serial) then 9999 else cg-npc-distance owner m.x m.y g.serial
     in if d <= cg-call-reach & d < dist then cg-idle-guard owner c m (i + 1) g.serial d else cg-idle-guard owner c m (i + 1) best dist
   cg-dead-bury : CompositeGame, CivicLive, WalkMap, Integer, WorldObject, Integer -> List (List Integer)
-  cg-dead-bury (owner) (c) (map) (seconds) (corpse) (row) = let g = cg-idle-guard owner c corpse 0 0 9999
+  cg-dead-bury (owner) (c) (map) (seconds) (corpse) (row) = if peek-qword row 64 /= 0 then [] else let g = cg-idle-guard owner c corpse 0 0 9999
     in let i = if g == 0 then -1 else cv-guard-role c g 0 - 2
     in if i < 0 then [] else let heard = cg-dead-hear row g in let p = list-at c.guards i
     in when world-get owner.checkpoint.game.world g
@@ -5146,18 +5448,430 @@ Chapter: CompositeGameRules
           is Ok (spot) -> when cv-walk c p guard map owner.town-doors spot
             is Err (_) -> []
             is Ok (moved) -> let paced = __record-set p "next-step" (seconds + 12) in moved
-  cg-dead-step : CompositeGame, CivicLive, WalkMap, Integer, Integer, List (List Integer) -> List (List Integer)
-  cg-dead-step (owner) (c) (map) (seconds) (i) (packets) = if i >= cg-dead-rows then packets
-    else let row = owner.dead + i * cg-dead-bytes
-    in let x = peek-qword row 0
-    in let found = if x == 0 then 0 else cg-corpse-at owner.checkpoint.game.world (world-tile-first owner.checkpoint.game.world x (peek-qword row 8)) (peek-qword row 16)
-    in let cleared = if x /= 0 & found == 0 then poke-qword row 0 0 else 0
-    in let step = if found == 0 then [] else when world-get owner.checkpoint.game.world found
+ UOAIX-275 (docs/Designs/Active/Apps/UoaixCoroners.md): a row noted with its innocent victim (owner.incidents on) holds
+ its corpse as an incident once found; an open incident's corpse neither decays nor is buried by a guard. Stage 1 waits
+ for a Britain worker in sight, who runs to the mayor (2); the mayor then walks to the corpse (3) and waits there (4).
+ A witness that dies is let go and the incident waits for another; the mayor is taken by one incident at a time.
+  cg-incident-fallen : Integer = 1
+  cg-incident-running : Integer = 2
+  cg-incident-called : Integer = 3
+  cg-incident-waiting : Integer = 4
+  cg-incident-quested : Integer = 5
+  cg-incident-coroners : Integer = 6
+  cg-incident-held : Integer, Integer, Integer -> Boolean
+  cg-incident-held (ring) (serial) (i) = if i >= sa-capacity ring then False
+    else let row = sa-at ring i
+    in (peek-qword row 0 /= 0 & peek-qword row 64 /= 0 & peek-qword row 56 == serial) | cg-incident-held ring serial (i + 1)
+ The decay wheel keeps an incident's corpse; one no Britain worker has seen (stage 1) for cg-witness-wait decay periods
+ (cg-corpse-ms each) is let go, so a death where no worker walks still rots.
+  cg-witness-wait : Integer = 6
+  cg-incident-keep : Integer, Integer, Integer -> Boolean
+  cg-incident-keep (ring) (serial) (i) = if i >= sa-capacity ring then False
+    else let row = sa-at ring i
+    in if peek-qword row 0 == 0 | peek-qword row 64 == 0 | peek-qword row 56 /= serial then cg-incident-keep ring serial (i + 1)
+    else if peek-qword row 64 /= cg-incident-fallen then True
+    else if peek-qword row 160 < cg-witness-wait then (let n = poke-qword row 160 (peek-qword row 160 + 1) in True)
+    else let a = poke-qword row 64 0 in let b = poke-qword row 72 0 in False
+  cg-incident-runner : Integer, Integer, Integer -> Boolean
+  cg-incident-runner (ring) (serial) (i) = if i >= sa-capacity ring | serial == 0 then False
+    else let row = sa-at ring i
+    in (peek-qword row 0 /= 0 & peek-qword row 64 == cg-incident-running & peek-qword row 80 == serial) | cg-incident-runner ring serial (i + 1)
+ The mayor serves one incident: the one he waits at (stage 4), else the first that called him (stage 3).
+  cg-mayor-row : Integer, Integer -> Integer
+  cg-mayor-row (ring) (i) = let waiting = cg-stage-row ring cg-incident-waiting 0 in if waiting >= 0 then waiting else cg-stage-row ring cg-incident-called i
+  cg-stage-row : Integer, Integer, Integer -> Integer
+  cg-stage-row (ring) (stage) (i) = if i >= sa-capacity ring then -1
+    else let row = sa-at ring i
+    in if peek-qword row 0 /= 0 & peek-qword row 64 == stage then i else cg-stage-row ring stage (i + 1)
+  cg-incident-say : CompositeGame, Integer, Text -> List (List Integer)
+  cg-incident-say (owner) (serial) (line) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> []
+    is Ok (m) -> if world-announce-text owner.checkpoint.game.world serial line then (let told = owner.combat.notice-hook m.x m.y 0 0 0 (gvp-speech m "" line) in []) else []
+ Incident lines are said in the town tick, whose reply reaches one session; the event ring tells every player in range
+ (trial-47676: b stood 2 tiles from the mayor and heard neither the witness nor the offer). The offer is told to its
+ player alone, so a second player in reach still hears the line the mayor said to the first.
+  cg-incident-tell : CompositeGame, Integer, Integer, Text -> List (List Integer)
+  cg-incident-tell (owner) (serial) (player) (line) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> []
+    is Ok (m) -> let told = owner.combat.notice-hook m.x m.y 0 0 player (gvp-speech m "" line) in []
+  cg-standing : CompositeGame, Integer -> Boolean
+  cg-standing (owner) (serial) = serial > 0 & (when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> m.health > 0)
+ The witness is a worker who walks Britain's map: the gatherer, the farmer or a miner (cg-worker-step walks it).
+  cg-britain-witness : CompositeGame, WalkMap, WorldObject -> Integer
+  cg-britain-witness (owner) (map) (corpse) = let gatherer = when owner.gatherer is None -> 0 is Just (g) -> g.serial
+    in let farmer = when owner.farmer is None -> 0 is Just (f) -> f.serial
+    in if cg-sees-corpse owner map corpse gatherer then gatherer
+    else if cg-sees-corpse owner map corpse farmer then farmer
+    else cg-witness-in owner map corpse owner.miners 0
+  cg-incident-step : CompositeGame, CivicLive, WalkMap, Integer, WorldObject, Integer -> List (List Integer)
+  cg-incident-step (owner) (c) (map) (seconds) (corpse) (row) = let stage = peek-qword row 64
+    in let arrived = if stage == cg-incident-waiting & peek-qword row 144 == 0 then poke-qword row 144 (seconds + 1) else 0
+    in if (stage == cg-incident-running | stage == cg-incident-called) & peek-qword row 160 > 0 & seconds - (peek-qword row 160 - 1) >= cg-queued-close then cg-incident-close owner corpse row
+    else if stage == cg-incident-waiting & peek-qword row 144 > 0 & seconds - (peek-qword row 144 - 1) >= cg-unaccepted-close then cg-incident-close owner corpse row
+    else if stage == cg-incident-fallen then cg-incident-witness owner map seconds corpse row
+    else if stage == cg-incident-running then cg-incident-run owner c row
+    else if stage == cg-incident-called then cg-incident-call owner c map seconds corpse row
+    else if stage == cg-incident-waiting then cg-incident-offer owner c corpse row
+    else if stage == cg-incident-quested then cg-incident-quest owner row
+    else if stage == cg-incident-coroners then cg-incident-fetch owner c map seconds corpse row
+    else []
+ Q5 (root, 2026-10-21): an incident the mayor waits at closes a game day after he first arrived; one still queued for
+ him (stages 2 and 3) closes three game days after its witness ran. With the cemetery clear the coroners bury it,
+ unpaid; otherwise it is let go as an unseen corpse is, and decays. Row 160 holds the game second the witness ran, row
+ 144 (the grave's z from stage 7) the game second the mayor first arrived, each plus 1.
+  cg-unaccepted-close : Integer = 86400
+  cg-queued-close : Integer = 3 * 86400
+  cg-incident-close : CompositeGame, WorldObject, Integer -> List (List Integer)
+  cg-incident-close (owner) (corpse) (row) = let purged = cg-quest-purge owner.quests corpse.serial 0
+    in let w = poke-qword row 80 0
+    in if cg-cemetery-clear owner then (let b = poke-qword row 64 cg-incident-coroners in [])
+    else let a = poke-qword row 64 0 in let v = poke-qword row 72 0 in let u = poke-qword row 160 0 in []
+  cg-incident-witness : CompositeGame, WalkMap, Integer, WorldObject, Integer -> List (List Integer)
+  cg-incident-witness (owner) (map) (seconds) (corpse) (row) = let w = cg-britain-witness owner map corpse
+    in if w == 0 | cg-incident-runner owner.dead w 0 then []
+    else let a = poke-qword row 80 w
+    in let ran = poke-qword row 160 (seconds + 1)
+    in let b = poke-qword row 64 cg-incident-running
+    in cg-incident-say owner w "One of ours lies dead! I must fetch the mayor!"
+  cg-incident-run : CompositeGame, CivicLive, Integer -> List (List Integer)
+  cg-incident-run (owner) (c) (row) = let w = peek-qword row 80
+    in if not (cg-standing owner w) then (let a = poke-qword row 80 0 in let u = poke-qword row 160 0 in let b = poke-qword row 64 cg-incident-fallen in [])
+    else when world-get owner.checkpoint.game.world c.mayor
       is Err (_) -> []
-      is Ok (corpse) -> if peek-qword row 40 /= 0 then cg-dead-hunt owner c map seconds corpse row
+      is Ok (mayor) -> if mayor.health <= 0 | cg-npc-distance owner mayor.x mayor.y w > 2 then []
+        else let held = cg-mayor-row owner.dead 0
+        in let from = if held >= 0 then sa-at owner.dead held else 0
+        in let post = poke-qword row 112 (if from /= 0 then peek-qword from 112 else mayor.x * 65536 + mayor.y)
+        in let height = poke-qword row 120 (if from /= 0 then peek-qword from 120 else mayor.z)
+        in let homed = if held >= 0 then 0 else cg-mayor-post c row
+        in let b = poke-qword row 64 cg-incident-called
+        in cg-incident-say owner w "Mayor! One of ours lies dead in the street!"
+          & cg-incident-say owner c.mayor (if held >= 0 then "Another? I shall come when I can." else "Show me. I shall come at once.")
+  cg-mayor-post : CivicLive, Integer -> Integer
+  cg-mayor-post (c) (row) = let v = peek-qword row 112
+    in let a = __record-set c.mayor-walk.target "x" (v / 65536)
+    in let b = __record-set c.mayor-walk.target "y" (int-mod v 65536)
+    in let d = __record-set c.mayor-walk.target "z" (peek-qword row 120)
+    in let e = rte-drop c.mayor-walk.walk in 1
+  cg-incident-call : CompositeGame, CivicLive, WalkMap, Integer, WorldObject, Integer -> List (List Integer)
+  cg-incident-call (owner) (c) (map) (seconds) (corpse) (row) = if sa-at owner.dead (max 0 (cg-mayor-row owner.dead 0)) /= row then []
+    else let posted = if c.mayor-walk.target.x < 0 then cg-mayor-post c row else 0
+    in when world-get owner.checkpoint.game.world c.mayor
+      is Err (_) -> []
+      is Ok (mayor) -> if mayor.health <= 0 then []
+        else if max (walk-abs (corpse.x - mayor.x)) (walk-abs (corpse.y - mayor.y)) <= 2 then
+          (let b = poke-qword row 64 cg-incident-waiting in cg-incident-say owner c.mayor "A good soul fallen. They must be laid to rest.")
+        else when cv-approach c map mayor corpse 0
+          is Err (_) -> []
+          is Ok (spot) -> cg-mayor-walk owner c map seconds mayor spot.x spot.y spot.z
+  cg-mayor-walk : CompositeGame, CivicLive, WalkMap, Integer, WorldObject, Integer, Integer, Integer -> List (List Integer)
+  cg-mayor-walk (owner) (c) (map) (seconds) (mayor) (x) (y) (z) = let p = c.mayor-walk
+    in if p.next-step > seconds then []
+    else let paced = __record-set p "next-step" (seconds + 12)
+    in when rte-toward-in c.town.nav c.law.world (Just c.town.vendors.game) map owner.town-doors rte-any p.walk mayor x y z
+      is Err (_) -> []
+      is Ok (moved) -> moved
+ With no incident holding him, a mayor away from his post walks back to it.
+  cg-mayor-home : CompositeGame, CivicLive, WalkMap, Integer -> List (List Integer)
+  cg-mayor-home (owner) (c) (map) (seconds) = let t = c.mayor-walk.target
+    in if t.x < 0 | cg-mayor-row owner.dead 0 >= 0 then []
+    else when world-get owner.checkpoint.game.world c.mayor
+      is Err (_) -> []
+      is Ok (mayor) -> if mayor.x == t.x & mayor.y == t.y then (let gone = __record-set t "x" (0 - 1) in [])
+        else if mayor.health <= 0 then []
+        else cg-mayor-walk owner c map seconds mayor t.x t.y t.z
+ Stage 4: each living player (not a ghost) within cg-offer-reach of the corpse while the mayor stands by it is offered the quest once
+ (L-FUTILITY), unless the player's account has already taken one (Q4). The quests table holds those offers (kind 1:
+ corpse, player; in memory) and the accounts that took a quest (kind 2: account; saved in the incident tail).
+  cg-offer-reach : Integer = 6
+  cg-quest-bytes : Integer = 24
+  cg-quest-find : Integer, Integer, Integer, Integer, Integer -> Integer
+  cg-quest-find (ring) (kind) (a) (b) (i) = if i >= sa-capacity ring then -1
+    else let row = sa-at ring i in if peek-qword row 0 == kind & peek-qword row 8 == a & peek-qword row 16 == b then i else cg-quest-find ring kind a b (i + 1)
+  cg-quest-add : Integer, Integer, Integer, Integer -> Integer
+  cg-quest-add (ring) (kind) (a) (b) = let i = cg-quest-find ring 0 0 0 0
+    in if i < 0 then -1 else let row = sa-at ring i in let k = poke-qword row 0 kind in let x = poke-qword row 8 a in let y = poke-qword row 16 b in i
+  cg-quest-used : Integer, Integer, Integer -> Integer
+  cg-quest-used (ring) (i) (n) = if i >= sa-capacity ring then n else cg-quest-used ring (i + 1) (if peek-qword (sa-at ring i) 0 /= 0 then n + 1 else n)
+  cg-quest-purge : Integer, Integer, Integer -> Integer
+  cg-quest-purge (ring) (corpse) (i) = if i >= sa-capacity ring then 0
+    else let row = sa-at ring i
+    in let gone = if peek-qword row 0 == 1 & peek-qword row 8 == corpse then poke-qword row 0 0 + poke-qword row 8 0 + poke-qword row 16 0 else 0
+    in cg-quest-purge ring corpse (i + 1)
+  cg-offer-line : Text = "Thou there! Wilt thou clear the graveyard north of the castle of its foul beasts, that this soul be laid to rest? The town shall give thee a house: say 'accept', with 'cottage' or 'stone' for those over a wooden house."
+  cg-incident-offer : CompositeGame, CivicLive, WorldObject, Integer -> List (List Integer)
+  cg-incident-offer (owner) (c) (corpse) (row) = when world-get owner.checkpoint.game.world c.mayor
+    is Err (_) -> []
+    is Ok (mayor) -> if mayor.health <= 0 | max (walk-abs (corpse.x - mayor.x)) (walk-abs (corpse.y - mayor.y)) > 2 then (let b = poke-qword row 64 cg-incident-called in [])
+      else cg-offer-each owner c corpse (cg-players-near owner.vendor owner.checkpoint.game.world corpse.x corpse.y cg-offer-reach) 0 []
+  cg-offer-each : CompositeGame, CivicLive, WorldObject, List Integer, Integer, List (List Integer) -> List (List Integer)
+  cg-offer-each (owner) (c) (corpse) (ps) (i) (packets) = if i >= list-length ps then packets
+    else let p = list-at ps i
+    in let account = ga-owner owner.checkpoint.game.accounts p 0
+    in let ghost = when world-get owner.checkpoint.game.world p is Err (_) -> True is Ok (m) -> m.health <= 0 | m.graphic == 402 | m.graphic == 403
+    in if ghost | account < 0 | cg-quest-find owner.quests 2 account 0 0 >= 0 | cg-quest-find owner.quests 1 corpse.serial p 0 >= 0 then cg-offer-each owner c corpse ps (i + 1) packets
+    else let noted = cg-quest-add owner.quests 1 corpse.serial p
+    in cg-offer-each owner c corpse ps (i + 1) (packets & (if noted < 0 then [] else cg-incident-tell owner c.mayor p cg-offer-line))
+ A player says "accept" within cg-offer-reach of a waiting incident's corpse: the player holds the quest (stage 5), the
+ account is marked, and the mayor returns to his post.
+  cg-incident-accept : CompositeGame, GameShard, GameInput, List Integer -> Maybe GameReply
+  cg-incident-accept (owner) (game) (input) (packet) = if not owner.incidents | list-length packet < 9 | list-at packet 0 /= 3 | input.mode /= 2 | input.session.phase /= 2 then None
+    else if not (gp-speech-valid packet) | not (ns-has (gp-speech-text packet) "accept") then None
+    else when owner.civic
+      is None -> None
+      is Just (c) -> when world-get game.world input.session.serial
+        is Err (_) -> None
+        is Ok (me) -> let i = if me.health <= 0 then -1 else cg-waiting-near owner me 0
+          in let account = ga-owner game.accounts me.serial 0
+          in if i < 0 | account < 0 then None
+          else if cg-quest-find owner.quests 2 account 0 0 >= 0 then Just (gs-reply (cg-incident-say owner c.mayor "Thou hast already laid one of ours to rest. Let another take up this task.") "incident: account served")
+          else if cg-quest-add owner.quests 2 account 0 < 0 then None
+          else let row = sa-at owner.dead i
+          in let a = poke-qword row 88 me.serial
+          in let chosen = poke-qword row 128 (cn-design-said (gp-speech-text packet))
+          in let b = poke-qword row 64 cg-incident-quested
+          in let purged = cg-quest-purge owner.quests (peek-qword row 56) 0
+          in Just (gs-reply (cg-incident-say owner c.mayor "Bless thee. Clear the graveyard of every foul beast and stand within it, and the coroners shall bury this soul.") "incident: quest accepted")
+  cg-waiting-near : CompositeGame, WorldObject, Integer -> Integer
+  cg-waiting-near (owner) (me) (i) = if i >= sa-capacity owner.dead then -1
+    else let row = sa-at owner.dead i
+    in let near = peek-qword row 0 /= 0 & peek-qword row 64 == cg-incident-waiting
+      & (when world-get owner.checkpoint.game.world (peek-qword row 56) is Err (_) -> False is Ok (o) -> max (walk-abs (o.x - me.x)) (walk-abs (o.y - me.y)) <= cg-offer-reach)
+    in if near then i else cg-waiting-near owner me (i + 1)
+ Stage 5 ends when no hunting creature (ai 2 or 11) stands in Britain's cemetery and the holder does: WorldSpawnData
+ regions 5505 (1338,1445 to 1374,1509) and 5506 (1368,1444 to 1389,1491).
+  cg-in-cemetery : Integer, Integer -> Boolean
+  cg-in-cemetery (x) (y) = (x >= 1338 & x <= 1374 & y >= 1445 & y <= 1509) | (x >= 1368 & x <= 1389 & y >= 1444 & y <= 1491)
+  cg-cemetery-clear : CompositeGame -> Boolean
+  cg-cemetery-clear (owner) = when owner.spawns is None -> True is Just (s) -> not (cg-cemetery-foe owner s 0)
+  cg-cemetery-foe : CompositeGame, GameWorldSpawn, Integer -> Boolean
+  cg-cemetery-foe (owner) (s) (i) = if i >= list-length s.slots then False
+    else let slot = list-at s.slots i
+    in let p = if slot.serial == 0 | slot.owner /= 0 then 0 - 1 else (list-at s.catalog.profiles slot.profile).ai
+    in let foe = (p == 2 | p == 11) & (when world-get owner.checkpoint.game.world slot.serial is Err (_) -> False is Ok (m) -> m.health > 0 & cg-in-cemetery m.x m.y)
+    in foe | cg-cemetery-foe owner s (i + 1)
+  cg-incident-quest : CompositeGame, Integer -> List (List Integer)
+  cg-incident-quest (owner) (row) = when world-get owner.checkpoint.game.world (peek-qword row 88)
+    is Err (_) -> []
+    is Ok (h) -> if h.health <= 0 | not (cg-in-cemetery h.x h.y) | not (cg-cemetery-clear owner) then []
+      else let b = poke-qword row 64 cg-incident-coroners in []
+ Stages 6 to 8, one burial at a time: two coroners are made at Britain's healer shop (named "<name> the coroner", in a
+ dark robe) and walk to the corpse; once both stand beside it and the cemetery holds no hunting creature they take it
+ (cg-rot: the corpse and its contents leave the world) and choose a grave (7). A coroner outside the cemetery waits
+ while a hunting creature stands in it. Both at the grave, they lay a dirt patch and a gravestone, immovable (8); the
+ holder is paid a deed to the house named at "accept", cn-deed-silver from the town purse to the carpenter as any deed
+ is bought; then the coroners walk back to the shop and are dismissed there, and the row is freed. Graves are dug every
+ second tile of region 5505's rows on Britain's walk map (y from 1490; the window starts at y 1488, BritainWindow).
+  cg-incident-carrying : Integer = 7
+  cg-incident-buried : Integer = 8
+  cg-grave-dirt : Integer = #0913
+  cg-grave-stone : Integer = #0ED5
+  cg-coroner-robe : Integer = #1F03
+  cg-coroner-hue : Integer = #0455
+  cg-coroner-row : Integer, Integer -> Integer
+  cg-coroner-row (ring) (i) = if i >= sa-capacity ring then -1
+    else let row = sa-at ring i
+    in if peek-qword row 0 /= 0 & peek-qword row 64 >= cg-incident-coroners & peek-qword row 96 /= 0 then i else cg-coroner-row ring (i + 1)
+  cg-shop-titled : Text, Integer -> Integer
+  cg-shop-titled (title) (i) = if i >= list-length bb-shops then -1 else if (list-at bb-shops i).title == title then i else cg-shop-titled title (i + 1)
+  cg-coroner-make : CompositeGame, CivicLive, WalkMap, Integer -> Integer
+  cg-coroner-make (owner) (c) (map) (k) = let shop = cg-shop-titled "Healer" 0
+    in if shop < 0 then 0 else when bb-placement c.law.world map (list-at bb-shops shop) k
+      is Err (_) -> 0
+      is Ok (spot) -> when world-create c.law.world (gs-mobile 0 spot.x spot.y spot.z 400 1002)
+        is Err (_) -> 0
+        is Ok (serial) -> let styled = when cst-style owner.items serial cst-townsfolk is Err (_) -> 0 is Ok (_) -> 1
+          in let robed = when gmb-clothe owner.items serial cg-coroner-robe cg-coroner-hue 22 is Err (_) -> 0 is Ok (_) -> 1
+          in let named = cg-npc-name owner serial (nn-name cst-townsfolk serial & " the coroner")
+          in let touched = world-touch c.law.world in serial
+  cg-walker-bind : CvPatrol, Integer -> Integer
+  cg-walker-bind (p) (serial) = if p.serial == serial then 0
+    else let a = __record-set p "serial" serial in let b = rte-drop p.walk in let f = rte-queued p.walk in let d = __record-set p "next-step" 0 in 1
+  cg-coroners-bind : CivicLive, Integer -> Integer
+  cg-coroners-bind (c) (row) = cg-walker-bind (list-at c.coroners 0) (peek-qword row 96) + cg-walker-bind (list-at c.coroners 1) (peek-qword row 104)
+  cg-coroners-hire : CompositeGame, CivicLive, WalkMap, Integer -> List (List Integer)
+  cg-coroners-hire (owner) (c) (map) (row) = let a = cg-coroner-make owner c map 0
+    in let b = if a == 0 then 0 else cg-coroner-make owner c map 5
+    in if a == 0 | b == 0 then (let gone = cv-discard c.law.world a + cv-discard c.law.world b in [])
+    else let p = poke-qword row 96 a in let q = poke-qword row 104 b
+    in let bound = cg-coroners-bind c row
+    in cg-incident-say owner a "The healer sends us to carry the departed."
+  cg-coroners-free : CompositeGame, CivicLive, Integer -> Integer
+  cg-coroners-free (owner) (c) (row) = let a = cv-discard c.law.world (peek-qword row 96) + cv-discard c.law.world (peek-qword row 104)
+    in let p = poke-qword row 96 0 in let q = poke-qword row 104 0
+    in let unbound = cg-walker-bind (list-at c.coroners 0) 0 + cg-walker-bind (list-at c.coroners 1) 0
+    in let touched = world-touch c.law.world in a
+  cg-coroner-walk : CompositeGame, CivicLive, WalkMap, Integer, Integer, Integer, Integer, Integer -> List (List Integer)
+  cg-coroner-walk (owner) (c) (map) (seconds) (k) (x) (y) (z) = let p = list-at c.coroners k
+    in if p.next-step > seconds then []
+    else when world-get c.law.world p.serial
+      is Err (_) -> []
+      is Ok (m) -> let paced = __record-set p "next-step" (seconds + 12)
+        in when rte-toward-in c.town.nav c.law.world (Just c.town.vendors.game) map owner.town-doors rte-any p.walk m x y z
+          is Err (_) -> []
+          is Ok (moved) -> moved
+  cg-coroner-near : CompositeGame, CivicLive, WalkMap, Integer, Integer, WorldObject -> List (List Integer)
+  cg-coroner-near (owner) (c) (map) (seconds) (k) (goal) = let p = list-at c.coroners k
+    in when world-get c.law.world p.serial
+      is Err (_) -> []
+      is Ok (m) -> if max (walk-abs (goal.x - m.x)) (walk-abs (goal.y - m.y)) <= 1 then []
+        else when cv-approach c map m goal 0
+          is Err (_) -> []
+          is Ok (spot) -> cg-coroner-walk owner c map seconds k spot.x spot.y spot.z
+ An accepted burial is served before an unaccepted one (root, trial-47635).
+  cg-accepted-waiting : Integer, Integer -> Boolean
+  cg-accepted-waiting (ring) (i) = if i >= sa-capacity ring then False
+    else let row = sa-at ring i
+    in (peek-qword row 0 /= 0 & peek-qword row 64 == cg-incident-coroners & peek-qword row 88 /= 0 & peek-qword row 96 == 0) | cg-accepted-waiting ring (i + 1)
+  cg-beside : CompositeGame, Integer, Integer, Integer -> Boolean
+  cg-beside (owner) (serial) (x) (y) = cg-npc-distance owner x y serial <= 1
+  cg-incident-fetch : CompositeGame, CivicLive, WalkMap, Integer, WorldObject, Integer -> List (List Integer)
+  cg-incident-fetch (owner) (c) (map) (seconds) (corpse) (row) = if peek-qword row 96 == 0 then (if cg-coroner-row owner.dead 0 >= 0 | (peek-qword row 88 == 0 & cg-accepted-waiting owner.dead 0) then [] else cg-coroners-hire owner c map row)
+    else let bound = cg-coroners-bind c row
+    in if not (cg-standing owner (peek-qword row 96)) | not (cg-standing owner (peek-qword row 104)) then (let gone = cg-coroners-free owner c row in [])
+    else if cg-beside owner (peek-qword row 96) corpse.x corpse.y & cg-beside owner (peek-qword row 104) corpse.x corpse.y then
+      (if cg-cemetery-clear owner then cg-coroners-take owner c map corpse row else [])
+    else cg-coroner-near owner c map seconds 0 corpse & cg-coroner-near owner c map seconds 1 corpse
+  cg-grave-tile : CompositeGame, WalkMap, Integer, Integer -> Integer
+  cg-grave-tile (owner) (map) (x) (y) = if y > 1507 then 0 - 1
+    else if x > 1372 then cg-grave-tile owner map 1340 (y + 2)
+    else let free = world-tile-first owner.checkpoint.game.world x y == 0 & (when walk-ground map x y is Err (_) -> False is Ok (_) -> True)
+    in if free then x * 65536 + y else cg-grave-tile owner map (x + 2) y
+  cg-coroners-take : CompositeGame, CivicLive, WalkMap, WorldObject, Integer -> List (List Integer)
+  cg-coroners-take (owner) (c) (map) (corpse) (row) = let g = cg-grave-tile owner map 1340 1490
+    in if g < 0 then []
+    else let z = when walk-ground map (g / 65536) (int-mod g 65536) is Err (_) -> 0 is Ok (h) -> h
+    in if cg-rot owner corpse.serial == 0 then []
+    else let a = poke-qword row 136 g in let b = poke-qword row 144 z in let d = poke-qword row 64 cg-incident-carrying
+    in cg-incident-say owner (peek-qword row 96) "We shall see this one to rest."
+  cg-incident-late : CompositeGame, CivicLive, WalkMap, Integer, Integer -> List (List Integer)
+  cg-incident-late (owner) (c) (map) (seconds) (row) = let bound = cg-coroners-bind c row
+    in if peek-qword row 64 == cg-incident-carrying then cg-incident-carry owner c map seconds row
+    else cg-incident-home owner c map seconds row
+  cg-grave-at : Integer -> WorldObject
+  cg-grave-at (row) = WorldObject { serial = 0, kind = 1, x = peek-qword row 136 / 65536, y = int-mod (peek-qword row 136) 65536, z = peek-qword row 144,
+    graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+  cg-incident-carry : CompositeGame, CivicLive, WalkMap, Integer, Integer -> List (List Integer)
+  cg-incident-carry (owner) (c) (map) (seconds) (row) = let grave = cg-grave-at row
+    in let a = peek-qword row 96 in let b = peek-qword row 104
+    in if not (cg-standing owner a) | not (cg-standing owner b) then
+      (let gone = cg-coroners-free owner c row in let laid = cg-grave-lay owner row in let d = poke-qword row 64 cg-incident-buried in [])
+    else if cg-beside owner a grave.x grave.y & cg-beside owner b grave.x grave.y then
+      (let laid = cg-grave-lay owner row in let d = poke-qword row 64 cg-incident-buried in cg-incident-say owner a "Rest now. Thou art home.")
+    else let clear = cg-cemetery-clear owner
+    in (if clear | cg-coroner-inside owner a then cg-coroner-near owner c map seconds 0 grave else [])
+      & (if clear | cg-coroner-inside owner b then cg-coroner-near owner c map seconds 1 grave else [])
+  cg-coroner-inside : CompositeGame, Integer -> Boolean
+  cg-coroner-inside (owner) (serial) = when world-get owner.checkpoint.game.world serial is Err (_) -> False is Ok (m) -> cg-in-cemetery m.x m.y
+  cg-grave-lay : CompositeGame, Integer -> Integer
+  cg-grave-lay (owner) (row) = let grave = cg-grave-at row
+    in cg-grave-item owner grave cg-grave-dirt + cg-grave-item owner grave cg-grave-stone
+  cg-grave-item : CompositeGame, WorldObject, Integer -> Integer
+  cg-grave-item (owner) (grave) (art) = if world-room owner.items.world <= 0 then 0
+    else when world-create owner.items.world (WorldObject { serial = 0, kind = 2, x = grave.x, y = grave.y, z = grave.z, graphic = art, hue = 0, container = 0, amount = 1, health = 0 })
+      is Err (_) -> 0
+      is Ok (serial) -> if gsi-register owner.items serial 0 0 False False /= 0 then 0 else let touched = world-touch owner.items.world in 1
+ Stage 8: the holder is paid once (row 152 is 1); a town purse that cannot pay is said once (2) and paid when it can.
+  cg-incident-pay : CompositeGame, CivicLive, Integer -> List (List Integer)
+  cg-incident-pay (owner) (c) (row) = let holder = peek-qword row 88
+    in let design = if cn-design-ok (peek-qword row 128) then peek-qword row 128 else 1
+    in let pack = gsi-pack-find owner.items.world holder 0
+    in let v = owner.vendor
+    in let town = when owner.gov is None -> 0 is Just (s) -> (tg-office s.government 1).purse
+    in if pack == 0 | town < 1 | v.vendor-count <= bb-carpenter | world-room owner.items.world <= 0 then []
+    else let price = cn-deed-silver * (v.currency.copper-rate / v.currency.silver-rate)
+    in let funded = when owner.gov is None -> 0 is Just (s) -> cg-fund-town s.government ((price + v.currency.copper-rate - 1) / v.currency.copper-rate)
+    in if cn-tender v.currency town (ep-actor v.currency.world (list-at v.vendors bb-carpenter).actor).purse price /= 0 then
+      (if peek-qword row 152 == 2 then [] else let said = poke-qword row 152 2 in cg-incident-say owner c.mayor "The town purse cannot yet pay for thy house. It shall, when the taxes come in.")
+    else when cn-make-deed owner.production.harvest owner.checkpoint.game pack design ""
+      is Err (_) -> []
+      is Ok (_) -> let paid = poke-qword row 152 1
+        in cg-incident-say owner (peek-qword row 96) (as-mobile-name owner.active owner.checkpoint.game holder & ", the mayor hath set a deed to a " & cn-design-name design & " in thy pack.")
+  cg-incident-home : CompositeGame, CivicLive, WalkMap, Integer, Integer -> List (List Integer)
+  cg-incident-home (owner) (c) (map) (seconds) (row) = let owed = peek-qword row 88 /= 0 & peek-qword row 152 /= 1
+    in let paid = if owed then cg-incident-pay owner c row else []
+    in if owed & peek-qword row 152 /= 1 then paid
+    else let shop = cg-shop-titled "Healer" 0
+    in let home = if shop < 0 then WorldObject { serial = 0, kind = 1, x = 0, y = 0, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+      else let s = list-at bb-shops shop in when bb-placement c.law.world map s 0
+        is Err (_) -> WorldObject { serial = 0, kind = 1, x = (s.x1 + s.x2) / 2, y = (s.y1 + s.y2) / 2, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+        is Ok (spot) -> WorldObject { serial = 0, kind = 1, x = spot.x, y = spot.y, z = spot.z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+    in let a = peek-qword row 96 in let b = peek-qword row 104
+    in let unapproached = shop >= 0 & (when world-get owner.checkpoint.game.world a is Err (_) -> False is Ok (m) -> is-err (cv-approach c map m home 0))
+    in let lost = unapproached | (list-at c.coroners 0).walk.fails > 0 | (list-at c.coroners 1).walk.fails > 0
+    in let back = shop < 0 | lost | ((not (cg-standing owner a) | cg-coroner-shop owner a shop) & (not (cg-standing owner b) | cg-coroner-shop owner b shop))
+    in if back then (let gone = if peek-qword row 96 == 0 then 0 else cg-coroners-free owner c row in let freed = cg-dead-zero row 0 in paid)
+    else paid & cg-coroner-near owner c map seconds 0 home & cg-coroner-near owner c map seconds 1 home
+  cg-coroner-shop : CompositeGame, Integer, Integer -> Boolean
+  cg-coroner-shop (owner) (serial) (shop) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> True
+    is Ok (m) -> cn-in-shop (list-at bb-shops shop) m
+  cg-dead-step : CompositeGame, CivicLive, WalkMap, Integer, Integer, List (List Integer) -> List (List Integer)
+  cg-dead-step (owner) (c) (map) (seconds) (i) (packets) = if i >= sa-capacity owner.dead then packets & cg-mayor-home owner c map seconds
+    else let row = sa-at owner.dead i
+    in let x = peek-qword row 0
+    in let carried = x /= 0 & peek-qword row 64 >= cg-incident-carrying
+    in let found = if x == 0 | carried then 0 else cg-corpse-at owner.checkpoint.game.world (world-tile-first owner.checkpoint.game.world x (peek-qword row 8)) (peek-qword row 16)
+    in let lost = x /= 0 & not carried & found == 0
+    in let dismissed = if lost & peek-qword row 96 /= 0 then cg-coroners-free owner c row else 0
+    in let purged = if lost & peek-qword row 64 /= 0 then cg-quest-purge owner.quests (peek-qword row 56) 0 else 0
+    in let cleared = if lost then cg-dead-zero row 0 else 0
+    in let held = if found == 0 | peek-qword row 64 /= 0 | peek-qword row 72 == 0 then 0 else let kept = poke-qword row 56 found in poke-qword row 64 cg-incident-fallen
+    in let step = if carried then cg-incident-late owner c map seconds row else if found == 0 then [] else when world-get owner.checkpoint.game.world found
+      is Err (_) -> []
+      is Ok (corpse) -> let staged = cg-incident-step owner c map seconds corpse row
+        in if peek-qword row 40 /= 0 then staged & cg-dead-hunt owner c map seconds corpse row
         else let cried = cg-dead-cry owner c map corpse row
-        in cried & (if cg-dead-heard row then [] else cg-dead-witness owner corpse seconds 0 (cg-npc-count owner) []) & cg-dead-bury owner c map seconds corpse row
+        in staged & cried & (if cg-dead-heard row then [] else cg-dead-witness owner corpse (peek-qword row 72 /= 0) seconds 0 (cg-npc-count owner) []) & cg-dead-bury owner c map seconds corpse row
     in cg-dead-step owner c map seconds (i + 1) (packets & step)
+ The incident tail (CompositeCodec): a count, then every row holding an incident, whole, then a count and the accounts
+ that took a quest. A restored row takes a free row; each table first grows to hold what is restored.
+  cg-incident-count : Integer, Integer, Integer -> Integer
+  cg-incident-count (ring) (i) (n) = if i >= sa-capacity ring then n
+    else cg-incident-count ring (i + 1) (if peek-qword (sa-at ring i) 0 /= 0 & peek-qword (sa-at ring i) 64 /= 0 then n + 1 else n)
+  cg-incident-tail-size : CompositeGame -> Integer
+  cg-incident-tail-size (owner) = 16 + cg-incident-count owner.dead 0 0 * cg-dead-bytes + cg-served-count owner.quests 0 0 * 8
+  cg-served-count : Integer, Integer, Integer -> Integer
+  cg-served-count (ring) (i) (n) = if i >= sa-capacity ring then n else cg-served-count ring (i + 1) (if peek-qword (sa-at ring i) 0 == 2 then n + 1 else n)
+  cg-served-write : Integer, Integer, Integer, Integer -> Integer
+  cg-served-write (ring) (at) (i) (n) = if i >= sa-capacity ring then n
+    else if peek-qword (sa-at ring i) 0 /= 2 then cg-served-write ring at (i + 1) n
+    else let a = poke-qword at (8 + n * 8) (peek-qword (sa-at ring i) 8) in cg-served-write ring at (i + 1) (n + 1)
+  cg-served-read : Integer, Integer, Integer, Integer -> Integer
+  cg-served-read (ring) (at) (i) (n) = if i >= n then n
+    else let v = peek-qword at (8 + i * 8)
+    in let kept = if cg-quest-find ring 2 v 0 0 >= 0 then 0 else cg-quest-add ring 2 v 0
+    in if kept < 0 then -1 else cg-served-read ring at (i + 1) n
+  cg-dead-copy : Integer, Integer, Integer -> Integer
+  cg-dead-copy (from) (to) (at) = if at >= cg-dead-bytes then 0 else let a = poke-qword to at (peek-qword from at) in cg-dead-copy from to (at + 8)
+  cg-incident-write-rows : Integer, Integer, Integer, Integer -> Integer
+  cg-incident-write-rows (ring) (at) (i) (n) = if i >= sa-capacity ring then n
+    else let row = sa-at ring i
+    in if peek-qword row 0 == 0 | peek-qword row 64 == 0 then cg-incident-write-rows ring at (i + 1) n
+    else let copied = cg-dead-copy row (at + 8 + n * cg-dead-bytes) 0 in cg-incident-write-rows ring at (i + 1) (n + 1)
+  cg-incident-write-tail : CompositeGame, Integer -> Integer
+  cg-incident-write-tail (owner) (at) = let n = cg-incident-write-rows owner.dead at 0 0 in let a = poke-qword at 0 n
+    in let served = at + 8 + n * cg-dead-bytes
+    in let m = cg-served-write owner.quests served 0 0 in let b = poke-qword served 0 m in served + 8 + m * 8
+  cg-incident-read-tail : CompositeGame, Integer, Integer -> Integer
+  cg-incident-read-tail (owner) (at) (room) = if room < 8 | peek-qword at 0 < 0 | peek-qword at 0 > (room - 8) / cg-dead-bytes then -1
+    else let n = peek-qword at 0
+    in let served = at + 8 + n * cg-dead-bytes
+    in let left = room - 8 - n * cg-dead-bytes
+    in let m = if left < 8 then 0 else peek-qword served 0
+    in if m < 0 | (m > 0 & m > (left - 8) / 8) then -1
+    else let need = cg-dead-used owner.dead 0 0 + n
+    in if (if need * 4 > sa-capacity owner.dead * 3 then sa-grow owner.dead (need * 2) else 0) < 0 then -1
+    else let wanted = cg-quest-used owner.quests 0 0 + m
+    in if (if wanted * 4 > sa-capacity owner.quests * 3 then sa-grow owner.quests (wanted * 2) else 0) < 0 then -1
+    else if cg-incident-read-rows owner at 0 n < 0 then -1
+    else if cg-served-read owner.quests served 0 m < 0 then -1
+    else n
+  cg-incident-read-rows : CompositeGame, Integer, Integer, Integer -> Integer
+  cg-incident-read-rows (owner) (at) (i) (n) = if i >= n then n
+    else let free = cg-dead-free owner.dead 0
+    in if free < 0 then -1
+    else let copied = cg-dead-copy (at + 8 + i * cg-dead-bytes) (sa-at owner.dead free) 0 in cg-incident-read-rows owner at (i + 1) n
  UOAIX-262 (Damian, 2026-10-14: "other miners should notice the dead miner corpse, report it to the guards and the
  mayor and a patrol should be dispatched to investigate and deal with the threat"): a worker in sight of a fellow
  worker's corpse whose killer was a wild creature reports it; the nearest foot guard not fighting is sent, walks to the
@@ -6098,7 +6812,9 @@ Chapter: CompositeGameRules
  UOAIX-237 F1b, the merchant fleet's ships (MerchantFleet, docs/Designs/Active/Apps/UoaixMerchantFleet.md). Ship k is
  a captain mobile (skin 1006) on a reserved tile off the playable map, beside the stable pen, whose pack is the hold: the
  shops' checkout walks a lot's containers up to a mobile (gv-owned). Its actor is purse owner mf-owner + k at place 100,
- found again by owner at every boot, and a new purse takes a crown loan as a founding shop does (BritainShops). The
+ found again by owner at every boot, and a purse with no open crown loan takes one as a founding shop does (BritainShops),
+ on every leg until one lands: eu-lend refuses while the currency has no room (eu-room), which left the ships with nothing
+ (trial-46860: fleet-purse=0, 51 buys refused for funds). The
  voyage is the economy clock: every mf-leg-hours game hours ship k trades at port lane[hour / mf-leg-hours mod length].
   cg-fleet-hue : Integer = 1006
  The foot guards (CivicLive) a once-an-hour route failure report covers (CompositeStore cs-foot-report).
@@ -6116,14 +6832,16 @@ Chapter: CompositeGameRules
     in let found = cg-fleet-find world (world-tile-first world (cg-fleet-x k) cg-fleet-y)
     in if found /= 0 then found
     else when world-create world (gs-mobile 0 (cg-fleet-x k) cg-fleet-y 0 400 cg-fleet-hue) is Err (_) -> 0 is Ok (serial) -> serial
+ The purse and actor tables grow only while the world may (eu-open, ep-admit): grown in play they lay above the serving
+ mark and dangled after the next compaction (L-BELOWMARK; red, UOAIX audit 2026-10-18).
   cg-fleet-actor : EuCurrency, Integer -> Integer
   cg-fleet-actor (x) (k) = let found = em-find x.world.money 2 (mf-owner + k) 1
-    in let room = if found /= 0 | x.world.money.purse-count < list-length x.world.money.purses then 0 else eu-grow-purses x
+    in let room = if found /= 0 | x.world.money.purse-count < list-length x.world.money.purses | not x.world.goods.world.growing then 0 else eu-grow-purses x
     in let purse = if found /= 0 then found else eu-open x 2 (mf-owner + k)
     in if purse < 1 then 0 - 1
-    else let lent = if found /= 0 then 0 else eu-lend x True 1 purse 3 cg-fleet-loan-gold 0 em-limit
+    else let lent = if bb-debt x.world.money purse 0 /= 0 then 0 else eu-lend x True 1 purse 3 cg-fleet-loan-gold 0 em-limit
     in let held = cg-actor-of x.world purse 0
-    in let seats = if held > 0 | x.world.actor-count < list-length x.world.actors then 0 else ep-grow-actors x.world ep-actor-block
+    in let seats = if held > 0 | x.world.actor-count < list-length x.world.actors | not x.world.goods.world.growing then 0 else ep-grow-actors x.world ep-actor-block
     in if held > 0 then held else ep-admit x.world purse cgg-town-place
   cg-fleet-install : CompositeGame, Integer -> Integer
   cg-fleet-install (owner) (k) = if k >= mf-ships then 0
@@ -6146,15 +6864,37 @@ Chapter: CompositeGameRules
     in let captain = cg-fleet-find owner.items.world (world-tile-first owner.items.world (cg-fleet-x k) cg-fleet-y)
     in let pack = if captain == 0 then 0 else gsi-pack-find owner.items.world captain 0
     in let actor = cg-fleet-actor owner.vendor.currency k
-    in let traded = if captain == 0 | pack == 0 | actor < 1 then 0 else cg-fleet-trade owner.vendor actor captain pack (list-at lane leg) (mf-next lane leg)
+    in let traded = if captain == 0 | pack == 0 | actor < 1 then (let missed = cg-tally-bump owner.fleet-tally 24 1 in 0) else cg-fleet-trade owner.vendor owner.fleet-tally actor captain pack (list-at lane leg) (mf-next lane leg)
     in traded + cg-fleet-ships owner hour (k + 1)
-  cg-fleet-trade : GvWorld, Integer, Integer, Integer, Integer, Integer -> Integer
-  cg-fleet-trade (v) (actor) (captain) (pack) (port) (next) = let cities = ct-table 0
+ The fleet tally (economy line): legs traded at 0, lots sold at 8, lots bought at 16, legs no ship could sail at 24;
+ the buy scan's lots scanned at 32, off the shelf at 40, with no bid at the next port at 48, refused on the margin at
+ 56, the lowest ask as a percent of that bid at 64 (0 none yet), shut shops passed at 72; a checkout that refused a
+ buy, by gv-checkout's reason: stock or ownership at 80, funds at 88, any other at 96.
+  cg-fleet-trade : GvWorld, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  cg-fleet-trade (v) (tally) (actor) (captain) (pack) (port) (next) = let cities = ct-table 0
     in let cityshops = ct-city-shops 0
     in let here = mf-port-shops cities cityshops port 0 []
     in let there = mf-port-shops cities cityshops next 0 []
     in let sold = cg-fleet-sell v actor captain here (ep-lot-first v.currency.world.goods actor) 0
-    in sold + cg-fleet-buy v actor captain pack here there 0 0
+    in let bought = cg-fleet-buy v tally actor captain pack here there 0 0
+    in let legs = cg-tally-bump tally 0 1
+    in let s = cg-tally-bump tally 8 sold
+    in let b = cg-tally-bump tally 16 bought
+    in sold + bought
+  cg-fleet-purse : CompositeGame -> Integer
+  cg-fleet-purse (owner) = cg-fleet-purse-k owner.vendor.currency 0
+  cg-fleet-purse-k : EuCurrency, Integer -> Integer
+  cg-fleet-purse-k (x) (k) = if k >= mf-ships then 0
+    else let p = em-find x.world.money 2 (mf-owner + k) 1
+    in (if p < 1 then 0 else eu-value x (em-purse x.copper p).coin (em-purse x.silver p).coin (em-purse x.world.money p).coin) + cg-fleet-purse-k x (k + 1)
+  cg-fleet-said : CompositeGame -> Text
+  cg-fleet-said (owner) = " fleet-legs=" & show (peek-qword owner.fleet-tally 0) & " fleet-sold=" & show (peek-qword owner.fleet-tally 8)
+    & " fleet-bought=" & show (peek-qword owner.fleet-tally 16) & " fleet-unsailed=" & show (peek-qword owner.fleet-tally 24)
+    & " fleet-scanned=" & show (peek-qword owner.fleet-tally 32) & " fleet-off-shelf=" & show (peek-qword owner.fleet-tally 40)
+    & " fleet-no-bid=" & show (peek-qword owner.fleet-tally 48) & " fleet-margin=" & show (peek-qword owner.fleet-tally 56)
+    & " fleet-best-ask-pct=" & show (peek-qword owner.fleet-tally 64) & " fleet-shut=" & show (peek-qword owner.fleet-tally 72)
+    & " fleet-refused-lots=" & show (peek-qword owner.fleet-tally 80) & " fleet-refused-funds=" & show (peek-qword owner.fleet-tally 88)
+    & " fleet-refused-other=" & show (peek-qword owner.fleet-tally 96) & " fleet-purse=" & show (cg-fleet-purse owner)
   cg-fleet-into : GvWorld, Integer -> Integer
   cg-fleet-into (v) (k) = let role = ct-vendor-role k in let s = list-at v.vendors k
     in if role == bb-herbalist | role == bb-fishmonger | role == bb-jeweler then s.stock else s.extra
@@ -6170,15 +6910,15 @@ Chapter: CompositeGameRules
       else (when gv-checkout v [GvLine { lot = serial, quantity = amount, price = bid, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }]
         (list-at v.vendors best).actor actor captain (cg-fleet-into v best) captain is Err (_) -> 0 is Ok (_) -> 1)
     in done + cg-fleet-sell v actor captain port after (n + 1)
-  cg-fleet-buy : GvWorld, Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> Integer
-  cg-fleet-buy (v) (actor) (captain) (pack) (here) (there) (i) (bought) = if i >= list-length here | bought >= mf-hold-lots then bought
+  cg-fleet-buy : GvWorld, Integer, Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> Integer
+  cg-fleet-buy (v) (tally) (actor) (captain) (pack) (here) (there) (i) (bought) = if i >= list-length here | bought >= mf-hold-lots then bought
     else let k = list-at here i
-    in if k < 0 | k >= list-length v.vendors then cg-fleet-buy v actor captain pack here there (i + 1) bought
+    in if k < 0 | k >= list-length v.vendors then cg-fleet-buy v tally actor captain pack here there (i + 1) bought
     else let s = list-at v.vendors k
-    in let more = if gv-shut v k then bought else cg-fleet-buy-lots v actor captain pack k there (ep-lot-first v.currency.world.goods s.actor) bought 0
-    in cg-fleet-buy v actor captain pack here there (i + 1) more
-  cg-fleet-buy-lots : GvWorld, Integer, Integer, Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
-  cg-fleet-buy-lots (v) (actor) (captain) (pack) (k) (there) (serial) (bought) (n) = if serial == 0 | n >= 16 | bought >= mf-hold-lots then bought
+    in let more = if gv-shut v k then (let passed = cg-tally-bump tally 72 1 in bought) else cg-fleet-buy-lots v tally actor captain pack k there (ep-lot-first v.currency.world.goods s.actor) bought 0
+    in cg-fleet-buy v tally actor captain pack here there (i + 1) more
+  cg-fleet-buy-lots : GvWorld, Integer, Integer, Integer, Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
+  cg-fleet-buy-lots (v) (tally) (actor) (captain) (pack) (k) (there) (serial) (bought) (n) = if serial == 0 | n >= 16 | bought >= mf-hold-lots then bought
     else let w = v.currency.world
     in let s = list-at v.vendors k
     in let after = ep-lot-next w.goods serial
@@ -6186,11 +6926,18 @@ Chapter: CompositeGameRules
     in let shelf = gv-under v.game.world serial s.extra 65 | bb-in-shop v s.extra serial | gv-under v.game.world serial s.stock 65
     in let quantity = min 4 (ep-amount w.goods serial)
     in let ask = ep-price w s.actor l.item
-    in let got = if not shelf | quantity < 1 | not (mf-worth-buying ask (mf-best-bid w v.vendors there l.item 0 0)) then 0
+    in let bid = mf-best-bid w v.vendors there l.item 0 0
+    in let scanned = cg-tally-bump tally 32 1
+    in let why = if not shelf | quantity < 1 then cg-tally-bump tally 40 1 else if bid < 1 | ask < 1 then cg-tally-bump tally 48 1
+      else let pct = ask * 100 / bid
+      in let best = if peek-qword tally 64 == 0 | pct < peek-qword tally 64 then poke-qword tally 64 pct else 0
+      in if mf-worth-buying ask bid then 0 else cg-tally-bump tally 56 1
+    in let got = if not shelf | quantity < 1 | not (mf-worth-buying ask bid) then 0
       else let opened = v.window k 1
       in let r = gv-checkout v [GvLine { lot = serial, quantity = quantity, price = ask, delivered = 0, basis = 0, copper = 0, silver = 0, gold = 0 }] actor s.actor s.serial pack captain
-      in let shut = v.window k 0 in if is-ok r then 1 else 0
-    in cg-fleet-buy-lots v actor captain pack k there after (bought + got) (n + 1)
+      in let shut = v.window k 0
+      in when r is Ok (_) -> 1 is Err (e) -> let refused = cg-tally-bump tally (if text-starts-with e "vendor stock" then 80 else if text-starts-with e "vendor funds" then 88 else 96) 1 in 0
+    in cg-fleet-buy-lots v tally actor captain pack k there after (bought + got) (n + 1)
   cg-dress-all : CompositeGame, List Integer, Integer -> Integer
   cg-dress-all (owner) (serials) (i) = if i == list-length serials then 0
     else let serial = list-at serials i in cg-dress-bare owner serial cst-shopkeeper (nn-name cst-guard serial) + cg-dress-all owner serials (i + 1)
@@ -6690,11 +7437,11 @@ Chapter: CompositeGameRules
   cg-keepers-lodging : List BshKeeper, Integer -> Integer
   cg-keepers-lodging (xs) (i) = if i >= list-length xs then 0
     else (if i /= bsh-inn & cgg-in-box tl-home-region (list-at xs i).home.x (list-at xs i).home.y then 1 else 0) + cg-keepers-lodging xs (i + 1)
- A city worker homed in its city's inn. Britain's city record names the herbalist's building in its inn field, where the
- reagent gatherers lodge (UOAIX-248), so Britain's inn is the Sweet Dreams (tl-home-region).
+ A city worker homed in its city's inn. Britain's city record names the herbalist's building in its inn field, the bed
+ of a reagent gatherer no house takes (cg-city-beds), so a Britain worker counts in the Sweet Dreams or in that shop.
   cg-city-lodging : List CgGatherer, Integer -> Integer
   cg-city-lodging (xs) (i) = if i >= list-length xs then 0
-    else let w = list-at xs i in (if (if w.city.city == 0 then cgg-in-box tl-home-region w.home.x w.home.y else cgg-in-box w.city.inn w.home.x w.home.y) then 1 else 0) + cg-city-lodging xs (i + 1)
+    else let w = list-at xs i in (if (if w.city.city == 0 then cgg-in-box tl-home-region w.home.x w.home.y | cgg-in-box w.city.inn w.home.x w.home.y else cgg-in-box w.city.inn w.home.x w.home.y) then 1 else 0) + cg-city-lodging xs (i + 1)
   cg-inn-lodgers : CompositeGame -> Text
   cg-inn-lodgers (owner) = let workers = cg-in-lodging (cg-fighter-homes owner (cg-worker-homes owner)) 0
     in let folk = when owner.town is None -> 0 is Just (t) -> cg-folk-lodging t 0
@@ -6722,7 +7469,7 @@ Chapter: CompositeGameRules
       graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
     in let r = if c.trade.raw == cgg-ore then cgg-node-region else BbShop { title = "Node", premises = "Britain", x1 = origin.x - 2, y1 = origin.y - 2, x2 = origin.x + 2, y2 = origin.y + 2 }
     in let inside = c.node.x >= r.x1 & c.node.x <= r.x2 & c.node.y >= r.y1 & c.node.y <= r.y2
-    in if not (cg-node-taken miners c 0) & (inside | c.trade.raw /= cgg-ore) & rte-plan t.nav t.vendors.game.world map doors from c.node.x c.node.y c.node.z >= 0 then let reset = cgg-reset c in tries
+    in if not (cg-node-taken miners c 0) & (inside | c.trade.raw /= cgg-ore) & rte-plan-at 1 t.nav t.vendors.game.world map doors from c.node.x c.node.y c.node.z >= 0 then let reset = cgg-reset c in tries
     else when bb-placement t.vendors.game.world map r (if inside then (c.node.y - r.y1) * (r.x2 - r.x1 + 1) + c.node.x - r.x1 + 1 else tries)
       is Err (_) -> -1
       is Ok (spot) -> let moved = tl-copy-spot c.node spot in cg-node-reach miners t map doors c origin (tries + 1)
@@ -6784,13 +7531,11 @@ Chapter: CompositeGameRules
   cg-monsters-base : CompositeGame, GameShard, GameInput, WalkMap, Integer, Integer -> Result (Maybe GameReply) Text
   cg-monsters-base (owner) (game) (input) (map) (port) (tick) = when gm-pulse owner.monsters game input map port tick
     is Err (e) -> Err e
-    is Ok (reply) -> when cbd-dress owner.combat owner.items 0
+    is Ok (reply) -> when gr-after owner.resurrection game input (cbd-reply owner.items (Ok reply))
       is Err (e) -> Err e
-      is Ok (_) -> when gr-after owner.resurrection game input (cbd-reply owner.items (Ok reply))
+      is Ok (fought) -> when cg-healed owner game input
         is Err (e) -> Err e
-        is Ok (fought) -> when cg-healed owner game input
-          is Err (e) -> Err e
-          is Ok (healed) -> Ok (cg-combine fought healed)
+        is Ok (healed) -> Ok (cg-combine fought healed)
  ServUO BaseHealer.OnMovement and OfferResurrection, pre-AOS: a town healer raises a ghost that comes within 4 tiles,
  saying "Thou art dead, but 'tis within my power to resurrect thee.  Live!" with sound 0x1F2. Shop 4 of bb-shops is the
  Healer Of Britain; only a world with Britain's shops bound has one. The healer must see the ghost (UOAIX-68: only a

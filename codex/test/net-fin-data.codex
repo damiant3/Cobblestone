@@ -1,0 +1,42 @@
+Chapter: NetFinData
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ A peer's last bytes on its FIN: the five bytes are delivered and acknowledged with
+ the FIN (7001 + 5 + 1), and a bare FIN still acknowledges only itself.
+
+Section: Arms
+
+  nfd-me : List Integer = [10, 0, 2, 15]
+  nfd-peer : List Integer = [10, 0, 2, 2]
+
+  nfd-seg : Integer, Integer, Integer -> TcpSegment
+  nfd-seg (seq) (ack) (flags) = tcp-segment-of 50000 9443 seq ack flags 8192 []
+
+  nfd-lis : TcpConnection = tcp-set-state (tcp-new-connection 9443 [10, 0, 2, 15] 0 [10, 0, 2, 2] 1000) TcpListening
+  nfd-synr : TcpStep = tcp-step nfd-lis (EvSegment (nfd-seg 7000 0 tcp-flag-syn))
+  nfd-est : TcpStep = tcp-step (nfd-synr.conn) (EvSegment (nfd-seg 7001 1001 tcp-flag-ack))
+
+  nfd-session : Integer -> NetSession
+  nfd-session (n) = set-conn (net-session-new-at [2, 0, 0, 0, 0, 1] nfd-me nfd-peer 9443 50000 nfd-peer 1000) (set-remote (nfd-est.conn) 50000 nfd-peer)
+
+  nfd-frame : Integer, List Integer -> List Integer
+  nfd-frame (flags) (payload) =
+    let tcp = tcp-with-checksum (tcp-build-segment 50000 9443 7001 1001 flags 8192 payload) nfd-peer nfd-me
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (ip-build-packet nfd-peer nfd-me ip-proto-tcp tcp)
+
+  nfd-acked : NetResult -> Integer
+  nfd-acked (r) = read-be32 (net-outbox-frame (r.session) 0) (eth-header-size + ip-header-size + 8)
+
+  nfd-line : NetResult -> Text
+  nfd-line (r) =
+    r.output & ", " & tcp-state-name (r.session.conn.state) & ", recv-next " & show (r.session.conn.recv-next) & ", acked " & show (nfd-acked r)
+    & (if r.data-stop > r.data-off then ", first byte " & show (list-at (r.data) (r.data-off)) else "")
+
+  opening : [Console] Nothing = act
+    print-line-uni ("fin with five bytes = " & nfd-line (net-process-frame (nfd-session 0) (nfd-frame (bit-or tcp-flag-fin (bit-or tcp-flag-ack tcp-flag-psh)) [104, 101, 108, 108, 111])))
+    print-line-uni ("bare fin = " & nfd-line (net-process-frame (nfd-session 0) (nfd-frame (bit-or tcp-flag-fin tcp-flag-ack) [])))
+  end
+
+Page 1

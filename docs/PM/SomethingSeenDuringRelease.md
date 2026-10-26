@@ -28,6 +28,37 @@ count does.
 ## Open
 
 ## Done
+### Update 71 -- six reds past the preflight, one an app regression, the rest the bed
+
+Step 0b, 2026-10-26, at main 48729; the compiler stages were green first time
+(SUT === stage1, Sut equal to the depot seed `967435BD`).
+
+- **The preflight: an annotation outlived its function's move.** fester 47259
+  moved `emit-cards` from `SolverGalleryExport` to `SolverBridgeReport` and
+  left its sidecar entry behind; `check-annotation-targets` runs only in the
+  full gate. The entry moved with the function (main 48729).
+- **test-run and the battery: GPU-model subjects past the 60 s wall budget
+  under 16 guests on one GPU** (8 in the gate, 7 in the battery: the SDXL UNet
+  arms, `clip-sdxl-prompt`, `diffusion-dat`, `lora-resident`). Every one passed
+  alone on the release SUT, except `sdxl-euler`, which takes 156 to 166 s alone
+  on a cold file cache on two seeds with exact output and now carries `.slow`
+  (main 48747). Run the GPU subjects alone after a fan-out rather than reading
+  their reds as the compiler.
+- **cross-smoke: an empty arm64 capture under load read as a wrong answer**
+  (every `.expected` line missing) and was not retried, the Update 62 class;
+  `check-cross-smoke.ps1` passed twice alone at once.
+- **browser-checks: the ModBuilder page renders its markup as text.** val 45875
+  sets every widget label by `textContent` (HTML-WIDGET-ENTITY), and ModBuilder
+  builds its body as one HTML label, so the page has no `<main>` and the wizard
+  throws (revision 31 of `modbuilder.html` passes 54 of 54). Named in the
+  Update 71 notes as an app failure, not a blocker (root); ModBuilder and the 6
+  other pages holding HTML-string labels go to val.
+- **Two operator traps.** A gate log written under `build-output/` fails the
+  gate's own clean phase (the file is held open); write it outside. And
+  `compile.ps1` resolves a relative `-Out` and `-Src` against the PROCESS
+  directory, not the PowerShell location, so a `Set-Location` into the release
+  workspace still writes into the shell's own workspace: pass absolute paths.
+
 
 ### Update 70 -- one compiler miscompile, found only by the full test-run
 
@@ -36,6 +67,7 @@ count does.
 - `check-cite-names` read an untracked `apps/landing/web/compile/Codex.codex` left by an older landing build in the release workspace. Before the gate, `p4 reconcile -n` the workspace and move every untracked `.codex` out.
 - `plug-smoke`: since 41488 ptx `run.ps1` refuses a program calling a function PTX does not define, and both shared smoke inputs print. ptx now smokes its own device-kernel probes (45567).
 - `p4-stale-check` refused the poison build's concatenated source in a log folder inside the workspace. Keep release logs and scratch outside the workspace.
+- Root ran the gate in the copy-up workspace (`Cobblestone-root-main`), never in root's dev workspace: the gate's `clean` phase deletes `build-output`, which in root dev holds the live UOAIX shard's world and its test plans.
 - GPU subjects over the 60 s wall budget at 16 ways: 5 in `test-run`, the same 7 in the battery and in the poison battery; graded alone after the fan-outs.
 ### Update 69 -- three reds at step 0b, none a compiler defect
 

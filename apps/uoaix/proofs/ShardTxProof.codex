@@ -87,10 +87,15 @@ Chapter: ShardTxProof
     in let overwritten = txp-bytes 0 12003 (__list-with-capacity 12003)
     in let changed = list-set-at overwritten 0 77
     in let busy = when stx-enqueue q [9] is Err (e) -> True is Ok (n) -> False
+    in let appended = when stx-new 8
+      is Err (e) -> False
+      is Ok (a) -> let first = stx-enqueue a [1, 2, 3] in let sent = __record-set a "offset" 2 in let second = stx-enqueue a [4, 5]
+        in is-ok second & a.used == 3 & a.offset == 0 & peek-byte a.buffer 0 == 3 & peek-byte a.buffer 1 == 4 & peek-byte a.buffer 2 == 5
     in act
       txp-check "invalid byte refuses before enqueue" bad
       txp-check "queue owns bytes after caller scratch reuse" (q.used == 12003 & q.offset == 0 & peek-byte q.buffer 0 == 0 & peek-byte q.buffer 12002 == int-mod 12002 251)
-      txp-check "busy queue refuses replacement" (busy & q.used == 12003 & peek-byte q.buffer 0 == 0)
+      txp-check "a full pending queue refuses for capacity and keeps its bytes" (busy & q.used == 12003 & peek-byte q.buffer 0 == 0)
+      txp-check "a pending queue appends the next response behind its unsent bytes, moved to the front" appended
       when txp-fill q (txp-session 2593) net-rexmit-capacity
         is Err (e) -> print-line-uni ("FAIL fill " & e)
         is Ok (t) -> act

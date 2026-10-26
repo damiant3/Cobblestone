@@ -1,0 +1,48 @@
+Chapter: NetPeer
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+ The same segment, ports and sequence numbers alike, from the peer and from another
+ address: only the source differs between each pair.
+
+Section: Arms
+
+  npr-me : List Integer = [10, 0, 2, 15]
+  npr-peer : List Integer = [10, 0, 2, 2]
+  npr-other : List Integer = [10, 0, 2, 99]
+
+  npr-seg : Integer, Integer, Integer -> TcpSegment
+  npr-seg (seq) (ack) (flags) = tcp-segment-of 50000 9443 seq ack flags 8192 []
+
+  npr-lis : TcpConnection = tcp-set-state (tcp-new-connection 9443 [10, 0, 2, 15] 0 [10, 0, 2, 2] 1000) TcpListening
+  npr-synr : TcpStep = tcp-step npr-lis (EvSegment (npr-seg 7000 0 tcp-flag-syn))
+  npr-est : TcpStep = tcp-step (npr-synr.conn) (EvSegment (npr-seg 7001 1001 tcp-flag-ack))
+
+  npr-session : Integer -> NetSession
+  npr-session (n) = set-conn (net-session-new-at [2, 0, 0, 0, 0, 1] npr-me npr-peer 9443 50000 npr-peer 1000) (set-remote (npr-est.conn) 50000 npr-peer)
+
+  npr-frame : List Integer, Integer, Integer, List Integer -> List Integer
+  npr-frame (src) (seq) (flags) (payload) =
+    let tcp = tcp-with-checksum (tcp-build-segment 50000 9443 seq 1001 flags 8192 payload) src npr-me
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (ip-build-packet src npr-me ip-proto-tcp tcp)
+
+  npr-hello : List Integer = [104, 101, 108, 108, 111]
+
+  npr-out : List Integer, Integer, Integer, List Integer -> Text
+  npr-out (src) (seq) (flags) (payload) =
+    let r = net-process-frame (npr-session 0) (npr-frame src seq flags payload)
+    in r.output & ", " & tcp-state-name (r.session.conn.state)
+
+  npr-listener : Integer -> NetSession
+  npr-listener (n) = (net-listen (net-session-new-at [2, 0, 0, 0, 0, 1] npr-me npr-peer 9443 0 [0, 0, 0, 0] 1000)).session
+
+  opening : [Console] Nothing = act
+    print-line-uni ("data from the peer = " & npr-out npr-peer 7001 (bit-or tcp-flag-ack tcp-flag-psh) npr-hello)
+    print-line-uni ("data from another address = " & npr-out npr-other 7001 (bit-or tcp-flag-ack tcp-flag-psh) npr-hello)
+    print-line-uni ("fin from the peer = " & npr-out npr-peer 7001 (bit-or tcp-flag-fin tcp-flag-ack) [])
+    print-line-uni ("fin from another address = " & npr-out npr-other 7001 (bit-or tcp-flag-fin tcp-flag-ack) [])
+    print-line-uni ("syn to a listener from another address = " & (net-process-frame (npr-listener 0) (npr-frame npr-other 7000 tcp-flag-syn [])).output)
+  end
+
+Page 1

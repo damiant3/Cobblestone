@@ -13,7 +13,8 @@ Section: Environment
    re-ctors : List Text,
    re-def-name : Text,
    re-typedefs : List ATypeDef,
-   re-builtins : List Text
+   re-builtins : List Text,
+   re-poly : List RcPolyDef
   }
 
   rc-env-bind : RcEnv, Text -> RcEnv
@@ -24,7 +25,8 @@ Section: Environment
       re-ctors = e.re-ctors,
       re-def-name = e.re-def-name,
       re-typedefs = e.re-typedefs,
-      re-builtins = e.re-builtins
+      re-builtins = e.re-builtins,
+      re-poly = e.re-poly
     }
 
   rc-env-bind-all : RcEnv, List Text, Integer, Integer -> RcEnv
@@ -475,7 +477,239 @@ Section: Expression Walk
   rc-check-apply (w) (e) (f) (a) (t) =
     let w1 = rc-check-expr w e f
     in let w2 = rc-check-expr w1 e a
-    in rc-check-apply-types w2 e (rc-expr-ty f) a t
+    in let w3 = rc-check-ctor-inst w2 e f a t
+    in let w4 = rc-check-poly-inst w3 e f a t
+    in rc-check-apply-types w4 e (rc-expr-ty f) a t
+
+ The same derivation for a call of a polymorphic definition: at the node
+ that supplies its last parameter, each declared parameter is matched
+ against its argument (and a lambda argument's body), and the declared
+ type so substituted must equal the type published on the head. A head
+ published at a type variable is a call inside a polymorphic body: the
+ caller's variables are rigid there, so each is rewritten as a named type
+ of its own (`%tv` and its id) on the argument and published sides, and
+ the callee's declared variables bind to those as to any concrete type.
+
+  RcPolyDef = record {
+    pd-name : Text,
+    pd-ty : CodexType,
+    pd-arity : Integer
+  }
+
+  rc-poly-defs : List IRDef, Integer, Integer, List RcPolyDef -> List RcPolyDef
+  rc-poly-defs (ds) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at ds i
+    in if rc-has-tvar (d.type-val) rc-subst-fuel then
+      rc-poly-defs ds (i + 1) len (list-push acc (RcPolyDef { pd-name = d.name, pd-ty = rc-strip-forall (d.type-val) 32, pd-arity = list-length (d.params) }))
+    else rc-poly-defs ds (i + 1) len acc
+
+  rc-strip-forall : CodexType, Integer -> CodexType
+  rc-strip-forall (t) (fuel) =
+    if fuel <= 0 then t
+    else when t
+     is ForAllTy (i) (b) -> rc-strip-forall b (fuel - 1)
+     is ForAllEff (i) (b) -> rc-strip-forall b (fuel - 1)
+     is otherwise -> t
+
+  rc-find-poly : List RcPolyDef, Text, Integer, Integer -> Integer
+  rc-find-poly (ps) (n) (i) (len) =
+    if i >= len then (-1)
+    else if (list-at ps i).pd-name == n then i
+    else rc-find-poly ps n (i + 1) len
+
+  rc-spine-head-ty : IRExpr, Integer -> RcTyOf
+  rc-spine-head-ty (f) (fuel) =
+    if fuel <= 0 then RcTyNone
+    else when f
+     is IrName (n) (t) (sp) -> RcTyKnown t
+     is IrApply (g) (x) (t) (sp) -> rc-spine-head-ty g (fuel - 1)
+     is otherwise -> RcTyNone
+
+  rc-head-has-tvar : RcTyOf -> Boolean
+  rc-head-has-tvar (h) =
+    when h
+     is RcTyNone -> True
+     is RcTyKnown (t) -> rc-has-tvar t rc-subst-fuel
+
+  rc-check-poly-inst : RcWalk, RcEnv, IRExpr, IRExpr, CodexType -> RcWalk
+  rc-check-poly-inst (w) (e) (f) (a) (t) =
+    let k = rc-find-poly (e.re-poly) (rc-spine-head f 32) 0 (list-length (e.re-poly))
+    in if k < 0 then w
+    else let pd = list-at (e.re-poly) k
+    in let s = rc-ctor-spine f [a] 32
+    in if list-length (s.cs-args) /= pd.pd-arity then w
+    else if rc-head-has-tvar (rc-spine-head-ty f 32) then rc-check-poly-rigid w e pd s (rc-spine-head-ty f 32)
+    else rc-poly-inst-verdict w e (pd.pd-name) (pd.pd-ty) (rc-spine-head-ty f 32) (rc-poly-bind (rc-curried-params (pd.pd-ty) [] 32) (s.cs-args) 0 (pd.pd-arity) [])
+
+  rc-check-poly-rigid : RcWalk, RcEnv, RcPolyDef, RcCtorSpine, RcTyOf -> RcWalk
+  rc-check-poly-rigid (w) (e) (pd) (s) (published) =
+    when published
+     is RcTyNone -> w
+     is RcTyKnown (pt) ->
+      let rb = rc-rigid-binds-args (s.cs-args) 0 (list-length (s.cs-args)) (rc-rigid-binds pt [] rc-subst-fuel)
+      in let r = rc-poly-bind-rigid (rc-curried-params (pd.pd-ty) [] 32) (s.cs-args) 0 (pd.pd-arity) [] rb
+      in rc-poly-inst-verdict w e (pd.pd-name) (pd.pd-ty) (RcTyKnown (rc-subst pt rb rc-subst-fuel)) r
+
+  rc-rigid-binds : CodexType, List RcTvBind, Integer -> List RcTvBind
+  rc-rigid-binds (ty) (acc) (fuel) =
+    if fuel <= 0 then acc
+    else when ty
+     is TypeVar (id) -> if rc-tvb-has acc id 0 (list-length acc) then acc else list-push acc (RcTvBind { tvb-id = id, tvb-ty = ConstructedTy (Name { value = "%tv" & show id }) [], tvb-n = 1 })
+     is ListTy (x) -> rc-rigid-binds x acc (fuel - 1)
+     is LinkedListTy (x) -> rc-rigid-binds x acc (fuel - 1)
+     is FunTy (p) (row) (r) -> rc-rigid-binds r (rc-rigid-binds p acc (fuel - 1)) (fuel - 1)
+     is ConstructedTy (n) (args) -> rc-rigid-binds-list args 0 (list-length args) acc (fuel - 1)
+     is SumTy (n) (args) (cs) -> rc-rigid-binds-list args 0 (list-length args) acc (fuel - 1)
+     is RecordTy (n) (args) (fs) -> rc-rigid-binds-list args 0 (list-length args) acc (fuel - 1)
+     is otherwise -> acc
+
+  rc-rigid-binds-list : List CodexType, Integer, Integer, List RcTvBind, Integer -> List RcTvBind
+  rc-rigid-binds-list (xs) (i) (len) (acc) (fuel) =
+    if i >= len then acc
+    else rc-rigid-binds-list xs (i + 1) len (rc-rigid-binds (list-at xs i) acc fuel) fuel
+
+  rc-rigid-binds-args : List IRExpr, Integer, Integer, List RcTvBind -> List RcTvBind
+  rc-rigid-binds-args (args) (i) (len) (acc) =
+    if i >= len then acc
+    else when rc-expr-ty (list-at args i)
+     is RcTyNone -> rc-rigid-binds-args args (i + 1) len acc
+     is RcTyKnown (at) -> rc-rigid-binds-args args (i + 1) len (rc-rigid-binds at acc rc-subst-fuel)
+
+  rc-poly-bind-rigid : List CodexType, List IRExpr, Integer, Integer, List RcTvBind, List RcTvBind -> RcSubst
+  rc-poly-bind-rigid (ps) (args) (i) (len) (bs) (rb) =
+    if i >= len then RcSubOk bs
+    else if i >= list-length ps then RcSubUnknown
+    else let x = list-at args i
+    in if rc-wf-is-int-lit x | rc-wf-is-narrow-call x then rc-poly-bind-rigid ps args (i + 1) len bs rb
+    else when rc-expr-ty x
+     is RcTyNone -> rc-poly-bind-rigid ps args (i + 1) len bs rb
+     is RcTyKnown (at) -> rc-poly-rigid-step ps args i len rb (rc-match (list-at ps i) (rc-subst at rb rc-subst-fuel) bs rc-subst-fuel)
+
+  rc-poly-rigid-step : List CodexType, List IRExpr, Integer, Integer, List RcTvBind, RcSubst -> RcSubst
+  rc-poly-rigid-step (ps) (args) (i) (len) (rb) (r) =
+    when r
+     is RcSubOk (bs2) -> rc-poly-bind-rigid ps args (i + 1) len bs2 rb
+     is RcSubConflict -> RcSubConflict
+     is RcSubUnknown -> RcSubUnknown
+
+  rc-poly-bind : List CodexType, List IRExpr, Integer, Integer, List RcTvBind -> RcSubst
+  rc-poly-bind (ps) (args) (i) (len) (bs) =
+    if i >= len then RcSubOk bs
+    else if i >= list-length ps then RcSubUnknown
+    else let x = list-at args i
+    in if rc-wf-is-int-lit x | rc-wf-is-narrow-call x then rc-poly-bind ps args (i + 1) len bs
+    else rc-poly-bind-step ps args i len (rc-spine-witness (list-at ps i) x bs)
+
+  rc-poly-bind-step : List CodexType, List IRExpr, Integer, Integer, RcSubst -> RcSubst
+  rc-poly-bind-step (ps) (args) (i) (len) (r) =
+    when r
+     is RcSubOk (bs2) -> rc-poly-bind ps args (i + 1) len bs2
+     is RcSubConflict -> RcSubConflict
+     is RcSubUnknown -> RcSubUnknown
+
+  rc-poly-inst-verdict : RcWalk, RcEnv, Text, CodexType, RcTyOf, RcSubst -> RcWalk
+  rc-poly-inst-verdict (w) (e) (n) (declared) (published) (r) =
+    when r
+     is RcSubConflict -> rc-add w (rc-finding (e.re-def-name) RcDisagree "poly-instantiation" (n & " is called with arguments that require one type variable to be two types"))
+     is RcSubUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "poly-instantiation-undecided" (n & " has an argument this checker cannot match against its declared parameter"))
+     is RcSubOk (bs) -> rc-poly-inst-pub w e n (rc-subst declared bs rc-subst-fuel) published
+
+  rc-poly-inst-pub : RcWalk, RcEnv, Text, CodexType, RcTyOf -> RcWalk
+  rc-poly-inst-pub (w) (e) (n) (derived) (published) =
+    when published
+     is RcTyNone -> w
+     is RcTyKnown (pt) -> if rc-has-tvar pt rc-subst-fuel then w else rc-poly-inst-cmp w e n (rc-ty-eq derived pt)
+
+  rc-poly-inst-cmp : RcWalk, RcEnv, Text, TyCmp -> RcWalk
+  rc-poly-inst-cmp (w) (e) (n) (c) =
+    when c
+     is TyEq -> w
+     is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "poly-instantiation" (n & " is published at an instantiation its own arguments do not give"))
+     is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "poly-instantiation-undecided" (n & " has an instantiation this checker cannot hold against its arguments"))
+
+ The compiler publishes a constructor application's type arguments in the
+ site's result; this derives them again from the arguments. A field
+ declared as a bare type parameter binds that parameter to its argument's
+ recorded type, and the published type argument must equal it (type
+ arguments are invariant). Integer literals and `__narrow` results are
+ admitted by value, which `RecheckBounds` decides, so they bind nothing.
+
+  RcCtorSpine = record {
+    cs-head : Text,
+    cs-args : List IRExpr
+  }
+
+  rc-spine-head : IRExpr, Integer -> Text
+  rc-spine-head (f) (fuel) =
+    if fuel <= 0 then ""
+    else when f
+     is IrName (n) (t) (sp) -> n
+     is IrApply (g) (x) (t) (sp) -> rc-spine-head g (fuel - 1)
+     is otherwise -> ""
+
+  rc-ctor-spine : IRExpr, List IRExpr, Integer -> RcCtorSpine
+  rc-ctor-spine (f) (args) (fuel) =
+    if fuel <= 0 then RcCtorSpine { cs-head = "", cs-args = args }
+    else when f
+     is IrName (n) (t) (sp) -> RcCtorSpine { cs-head = n, cs-args = args }
+     is IrApply (g) (x) (t) (sp) -> rc-ctor-spine g ([x] & args) (fuel - 1)
+     is otherwise -> RcCtorSpine { cs-head = "", cs-args = args }
+
+  rc-check-ctor-inst : RcWalk, RcEnv, IRExpr, IRExpr, CodexType -> RcWalk
+  rc-check-ctor-inst (w) (e) (f) (a) (t) =
+    if rc-in (e.re-ctors) (rc-spine-head f 32) == False then w
+    else let s = rc-ctor-spine f [a] 32
+    in when t
+     is SumTy (sn) (targs) (cs) -> rc-check-ctor-inst-ty w e s (sn.value) targs
+     is ConstructedTy (cn) (targs) -> rc-check-ctor-inst-ty w e s (cn.value) targs
+     is otherwise -> w
+
+  rc-check-ctor-inst-ty : RcWalk, RcEnv, RcCtorSpine, Text, List CodexType -> RcWalk
+  rc-check-ctor-inst-ty (w) (e) (s) (tyname) (targs) =
+    let tds = e.re-typedefs
+    in let tps = rc-variant-tparams tds tyname 0 (list-length tds)
+    in let ctors = rc-find-variant tds tyname 0 (list-length tds)
+    in let fields = rc-avariant-fields ctors (s.cs-head) 0 (list-length ctors)
+    in if list-length tps == 0 then w
+    else if list-length tps /= list-length targs then w
+    else if list-length fields /= list-length (s.cs-args) then w
+    else rc-ctor-inst-fields w e (s.cs-head) fields tps targs (s.cs-args) 0 (list-length fields)
+
+  rc-ctor-inst-fields : RcWalk, RcEnv, Text, List ATypeExpr, List Name, List CodexType, List IRExpr, Integer, Integer -> RcWalk
+  rc-ctor-inst-fields (w) (e) (n) (fields) (tps) (targs) (args) (i) (len) =
+    if i >= len then w
+    else let j = rc-field-tparam (list-at fields i) tps
+    in let x = list-at args i
+    in let w2 = if j < 0 then w
+      else if rc-wf-is-int-lit x | rc-wf-is-narrow-call x then w
+      else rc-ctor-inst-verdict w e n (list-at targs j) (rc-expr-ty x)
+    in rc-ctor-inst-fields w2 e n fields tps targs args (i + 1) len
+
+  rc-field-tparam : ATypeExpr, List Name -> Integer
+  rc-field-tparam (f) (tps) =
+    when f
+     is ANamedType (nm) (sp) -> rc-name-index tps (nm.value) 0 (list-length tps)
+     is otherwise -> (-1)
+
+  rc-name-index : List Name, Text, Integer, Integer -> Integer
+  rc-name-index (tps) (nm) (i) (len) =
+    if i >= len then (-1)
+    else if (list-at tps i).value == nm then i
+    else rc-name-index tps nm (i + 1) len
+
+  rc-ctor-inst-verdict : RcWalk, RcEnv, Text, CodexType, RcTyOf -> RcWalk
+  rc-ctor-inst-verdict (w) (e) (n) (published) (got) =
+    when got
+     is RcTyNone -> w
+     is RcTyKnown (at) -> rc-ctor-inst-cmp w e n (rc-ty-eq published at)
+
+  rc-ctor-inst-cmp : RcWalk, RcEnv, Text, TyCmp -> RcWalk
+  rc-ctor-inst-cmp (w) (e) (n) (c) =
+    when c
+     is TyEq -> w
+     is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "ctor-instantiation" (n & " is published at a type argument that its own argument does not have"))
+     is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "ctor-instantiation-undecided" (n & " has a type argument this checker cannot hold against its argument"))
 
   rc-check-apply-types : RcWalk, RcEnv, RcTyOf, IRExpr, CodexType -> RcWalk
   rc-check-apply-types (w) (e) (ft) (a) (t) =
@@ -494,27 +728,12 @@ Section: Expression Walk
 
 Section: Spine Scoped Substitution
 
- Facts about the WIRE, which this plug may not read the compiler to learn.
-
- A comprehension desugars to `map-list`, and the compiler records that
- application's result uninstantiated: `(list (tvar 25))`, flowing into a
- concrete parameter. Type-variable ids belong to the CALLEE'S signature and
- are reproduced verbatim at every call site, so both comprehensions in one
- definition carry the same ids and so does an unrelated definition's --
- which is why a map keyed by tvar id may not outlive one spine. A lambda
- argument's recorded type stays `(fn (tvar 24) (tvar 25))`, so the pair that
- supplies the result variable is the lambda's BODY, not its type.
-
- Where a call carries enough information for a second witness the compiler
- INSTANTIATES it and no variable reaches the wire at all, measured on the
- whole compiler as SINGLE-WITNESS 92 of 92. So the conflict arm below is
- present and has never fired.
-
- Soundness: no binding here is taken from the parameter the spine's result
- flows into, which would close every one of these vacuously. The arm that
- fails if that changes is `bounded-arg-into-plain-slot` in `kill-rate.ps1`,
- and `tvar-spine-substitution` is the arm that fails if the substitution
- stops deciding.
+ The compiler publishes every call site's instantiation (2026-10-20), so
+ this substitution decides only a site that arrives uninstantiated, and
+ no arm in `kill-rate.ps1` reaches it. Type-variable ids belong to the
+ callee's signature and repeat at every call site, so a map keyed by tvar
+ id may not outlive one spine; no binding is taken from the parameter the
+ spine's result flows into.
 
  Fuel of 24: a spine longer than that answers unknown rather than recursing.
 
@@ -860,15 +1079,16 @@ Section: Spine Scoped Substitution
 
 Section: Definition Walk
 
-  rc-check-def : RcWalk, List Text, List Text, List ATypeDef, List Text, IRDef -> RcWalk
-  rc-check-def (w) (defs) (ctors) (tds) (bs) (d) =
+  rc-check-def : RcWalk, List Text, List Text, List ATypeDef, List Text, List RcPolyDef, IRDef -> RcWalk
+  rc-check-def (w) (defs) (ctors) (tds) (bs) (poly) (d) =
     let base = RcEnv {
       re-locals = [],
       re-defs = defs,
       re-ctors = ctors,
       re-def-name = d.name,
       re-typedefs = tds,
-      re-builtins = bs
+      re-builtins = bs,
+      re-poly = poly
     }
     in let ps = rc-param-names (d.params) 0 (list-length (d.params)) []
     in let e = rc-env-bind-all base ps 0 (list-length ps)
@@ -884,12 +1104,13 @@ Section: Definition Walk
     let ds = ch.defs
     in let names = rc-def-names ds 0 (list-length ds) []
     in let bs = recheck-builtin-names
-    in rc-check-defs (rc-walk-new fuel) names ctors tds bs ds 0 (list-length ds)
+    in let poly = rc-poly-defs ds 0 (list-length ds) []
+    in rc-check-defs (rc-walk-new fuel) names ctors tds bs poly ds 0 (list-length ds)
 
-  rc-check-defs : RcWalk, List Text, List Text, List ATypeDef, List Text, List IRDef, Integer, Integer -> RcWalk
-  rc-check-defs (w) (defs) (ctors) (tds) (bs) (ds) (i) (len) =
+  rc-check-defs : RcWalk, List Text, List Text, List ATypeDef, List Text, List RcPolyDef, List IRDef, Integer, Integer -> RcWalk
+  rc-check-defs (w) (defs) (ctors) (tds) (bs) (poly) (ds) (i) (len) =
     if i >= len then w
     else
-      rc-check-defs (rc-check-def w defs ctors tds bs (list-at ds i)) defs ctors tds bs ds (i + 1) len
+      rc-check-defs (rc-check-def w defs ctors tds bs poly (list-at ds i)) defs ctors tds bs poly ds (i + 1) len
 
 Page 1

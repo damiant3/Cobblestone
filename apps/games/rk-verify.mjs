@@ -117,6 +117,7 @@ const tradeValue = k => (k < 5 ? [4, 6, 8, 10, 12][k] : 15 + 5 * (k - 5));
 const pack = (a, b, c) => a + 64 * b + 4096 * c;
 const unpack = x => [x % 64, Math.floor(x / 64) % 64, Math.floor(x / 4096)];
 const KIND = { place: 0, trade: 1, attack: 2, stop: 3, movein: 4, fortify: 5, end: 6 };
+const NEUTRAL = 2;
 
 // -- The oracle ----------------------------------------------------------
 const seen = new Map();
@@ -147,14 +148,18 @@ function connected(o, p, a, b) {
   }
   return seenT.has(b);
 }
+// Two players' setting up (1959 rules): each turn, 2 of the player's own
+// armies, then 1 neutral army on a neutral territory.
+const neutralDue = (o, p) => o.np === 2 && o.neutralLeft > 0 && (o.step >= 2 || o.setup[p] === 0);
 
 function legal(o, p, kind, arg) {
   if (o.over || p < 0 || p >= o.np || p !== o.cur) return false;
   const ph = o.phase;
   switch (kind) {
     case KIND.place:
-      if (!(arg >= 0 && arg < T) || o.owner[arg] !== p) return false;
-      if (ph === 0) return o.setup[p] > 0;
+      if (!(arg >= 0 && arg < T)) return false;
+      if (ph === 0) return neutralDue(o, p) ? o.owner[arg] === NEUTRAL : o.owner[arg] === p && o.setup[p] > 0;
+      if (o.owner[arg] !== p) return false;
       if (ph === 1 || ph === 5) return o.place > 0 && hand(o, p) < 5;
       return false;
     case KIND.trade: {
@@ -215,10 +220,18 @@ function apply(o, p, kind, arg, eng) {
     case KIND.place:
       o.armies[arg]++;
       if (o.phase === 0) {
-        o.setup[p]--; saw('setup: an army placed');
+        if (o.np === 2 && o.owner[arg] === NEUTRAL) { o.neutralLeft--; o.step = 0; saw('setup: a neutral army placed'); }
+        else {
+          o.setup[p]--; saw('setup: an army placed');
+          if (o.np === 2) {
+            o.step++;
+            if ((o.step < 2 && o.setup[p] > 0) || o.neutralLeft > 0) return;
+            o.step = 0;
+          }
+        }
         for (let k = 1; k <= o.np; k++) {
           const q = (p + k) % o.np;
-          if (o.setup[q] > 0) { o.cur = q; return; }
+          if (o.setup[q] > 0 || o.neutralLeft > 0) { o.cur = q; return; }
         }
         o.cur = 0; beginTurn(o); saw('setup: finished, the first turn begins');
         return;
@@ -253,13 +266,17 @@ function apply(o, p, kind, arg, eng) {
       if (o.armies[to] > 0) return;
       const q = o.owner[to];
       o.owner[to] = p; o.conquered = true; saw('conquest');
+      if (q === NEUTRAL && o.np === 2) saw('conquest: a neutral territory');
       o.move = { from, to, min: n };
-      if (held(o, p) === T) {
+      // Rule 10: the last rival player eliminated, a neutral army or not.
+      if ([...Array(o.np).keys()].every(r => r === p || held(o, r) === 0)) {
         o.armies[to] = n; o.armies[from] -= n;
-        o.over = true; o.winner = p; o.phase = 6; o.place = 0; saw('game: one player holds the world');
+        o.over = true; o.winner = p; o.phase = 6; o.place = 0;
+        saw(held(o, p) === T ? 'game: one player holds the world' : 'game: the opponent eliminated, the neutral army standing');
         return;
       }
-      if (held(o, q) === 0) {
+      if (held(o, q) === 0 && q >= o.np) saw('elimination: the neutral army, no cards');
+      else if (held(o, q) === 0) {
         saw('elimination: a player knocked out');
         for (let c = 0; c < 44; c++) if (o.holder[c] === q) { o.holder[c] = p; saw('elimination: cards taken'); }
         o.elim = hand(o, p) >= 6;
@@ -303,6 +320,9 @@ function snapshot(h, np) {
     holder: [...Array(44)].map((_, c) => e.rk_holder(h, c)).join(','),
     deck: [...Array(e.rk_decklen(h))].map((_, k) => e.rk_deck(h, k)).join(','),
     discard: [...Array(e.rk_discardlen(h))].map((_, k) => e.rk_discard(h, k)).join(','),
+    // The neutral army's armies left to set up and the turn's own armies
+    // placed, at the layout's slots 28 and 25.
+    neutral: np === 2 ? [e.rk_slot(h, 28), e.rk_slot(h, 25)].join(',') : '',
   };
   if (s.done) s.winner = e.rk_winner(h);
   if (s.phase === 3) s.move = [e.rk_mfrom(h), e.rk_mto(h), e.rk_mmin(h)].join(',');
@@ -314,6 +334,7 @@ function oracleView(o) {
     place: o.place, trades: o.trades,
     setup: o.setup.join(','), owner: o.owner.join(','), armies: o.armies.join(','),
     holder: o.holder.join(','), deck: o.deck.join(','), discard: o.discard.join(','),
+    neutral: o.np === 2 ? [o.neutralLeft, o.step].join(',') : '',
   };
   if (o.over) s.winner = o.winner;
   if (o.phase === 3) s.move = [o.move.from, o.move.to, o.move.min].join(',');
@@ -364,6 +385,7 @@ function probes(o, rand) {
 const failures = [];
 const note = msg => { if (failures.length < 12) failures.push(msg); };
 let actions = 0, legalChecks = 0, refusals = 0, stepChecks = 0, won = 0, capped = 0;
+let neutralGames = 0, neutralWon = 0, neutralStanding = 0;
 
 function stepByHand(h, seed) {
   let g = h, n = 0;
@@ -389,16 +411,22 @@ function playGame(seed, np, engineShare, legalEvery, maxActions) {
   const rand = makeRand(seed);
   let h = e.rk_new(seed, np);
   const owner = [...Array(T)].map((_, t) => e.rk_owner(h, t));
-  // Rule 2's deal: round the table, one army each.
-  const counts = [...Array(np)].map((_, p) => owner.filter(q => q === p).length);
-  const want = [...Array(np)].map((_, p) => Math.floor(T / np) + (p < T % np ? 1 : 0));
+  // Rule 2's deal: round the table, one army each; two players deal three
+  // ways, the third share to the neutral army (owner 2) of 40, the rest of
+  // which the players place in setting up.
+  const seats = np === 2 ? 3 : np;
+  const counts = [...Array(seats)].map((_, p) => owner.filter(q => q === p).length);
+  const want = [...Array(seats)].map((_, p) => Math.floor(T / seats) + (p < T % seats ? 1 : 0));
   if (counts.join() !== want.join()) { note(`seed ${seed}: dealt ${counts}, round the table is ${want}`); return; }
+  const armies = owner.map(() => 1);
+  if (np === 2) neutralGames++;
   const deck = [...Array(44)].map((_, k) => e.rk_deck(h, k));
   if ([...deck].sort((a, b) => a - b).join() !== [...Array(44).keys()].join()) { note(`seed ${seed}: the deck is not the 44 cards`); return; }
   const o = {
     np, cur: 0, turn: 0, over: false, winner: -1, phase: 0, place: 0, trades: 0,
     conquered: false, bonus: false, elim: false, move: { from: -1, to: -1, min: 0 },
-    owner, armies: owner.map(() => 1), setup: want.map(c => START[np] - c),
+    owner, armies, setup: want.slice(0, np).map(c => START[np] - c),
+    neutralLeft: np === 2 ? START[2] - want[2] : 0, step: 0,
     holder: [...Array(44)].map(() => -2), deck, discard: [],
   };
   const d0 = differ(snapshot(h, np), oracleView(o));
@@ -446,6 +474,8 @@ function playGame(seed, np, engineShare, legalEvery, maxActions) {
     h = h2;
   }
   if (o.over) won++; else capped++;
+  if (o.over && np === 2) neutralWon++;
+  if (o.over && np === 2 && held(o, NEUTRAL) > 0) neutralStanding++;
 }
 
 const t0 = Date.now();
@@ -457,9 +487,12 @@ ok('the engine and the rules agree after every action, and on every legal set',
   failures.length ? failures.slice(0, 4).join('; ') : `${actions} actions, ${legalChecks} legal-set questions, ${refusals} refusals, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 ok('a step is the engine\'s choices one at a time', failures.length === 0 && stepChecks > 20, `${stepChecks} positions`);
 ok('control: games were won outright', won > 10, `${won} won, ${capped} stopped at the action cap`);
+ok('control: two-player games dealt a neutral army, and some were won with it still standing', neutralGames > 0 && neutralStanding > 0,
+   `${neutralGames} two-player games, ${neutralWon} won, ${neutralStanding} with the neutral army standing`);
 
 const CLASSES = [
-  'setup: an army placed', 'setup: finished, the first turn begins',
+  'setup: an army placed', 'setup: a neutral army placed', 'setup: finished, the first turn begins',
+  'conquest: a neutral territory',
   ...CONTINENTS.map(([n]) => `continent bonus: ${n}`),
   'set: three of a kind', 'set: one of each', 'set: with a wild card',
   'trade: number 1', 'trade: number 2', 'trade: number 3', 'trade: number 4', 'trade: number 5', 'trade: number 6',

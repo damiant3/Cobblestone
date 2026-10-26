@@ -1,0 +1,45 @@
+Chapter: BvtLinkOverflow
+  cites Uoaix chapter ShardLinks
+  cites Net chapter TcpTransport
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Uoaix chapter BvtCheck
+
+  blo-frame : Integer, Integer, List Integer -> List Integer
+  blo-frame (sequence) (flags) (bytes) = blo-frame-acking sequence (if flags == tcp-flag-syn then 0 else 1001) flags bytes
+  blo-frame-acking : Integer, Integer, Integer, List Integer -> List Integer
+  blo-frame-acking (sequence) (ack) (flags) (bytes) =
+    let source = [10,0,2,100]
+    in let dest = [10,0,2,15]
+    in let segment = tcp-with-checksum (tcp-build-segment 50000 2593 sequence ack flags 8192 bytes) source dest
+    in eth-build-frame [2,0,0,0,0,1] [2,0,0,0,0,2] eth-type-ipv4 (ip-build-packet source dest ip-proto-tcp segment)
+  blo-feed : ShardLinks, List Integer -> Integer
+  blo-feed (owner) (frame) = let fed = sl-feed owner frame (list-length frame)
+    in let slot = list-at owner.slots 0
+    in let cleared = __record-set slot "transport" (transport-set-session slot.transport (set-outbox slot.transport.session [])) in fed
+  blo-fill : Integer, List Integer -> List Integer
+  blo-fill (left) (out) = if left == 0 then out else blo-fill (left - 1) (list-push out 77)
+  blo-segments : ShardLinks, Integer -> Integer
+  blo-segments (owner) (i) = if i >= 6 then 0
+    else let fed = blo-feed owner (blo-frame (103 + i * 1400) 24 (blo-fill 1400 (__list-with-capacity 1400))) in blo-segments owner (i + 1)
+  blo-run : Integer -> List Integer
+  blo-run (unused) = when sl-new [2593] [2,0,0,0,0,1] [10,0,2,15] [10,0,2,2] [255,255,255,0]
+    is Err (_) -> [-1]
+    is Ok (owner) -> let opened = blo-feed owner (blo-frame 100 tcp-flag-syn [])
+      in let first = blo-feed owner (blo-frame-acking 101 (list-at owner.slots 0).transport.session.conn.send-next 24 [1,2])
+      in let burst = blo-segments owner 0
+      in let slot = list-at owner.slots 0
+      in let failed = if slot.failed then 1 else 0
+      in let held = slot.transport.recv-len
+      in let next = slot.transport.session.conn.recv-next
+      in let drained = __record-set slot "transport" (transport-drop-recv slot.transport)
+      in let again = blo-feed owner (blo-frame (103 + 5 * 1400) 24 (blo-fill 1400 (__list-with-capacity 1400)))
+      in [opened, failed, held, next, if (list-at owner.slots 0).failed then 1 else 0, (list-at owner.slots 0).transport.recv-len, (list-at owner.slots 0).transport.session.conn.recv-next]
+  bvt-link-overflow : Integer -> [Console] Integer
+  bvt-link-overflow (unused) = act
+    r <- blo-run 0
+    a <- bvt-check ("a segment past a link's receive buffer is dropped unacknowledged and the link stays up (opened, failed, buffered, next: " & show (list-at r 0) & " " & show (list-at r 1) & " " & show (list-at r 2) & " " & show (list-at r 3) & ")") (list-length r == 7 & list-at r 0 == 0 & list-at r 1 == 0 & list-at r 2 == 7002 & list-at r 3 == 7103)
+    b <- bvt-check ("the dropped segment sent again after the game drains the buffer is taken (failed, buffered, next: " & show (list-at r 4) & " " & show (list-at r 5) & " " & show (list-at r 6) & ")") (list-length r == 7 & list-at r 4 == 0 & list-at r 5 == 1400 & list-at r 6 == 8503)
+    a + b
+  end

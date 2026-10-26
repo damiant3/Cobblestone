@@ -1,0 +1,57 @@
+Chapter: BvtViewCache
+  cites Uoaix chapter CompositePlanting
+  cites Uoaix chapter Construction
+  cites Uoaix chapter MultiDesigns
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+ The planting and house views run on every pulse of every session; a walk of every site there costs sessions times the
+ world, so a viewer steps only the sites near where it last scanned them all. A sent byte poked to 9 on a bare site or
+ an empty house slot reads which sites a pulse stepped: a step resets it to the 0 it wants.
+  bwc-site : GameHarvest, Integer, Integer, Integer -> Integer
+  bwc-site (h) (k) (x) (y) = let site = list-at h.sites k
+    in let a = __record-set site "x" x in let b = __record-set site "y" y in let c = __record-set h "count" (max h.count (k + 1)) in k
+  bwc-house : CnState, Integer, Integer, Integer -> Integer
+  bwc-house (s) (k) (x) (y) = let a = cn-site-set s k 1 x in let b = cn-site-set s k 2 y
+    in let c = poke-qword s.buf 8 (max (cn-sites s) (k + 1)) in k
+  bvt-view-cache : Integer -> [Console] Integer
+  bvt-view-cache (unused) = when cg-game 256
+    is Err (e) -> bvt-check ("view cache fixture game: " & e) False
+    is Ok (game) -> when bb-economy 0
+      is Err (e) -> bvt-check ("view cache fixture economy: " & e) False
+      is Ok (currency) -> act
+        h <- gh-state (gv-new game currency) (gsi-new game.world)
+        near <- bwc-site h 0 100 100
+        far <- bwc-site h 1 1000 1000
+        st <- cpl-new 0
+        first <- cpl-view st h 1 100 100
+        v <- list-at st.viewers 0
+        kept <- v.near-count == 1 & v.connection == 1
+        p0 <- poke-byte v.sent 0 9
+        p1 <- poke-byte v.sent 1 9
+        second <- cpl-view st h 1 101 100
+        stepped <- peek-byte v.sent 0 == 0 & peek-byte v.sent 1 == 9
+        late <- bwc-site h 2 110 100
+        p2 <- poke-byte v.sent 2 9
+        third <- cpl-view st h 1 101 100
+        gathered <- v.near-count == 2 & peek-byte v.sent 2 == 0 & peek-byte v.sent 1 == 9
+        fourth <- cpl-view st h 1 200 100
+        rescanned <- peek-byte v.sent 1 == 0
+        s <- cn-new 0
+        designs <- md-new 0
+        home <- bwc-house s 0 100 100
+        away <- bwc-house s 1 1000 1000
+        seen <- cn-view s designs 1 100 100
+        w <- list-at s.viewers 0
+        q0 <- poke-byte w.sent 0 9
+        q1 <- poke-byte w.sent 1 9
+        again <- cn-view s designs 1 101 100
+        housed <- w.near-count == 1 & peek-byte w.sent 0 == 0 & peek-byte w.sent 1 == 9
+        raised <- __record-set s "revision" (s.revision + 1)
+        placed <- cn-view s designs 1 101 100
+        renewed <- peek-byte w.sent 1 == 0
+        a <- bvt-check "a planting viewer steps only the sites near its last full scan: a far site's sent byte is not touched" (kept & stepped)
+        b <- bvt-check "a site appended since joins the viewer's near sites, and a move past the margin scans them all again" (gathered & rescanned)
+        c <- bvt-check "a house viewer steps only the houses near its last full scan, and a placed or torn house scans them all again" (housed & renewed)
+        a + b + c
+      end

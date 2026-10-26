@@ -180,7 +180,11 @@ against, so the flag ADDS an arm rather than moving the floor.
   `-usb-bot-die-lba N` is the LBA gate, and the `before-deferred bank=ok`
   reading is half the result: it says the run was healthy up to the write that
   killed it, which separates this from a medium that was never usable. Arms
-  `sink-dies` and `sink-drop` in `diag-arm.ps1`.
+  `sink-dies` and `sink-drop` in `diag-arm.ps1`. The death is latched;
+  `-usb-bot-revive-on-reset` lets the target answer again after a Mass
+  Storage Reset (the reset the driver issues; it issues no port reset) and
+  spends the trigger, so a recovery path has an arm that can pass
+  (`OperatorsManual.md`, the flag table).
 - **`-e1000-inject-armed` is keyed on the GPRC read rather than on an ordinal.**
   The injector otherwise empties its budget at the `RCTL.EN` write, one stage
   before anything asks about a receive. An ordinal key (`-e1000-inject-late N`)
@@ -216,21 +220,7 @@ fixed driver and passed.
 
 ## Queue
 
-**1. A target that REVIVES after it died. Owner none**, asked for by red
-2026-08-21 for reek's WORKS-9 recovery path. `usb_bot_dead` is latched on
-purpose (at the `-usb-bot-die-len` check): once the target dies it never answers
-again, which is what `sink-dies` needs and what the metal target does. WORKS-9
-needs the other half, a variant where a device that died at `-usb-bot-die-lba`
-comes back on a port reset or an endpoint reset, whichever the driver can
-actually issue, so a recovery path has an arm that can pass AND an arm that
-cannot. Keep the latched default and name the new flag beside it.
-
-**Measure before designing it**: which reset the driver issues, and whether this
-model sees it, is the whole question. If codex-vm's xHCI does not already
-observe a port or endpoint reset on the BOT path, the flag has nothing to hang
-off and that is the first finding, not a detail.
-
-**2. Per-controller device attachment. Owner none, and WORKS-25's keyboard and
+**1. Per-controller device attachment. Owner none, and WORKS-25's keyboard and
 camera arms are parked behind it** (the mass-storage walk is graded by
 `codex/test/apps/usb-walk-past` and `usb-walk-stop`). `-xhci-two` gives a second controller with NOTHING on it: measured
 2026-08-21, `ctl1` reports `kbd=n mouse=n disk=n`, `-usb-disk-port` selects a
@@ -250,7 +240,7 @@ rewrites the device models underneath the disk and keyboard boot path, and
 nothing in the campaign needs `ctl1` because the stick rides `ctl0`. Damian can
 overrule.
 
-**3. A caveat that bounds `-gop-stride`.** It sets the field correctly and
+**2. A caveat that bounds `-gop-stride`.** It sets the field correctly and
 refuses the values it cannot serve, but the payloads that consume a stride are
 Option A images, and those do not boot under codex-vm's own `-uefi` path:
 both the current and the previous binary triple-fault at RIP `0x7032`, which the

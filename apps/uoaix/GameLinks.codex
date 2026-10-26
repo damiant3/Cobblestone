@@ -9,7 +9,8 @@ Chapter: GameLinks
     web : (HttpRequest -> Result HttpResponse Text), tick-at : Integer, tick-failures : Integer,
     watermark-at : Integer, heap-peak : Integer, stack-low : Integer,
     grow-need : (Integer -> Boolean), grow : (Integer -> Result Integer Text), grow-limit : Integer, grow-base : Integer, grow-why : (Integer -> Integer),
-    admit-dynamic : Boolean, link-bytes : Integer, round-ticks : Integer, round-budget : Integer, rate : Integer, round-end : Integer, first-hpet : Integer, first-ticks : Integer }
+    admit-dynamic : Boolean, link-bytes : Integer, round-ticks : Integer, round-budget : Integer, rate : Integer, round-end : Integer, first-hpet : Integer, first-ticks : Integer,
+    slow : Integer }
   gl-ports : List Integer, Integer -> Boolean
   gl-ports (ports) (i) = if i == list-length ports then True else (list-at ports i == 2593 | list-at ports i == 2594) & gl-ports ports (i + 1)
   gl-web-none : HttpRequest -> Result HttpResponse Text
@@ -85,7 +86,8 @@ Chapter: GameLinks
         is Ok (peers) -> let owner = GameLinks { server = server, specs = specs, peers = peers,
           relays = gl-relays sl-max-links [], lifetime = hpet-ticks-per-second * 120, rate = hpet-ticks-per-second, fault = False, web = gl-web-none, tick-at = 0, tick-failures = 0,
           watermark-at = 0, heap-peak = 0, stack-low = 0, grow-need = gl-grow-never, grow = gl-grow-none, grow-limit = 0, grow-base = 0, grow-why = gl-grow-why-none,
-          admit-dynamic = False, link-bytes = 0, round-ticks = 0, round-budget = 0, round-end = 0, first-hpet = 0, first-ticks = 0 }
+          admit-dynamic = False, link-bytes = 0, round-ticks = 0, round-budget = 0, round-end = 0, first-hpet = 0, first-ticks = 0,
+          slow = gl-slow-new 0 }
           in let saved = __record-set server.links "mark" __heap-save in Ok owner
   gl-ticket : GameLinks, Integer, Integer, Integer -> Integer
   gl-ticket (owner) (key) (now) (i) = if key == 0 | i == list-length owner.relays then -1
@@ -175,14 +177,15 @@ Chapter: GameLinks
       in handled
     end
  A death answer's full re-entry redraws every view at once: 270 packets in Britain (play-head18).
- The count bounds ss-encode-replies' one frame per packet; stx-max-bytes bounds the bytes.
+ The count bounds ss-encode-replies' one frame per packet; the link's tx and spill bound the bytes (sl-enqueue).
   gl-reply-packets : Integer = 4096
   gl-queue : GameLinks, Integer, GameReply -> Result Integer Text
   gl-queue (owner) (i) (reply) = let input = (list-at owner.server.protocols i).game
+    in let slot = list-at owner.server.links.slots i
     in if list-length reply.packets > gl-reply-packets then Err "game response packet budget exceeded"
-    else when ss-encode-replies owner.server.huffman (input.mode == 2) reply.packets 0 0 []
+    else when ss-encode-replies owner.server.huffman (input.mode == 2) reply.packets (slot.tx.capacity + slot.spill.capacity) 0 0 []
       is Err (e) -> Err e
-      is Ok (encoded) -> stx-enqueue (list-at owner.server.links.slots i).tx (ss-flatten encoded.packets 0 0 (__list-with-capacity encoded.bytes))
+      is Ok (encoded) -> sl-enqueue owner.server.links i (ss-flatten encoded.packets 0 0 (__list-with-capacity encoded.bytes))
   gl-input : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text), GameLinks, Integer, Integer -> [Console, e] Integer
   gl-input (handler) (owner) (i) (at) = let slot = list-at owner.server.links.slots i
     in let protocol = list-at owner.server.protocols i
@@ -195,7 +198,10 @@ Chapter: GameLinks
         in let reset = __record-set input "used" 0
         in let consumed = ss-consume slot (at + 1)
         in act
+          before <- get-ticks
           handled <- gl-handle handler owner i packet
+          after <- get-ticks
+          noted <- gl-note-packet owner.slow (after - before) (if list-length packet == 0 then -1 else list-at packet 0) i input.session.serial
           when handled
             is Err (e) -> ss-refuse protocol e
             is Ok (reply) -> when gl-queue owner i reply
@@ -279,6 +285,7 @@ Chapter: GameLinks
     in let p = list-at owner.server.protocols i
     in if p.closing == 0 then act 0 end
     else act
+      said <- if p.closing == 3 & not p.disconnected then gl-close-said owner i p "gm disconnect" else act 0 end
       notified <- if p.disconnected then act 0 end
         else if slot.port == 2594 then let marked = __record-set p "disconnected" True in act 0 end else
         let old = owner.server.game.active
@@ -310,10 +317,13 @@ Chapter: GameLinks
     in if not slot.occupied then gl-pass handler pulse disconnect owner (i + 1) now
     else let reset = if p.epoch /= slot.epoch then gl-reset owner i now else 0
     in let idle = p.closing == 0 & not slot.failed & not (net-io-conn-closed slot.transport) & get-ticks - p.activity > gl-idle-ms
+    in let why = if p.closing /= 0 then "" else if slot.failed then "link failed" else if net-io-conn-closed slot.transport then "transport closed" else ""
     in let failed = if slot.failed | net-io-conn-closed slot.transport | idle then __record-set p "closing" 2 else p
     in act
+      l0 <- get-ticks
       noted <- if idle then slg-line owner.server.game.log slg-network slg-warn ("LINK IDLE closed connection=" & show i & " after " & show (get-ticks - p.activity) & " ms with no frame") else act 0 end
-      consumed <- if p.closing /= 0 | slot.tx.offset /= slot.tx.used | slot.transport.recv-len == 0 then act 0 end
+      told <- if why == "" then act 0 end else gl-close-said owner i p why
+      consumed <- if p.closing /= 0 | sl-pending slot | slot.transport.recv-len == 0 then act 0 end
         else if slot.port == 2593 then gl-input handler owner i 0
         else if p.seen == slot.transport.recv-len & not (net-io-peer-finished slot.transport) then act 0 end
         else act
@@ -322,29 +332,44 @@ Chapter: GameLinks
         end
       eof <- if p.closing == 0 & slot.transport.recv-len == 0 & net-io-peer-finished slot.transport then
         if p.game.used > 0 | (p.game.wire.seed-count > 0 & p.game.wire.seed-count < 4) then ss-refuse p "incomplete packet at EOF"
-        else let closed = __record-set p "closing" 1 in act 0 end
+        else let closed = __record-set p "closing" 1 in gl-close-said owner i p "peer finished"
         else act 0 end
-      pulsed <- if p.closing == 0 & slot.tx.offset == slot.tx.used then gl-pulse pulse owner i now else act 0 end
+      l1 <- get-ticks
+      pulsed <- if p.closing == 0 & not (sl-pending slot) then gl-pulse pulse owner i now else act 0 end
+      l2 <- get-ticks
       aged-send <- gl-time-before-rx owner 0 hpet-ticks
       received-send <- ss-receive owner.server 16 0
       timed-send <- ni-advance slot.transport (list-at owner.peers i).clock hpet-ticks __heap-save
       let saved-send = __record-set slot "transport" timed-send
-      in let sent = if p.closing == 2 | slot.failed | slot.tx.offset == slot.tx.used then 0 else when sl-send owner.server.links i
+      in let sending = if p.closing == 2 | slot.failed | not (sl-pending slot) then Ok 0 else sl-send owner.server.links i
+      in let sent = when sending
         is Err (_) -> let failed = __record-set p "closing" 2 in 0
         is Ok (n) -> n
       in act
+        unsent <- when sending is Err (e) -> gl-close-said owner i p ("send " & e) is Ok (_) -> act 0 end
         flushed <- sl-flush owner.server.links 0
+        l3 <- get-ticks
         closed <- gl-close disconnect owner i
         if closed < 0 then -1 else act
           flushed-close <- sl-flush owner.server.links 0
           let released = if net-io-conn-closed slot.transport & net-outbox-count slot.transport.session == 0 & p.disconnected then sl-release owner.server.links i else Ok i
           in act
+            l4 <- get-ticks
+            linked <- gl-note-link owner.slow i (l1 - l0) (l2 - l1) (l3 - l2) (l4 - l3)
             rest <- gl-pass handler pulse disconnect owner (i + 1) now
             if rest < 0 then rest else consumed + pulsed + sent + rest
           end
         end
       end
     end
+ Every close the server did not answer for (a refusal says REFUSE, a reaped link LINK IDLE) names its cause, so a
+ dropped player's link is not closed in silence (root, trials 45650 and 45789: 4 to 13 soak links aborted, no line).
+  gl-close-said : GameLinks, Integer, ShardProtocol, Text -> [Console] Integer
+  gl-close-said (owner) (i) (p) (why) = act
+    slg-line owner.server.game.log slg-network slg-warn ("LINK CLOSE connection=" & show i & " serial=" & show p.game.session.serial
+      & " reason=" & why & " since-frame-ms=" & show (get-ticks - p.activity))
+    0
+  end
  A link with no inbound frame for gl-idle-ms (get-ticks, wall ms) is reaped. The 1.25 client pings (0x73) about once a
  minute when idle (live 43454: 15.6 to 74.9 s, median 62 s), so the limit is above three of its longest gaps (UOAIX-249).
   gl-idle-ms : Integer = 240000
@@ -376,6 +401,7 @@ Chapter: GameLinks
     aged <- gl-time-before-rx owner 0 started
     received <- ss-receive owner.server 16 0
     t1 <- get-ticks
+    cleared <- gl-slow-clear owner.slow
     worked <- gl-pass handler pulse disconnect owner 0 started
     t2 <- get-ticks
     ticked <- gl-tick world owner started
@@ -418,9 +444,29 @@ Chapter: GameLinks
     else act
       slg-line owner.server.game.log slg-world slg-warn ((if kind == 1 then "ROUND SLOW" else "ROUND LATE") & " ms=" & show t5
         & " total=" & show total & " gap=" & show gap & " scale=" & show scale & " receive=" & show (t1 - t0) & " pass=" & show (t2 - t1)
-        & " tick=" & show (t3 - t2) & " flush-compact=" & show (t4 - t3) & " grow=" & show (t5 - t4))
+        & " tick=" & show (t3 - t2) & " flush-compact=" & show (t4 - t3) & " grow=" & show (t5 - t4) & gl-slow-text owner.slow)
       0
     end
+ UOAIX-267: rounds stalled 20 to 26 s in the packet pass. Each round keeps, in ten qwords allocated at gl-new (below the
+ serving mark), the slowest handled packet (ms, opcode, link, session serial, at 0..24) and the slowest link's whole turn
+ in the pass (ms, link, then its input, pulse, send and close ms, at 32..72); a SLOW or LATE line prints both.
+  gl-slow-new : Integer -> Integer
+  gl-slow-new (unused) = let buf = alloc-bytes 80 in let cleared = gl-slow-clear buf in buf
+  gl-slow-clear : Integer -> Integer
+  gl-slow-clear (buf) = let a = poke-qword buf 0 (0 - 1) in let b = poke-qword buf 32 (0 - 1) in 0
+  gl-note-packet : Integer, Integer, Integer, Integer, Integer -> Integer
+  gl-note-packet (buf) (ms) (op) (link) (serial) = if ms <= peek-qword buf 0 then 0
+    else let a = poke-qword buf 0 ms in let b = poke-qword buf 8 op in let c = poke-qword buf 16 link in let d = poke-qword buf 24 serial in 1
+  gl-note-link : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gl-note-link (buf) (link) (input) (pulse) (send) (close) = let ms = input + pulse + send + close
+    in if ms <= peek-qword buf 32 then 0
+    else let a = poke-qword buf 32 ms in let b = poke-qword buf 40 link in let c = poke-qword buf 48 input
+    in let d = poke-qword buf 56 pulse in let e = poke-qword buf 64 send in let f = poke-qword buf 72 close in 1
+  gl-slow-text : Integer -> Text
+  gl-slow-text (buf) = (if peek-qword buf 0 < 0 then " slow-packet=none" else " slow-packet op=" & show (peek-qword buf 8) & " ms=" & show (peek-qword buf 0)
+      & " link=" & show (peek-qword buf 16) & " serial=" & show (peek-qword buf 24))
+    & (if peek-qword buf 32 < 0 then " slow-link=none" else " slow-link=" & show (peek-qword buf 40) & " ms=" & show (peek-qword buf 32)
+      & " input=" & show (peek-qword buf 48) & " pulse=" & show (peek-qword buf 56) & " send=" & show (peek-qword buf 64) & " close=" & show (peek-qword buf 72))
   gl-serve : (GameShard, GameInput, WalkMap, Integer, List Integer -> [e] Result GameReply Text),
     (GameShard, GameInput, WalkMap, Integer, Integer -> [e] Result (Maybe GameReply) Text),
     (GameShard, GameInput -> [e] Result Integer Text), (GameShard, WalkMap, Integer -> [e] Result Integer Text), GameLinks -> [Console, Network.Read, Network.Write, e] Integer

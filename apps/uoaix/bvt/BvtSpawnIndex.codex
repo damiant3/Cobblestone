@@ -1,0 +1,35 @@
+Chapter: BvtSpawnIndex
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+  bsi-agree : GameWorldSpawn, Integer -> Integer
+  bsi-agree (g) (i) = if i == list-length g.slots then 0
+    else let s = (list-at g.slots i).serial
+    in (if s == 0 | gws-slot-of g s 0 == gws-slot-scan g s 0 then 0 else 1) + bsi-agree g (i + 1)
+  bsi-stale : GameWorldSpawn, Integer -> Integer
+  bsi-stale (g) (n) = if n == 0 then 0 else let p = gws-index-put g (7000000 + n) 0 in bsi-stale g (n - 1)
+  bsi-checks : Integer -> Integer
+  bsi-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let profile = gws-claim-profile g "horse" 0
+        in if profile < 0 then -2
+        else when gws-summon g game profile 1420 1700 0 0 (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (horse) -> let found = gws-slot-of g horse 0
+            in let missing = gws-slot-of g 999999 0
+            in let before = bsi-agree g 0
+            in let used = g.index-used
+            in let push = g.index-cap / 2 + 1
+            in let rebuilt = g.index-used < used + push
+            in let after = bsi-agree g 0
+            in (if found >= 0 & found == gws-slot-scan g horse 0 then 1 else 0) + (if missing == -1 & gws-slot-scan g 999999 0 == -1 then 2 else 0)
+              + (if before == 0 then 4 else 0) + (if rebuilt & after == 0 & gws-slot-of g horse 0 == found then 8 else 0)
+  bvt-spawn-index : Integer -> [Console] Integer
+  bvt-spawn-index (unused) = act
+    n <- bsi-checks 0
+    bvt-check ("a spawn's slot is found by the serial index as the walk found it, a serial that is no spawn answers -1 at once, and the index rebuilt past half used still agrees (red, UOAIX-265; code " & show n & ", 15 is all)") (n == 15)
+  end

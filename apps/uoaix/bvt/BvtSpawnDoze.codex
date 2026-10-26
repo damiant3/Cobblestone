@@ -1,0 +1,125 @@
+Chapter: BvtSpawnDoze
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter GameWorldSpawn
+  cites Uoaix chapter WorldTimers
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtSpawnPace
+  cites Uoaix chapter BvtPlayersNear
+  cites Uoaix chapter BvtCheck
+
+ An earth elemental in the Britain mine region (1445..1457 by 1526..1534) wakes on the wheel (kind 16) with a player
+ 28 tiles south (within cg-awake-reach) or 68 tiles south (past it). Answers a bit per check: 1 the far wake dozes and
+ leaves the slot unarmed, 2 the near wake keeps it armed and awake, 4 the dozer is armed again by a view visit once the
+ player walks within reach, 8 a dozer-shaped creature at war with the far player stays armed, 16 a ghost within reach
+ keeps nothing awake; 31 is all, negative when the scenario cannot be built.
+  bsd-armed : CompositeGame -> Boolean
+  bsd-armed (owner) = wtm-find owner.timers gws-kind 0 >= 0
+  bsd-move : CompositeGame, Integer, Integer, Integer -> Boolean
+  bsd-move (owner) (serial) (x) (y) = when world-get owner.checkpoint.game.world serial
+    is Err (_) -> False
+    is Ok (m) -> when world-update owner.checkpoint.game.world (__record-set (__record-set m "x" x) "y" y)
+      is Err (_) -> False
+      is Ok (_) -> True
+  bsd-checks : Integer -> Integer
+  bsd-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in let map = bpc-map 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 | map.width == 0 then -2
+        else let wheeled = __record-set g.combat "wheel" (Just owner.timers)
+        in let tick = gm-ticks 1000000
+        in let clock = __record-set g.combat "tick" tick
+        in let beast = bpc-mobile owner 1450 1532
+        in let player = bpz-player owner 1450 1600 0
+        in if beast == 0 | player == 0 then -3
+        else if bpc-bind owner g 0 region profile beast /= 0 then -4
+        else let slot = list-at g.slots 0
+        in let cleared = wtm-clear owner.timers gws-kind 0
+        in let far = when gws-wake g owner.checkpoint.game map player 0 tick is Err (_) -> False is Ok (_) -> not (bsd-armed owner) & slot.doze == 1
+        in let moved = bsd-move owner player 1450 1560
+        in let reset = __record-set slot "doze" 0
+        in let cleared2 = wtm-clear owner.timers gws-kind 0
+        in let near = when gws-wake g owner.checkpoint.game map player 0 tick is Err (_) -> False is Ok (_) -> bsd-armed owner & slot.doze == 0
+        in let haunted = bsd-haunt owner g map player slot tick
+        in let away = bsd-move owner player 1450 1600
+        in let cleared3 = wtm-clear owner.timers gws-kind 0
+        in let dozed = when gws-wake g owner.checkpoint.game map player 0 tick is Err (_) -> False is Ok (_) -> slot.doze == 1 & not (bsd-armed owner)
+        in let back = bsd-move owner player 1450 1560
+        in let roused = when world-get owner.checkpoint.game.world player
+          is Err (_) -> False
+          is Ok (v) -> when gws-visit g owner.checkpoint.game map v 0 True []
+            is Err (_) -> False
+            is Ok (_) -> dozed & bsd-armed owner & slot.doze == 0
+        in let gone = bsd-move owner player 1450 1600
+        in let cleared4 = wtm-clear owner.timers gws-kind 0
+        in let a = list-at g.combat.actors (world-slot owner.checkpoint.game.world beast)
+        in let w = __record-set a "war" True
+        in let t = __record-set a "target" player
+        in let fighting = when gws-wake g owner.checkpoint.game map player 0 tick is Err (_) -> False is Ok (_) -> bsd-armed owner & slot.doze == 0
+        in if not moved | not away | not back | not gone then -5
+        else (if far then 1 else 0) + (if near then 2 else 0) + (if roused then 4 else 0) + (if fighting then 8 else 0) + (if haunted then 16 else 0)
+  bsd-haunt : CompositeGame, GameWorldSpawn, WalkMap, Integer, WorldSpawnSlot, Integer -> Boolean
+  bsd-haunt (owner) (g) (map) (player) (slot) (tick) = when world-get owner.checkpoint.game.world player
+    is Err (_) -> False
+    is Ok (m) -> let health = m.health in let graphic = m.graphic
+      in when world-update owner.checkpoint.game.world (__record-set (__record-set m "health" 0) "graphic" 402)
+      is Err (_) -> False
+      is Ok (_) -> let reset = __record-set slot "doze" 0
+        in let cleared = wtm-clear owner.timers gws-kind 0
+        in let dozed = when gws-wake g owner.checkpoint.game map player 0 tick is Err (_) -> False is Ok (_) -> slot.doze == 1 & not (bsd-armed owner)
+        in when world-update owner.checkpoint.game.world (__record-set (__record-set m "health" health) "graphic" graphic) is Err (_) -> False is Ok (_) -> dozed
+ UOAIX-268 (NPCs fight with no player online): a guard beside the dozing elemental, the only player 68 tiles off, strikes
+ it once (answers 1 when the strike re-armed it) or kills it (answers 3 when the kill re-armed it and its wake released
+ the slot); negative when the scenario cannot be built, -6 when the elemental did not doze first.
+  bsd-guard : Boolean -> Integer
+  bsd-guard (kill) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let region = list-length g.catalog.regions - 1
+        in let profile = cg-profile-index g.catalog.profiles "earthele" 0
+        in let map = bpc-map 0
+        in if (list-at g.catalog.regions region).name /= "Britain mine" | profile < 0 | map.width == 0 then -2
+        else let wheeled = __record-set g.combat "wheel" (Just owner.timers)
+        in let tick = gm-ticks 1000000
+        in let clock = __record-set g.combat "tick" tick
+        in let beast = bpc-mobile owner 1450 1532
+        in let guard = bpc-mobile owner 1451 1532
+        in let player = bpz-player owner 1450 1600 0
+        in if beast == 0 | guard == 0 | player == 0 then -3
+        else if bpc-bind owner g 0 region profile beast /= 0 then -4
+        else let indexed = gws-reindex g owner.checkpoint.game.world
+        in let slot = list-at g.slots 0
+        in let cleared = wtm-clear owner.timers gws-kind 0
+        in let dozed = when gws-wake g owner.checkpoint.game map player 0 tick is Err (_) -> False is Ok (_) -> slot.doze == 1 & not (bsd-armed owner)
+        in if not dozed then -6
+        else if gws-slot-of g beast 0 /= 0 then -9
+        else when cb-ensure g.combat owner.checkpoint.game guard
+          is Err (_) -> -3
+          is Ok (ga) -> when cb-ensure g.combat owner.checkpoint.game beast
+            is Err (_) -> -3
+            is Ok (ba) -> when world-get owner.checkpoint.game.world guard
+              is Err (_) -> -5
+              is Ok (gm) -> when world-get owner.checkpoint.game.world beast
+                is Err (_) -> -5
+                is Ok (bm) -> when cb-apply-hit g.combat owner.checkpoint.game (gn-input 0) ga ba gm bm (if kill then 100000 else 1) []
+                  is Err (_) -> -7
+                  is Ok (_) -> let woke = slot.doze == 0 & bsd-armed owner
+                    in if not kill then (if woke then 1 else 0)
+                    else let later = __record-set g.combat "tick" (tick + gm-ticks 2000)
+                    in when gws-wake g owner.checkpoint.game map player 0 (tick + gm-ticks 2000)
+                      is Err (_) -> -8
+                      is Ok (_) -> (if woke then 1 else 0) + (if slot.serial == 0 then 2 else 0)
+  bvt-spawn-doze : Integer -> [Console] Integer
+  bvt-spawn-doze (unused) = act
+    n <- bsd-checks 0
+    a <- bvt-check ("a wild creature with no player within 40 tiles dozes off the timer wheel, wakes when one comes within reach, and one at war never dozes, and a ghost wakes nothing (Damian, 2026-10-18, the region rule; code " & show n & ")") (n == 31)
+    s <- bsd-guard False
+    b <- bvt-check ("a guard's strike on a dozing creature far from every player re-arms it, so it fights back (UOAIX-268; code " & show s & ")") (s == 1)
+    k <- bsd-guard True
+    c <- bvt-check ("a guard far from every player kills a dozing creature, and its slot is released at the wake the kill armed (UOAIX-268; code " & show k & ")") (k == 3)
+    a + b + c
+  end

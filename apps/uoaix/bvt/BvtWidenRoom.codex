@@ -1,0 +1,21 @@
+Chapter: BvtWidenRoom
+  cites Uoaix chapter CompositeStore
+  cites Uoaix chapter BvtCheck
+
+  bwi-start : Integer = 13600000
+  bwi-room : Boolean, Integer, Integer -> Integer
+  bwi-room (doubling) (room) (bytes) = if doubling then cs-widen-room room bytes else cs-room bytes
+  bwi-run : Boolean, Integer, Integer, Integer, Boolean -> List Integer
+  bwi-run (doubling) (size) (room) (orphaned) (spare) = if size > 20 * bwi-start then [orphaned, room, if spare then 1 else 0]
+    else if room - size < room / 4 then
+      let next = bwi-room doubling room size
+      in bwi-run doubling size next (orphaned + room) (spare & next - size >= next / 4)
+    else bwi-run doubling (size + size / 100 + 1) room orphaned spare
+  bvt-widen-room : Integer -> [Console] Integer
+  bvt-widen-room (unused) = act
+    fixed <- bwi-run True bwi-start (cs-room bwi-start) 0 True
+    old <- bwi-run False bwi-start (cs-room bwi-start) 0 True
+    a <- bvt-check ("a growing checkpoint orphans at most one room across its widens and keeps a quarter spare after each (orphaned " & show (list-at fixed 0) & " of room " & show (list-at fixed 1) & ")") (list-at fixed 0 <= list-at fixed 1 & list-at fixed 2 == 1)
+    b <- bvt-check ("sizing each widen from the state alone orphans more than four rooms (orphaned " & show (list-at old 0) & " of room " & show (list-at old 1) & ")") (list-at old 0 > 4 * list-at old 1)
+    a + b
+  end

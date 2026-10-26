@@ -49,7 +49,7 @@ $unit=Join-Path $OutDir 'bvt-unit.codex'
 Admit 1048576
 $unitCdx=Join-Path $OutDir 'bvt-unit.cdx';$serverCdx=Join-Path $OutDir 'server.cdx'
 $compiles=@(
-    @{name='unit';p=(Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-File','build/compile.ps1','-Src',('"'+$unit+'"'),'-Out',('"'+$unitCdx+'"'),'-Log',('"'+(Join-Path $OutDir 'unit.compile.log')+'"'),'-Kernel',('"'+$Kernel+'"')) -RedirectStandardOutput (Join-Path $OutDir 'unit.compile.out'))},
+    @{name='unit';p=(Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-File','build/compile.ps1','-Src',('"'+$unit+'"'),'-Out',('"'+$unitCdx+'"'),'-Log',('"'+(Join-Path $OutDir 'unit.compile.log')+'"'),'-Kernel',('"'+$Kernel+'"'),'-Decks','150','-MemNoCap') -RedirectStandardOutput (Join-Path $OutDir 'unit.compile.out'))},
     @{name='server';p=(Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-File','build/compile.ps1','-Src','apps/uoaix/CompositeGameServer.codex','-Out',('"'+$serverCdx+'"'),'-Log',('"'+(Join-Path $OutDir 'server.compile.log')+'"'),'-Kernel',('"'+$Kernel+'"')) -RedirectStandardOutput (Join-Path $OutDir 'server.compile.out'))})
 $world=Join-Path $OutDir 'world.disk'
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'install-map-cache.ps1') -ClientRoot $ClientRoot -WorldDisk $world -DecorationFile $decoration -FloraFile $flora | Out-Null
@@ -165,9 +165,11 @@ try{
         $why=if($first.text -match '(?m)^LISTEN game-server 0'){try{Login $first.port}catch{$_.Exception.Message}}else{'no listener'}
         Check "server admits a login to the character list$(if($why){': '+$why})" (-not $why)
         # The restart guest saves a logged-in fresh world, then restarts on it while the walk guest keeps running.
+        # A login's close marks the save due and the timer writes it spread, 32 KB (cs-flight-bytes) per world tick: a
+        # fresh world's 4 MB checkpoint lands about 125 s after the login (UOAIX-267), so the wait is bounded at 300 s.
         $before=@([regex]::Matches((ReadShared $restart.log),'(?m)^WORLD COMMITTED')).Count
         $whyB=if($restart.text -match '(?m)^LISTEN game-server 0'){try{Login $restart.port}catch{$_.Exception.Message}}else{'no listener'}
-        $deadline=[datetime]::UtcNow.AddSeconds(30)
+        $deadline=[datetime]::UtcNow.AddSeconds(300)
         while(@([regex]::Matches((ReadShared $restart.log),'(?m)^WORLD COMMITTED')).Count -le $before -and [datetime]::UtcNow -lt $deadline -and -not $restart.vm.HasExited){Start-Sleep -Milliseconds 200}
         $committed=(-not $whyB) -and @([regex]::Matches((ReadShared $restart.log),'(?m)^WORLD COMMITTED')).Count -gt $before
         $restartSaved=ReadShared $restart.log

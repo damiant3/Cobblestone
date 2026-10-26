@@ -1,0 +1,149 @@
+Chapter: Sass89Sched
+  cites Sass chapter Sass89Int
+  cites Sass chapter SassSched
+  cites Sass chapter SassCtrl
+
+ Fixed latencies are turingas's (grammar.py at f7c1a74, the lat field of
+ each instruction): IADD3 4, ISETP 4, MOV 5, SHF 5, IMAD 5; EXIT, which has none
+ there, takes 5. S2R and global memory complete after a variable delay and
+ are ordered through the six dependency barriers, as SassSched orders them
+ for SM 5.2, with a stall of 2; so are LDS and STS. BRA, 7 in turingas,
+ waits on every barrier still pending, so nothing in flight crosses a loop's
+ back edge, and a loop head reached either way finds no barrier its body did
+ not set. BAR.SYNC waits on every barrier too, so this thread's shared
+ stores have left it before the block meets. HMMA is ordered through a
+ barrier as well, until its latency is measured on the card. A variable-
+ latency load or HMMA also holds its source registers on its barrier, which
+ completes after they are read, so a later writer of an address or a
+ fragment it reads waits for it.
+
+Section: Classes
+
+  s89-latency : S89Body -> Integer
+  s89-latency (b) =
+    when b
+     is S89Iadd3 (i) -> 4
+     is S89Isetp (i) -> 4
+     is S89S2r (d) (id) -> 2
+     is S89Ldg (m) -> 2
+     is S89Stg (m) -> 2
+     is S89Lds (m) -> 2
+     is S89Sts (m) -> 2
+     is S89Hmma (d) (a) (b) (c) -> 2
+     is S89Ldgsts (d) (s) -> 2
+     is S89Mufu (d) (f) (s) -> 2
+     is S89Bra (off) -> 7
+     is otherwise -> 5
+
+  s89-variable : S89Body -> Boolean
+  s89-variable (b) =
+    when b
+     is S89S2r (d) (id) -> True
+     is S89Ldg (m) -> True
+     is S89Stg (m) -> True
+     is S89Lds (m) -> True
+     is S89Sts (m) -> True
+     is S89Hmma (d) (a) (b) (c) -> True
+     is S89Ldgsts (d) (s) -> True
+     is S89Mufu (d) (f) (s) -> True
+     is otherwise -> False
+
+  s89-is-store : S89Body -> Boolean
+  s89-is-store (b) =
+    when b
+     is S89Stg (m) -> True
+     is S89Sts (m) -> True
+     is S89Ldgsts (d) (s) -> True
+     is otherwise -> False
+
+Section: Registers
+
+  s89-src-regs : S89Src -> List Integer
+  s89-src-regs (s) =
+    when s
+     is S89Reg (r) -> [r]
+     is otherwise -> []
+
+  s89-reads-raw : S89Body -> List Integer
+  s89-reads-raw (b) =
+    when b
+     is S89Mov (d) (s) -> s89-src-regs s
+     is S89Iadd3 (i) -> [i.a, i.c] & s89-src-regs i.b
+     is S89Imad (i) -> [i.a] & s89-src-regs i.b & (if i.c == 255 then [] else sched-pair i.c (if i.wide == 1 then 64 else 32))
+     is S89Isetp (i) -> [i.a] & s89-src-regs i.b
+     is S89Hmma (d) (a) (b) (c) -> [a, a + 1, a + 2, a + 3, b, b + 1, c, c + 1, c + 2, c + 3]
+     is S89Fadd (d) (a) (b) (neg) -> [a, b]
+     is S89Fmul (d) (a) (b) -> [a, b]
+     is S89Ldgsts (d) (s) -> [d, s, s + 1]
+     is S89Fmax (d) (a) (b) -> [a, b]
+     is S89Mufu (d) (f) (s) -> [s]
+     is S89F2fh (d) (s) -> [s]
+     is S89Prmt (d) (a) (s) (b) -> [a, b] & s89-src-regs s
+     is S89Lop3 (d) (a) (s) (c) (lut) -> [a, c] & s89-src-regs s
+     is S89Shf (i) -> [i.low, i.high] & s89-src-regs i.shift
+     is S89Ldg (m) -> [m.addr, m.addr + 1]
+     is S89Stg (m) -> [m.addr, m.addr + 1] & sched-pair m.data m.width
+     is S89Lds (m) -> [m.addr]
+     is S89Sts (m) -> [m.addr] & sched-pair m.data m.width
+     is otherwise -> []
+
+  s89-writes-raw : S89Body -> List Integer
+  s89-writes-raw (b) =
+    when b
+     is S89Mov (d) (s) -> [d]
+     is S89Iadd3 (i) -> [i.dst]
+     is S89Imad (i) -> sched-pair i.dst (if i.wide == 1 then 64 else 32)
+     is S89Prmt (d) (a) (s) (b) -> [d]
+     is S89Hmma (d) (a) (b) (c) -> [d, d + 1, d + 2, d + 3]
+     is S89Fadd (d) (a) (b) (neg) -> [d]
+     is S89Fmul (d) (a) (b) -> [d]
+     is S89Fmax (d) (a) (b) -> [d]
+     is S89Mufu (d) (f) (s) -> [d]
+     is S89F2fh (d) (s) -> [d]
+     is S89Lop3 (d) (a) (s) (c) (lut) -> [d]
+     is S89Shf (i) -> [i.dst]
+     is S89S2r (d) (id) -> [d]
+     is S89Ldc (d) (width) (bank) (off) -> sched-pair d width
+     is S89Ldg (m) -> sched-pair m.data m.width
+     is S89Lds (m) -> sched-pair m.data m.width
+     is otherwise -> []
+
+Section: Scheduling
+
+  s89-all-bars : List SchedPend, Integer, Integer -> Integer
+  s89-all-bars (ps) (i) (mask) = if i >= list-length ps then mask else s89-all-bars ps (i + 1) (bit-or mask (bit-shl 1 (list-at ps i).bar))
+
+  s89-waits-all : S89Body -> Boolean
+  s89-waits-all (b) =
+    when b
+     is S89Bra (off) -> True
+     is S89Bar -> True
+     is otherwise -> False
+
+  s89-sched-step : SchedState, S89Insn -> SchedState
+  s89-sched-step (st) (i) =
+    if s89-waits-all i.body then SchedState { pending = [], next-bar = st.next-bar, codes = list-push st.codes (CtrlCode { stall = s89-latency i.body, yield-bit = 1, write-bar = 7, read-bar = 7, wait-mask = s89-all-bars st.pending 0 0, reuse = 0 }) }
+    else s89-sched-plain st i
+
+  s89-sched-plain : SchedState, S89Insn -> SchedState
+  s89-sched-plain (st) (i) =
+    let b = i.body
+    in let reads = sched-drop-rz (s89-reads-raw b) 0 []
+    in let writes = sched-drop-rz (s89-writes-raw b) 0 []
+    in let var = s89-variable b
+    in let bar = if var then st.next-bar else -1
+    in let sp = sched-split st.pending reads writes bar 0 0 []
+    in let is-store = s89-is-store b
+    in let wbar = if var then (if is-store then 7 else bar) else 7
+    in let rbar = if is-store then bar else 7
+    in let pend = if var then (if is-store then sched-add sp.kept reads bar 1 0 else sched-add (sched-add sp.kept writes bar 0 0) reads bar 1 0) else sp.kept
+    in let code = CtrlCode { stall = s89-latency b, yield-bit = 1, write-bar = wbar, read-bar = rbar, wait-mask = sp.mask, reuse = 0 }
+    in SchedState { pending = pend, next-bar = if var then int-mod (st.next-bar + 1) 6 else st.next-bar, codes = list-push st.codes code }
+
+  s89-sched-run : List S89Insn, Integer, SchedState -> SchedState
+  s89-sched-run (insns) (k) (st) =
+    if k >= list-length insns then st
+    else s89-sched-run insns (k + 1) (s89-sched-step st (list-at insns k))
+
+  sass89-schedule : List S89Insn -> List CtrlCode
+  sass89-schedule (insns) = (s89-sched-run insns 0 (SchedState { pending = [], next-bar = 0, codes = [] })).codes

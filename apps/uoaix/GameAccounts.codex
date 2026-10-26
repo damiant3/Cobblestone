@@ -82,8 +82,8 @@ Chapter: GameAccounts
     else ga-be64 value (shift - 8) (list-push out (bit-and (bit-shru value shift) 255))
 
   ga-new : Integer -> Integer
-  ga-new (mode) = let table = alloc-bytes (ga-bytes + 8)
-    in let cleared = ga-zero table (ga-bytes + 8) 0
+  ga-new (mode) = let table = alloc-bytes (ga-bytes + 8 + ga-throttle-bytes)
+    in let cleared = ga-zero table (ga-bytes + 8 + ga-throttle-bytes) 0
     in let moded = poke-qword table 16 mode
     in let british = ga-create table ga-british-name ga-british-password
     in table
@@ -250,6 +250,83 @@ Section: Login
   ga-working : Integer -> Integer
   ga-working (table) = ga-slots table (ga-bound table)
 
+Section: Login throttle
+
+ A wire login pays its PBKDF2 (about 315 ms a run) on the one game loop, so a guess costs every player. A refused password
+ cools its account 1 s, doubling to 32 s, until a success; refused passwords (2 runs each, the plain and the shifted
+ reading) spend a shard budget of 4 runs a 4 s window, and while it is spent every login is refused before any hash, so a
+ flood costs the loop at most that; a success spends nothing. An account is created at most once in 10 s. The cooling
+ rows are the 256 latest refused accounts, the oldest overwritten; none is saved.
+  ga-throttle-room : Integer = 256
+  ga-throttle-bytes : Integer = 32 + ga-throttle-room * 24
+  ga-budget-runs : Integer = 4
+  ga-ticks : Integer -> Integer
+  ga-ticks (ms) = (ms * pit-input-hz + pit-count * 1000 - 1) / (pit-count * 1000)
+  ga-throttle : Integer -> Integer
+  ga-throttle (table) = table + ga-bytes + 8
+  ga-row : Integer, Integer, Integer -> Integer
+  ga-row (t) (index) (r) = if index < 0 | r >= ga-throttle-room then -1
+    else if peek-qword t (32 + r * 24) == index + 1 then r else ga-row t index (r + 1)
+  ga-cooling : Integer, Integer, Integer -> Boolean
+  ga-cooling (table) (index) (now) = let t = ga-throttle table in let r = ga-row t index 0
+    in r >= 0 & now < peek-qword t (32 + r * 24 + 16)
+  ga-cool-seconds : Integer -> Integer
+  ga-cool-seconds (fails) = if fails >= 6 then 32 else bit-shl 1 (fails - 1)
+  ga-refused : Integer, Integer, Integer -> Integer
+  ga-refused (table) (index) (now) = if index < 0 then 0
+    else let t = ga-throttle table
+    in let found = ga-row t index 0
+    in let r = if found >= 0 then found else int-mod (peek-qword t 24) ga-throttle-room
+    in let fails = if found >= 0 then peek-qword t (32 + r * 24 + 8) + 1 else 1
+    in let advanced = if found >= 0 then 0 else poke-qword t 24 (peek-qword t 24 + 1)
+    in let a = poke-qword t (32 + r * 24) (index + 1)
+    in let b = poke-qword t (32 + r * 24 + 8) fails
+    in poke-qword t (32 + r * 24 + 16) (now + ga-ticks (1000 * ga-cool-seconds fails))
+  ga-admitted : Integer, Integer -> Integer
+  ga-admitted (table) (index) = let t = ga-throttle table in let r = ga-row t index 0
+    in if r < 0 then 0 else let a = poke-qword t (32 + r * 24) 0 in let b = poke-qword t (32 + r * 24 + 8) 0 in poke-qword t (32 + r * 24 + 16) 0
+  ga-budget-open : Integer, Integer -> Boolean
+  ga-budget-open (table) (now) = let t = ga-throttle table
+    in let started = if now < peek-qword t 0 | now - peek-qword t 0 >= ga-ticks 4000 then (let a = poke-qword t 0 now in poke-qword t 8 0) else 0
+    in peek-qword t 8 < ga-budget-runs
+  ga-budget-spend : Integer, Integer -> Integer
+  ga-budget-spend (table) (runs) = let t = ga-throttle table in poke-qword t 8 (peek-qword t 8 + runs)
+  ga-may-create : Integer, Integer -> Boolean
+  ga-may-create (table) (now) = let last = peek-qword (ga-throttle table) 16
+    in last == 0 | now < last | now - last >= ga-ticks 10000
+ What a wire login answers before any hash: "" to go on, or the refusal.
+  ga-gate : Integer, List Integer, Integer, Integer, Boolean -> Text
+  ga-gate (table) (packet) (name-at) (now) (creating) = when ga-packet-name packet name-at 0 []
+    is Err (_) -> ""
+    is Ok (name) -> let index = ga-find table name 0
+      in if index >= 0 & ga-cooling table index now then "account login cooling down"
+      else if index < 0 & (not creating | ga-mode table /= ga-dev) then ""
+      else if index < 0 & not (ga-may-create table now) then "account creation limited"
+      else if not (ga-budget-open table now) then "account login busy"
+      else ""
+  ga-noted : Integer, List Integer, Integer, Integer, Result Integer Text -> Result Integer Text
+  ga-noted (table) (packet) (name-at) (now) (result) = when ga-packet-name packet name-at 0 []
+    is Err (_) -> result
+    is Ok (name) -> let index = ga-find table name 0
+      in let kept = when result
+        is Err (e) -> if e == "account password refused" then (let spent = ga-budget-spend table 2 in ga-refused table index now) else 0
+        is Ok (i) -> if i >= 0 then ga-admitted table i else 0
+      in result
+  ga-admit-gated : Integer, List Integer, Integer, Integer, Integer -> Result Integer Text
+  ga-admit-gated (table) (packet) (name-at) (password-at) (now) = let gate = ga-gate table packet name-at now False
+    in if gate /= "" then Err gate else ga-noted table packet name-at now (ga-admit table packet name-at password-at)
+  ga-login-gated : Integer, List Integer, Integer, Integer, Integer -> Result Integer Text
+  ga-login-gated (table) (packet) (name-at) (password-at) (now) = let gate = ga-gate table packet name-at now True
+    in if gate /= "" then Err gate
+    else let before = ga-count table
+    in let result = ga-login table packet name-at password-at
+    in let created = if ga-count table > before then poke-qword (ga-throttle table) 16 (max 1 now) else 0
+    in ga-noted table packet name-at now result
+  ga-verify-gated : Integer, Integer, List Integer, Integer -> Boolean
+  ga-verify-gated (table) (index) (raw) (now) = if ga-cooling table index now | not (ga-budget-open table now) then False
+    else if ga-verify-either table index raw then (let cleared = ga-admitted table index in True)
+    else (let spent = ga-budget-spend table 2 in let marked = ga-refused table index now in False)
+
 Section: Codec
 
  Header cells: count, bound, mode, salt counter, three RDRAND words, and a
@@ -298,8 +375,8 @@ Section: Codec
     in valid
 
   ga-decode : Integer -> Integer
-  ga-decode (buf) = let table = alloc-bytes (ga-bytes + 8)
-    in let cleared = poke-qword table ga-bytes 0
+  ga-decode (buf) = let table = alloc-bytes (ga-bytes + 8 + ga-throttle-bytes)
+    in let cleared = ga-zero table (ga-bytes + 8 + ga-throttle-bytes) 0
     in let copied = ws-copy buf table ga-bytes 0
     in table
 

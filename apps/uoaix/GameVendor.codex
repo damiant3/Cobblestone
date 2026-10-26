@@ -22,8 +22,12 @@ Chapter: GameVendor
     is Err (e) -> []
     is Ok (mobile) -> let slot = gv-slot v.game p.serial 0
       in let purse = (ep-actor v.currency.world p.actor).purse
-      in let value = eu-value v.currency (em-purse v.currency.copper purse).coin (em-purse v.currency.silver purse).coin (em-purse v.currency.world.money purse).coin
-      in if slot < 0 then [] else gvp-status mobile v.game.characters slot (value / v.currency.copper-rate)
+      in let piles = gv-coin-piles v.game.world (world-first-child v.game.world p.pack) []
+      in let copper = (em-purse v.currency.copper purse).coin + gv-coin-sum v.game.world piles 1 0
+      in let silver = (em-purse v.currency.silver purse).coin + gv-coin-sum v.game.world piles 2 0
+      in let gold = (em-purse v.currency.world.money purse).coin + gv-coin-sum v.game.world piles 3 0
+      in let value = eu-value v.currency copper silver gold
+      in if slot < 0 then [] else gvp-status mobile v.game.characters slot value
   gv-fill : GvWorld, GvPlayer, GvVendor, Integer, Integer -> Integer
   gv-fill (v) (p) (vendor) (side) (unused) = gv-fill-from v p vendor side (ep-lot-first v.currency.world.goods (if side == 1 then vendor.actor else p.actor))
   gv-fill-from : GvWorld, GvPlayer, GvVendor, Integer, Integer -> Integer
@@ -96,7 +100,8 @@ Chapter: GameVendor
  The answering vendor speaks overhead, so the player sees which one it is.
   gv-menu : GvWorld, GvPlayer, GvVendor, WorldObject, Integer, Integer, Integer, Integer -> GameReply
   gv-menu (v) (p) (vendor) (npc) (role) (side) (connection) (tick) =
-    let a = __record-set p "count" 0
+    let quoted = __record-set v "quoting" 1
+    in let a = __record-set p "count" 0
     in let b = __record-set p "vendor" vendor.serial
     in let c = __record-set p "side" side
     in let d = __record-set p "connection" connection
@@ -186,7 +191,8 @@ Chapter: GameVendor
     if p.vendor /= 0 | p.side /= 0 | tick < 0 then 0
     else let index = gv-vendor v vendor.serial 0
     in if side == 2 & index < 0 then 0
-    else let a = __record-set p "count" 0
+    else let quoted = __record-set v "quoting" 1
+    in let a = __record-set p "count" 0
     in let b = __record-set p "vendor" vendor.serial
     in let c = __record-set p "side" side
     in let d = __record-set p "connection" connection
@@ -206,20 +212,9 @@ Chapter: GameVendor
   gv-coin-sum (world) (piles) (metal) (i) = if i == list-length piles then 0
     else (when world-get world (list-at piles i) is Err (_) -> 0 is Ok (o) -> if gv-coin-metal o.graphic == metal then o.amount else 0)
       + gv-coin-sum world piles metal (i + 1)
-  gv-coin-drop : WorldTable, List Integer, Integer, List (List Integer) -> List (List Integer)
-  gv-coin-drop (world) (piles) (i) (out) = if i == list-length piles then out
-    else gv-coin-drop world piles (i + 1) (when world-delete world (list-at piles i) is Err (_) -> out is Ok (_) -> out & [sip-remove (list-at piles i)])
   gv-deposit : GvWorld, GvPlayer, List GvLine -> List (List Integer)
-  gv-deposit (v) (p) (lines) = let x = v.currency
-    in if not (ep-valid-actor x.world p.actor) then []
-    else let purse = (ep-actor x.world p.actor).purse
-    in if eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin >= gv-line-total v lines 0 4 0 then []
-    else let piles = gv-coin-piles v.game.world (world-first-child v.game.world p.pack) []
-    in let c = gv-coin-sum v.game.world piles 1 0
-    in let s = gv-coin-sum v.game.world piles 2 0
-    in let g = gv-coin-sum v.game.world piles 3 0
-    in if c + s + g == 0 | eu-deposit x p.actor purse c s g /= 0 then []
-    else gv-coin-drop v.game.world piles 0 []
+  gv-deposit (v) (p) (lines) = if not (ep-valid-actor v.currency.world p.actor) then []
+    else gv-bank-take v p (gv-line-total v lines 0 4 0) 1 0 (gv-coin-piles v.game.world (world-first-child v.game.world p.pack) []) []
  D-17 (Damian, 2026-10-13: "every shop that links to a bank links to specific bank"): a purchase the purse and the pack's
  coin leave short takes the rest from the buyer's box at the bank nearest the shopkeeper (gmb-linked), copper first,
  then silver, then gold, and only as many coins as the shortfall needs; another bank's box is never touched.

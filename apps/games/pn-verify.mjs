@@ -166,7 +166,7 @@ const tally = {
 function hand(g0, bad, label) {
   let g = g0, guard = 0;
   let calledBid = false;
-  let meld = null, played = [], trick = [], pts = [0, 0];
+  let meld = null, deece = null, played = [], trick = [], pts = [0, 0];
   while (e.pn_phase(g) < PHASE.SCORED && guard++ < 400) {
     const ph = e.pn_phase(g), seat = e.pn_cur(g);
     const before = g;
@@ -218,6 +218,7 @@ function hand(g0, bad, label) {
         if (e.pn_cur(g) !== e.pn_bidder(g)) bad.push(`${label}: seat ${e.pn_cur(g)} leads, the declarer is ${e.pn_bidder(g)}`);
         const t = e.pn_trump(g);
         meld = [0, 1, 2, 3].map(p => meldPagat(handOf(g, p), t));
+        deece = [0, 1, 2, 3].map(p => 10 * countOf(handOf(g, p), t, NINE));
         for (const team of [0, 1]) {
           if (e.pn_hmeld(g, team) !== meld[team] + meld[team + 2]) bad.push(`${label}: team ${team} melded ${e.pn_hmeld(g, team)}, pagat ${meld[team] + meld[team + 2]}`);
         }
@@ -252,12 +253,18 @@ function hand(g0, bad, label) {
     }
     if (g === before) { bad.push(`${label}: phase ${ph} seat ${seat} would not move`); break; }
   }
-  return { g, meld, pts, played };
+  return { g, meld, deece, pts, played };
 }
+
+// pagat: the non-bidding team loses its meld when "they pulled no counters
+// and failed to capture the final trick", except that "if their only meld was
+// one or both deeces, the points are scored". The last trick carries ten, so
+// a team that took it has points.
+const defenderKeeps = (meld, deece, pts) => pts > 0 || meld === deece;
 
 // Score a finished hand on this side and compare.
 function gradeScore(g0, r, bad, label) {
-  const { g, meld, pts } = r;
+  const { g, meld, deece, pts } = r;
   if (!meld) { bad.push(`${label}: never reached the play`); return; }
   if (pts[0] + pts[1] !== 250) bad.push(`${label}: the tricks came to ${pts[0] + pts[1]}`);
   for (const team of [0, 1]) {
@@ -268,7 +275,8 @@ function gradeScore(g0, r, bad, label) {
   const make = m[d] + pts[d] >= bid;
   const delta = [0, 0];
   delta[d] = make ? m[d] + pts[d] : -bid;
-  delta[1 - d] = pts[1 - d] > 0 ? m[1 - d] + pts[1 - d] : 0;
+  const dd = [deece[0] + deece[2], deece[1] + deece[3]];
+  delta[1 - d] = defenderKeeps(m[1 - d], dd[1 - d], pts[1 - d]) ? m[1 - d] + pts[1 - d] : 0;
   tally.hands++;
   if (make) tally.made++; else tally.set++;
   if (pts[1 - d] === 0) tally.defZero++;
@@ -296,6 +304,32 @@ function gradeScore(g0, r, bad, label) {
   ok('a hand is the auction, trump, four each way, the declarer\'s lead, the play and the score, all by pagat',
      bad.length === 0, bad.length ? bad.slice(0, 3).join('; ') : `${tally.hands} hands, ${tally.tricks} tricks`);
   console.log(`  note  the defenders took no counter and not the last trick in ${tally.defZero} of ${tally.hands} hands`);
+}
+
+// -- THE DEFENDERS' MELD, BUILT ----------------------------------------------
+// Self-play rarely leaves the defenders pointless, so the cases are built:
+// four hands as melded, hearts trump, seat 0 declaring 300 on 250 points, the
+// defenders (seats 1 and 3) taking 0 or 10. Each case names its score.
+{
+  const list = cards => cards.reduce((l, c) => e.pn_cardsadd(l, c), e.pn_cards0(0));
+  const filler = [id(CLUBS, JACK), id(DIAMONDS, NINE)];
+  const cases = [
+    ['a defender holding both deeces and nothing else keeps them with no counter', [id(HEARTS, NINE), id(HEARTS, NINE, 1)], [], 0, 20],
+    ['a defending team with one deece in each hand keeps both', [id(HEARTS, NINE)], [id(HEARTS, NINE, 1)], 0, 20],
+    ['control: a deece and a marriage need a counter, and lose all with none', [id(HEARTS, NINE), id(CLUBS, KING), id(CLUBS, QUEEN)], [], 0, 0],
+    ['control: the same meld with ten in tricks scores meld and tricks', [id(HEARTS, NINE), id(CLUBS, KING), id(CLUBS, QUEEN)], [], 10, 40],
+  ];
+  const bad = [];
+  for (const [name, h1, h3, t1, want] of cases) {
+    const g = e.pn_scorecase(list(filler), list([...h1, ...filler]), list(filler), list([...h3, ...filler]), HEARTS, 0, 300, 250 - t1, t1);
+    const got = e.pn_score(g, 1);
+    const meld = meldPagat([...h1, ...filler], HEARTS) + meldPagat([...h3, ...filler], HEARTS);
+    const dee = 10 * (countOf(h1, HEARTS, NINE) + countOf(h3, HEARTS, NINE));
+    const oracle = defenderKeeps(meld, dee, t1) ? meld + t1 : 0;
+    if (oracle !== want) bad.push(`${name}: the oracle says ${oracle}, the case ${want}`);
+    ok(name, got === want, `team 1 scored ${got}, pagat ${want}`);
+  }
+  ok('control: the oracle agrees with every built case', bad.length === 0, bad.join('; '));
 }
 
 // -- YOUR SEAT ----------------------------------------------------------------

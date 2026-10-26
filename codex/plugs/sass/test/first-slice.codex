@@ -32,6 +32,63 @@ Section: Kernels
    else 0
   end
 
+  gpu-divide : Integer, Integer -> [Device] Integer
+  gpu-divide (out) (n) = act
+   tid <- thread-idx-x
+   device-store out tid ((tid - n) / 64)
+  end
+
+  gpu-loop : Integer, Integer, Integer -> [Device] Integer
+  gpu-loop (out) (n) (k) = act
+   tid <- thread-idx-x
+   if k < n then gpu-loop out n (k + 1)
+   else device-store out tid k
+  end
+
+  gpu-narrow : Integer, Integer -> [Device] Integer
+  gpu-narrow (src) (dst) = act
+   ty <- thread-idx-y
+   bz <- block-idx-z
+   gy <- grid-dim-y
+   h <- device-load-u16 (src + (ty + bz + gy) * 2)
+   w <- device-load-u32 (src + ty * 4)
+   s <- device-store-u16 (dst + ty * 2) h
+   device-store-u32 (dst + bz * 4) w
+  end
+
+  gpu-shared : Integer, Integer -> [Device] Integer
+  gpu-shared (out) (n) = act
+   tid <- thread-idx-x
+   base <- shared-base
+   s <- shared-store-u32 (base + tid * 4) n
+   b <- sync-threads
+   v <- shared-load-u32 (base + tid * 4)
+   h <- shared-store-u16 (base + 512 + tid * 2) v
+   device-store out tid v
+  end
+
+  gpu-wmma : Integer, Integer, Integer, Integer -> [Device] Integer
+  gpu-wmma (a) (b) (c) (n) = act
+   z <- wmma-fill-f32 0
+   la <- wmma-load-a-f16 0 a n
+   lb <- wmma-load-b-f16 0 b n
+   m <- wmma-mma-f32 0 0 0
+   wmma-store-f32 0 c n
+  end
+
+  gpu-wmma-shared : Integer, Integer -> [Device] Integer
+  gpu-wmma-shared (c) (n) = act
+   base <- shared-base
+   lc <- wmma-load-c-f32-shared 1 (base + 4096) 16
+   la <- wmma-load-a-f16-shared 1 base 16
+   lb <- wmma-load-b-f16-shared 1 (base + 512) 16
+   lk <- wmma-load-b-col-f16-shared 0 (base + 1024) 16
+   m0 <- wmma-mma-f32 1 1 1
+   m1 <- wmma-mma-rc-f32 1 1 0
+   s <- wmma-store-f32-shared 1 (base + 4096) 16
+   wmma-store-f32 1 c n
+  end
+
   gpu-refuse-recursion : Integer, Integer -> [Device] Integer
   gpu-refuse-recursion (out) (n) = act
    tid <- thread-idx-x
@@ -40,6 +97,33 @@ Section: Kernels
 
   count-down : Integer -> [Device] Integer
   count-down (n) = if n < 1 then 0 else count-down (n - 1)
+
+  gpu-float : Integer, Integer, Integer -> [Device] Integer
+  gpu-float (out) (a) (b) = act
+   s <- device-store-u32 out (f32-add-bits a b)
+   t <- device-store-u32 (out + 4) (f32-sub-bits a b)
+   u <- device-store-u32 (out + 8) (f32-mul-bits a b)
+   v <- device-store-u32 (out + 12) (f32-max-bits a b)
+   e <- device-store-u32 (out + 16) (f32-ex2-bits a)
+   l <- device-store-u32 (out + 20) (f32-lg2-bits b)
+   device-store-u16 (out + 24) (f32-to-f16-bits a)
+  end
+
+  gpu-async : Integer, Integer -> [Device] Integer
+  gpu-async (src) (n) = act
+   base <- shared-base
+   s <- cp-async-16 (base + 16) src n
+   cp-async-commit
+   w <- cp-async-wait-one
+   cp-async-wait-all
+  end
+
+  gpu-warp : Integer, Integer -> [Device] Integer
+  gpu-warp (out) (n) = act
+   tid <- thread-idx-x
+   w <- if tid < n then sync-warp else 0
+   sync-warp
+  end
 
   gpu-refuse-multiply : Integer, Integer -> [Device] Integer
   gpu-refuse-multiply (out) (k) = act

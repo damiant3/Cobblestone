@@ -1,0 +1,470 @@
+Chapter: Sass89Int
+  cites Sass chapter SassCtrl
+  cites Sass chapter Sass89Hmma
+
+ SM 8.9 integer, move, memory and exit encodings for a first kernel, from
+ Mesa 26.2.4 nak/sm70_encode.rs (encode_alu_base, OpMov, OpIAdd3, OpIAdd3X,
+ OpISetP, OpShf, OpS2R, OpLdc, OpLd, OpSt, OpExit, set_mem_order). Bits are
+ numbered over the 128-bit instruction: the first word holds 0..63, the
+ second 64..127, each little-endian; controls occupy 105..125 as in
+ Sass89Hmma.
+
+ ALU fields: opcode 0..8 and source form 9..11 (register 1, 32-bit immediate
+ 4, constant bank 5); guard predicate 12..14, negated at 15; destination
+ 16..23; source 0 at 24..31, negated at 72; source 1 at 32..39 (negated at
+ 63), or an immediate in 32..63, or c[bank][offset] with the byte offset at
+ 38..53 and the bank at 54..58; source 2 at 64..71. Register 255 is RZ.
+
+ IADD3 (opcode 0x10): .X at 74; carry-in predicates at 87..89 (not 90) and
+ 77..79 (not 80), PT negated when absent; carry-out predicates at 81..83 and
+ 84..86, PT when absent. ISETP (0x0C): low-compare predicate 68..70 (not 71),
+ PT here since .EX is not admitted; signed at 73; AND 0, OR 1, XOR 2 at
+ 74..75; LT 1, EQ 2, LE 3, GT 4, NE 5, GE 6 at 76..78; the accumulated
+ predicate at 87..89 (not 90); the result at 81..83, PT at 84..86. SHF
+ (0x19): type at 73..74 (S64 0, S32 2, U32 3), right at 76, .HI at 80, wrap
+ at 75 left clear. U64 is refused: NAK writes 1, turingas 0 for the same
+ spelling. MOV (0x02) writes all four quad lanes, 0xF at 72..75. IMAD
+ (0x24) and IMAD.WIDE (0x25, a register-pair destination and addend):
+ signed at 73, PT at 81..83, and !PT at 87..90, which turingas writes and
+ NAK leaves clear.
+
+ PRMT (0x16): the selector as source 1, the second word as source 2, index
+ mode (0 at 72..74). LOP3 (0x12): the truth table at 72..79, PT at 81..83,
+ !PT at 87..90, which turingas writes only when the predicate is spelled.
+
+ Shared memory takes a 32-bit address register and the 24-bit signed byte
+ offset at 40..63, with the type at 73..75. LDS is 0x984 with uniform
+ addressing (91) clear, the only LDS form turingas encodes; NAK at SM 8.9
+ sets 91 with URZ at 32..37, and whether Ada reads the clear form is a
+ hardware question. STS is NAK's SM 8.9 form, 0x988: data 32..39, URZ at
+ 64..69, uniform addressing at 91. BAR.SYNC (0xB1D) is barrier 0, every
+ other field clear, in both.
+
+ BRA (0x947): the byte offset from the next instruction, a multiple of 16,
+ sign-extended over 32..81 (NAK writes it as words at 34..81, and .U at 32
+ clear); the branch condition PT at 87..89, the guard deciding.
+
+ FADD (0x21) and FMUL (0x20) are the ALU layout with register sources,
+ source 1 negated at 63; rounding (78..79) to nearest, no saturation (77)
+ and no flush to zero (80) leave the second word clear. FMNMX (0x09)
+ takes max with !PT at 87..90 (PT is min). MUFU (0x108) and F2F (0x104)
+ read their source as source 1; MUFU's function is at 74..77 (EX2 2, LG2
+ 3), and F2F.F16.F32's second word is turingas's 0x200800.
+
+ LDGSTS (0xFAE), the asynchronous global-to-shared copy, is turingas's
+ form: the shared address register at 16..23, the global address pair at
+ 24..31, and turingas's fixed second word 0x0F901C48 (the 128-bit type at
+ 73..75 and its constant bits, which it writes the same for .E and
+ .BYPASS, and !PT at 87..90). Which cache path and what that predicate
+ select on Ada is a hardware question. LDGDEPBAR (0x9AF) has no field;
+ DEPBAR (0x91A) .LE at 47, scoreboard SB0, and its count at 38..43.
+
+ WARPSYNC is NAK's (OpWarpSync, encode_alu_base): opcode 0x148 in form 4,
+ the 32-bit mask at 32..63, no destination or source 0, and the predicate
+ PT at 87..89 (not at 90). turingas has no WARPSYNC, so the listing tags
+ the line N and the grade checks these fields instead.
+
+ S2R (0x919): the system register at 72..79. LDC (0xB82): offset register RZ
+ at 24..31, the constant at 38..58, the memory type at 73..75 (32 bits 4, 64
+ bits 5). EXIT (0x94D): PT at 87..89.
+
+ LDG is NAK's SM 8.9 form, 0x981: address register 24..31, 64-bit address
+ at 90, uniform offset register URZ (63) at 32..37 taken as 64-bit at 72,
+ the byte offset (24 bits, signed) at 40..63, the result predicate PT at
+ 81..83, uniform addressing at 91. STG is 0x386, the form turingas encodes
+ from NVIDIA's own SM 7.5 output and NAK writes below SM 7.3: address
+ 24..31, 64-bit address at 72, data 32..39, the byte offset at 40..63.
+ Whether Ada executes 0x386 is a hardware question. Both carry the memory
+ type at 73..75 (16 bits zero-extended 2, 32 bits 4, 64 bits 5), the memory order at 77..80 and the eviction priority at
+ 84..86, written normal (1): turingas at f7c1a74 looks up .EF and .LU without
+ their dot and encodes no other priority. The order is NAK's SM 8.0+ table:
+ weak 0, constant 4, strong GPU 7, strong system 10; strong CTA (5) is
+ refused because turingas's scope field cannot spell it.
+
+Section: Instructions
+
+  S89Src =
+   | S89Reg (Integer)
+   | S89Imm (Integer)
+   | S89Cb (Integer) (Integer)
+
+  S89Add = record {
+   dst : Integer,
+   a : Integer,
+   a-neg : Integer,
+   b : S89Src,
+   b-neg : Integer,
+   c : Integer,
+   x : Integer,
+   out0 : Integer,
+   out1 : Integer,
+   in0 : Integer,
+   in0-neg : Integer,
+   in1 : Integer,
+   in1-neg : Integer
+  }
+
+  S89Cmp = record {
+   pred : Integer,
+   cmp : Integer,
+   signed : Integer,
+   bool-op : Integer,
+   a : Integer,
+   b : S89Src,
+   accum : Integer,
+   accum-neg : Integer
+  }
+
+  S89Shift = record {
+   dst : Integer,
+   right : Integer,
+   kind : Integer,
+   high-half : Integer,
+   low : Integer,
+   shift : S89Src,
+   high : Integer
+  }
+
+  S89Mad = record {
+   dst : Integer,
+   a : Integer,
+   b : S89Src,
+   c : Integer,
+   wide : Integer,
+   signed : Integer
+  }
+
+  S89Mem = record {
+   data : Integer,
+   addr : Integer,
+   offset : Integer,
+   width : Integer,
+   order : Integer
+  }
+
+  S89Body =
+   | S89Mov (Integer) (S89Src)
+   | S89Iadd3 (S89Add)
+   | S89Imad (S89Mad)
+   | S89Prmt (Integer) (Integer) (S89Src) (Integer)
+   | S89Lop3 (Integer) (Integer) (S89Src) (Integer) (Integer)
+   | S89Isetp (S89Cmp)
+   | S89Shf (S89Shift)
+   | S89S2r (Integer) (Integer)
+   | S89Ldc (Integer) (Integer) (Integer) (Integer)
+   | S89Ldg (S89Mem)
+   | S89Stg (S89Mem)
+   | S89Lds (S89Mem)
+   | S89Sts (S89Mem)
+   | S89Bar
+   | S89Hmma (Integer) (Integer) (Integer) (Integer)
+   | S89Fadd (Integer) (Integer) (Integer) (Integer)
+   | S89Fmul (Integer) (Integer) (Integer)
+   | S89Fmax (Integer) (Integer) (Integer)
+   | S89Mufu (Integer) (Integer) (Integer)
+   | S89F2fh (Integer) (Integer)
+   | S89Ldgsts (Integer) (Integer)
+   | S89LdgDepbar
+   | S89Depbar (Integer)
+   | S89Warpsync (Integer)
+   | S89Bra (Integer)
+   | S89Exit
+
+  S89Insn = record {
+   body : S89Body,
+   guard : Integer,
+   guard-neg : Integer,
+   control : CtrlCode
+  }
+
+Section: Validity
+
+  s89-in : Integer, Integer, Integer -> Boolean
+  s89-in (v) (lo) (hi) = if v < lo then False else v <= hi
+
+  s89-reg : Integer -> Boolean
+  s89-reg (r) = s89-in r 0 255
+
+  s89-pair : Integer -> Boolean
+  s89-pair (r) = if s89-in r 0 253 == False then False else bit-and r 1 == 0
+
+  s89-pred : Integer, Integer -> Boolean
+  s89-pred (p) (neg) = if s89-in p 0 7 == False then False else s89-in neg 0 1
+
+  s89-src-error : S89Src, Integer -> Text
+  s89-src-error (s) (neg) =
+    if s89-in neg 0 1 == False then "source"
+    else when s
+     is S89Reg (r) -> if s89-reg r then "" else "register"
+     is S89Imm (v) -> if neg == 1 then "source" else if s89-in v -2147483648 #FFFFFFFF then "" else "source"
+     is S89Cb (bank) (off) -> if s89-in bank 0 31 == False then "source" else if s89-in off 0 #FFFC == False then "source" else if bit-and off 3 == 0 then "" else "source"
+
+  s89-src-is-reg : S89Src -> Boolean
+  s89-src-is-reg (s) =
+    when s
+     is S89Reg (r) -> True
+     is otherwise -> False
+
+  s89-sys-ok : Integer -> Boolean
+  s89-sys-ok (id) = if id == 0 then True else if s89-in id 33 35 then True else s89-in id 37 39
+
+  s89-order-ok : Integer -> Boolean
+  s89-order-ok (o) = if o == 0 then True else if o == 4 then True else if o == 7 then True else o == 10
+
+  s89-wide-ok : Integer, Integer -> Boolean
+  s89-wide-ok (r) (width) =
+    if width == 16 | width == 32 then s89-reg r else if width == 64 then s89-pair r else False
+
+  s89-add-error : S89Add -> Text
+  s89-add-error (i) =
+    let src = s89-src-error i.b i.b-neg
+    in if src /= "" then src
+    else if s89-reg i.dst == False | s89-reg i.a == False | s89-reg i.c == False then "register"
+    else if s89-in i.a-neg 0 1 == False | s89-in i.x 0 1 == False then "modifier"
+    else if i.a-neg == 1 & i.b-neg == 1 then "modifier"
+    else if s89-pred i.out0 0 == False | s89-pred i.out1 0 == False then "predicate"
+    else if s89-pred i.in0 i.in0-neg == False | s89-pred i.in1 i.in1-neg == False then "predicate"
+    else if i.x == 0 & (i.in0 /= 7 | i.in0-neg /= 1 | i.in1 /= 7 | i.in1-neg /= 1) then "predicate"
+    else ""
+
+  s89-mad-error : S89Mad -> Text
+  s89-mad-error (i) =
+    let src = s89-src-error i.b 0
+    in if src /= "" then src
+    else if s89-reg i.a == False | s89-reg i.c == False | s89-reg i.dst == False then "register"
+    else if s89-in i.wide 0 1 == False | s89-in i.signed 0 1 == False then "modifier"
+    else if i.wide == 1 & (s89-pair i.dst == False | (i.c /= 255 & s89-pair i.c == False)) then "register"
+    else ""
+
+  s89-three-error : Integer, Integer, S89Src, Integer, Integer -> Text
+  s89-three-error (d) (a) (s) (c) (neg) =
+    let src = s89-src-error s neg
+    in if src /= "" then src
+    else if s89-reg d == False | s89-reg a == False | s89-reg c == False then "register"
+    else ""
+
+  s89-cmp-error : S89Cmp -> Text
+  s89-cmp-error (i) =
+    let src = s89-src-error i.b 0
+    in if src /= "" then src
+    else if s89-reg i.a == False then "register"
+    else if s89-in i.pred 0 7 == False | s89-pred i.accum i.accum-neg == False then "predicate"
+    else if s89-in i.cmp 1 6 == False | s89-in i.signed 0 1 == False | s89-in i.bool-op 0 2 == False then "modifier"
+    else ""
+
+  s89-amount-error : S89Src -> Text
+  s89-amount-error (s) =
+    when s
+     is S89Imm (v) -> if s89-in v 0 63 then "" else "source"
+     is otherwise -> s89-src-error s 0
+
+  s89-shift-error : S89Shift -> Text
+  s89-shift-error (i) =
+    let src = s89-amount-error i.shift
+    in if src /= "" then src
+    else if s89-reg i.dst == False | s89-reg i.low == False | s89-reg i.high == False then "register"
+    else if s89-in i.right 0 1 == False | s89-in i.high-half 0 1 == False then "modifier"
+    else if i.kind == 1 then "type"
+    else if i.kind /= 0 & i.kind /= 2 & i.kind /= 3 then "type"
+    else ""
+
+  s89-mem-error : S89Mem -> Text
+  s89-mem-error (m) =
+    if s89-pair m.addr == False then "register"
+    else if s89-wide-ok m.data m.width == False then "register"
+    else if s89-in m.offset -8388608 8388607 == False then "offset"
+    else if s89-order-ok m.order == False then "order"
+    else ""
+
+  s89-shared-error : S89Mem -> Text
+  s89-shared-error (m) =
+    if s89-reg m.addr == False then "register"
+    else if s89-wide-ok m.data m.width == False then "register"
+    else if s89-in m.offset -8388608 8388607 == False then "offset"
+    else if m.order /= 7 then "order"
+    else ""
+
+  s89-ldc-error : Integer, Integer, Integer, Integer -> Text
+  s89-ldc-error (d) (width) (bank) (off) =
+    if width == 16 then "width"
+    else if s89-wide-ok d width == False then "register"
+    else if s89-in bank 0 31 == False | s89-in off 0 #FFFF == False then "source"
+    else if int-mod off (width / 8) /= 0 then "source"
+    else ""
+
+ The reuse flags a source may carry: bit 0 source 0, bit 1 source 1, bit 2
+ source 2, each only on a register.
+
+  s89-reuse-mask : S89Body -> Integer
+  s89-reuse-mask (b) =
+    when b
+     is S89Mov (d) (s) -> if s89-src-is-reg s then 2 else 0
+     is S89Iadd3 (i) -> if s89-src-is-reg i.b then 7 else 5
+     is S89Imad (i) -> if s89-src-is-reg i.b then 7 else 5
+     is S89Prmt (d) (a) (s) (b) -> if s89-src-is-reg s then 7 else 5
+     is S89Lop3 (d) (a) (s) (c) (lut) -> if s89-src-is-reg s then 7 else 5
+     is S89Isetp (i) -> if s89-src-is-reg i.b then 3 else 1
+     is S89Shf (i) -> if s89-src-is-reg i.shift then 7 else 5
+     is S89Fadd (d) (a) (b) (neg) -> 3
+     is S89Fmul (d) (a) (b) -> 3
+     is S89Fmax (d) (a) (b) -> 3
+     is otherwise -> 0
+
+  s89-body-error : S89Body -> Text
+  s89-body-error (b) =
+    when b
+     is S89Mov (d) (s) -> if s89-reg d == False then "register" else s89-src-error s 0
+     is S89Iadd3 (i) -> s89-add-error i
+     is S89Imad (i) -> s89-mad-error i
+     is S89Prmt (d) (a) (s) (b) -> s89-three-error d a s b 0
+     is S89Lop3 (d) (a) (s) (c) (lut) -> if s89-in lut 0 255 == False then "modifier" else s89-three-error d a s c 0
+     is S89Isetp (i) -> s89-cmp-error i
+     is S89Shf (i) -> s89-shift-error i
+     is S89S2r (d) (id) -> if s89-reg d == False then "register" else if s89-sys-ok id then "" else "system register"
+     is S89Ldc (d) (width) (bank) (off) -> s89-ldc-error d width bank off
+     is S89Ldg (m) -> s89-mem-error m
+     is S89Stg (m) -> s89-mem-error m
+     is S89Lds (m) -> s89-shared-error m
+     is S89Sts (m) -> s89-shared-error m
+     is S89Bar -> ""
+     is S89Hmma (d) (a) (b) (c) -> ""
+     is S89Fadd (d) (a) (b) (neg) -> if s89-in neg 0 1 == False then "modifier" else s89-three-error d a (S89Reg b) 255 0
+     is S89Fmul (d) (a) (b) -> s89-three-error d a (S89Reg b) 255 0
+     is S89Fmax (d) (a) (b) -> s89-three-error d a (S89Reg b) 255 0
+     is S89Mufu (d) (f) (s) -> if f /= 2 & f /= 3 then "function" else s89-three-error d 0 (S89Reg s) 255 0
+     is S89F2fh (d) (s) -> s89-three-error d 0 (S89Reg s) 255 0
+     is S89Ldgsts (d) (s) -> if s89-reg d == False | s89-pair s == False then "register" else ""
+     is S89LdgDepbar -> ""
+     is S89Depbar (n) -> if s89-in n 0 63 then "" else "count"
+     is S89Warpsync (mask) -> if s89-in mask 0 #FFFFFFFF then "" else "mask"
+     is S89Bra (off) -> if s89-in off -2147483648 2147483632 == False then "offset" else if bit-and off 15 == 0 then "" else "offset"
+     is S89Exit -> ""
+
+  s89-error : S89Insn -> Text
+  s89-error (i) =
+    let c = i.control
+    in if sass-ctrl-valid c == False | c.reuse > 7 then "control"
+    else if bit-and c.reuse (bit-xor (s89-reuse-mask i.body) 7) /= 0 then "control"
+    else if sass89-bar-valid c.write-bar == False | sass89-bar-valid c.read-bar == False then "barrier"
+    else if s89-pred i.guard i.guard-neg == False then "guard"
+    else if i.guard == 7 & i.guard-neg /= 0 then "guard"
+    else s89-body-error i.body
+
+Section: Encoding
+
+  s89-form : S89Src -> Integer
+  s89-form (s) =
+    when s
+     is S89Reg (r) -> 1
+     is S89Imm (v) -> 4
+     is S89Cb (bank) (off) -> 5
+
+  s89-src1 : S89Src, Integer -> Integer
+  s89-src1 (s) (neg) =
+    when s
+     is S89Reg (r) -> bit-or (bit-shl r 32) (bit-shl neg 63)
+     is S89Imm (v) -> bit-shl (bit-and v #FFFFFFFF) 32
+     is S89Cb (bank) (off) -> bit-or (bit-shl off 38) (bit-or (bit-shl bank 54) (bit-shl neg 63))
+
+  s89-alu : Integer, S89Src, Integer, Integer, Integer -> Integer
+  s89-alu (op) (s) (neg) (d) (a) =
+    bit-or op (bit-or (bit-shl (s89-form s) 9) (bit-or (bit-shl d 16) (bit-or (bit-shl a 24) (s89-src1 s neg))))
+
+  s89-mem-kind : Integer -> Integer
+  s89-mem-kind (w) = if w == 64 then 5 else if w == 16 then 2 else 4
+
+  s89-mem-high : S89Mem -> Integer
+  s89-mem-high (m) =
+    let kind = s89-mem-kind m.width
+    in bit-or (bit-shl 1 8) (bit-or (bit-shl kind 9) (bit-or (bit-shl m.order 13) (bit-shl 1 20)))
+
+  s89-mem-low : Integer, Integer, Integer -> Integer
+  s89-mem-low (op) (a) (off) =
+    bit-or op (bit-or (bit-shl a 24) (bit-shl (bit-and off #FFFFFF) 40))
+
+  s89-low : S89Body -> Integer
+  s89-low (b) =
+    when b
+     is S89Mov (d) (s) -> s89-alu 2 s 0 d 0
+     is S89Iadd3 (i) -> s89-alu #10 i.b i.b-neg i.dst i.a
+     is S89Imad (i) -> s89-alu (if i.wide == 1 then #25 else #24) i.b 0 i.dst i.a
+     is S89Prmt (d) (a) (s) (b) -> s89-alu #16 s 0 d a
+     is S89Lop3 (d) (a) (s) (c) (lut) -> s89-alu #12 s 0 d a
+     is S89Isetp (i) -> s89-alu #C i.b 0 0 i.a
+     is S89Shf (i) -> s89-alu #19 i.shift 0 i.dst i.low
+     is S89S2r (d) (id) -> bit-or #919 (bit-shl d 16)
+     is S89Ldc (d) (width) (bank) (off) -> bit-or #B82 (bit-or (bit-shl d 16) (bit-or (bit-shl 255 24) (bit-or (bit-shl off 38) (bit-shl bank 54))))
+     is S89Ldg (m) -> bit-or (s89-mem-low #981 m.addr m.offset) (bit-or (bit-shl m.data 16) (bit-shl 63 32))
+     is S89Stg (m) -> bit-or (s89-mem-low #386 m.addr m.offset) (bit-shl m.data 32)
+     is S89Lds (m) -> bit-or (s89-mem-low #984 m.addr m.offset) (bit-shl m.data 16)
+     is S89Sts (m) -> bit-or (s89-mem-low #988 m.addr m.offset) (bit-shl m.data 32)
+     is S89Bar -> #B1D
+     is S89Hmma (d) (a) (b) (c) -> 0
+     is S89Fadd (d) (a) (b) (neg) -> s89-alu #21 (S89Reg b) neg d a
+     is S89Fmul (d) (a) (b) -> s89-alu #20 (S89Reg b) 0 d a
+     is S89Fmax (d) (a) (b) -> s89-alu #9 (S89Reg b) 0 d a
+     is S89Mufu (d) (f) (s) -> s89-alu #108 (S89Reg s) 0 d 0
+     is S89F2fh (d) (s) -> s89-alu #104 (S89Reg s) 0 d 0
+     is S89Ldgsts (d) (s) -> bit-or #FAE (bit-or (bit-shl d 16) (bit-shl s 24))
+     is S89LdgDepbar -> #9AF
+     is S89Depbar (n) -> bit-or #91A (bit-or (bit-shl 1 47) (bit-shl n 38))
+     is S89Warpsync (mask) -> bit-or #948 (bit-shl mask 32)
+     is S89Bra (off) -> bit-or #947 (bit-shl (bit-and off #FFFFFFFF) 32)
+     is S89Exit -> #94D
+
+  s89-add-high : S89Add -> Integer
+  s89-add-high (i) =
+    let ins = bit-or (bit-shl i.in1 13) (bit-or (bit-shl i.in1-neg 16) (bit-or (bit-shl i.in0 23) (bit-shl i.in0-neg 26)))
+    in let outs = bit-or (bit-shl i.out0 17) (bit-shl i.out1 20)
+    in bit-or i.c (bit-or (bit-shl i.a-neg 8) (bit-or (bit-shl i.x 10) (bit-or ins outs)))
+
+  s89-cmp-high : S89Cmp -> Integer
+  s89-cmp-high (i) =
+    let mods = bit-or (bit-shl i.signed 9) (bit-or (bit-shl i.bool-op 10) (bit-shl i.cmp 12))
+    in let preds = bit-or (bit-shl i.pred 17) (bit-or (bit-shl 7 20) (bit-or (bit-shl i.accum 23) (bit-shl i.accum-neg 26)))
+    in bit-or (bit-shl 7 4) (bit-or mods preds)
+
+  s89-high : S89Body -> Integer
+  s89-high (b) =
+    when b
+     is S89Mov (d) (s) -> bit-shl 15 8
+     is S89Iadd3 (i) -> s89-add-high i
+     is S89Imad (i) -> bit-or i.c (bit-or (bit-shl i.signed 9) (bit-or (bit-shl 7 17) (bit-shl 15 23)))
+     is S89Prmt (d) (a) (s) (b) -> b
+     is S89Lop3 (d) (a) (s) (c) (lut) -> bit-or c (bit-or (bit-shl lut 8) (bit-or (bit-shl 7 17) (bit-shl 15 23)))
+     is S89Isetp (i) -> s89-cmp-high i
+     is S89Shf (i) -> bit-or i.high (bit-or (bit-shl i.kind 9) (bit-or (bit-shl i.right 12) (bit-shl i.high-half 16)))
+     is S89S2r (d) (id) -> bit-shl id 8
+     is S89Ldc (d) (width) (bank) (off) -> bit-shl (if width == 64 then 5 else 4) 9
+     is S89Ldg (m) -> bit-or (s89-mem-high m) (bit-or (bit-shl 7 17) (bit-or (bit-shl 1 26) (bit-shl 1 27)))
+     is S89Stg (m) -> s89-mem-high m
+     is S89Lds (m) -> bit-shl (s89-mem-kind m.width) 9
+     is S89Sts (m) -> bit-or 63 (bit-or (bit-shl (s89-mem-kind m.width) 9) (bit-shl 1 27))
+     is S89Bar -> 0
+     is S89Hmma (d) (a) (b) (c) -> 0
+     is S89Fadd (d) (a) (b) (neg) -> 0
+     is S89Fmul (d) (a) (b) -> 0
+     is S89Fmax (d) (a) (b) -> bit-shl 15 23
+     is S89Mufu (d) (f) (s) -> bit-shl f 10
+     is S89F2fh (d) (s) -> #200800
+     is S89Ldgsts (d) (s) -> #F901C48
+     is S89LdgDepbar -> 0
+     is S89Depbar (n) -> 0
+     is S89Warpsync (mask) -> bit-shl 7 23
+     is S89Bra (off) -> bit-or (bit-shl 7 23) (if off < 0 then #3FFFF else 0)
+     is S89Exit -> bit-shl 7 23
+
+ HMMA.16816.F32 is Sass89Hmma's encoding, F16 inputs.
+
+  sass89-encode : S89Insn -> Sass89Encoding
+  sass89-encode (i) =
+    when i.body
+     is S89Hmma (d) (a) (b) (c) -> sass89-hmma (Hmma89 { k = 16, accum-bits = 32, dst = d, a = a, b = b, c = c, guard = i.guard, guard-neg = i.guard-neg, control = i.control })
+     is otherwise -> s89-encode-int i
+
+  s89-encode-int : S89Insn -> Sass89Encoding
+  s89-encode-int (i) =
+    let error = s89-error i
+    in if error /= "" then Sass89Refused error
+    else let low = bit-or (s89-low i.body) (bit-or (bit-shl i.guard 12) (bit-shl i.guard-neg 15))
+    in Sass89Words low (bit-or (s89-high i.body) (sass89-control-high i.control))

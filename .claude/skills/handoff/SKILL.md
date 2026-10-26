@@ -28,11 +28,11 @@ Gather, with tools (do not answer from memory):
    and that turn reports it in `cache_read`.
 
    ```powershell
-   build/measure-context.ps1 -Lane <your lane>            # one row: percent, at-rest, last write, compaction
-   build/measure-context.ps1 -Lane <your lane> -Percent   # the whole number status.json carries
+   tools/agents/measure-context.ps1 -Lane <your lane>            # one row: percent, at-rest, last write, compaction
+   tools/agents/measure-context.ps1 -Lane <your lane> -Percent   # the whole number status.json carries
    ```
 
-   The tool is the formula (`build/measure-context.ps1`, its header states
+   The tool is the formula (`tools/agents/measure-context.ps1`, its header states
    it); a copy of the script in a skill is what drifted before. It is
    compaction-aware: after a `/compact` and before your first turn it says
    so instead of printing the pre-compaction number.
@@ -57,7 +57,13 @@ Gather, with tools (do not answer from memory):
 "58% is not enough action on the context we load at init; agent estimates
 of token spend are almost always very much over"; 75 ruled 2026-09-28).** Pick a unit that fits
 250k free and work. A wrap you start under 75 is cancelled by root and the
-session resumed. At 75 measured, or when root orders it, wrap.
+session resumed. **75 is a start threshold, not an end one** (Damian,
+2026-10-24: "75% is a start project threshold, not an end project
+threshold"; "you are effective through the low 80's on many things, so stop
+worrying if you are close to 75. only worry when you are beyond 75"): past
+75 measured, start no new large unit; finish the unit in hand and take small
+ones, then wrap. Under 75 the handoff does not enter the decision at all, and
+73 is not close to it. When root orders it, wrap.
 
 **The test is the number measured at the START of the turn, never a forecast
 of where the next unit will end** (Damian, 2026-09-24). Under 75 at turn

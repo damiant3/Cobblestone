@@ -1,6 +1,14 @@
 Chapter: BvtHerbReach
   cites Uoaix chapter CompositeGameRules
   cites Uoaix chapter CityWorkers
+  cites Uoaix chapter CompositeGatherer
+  cites Uoaix chapter Teleporters
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter BritainProduction
+  cites Uoaix chapter EconomyGatherer
+  cites Uoaix chapter EconomyHarvest
+  cites Uoaix chapter WalkMap
+  cites Uoaix chapter Cities
   cites Uoaix chapter BvtNpcMove
   cites Uoaix chapter BvtCheck
 
@@ -9,6 +17,8 @@ Chapter: BvtHerbReach
  town entrance both ways (cw-sale-reach). On BvtNpcMove's fixture, Britain's herbalist (shop 12): open ground routes;
  a ring of colliders 3 tiles round the keeper walls its sale tile off. Each arm takes a fixture of its own, so the
  route cache of one cannot answer for the other.
+ The hop arm walls the same ring and adds two teleporters, beside the entrance into the ring and from the ring back out
+ (Jhelom's herbalist stands on an island its town reaches only so); the walled arm, with no teleporters, is its control.
   bhr-wall : WalkMap, Integer, Integer, Integer -> Integer
   bhr-wall (map) (x) (y) (i) = if i >= 49 then 0
     else let dx = int-mod i 7 - 3
@@ -23,7 +33,7 @@ Chapter: BvtHerbReach
       is None -> -2
       is Just (t) -> when owner.town-map
         is None -> -3
-        is Just (map) -> if is-ok (cw-sale-reach cw-britain t map bb-herbalist) then 1 else 0
+        is Just (map) -> if is-ok (cw-sale-reach cw-britain t map 0 bb-herbalist) then 1 else 0
   bhr-walled : Integer -> Integer
   bhr-walled (unused) = when bnm-founded 0
     is Err (_) -> -1
@@ -34,11 +44,82 @@ Chapter: BvtHerbReach
         is Just (map) -> when world-get t.vendors.game.world (list-at t.vendors.vendors bb-herbalist).serial
           is Err (_) -> -4
           is Ok (keeper) -> let built = bhr-wall map keeper.x keeper.y 0
-            in if built < 24 then -5 else if is-ok (cw-sale-reach cw-britain t map bb-herbalist) then 0 else 2
+            in if built < 24 then -5 else if is-ok (cw-sale-reach cw-britain t map 0 bb-herbalist) then 0 else 2
+  bhr-row : Integer, Integer, BbSpot, BbSpot -> Integer
+  bhr-row (tp) (i) (from) (to) = let at = i * tp-row-bytes
+    in let a = poke-qword tp at from.x in let b = poke-qword tp (at + 8) from.y in let c = poke-qword tp (at + 16) from.z
+    in let d = poke-qword tp (at + 24) to.x in let e = poke-qword tp (at + 32) to.y in poke-qword tp (at + 40) to.z
+  bhr-mob : Integer -> WorldObject
+  bhr-mob (unused) = WorldObject { serial = 0, kind = 1, x = 0, y = 0, z = 0, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+ Bits: 1 the walled sale tile admitted, 2 the way in picked from beside the entrance, 4 the way out picked from the sale
+ tile, 8 no pick with no teleporters, 16 a fixture whose landing is the sale tile itself (no plan leg would run).
+  bhr-hop : Integer -> Integer
+  bhr-hop (unused) = when bnm-founded 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.town
+      is None -> -2
+      is Just (t) -> when owner.town-map
+        is None -> -3
+        is Just (map) -> when world-get t.vendors.game.world (list-at t.vendors.vendors bb-herbalist).serial
+          is Err (_) -> -4
+          is Ok (keeper) -> let w = t.vendors.game.world
+            in let box = cgg-sale-box keeper.x keeper.y bb-herbalist
+            in when bb-placement w map box 0
+              is Err (_) -> -6
+              is Ok (spot) -> let built = bhr-wall map keeper.x keeper.y 0
+                    in let inside = cgg-beside t (bhr-mob 0) map spot 0
+                    in let back = cgg-beside t (bhr-mob 0) map spot 1
+                    in let outside = cgg-beside t (bhr-mob 0) map t.entrance 0
+                    in let tp = cb-zeroed (tpd-count * tp-row-bytes)
+                    in let a = bhr-row tp 0 outside inside
+                    in let b = bhr-row tp 1 back outside
+                    in if built < 24 then -5
+                    else let admitted = if is-ok (cw-sale-reach cw-britain t map tp bb-herbalist) then 1 else 0
+                    in let way-in = if cgg-pick-via tp map outside.x outside.y spot 0 (0 - 1) 0 == 0 then 2 else 0
+                    in let way-out = if cgg-pick-via tp map spot.x spot.y t.entrance 0 (0 - 1) 0 == 1 then 4 else 0
+                    in let none = if cgg-pick-via 0 map spot.x spot.y t.entrance 0 (0 - 1) 0 < 0 then 8 else 0
+                    in let same = if inside.x == spot.x & inside.y == spot.y then 16 else 0
+                    in admitted + way-in + way-out + none + same
+ Trial 46520: Jhelom's herb farmer crossed, sold, and stuck at the herbalist on the way home (leg 3, via the entrance,
+ blocked 2048): a hop was refused while walking via the entrance. On the islands' strip (BvtCityKeeperLeisure's
+ window), a worker at the herbalist bound for the town entrance with two failed plans picks the teleporter at
+ 1406,3996 via the entrance (1) as off it (2); one failed plan (4) or no teleporters (8) picks none.
+  bhr-at : Integer, Integer, Integer -> Boolean
+  bhr-at (tp) (i) (x) = i >= 0 & tp-at tp i 0 == x
+  bhr-home : Integer -> Integer
+  bhr-home (unused) = when bb-economy 0
+    is Err (_) -> -1
+    is Ok (x) -> let r = cgg-resource-of x.world 15 0
+      in when egg-new-for x 3702 (cgg-lumber-place + 5000) r 0
+        is Err (_) -> -2
+        is Ok (g) -> when walk-map-new 1400 3816 72 208
+          is Err (_) -> -3
+          is Ok (map) -> let spot = BbSpot { x = 1427, y = 3981, z = 5 }
+            in let w = cgg-make-in (cw-skara (ct-table 0) (ct-city-shops 0) ct-shop-roles) g 0 spot spot 3 1 0 0
+            in let tp = tp-load 0
+            in let mob = WorldObject { serial = 0, kind = 1, x = 1427, y = 3981, z = 5, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+            in let entrance = BbSpot { x = 1371, y = 3810, z = 0 }
+            in let a = __record-set w "tp" tp
+            in let b = __record-set w.walk "fails" 2
+            in let via = if bhr-at tp (cgg-hop-pick w mob map entrance) 1406 then 1 else 0
+            in let c = __record-set w "hop" (0 - 1)
+            in let d = __record-set w "via" 0
+            in let off = if bhr-at tp (cgg-hop-pick w mob map entrance) 1406 then 2 else 0
+            in let e = __record-set w "hop" (0 - 1)
+            in let f = __record-set w.walk "fails" 1
+            in let once = if cgg-hop-pick w mob map entrance < 0 then 4 else 0
+            in let h = __record-set w.walk "fails" 2
+            in let i = __record-set w "tp" 0
+            in let none = if cgg-hop-pick w mob map entrance < 0 then 8 else 0
+            in via + off + once + none
   bvt-herb-reach : Integer -> [Console] Integer
   bvt-herb-reach (unused) = act
     n <- bhr-open 0
     m <- bhr-walled 0
+    h <- bhr-hop 0
     a <- bvt-check ("a herb farmer's buyer whose sale tile routes from the town entrance admits it, and one walled off refuses it (cw-sale-reach, codes " & show n & " " & show m & ")") (n == 1 & m == 2)
-    a
+    b <- bvt-check ("a walled sale tile one teleporter reaches each way admits its herb farmer, and a worker picks the teleporter in and the one out (UOAIX-260, Jhelom's herbalist; code " & show h & ")") (h == 15)
+    k <- bhr-home 0
+    c <- bvt-check ("a city worker bound home across water picks its teleporter while walking via the entrance too, and not before two failed plans or with no teleporters (UOAIX-260, trial 46520; code " & show k & ")") (k == 15)
+    a + b + c
   end

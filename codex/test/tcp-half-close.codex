@@ -1,0 +1,59 @@
+Chapter: TcpHalfClose
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+Section: Arms
+
+  thc-me : List Integer = [10, 0, 2, 15]
+  thc-peer : List Integer = [10, 0, 2, 2]
+
+  thc-seg : Integer, Integer, Integer -> TcpSegment
+  thc-seg (seq) (ack) (flags) = tcp-segment-of 50000 9443 seq ack flags 8192 []
+
+  thc-lis : TcpConnection = tcp-set-state (tcp-new-connection 9443 [10, 0, 2, 15] 0 [10, 0, 2, 2] 1000) TcpListening
+  thc-synr : TcpStep = tcp-step thc-lis (EvSegment (thc-seg 7000 0 tcp-flag-syn))
+  thc-est : TcpStep = tcp-step (thc-synr.conn) (EvSegment (thc-seg 7001 1001 tcp-flag-ack))
+  thc-fw1 : TcpStep = tcp-step (set-remote (thc-est.conn) 50000 thc-peer) EvClose
+
+  thc-session : TcpConnection -> NetSession
+  thc-session (c) = set-conn (net-session-new-at [2, 0, 0, 0, 0, 1] thc-me thc-peer 9443 50000 thc-peer 1000) c
+
+  thc-fw2 : NetResult = net-process-frame (thc-session (thc-fw1.conn)) (thc-frame 7001 1002 tcp-flag-ack [])
+
+  thc-frame : Integer, Integer, Integer, List Integer -> List Integer
+  thc-frame (seq) (ack) (flags) (payload) =
+    let tcp = tcp-with-checksum (tcp-build-segment 50000 9443 seq ack flags 8192 payload) thc-peer thc-me
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (ip-build-packet thc-peer thc-me ip-proto-tcp tcp)
+
+  thc-acked : NetResult -> Text
+  thc-acked (r) =
+    if net-outbox-count (r.session) == 0 then "nothing sent"
+    else "acked " & show (read-be32 (net-outbox-frame (r.session) 0) (eth-header-size + ip-header-size + 8))
+
+  thc-line : NetResult -> Text
+  thc-line (r) =
+    r.output & ", " & tcp-state-name (r.session.conn.state) & ", recv-next " & show (r.session.conn.recv-next) & ", " & thc-acked r
+    & (if r.data-stop > r.data-off then ", first byte " & show (list-at (r.data) (r.data-off)) else "")
+
+  thc-step-line : TcpStep -> Text
+  thc-step-line (s) = tcp-state-name (s.conn.state) & ", recv-next " & show (s.conn.recv-next)
+
+  psh-ack : Integer = bit-or tcp-flag-ack tcp-flag-psh
+  fin-psh-ack : Integer = bit-or tcp-flag-fin psh-ack
+
+  opening : [Console] Nothing = act
+    print-line-uni ("syn-received, ack of our syn = " & thc-step-line thc-est)
+    print-line-uni ("syn-received, ack of another number = " & thc-step-line (tcp-step (thc-synr.conn) (EvSegment (thc-seg 7001 5000 tcp-flag-ack))))
+    print-line-uni ("syn-received, data acking another number = " & thc-step-line (tcp-step (thc-synr.conn) (EvSegment (tcp-segment-of 50000 9443 7001 5000 psh-ack 8192 [104, 105]))))
+    print-line-uni ("fin-wait-1, five bytes = " & thc-line (net-process-frame (thc-session (thc-fw1.conn)) (thc-frame 7001 1001 psh-ack [104, 101, 108, 108, 111])))
+    print-line-uni ("fin-wait-1, five bytes acking our fin = " & thc-line (net-process-frame (thc-session (thc-fw1.conn)) (thc-frame 7001 1002 psh-ack [104, 101, 108, 108, 111])))
+    print-line-uni ("fin-wait-1, fin with five bytes = " & thc-line (net-process-frame (thc-session (thc-fw1.conn)) (thc-frame 7001 1002 fin-psh-ack [104, 101, 108, 108, 111])))
+    print-line-uni ("fin-wait-1, five bytes past a gap = " & thc-line (net-process-frame (thc-session (thc-fw1.conn)) (thc-frame 7009 1001 psh-ack [104, 101, 108, 108, 111])))
+    print-line-uni ("fin-wait-1, bare ack of our fin = " & thc-line thc-fw2)
+    print-line-uni ("fin-wait-2, five bytes = " & thc-line (net-process-frame (thc-fw2.session) (thc-frame 7001 1002 psh-ack [104, 101, 108, 108, 111])))
+    print-line-uni ("fin-wait-2, fin with five bytes = " & thc-line (net-process-frame (thc-fw2.session) (thc-frame 7001 1002 fin-psh-ack [104, 101, 108, 108, 111])))
+    print-line-uni ("fin-wait-2, bare fin = " & thc-line (net-process-frame (thc-fw2.session) (thc-frame 7001 1002 (bit-or tcp-flag-fin tcp-flag-ack) [])))
+  end
+
+Page 1

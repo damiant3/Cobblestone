@@ -2,9 +2,9 @@
 #
 # Hand-written. There is no generator for this file.
 #
-#   pwsh build/p4-metal-diffs.ps1
-#   pwsh build/p4-metal-diffs.ps1 -File //Codex/main/CLAUDE.md -Out claude.md
-#   pwsh build/p4-metal-diffs.ps1 -Pattern 'sitting|stick' -MaxRev 50
+#   pwsh tools/agents/p4-metal-diffs.ps1
+#   pwsh tools/agents/p4-metal-diffs.ps1 -File //Codex/main/CLAUDE.md -Out claude.md
+#   pwsh tools/agents/p4-metal-diffs.ps1 -Pattern 'sitting|stick' -MaxRev 50
 #
 # WHY THIS EXISTS. A register written under R-HISTORY replaces each row in
 # place, therefore the current revision holds no history of itself and
@@ -35,12 +35,15 @@ param(
     [string]$Out = '',
     [string]$Pattern = 'sitting|stick|metal|ASUS|flight|board|bed|flash|rehears',
     [int]$MaxRev = 0,
-    [int]$FirstRev = 1
+    [int]$FirstRev = 1,
+    [string]$Repo = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+if (-not $Repo) { $Repo = @(& p4 -ztag -F '%clientRoot%' info)[0] }
+if (-not $Repo -or -not (Test-Path -LiteralPath $Repo -PathType Container)) { throw "p4-metal-diffs: no workspace root; pass -Repo" }
+$Repo = (Resolve-Path -LiteralPath $Repo).Path
 Set-Location $Repo
 
 Write-Host "p4-metal-diffs: $File"

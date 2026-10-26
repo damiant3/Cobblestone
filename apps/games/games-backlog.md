@@ -39,8 +39,6 @@ head's 36,563 until main 30043). The globe WGSL (`build.ps1:380`) and
 scratch and compare bytes, or run the module's grader
 (`apps/fishtank/ft-verify.mjs`) by hand before a publish.
 
-## Rules campaign: open
-
 ## CodexMagic integration
 
 **The named skill ladder needs validation on shuffled play.** The MAIN33929
@@ -55,10 +53,6 @@ holdout, approved shuffle correction and reporting contract. Tuning remains open
 ranked/casual selector. Requiring Master in ranked play needs that mode contract
 and wiring; the current skill-level ranking unit does not invent one
 (root ruling 2026-10-01).
-
-**Crafting cannot share a unit with the card-game Engine.** A citer of
-`codexmagic/Crafting.codex` that also adds the card-game Engine collides on
-`advance-turn` with RPGEngine; no live application unit does this.
 
 ## Where game defects hide
 

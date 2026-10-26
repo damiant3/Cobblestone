@@ -67,35 +67,37 @@ for ($i = 0; $i -lt $sources.Count; $i++) {
     New-Item -ItemType Directory -Force -Path $testOut | Out-Null
     $resolved = Resolve-Order $sources[$i]
     if ($null -eq $resolved) {
-        "8" | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
-        "error 3010: foreword resolution failed" | Set-Content -Path (Join-Path $testOut 'build.log') -Encoding UTF8
-        continue
-    }
+    "8" | Set-Content -Path (Join-Path $testOut '.exitcode') -Encoding UTF8
+    "error 3010: foreword resolution failed" | Set-Content -Path (Join-Path $testOut 'build.log') -Encoding UTF8
+    continue
+}
     $testNames.Add($name)
     # The regions ride along so build.log can name the file and the file's own
-    # line. This assembler builds its own unit and writes its own log, so it
-    # has to map back itself -- compile.ps1 doing it is not enough, and the
-    # battery is the path that matters for a `.failing` position pin.
+# line. This assembler builds its own unit and writes its own log, so it
+# has to map back itself -- compile.ps1 doing it is not enough, and the
+# battery is the path that matters for a `.failing` position pin.
     $regionsByName[$name] = Get-DiagRegions -Ordered $resolved.Ordered -SrcPath $sources[$i]
     $flagsFile = Join-Path ([System.IO.Path]::GetDirectoryName($sources[$i])) "$name.flags"
     $extraFlags = if (Test-Path -PathType Leaf $flagsFile) { ' ' + (Get-Content -TotalCount 1 $flagsFile).Trim() } else { '' }
     # Plain CDX: the batch session loops because the SEED is repl-built.
-    # A per-request 'repl' flag would embed a REPL loop in the TEST binary
-    # (hangs stdin-consuming tests); the 'map' flag would stream the full
-    # symbol map over serial per test (the battery-wide map tax). Test
-    # binaries get Exit mode and halt cleanly on their own.
+# A per-request 'repl' flag would embed a REPL loop in the TEST binary
+# (hangs stdin-consuming tests); the 'map' flag would stream the full
+# symbol map over serial per test (the battery-wide map tax). Test
+# binaries get Exit mode and halt cleanly on their own.
     $inputWriter.Write("CDX$extraFlags`n")
     $srcChars = 0
     foreach ($l in (Format-CiteChapters -Ordered $resolved.Ordered)) { $inputWriter.Write($l); $inputWriter.Write("`n"); $srcChars += $l.Length + 1 }
     foreach ($l in $resolved.Lines) { $inputWriter.Write($l); $inputWriter.Write("`n"); $srcChars += $l.Length + 1 }
     $inputWriter.Write([char]4)
     # Census instrumentation: the resolved concat size is the best host-side
-    # proxy for a test's compile cost inside a batch (the VM's output file
-    # flushes on exit, so per-test wall time is not observable from here).
+# proxy for a test's compile cost inside a batch (the VM's output file
+# flushes on exit, so per-test wall time is not observable from here).
     "$srcChars" | Set-Content -Path (Join-Path $testOut '.src-bytes') -Encoding UTF8
 }
 $inputWriter.Dispose()
 if ($testNames.Count -eq 0) { Remove-Item $inputFile -Force -ErrorAction SilentlyContinue; exit 0 }
+
+
 $outputFile = [System.IO.Path]::GetTempFileName()
 $stderrFile = [System.IO.Path]::GetTempFileName()
 # -Kernel is what the CALLER decided to grade with. Without it this script read

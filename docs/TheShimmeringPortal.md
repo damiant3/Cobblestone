@@ -186,6 +186,16 @@ Build trees with the constructors: `widget-panel`, `widget-label`,
 `widget-dropdown`, `widget-toolbar`, `widget-menu`, `widget-tabs`,
 `widget-list-view`, `widget-number-field`, `widget-text-area`.
 
+A label's and a button's text is set as text, never parsed as HTML, so it may carry what a user typed. Numeric
+entities (`&#8594;`, `&#x2713;`) and the named ones `amp apos bull darr gt hellip larr ldquo lt mdash middot nbsp ndash
+quot rarr rdquo shy times uarr` are decoded to their characters (`_wkEnt`); any other `&...;` shows as typed.
+`codex/plugs/html/arms/widget-entity.mjs` grades it.
+
+A checked-in app page (`apps/*/web/*.html`) holds the runtime of whichever plug last built it, so a runtime fix reaches
+it only when the page is rebuilt, and a rebuild also brings every other emitter change since its last build (the
+codexmagic marketplace page grew from 316 to 1,126 lines on 2026-10-18). Rebuild `codex/plugs/html/build-output/html-plug.cdx`
+with `codex/plugs/html/build.ps1` before an arm: `run.ps1` runs whatever that binary is.
+
 `WkCustom` is the escape hatch, and the browser apps lean on it. The
 `WebWidgets` chapter (Path A, see Chapter 3) wraps it: `widget-box id
 cls children` emits a `WkCustom` tagged `box:<cls>`, which the plug
@@ -379,7 +389,8 @@ tree, its data helpers, and its click/input handlers.
   handler` (answers the frame's requests: request text and a reply callback) and, in the framed page,
   `host-request-then text cb`; plugs-backlog HTML-FRAME, `codex/plugs/html/arms/frame.mjs`
 - **Dialogs** -- `show-alert`, `show-confirm`, `show-prompt`,
-  `close-dialog` (real `<dialog>` elements, `showModal()`)
+  `close-dialog` (real `<dialog>` elements, `showModal()`); the title and message are set as text, never parsed as
+  HTML, so they may carry what a user typed; `codex/plugs/html/arms/dialog.mjs` grades it
 - **A11y** -- `dom-set-aria`, `dom-set-role`; `dom-apply-a11y id info`
   (WebA11y) applies a whole `A11yInfo`: `RoleNone`, an empty text, `LiveOff`,
   a focus order of 0 and `None` set nothing, and the value range is written
@@ -869,3 +880,12 @@ pwsh apps\games\server.ps1 -Port 8080
 ```powershell
 pwsh build\build-magic-pages.ps1
 ```
+
+### Serve the compile page from our own kernel
+```powershell
+pwsh apps\landing\serve-compile.ps1          # http://127.0.0.1:<port>/, local only
+pwsh apps\landing\serve-compile.ps1 -Test    # byte-for-byte fetch, embedded compiler wasm, 404, refusal, memory
+```
+`CompileServer.codex` reads a site disk the script writes from
+`apps/landing/web/compile` into memory at boot and sends each file from that
+buffer through `web-serve-concurrent-with`, one segment at a time.

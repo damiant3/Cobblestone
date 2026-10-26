@@ -229,10 +229,15 @@ card, in a window or a sitting.
       isolated emitter timings. Each new guest timing was below one timer
       tick, so timing does not establish a scaling curve. The first-slice
       listing is byte-identical and passes maxas.
-    - **Remaining cost limits:** scheduler control-code accumulation
-      (`SassSched.sched-step`) and listing text accumulation
-      (`SassLower.sass-listing-groups`) still copy growing prefixes. The
-      instruction-accumulator proof does not establish linear whole-plug cost.
+    - **Whole-plug cost:** the scheduler pushes each control code
+      (`SassSched.sched-step`), and the listing pushes its lines and joins
+      them once (`SassLower.sass-listing-groups`, `sass-emit-defs`,
+      `text-concat-list`). `emit-cost.codex`'s SCHED and LIST lines, graded
+      by `test-maxas.ps1`, measured 2026-10-18 with seed `292381CBBECE88CA`
+      at 512/1,024/2,048/4,096 instructions: 203,640/407,432/815,000/1,630,120
+      bytes to schedule and 933,736/1,886,016/3,761,640/7,529,472 to list.
+      The prefix-copying forms measured 1,274,648 to 68,919,064 and 6,781,480
+      to 380,812,456 over the same sizes, and fail the check.
   - **No cubin.** Our own driver loads kernels at stage 4, so an sm_52
     cubin would serve only NVIDIA's loader and the vendor tools, one ruled
     out and the other deferred (root, 2026-09-30).
@@ -244,9 +249,136 @@ card, in a window or a sitting.
     packs F16-input HMMA m16n8k8/m16n8k16 with F16 or F32 accumulation,
     guarded by P0..P6 or PT, and three source reuse bits. Scheduling fields
     are raw bits; barriers are 0..5 or 7 for none. Register indices are
-    encoded, not a proof of fragment allocation or alignment. The SM 5.2
-    plug driver remains unchanged; SM 8.9 lowering and other instructions
-    remain open.
+    encoded, not a proof of fragment allocation or alignment.
+  - **First-kernel slice:** `codex/plugs/sass/Sass89Int.codex` encodes
+    MOV, IADD3 (.X, carry-in and carry-out predicates), IMAD and
+    IMAD.WIDE, PRMT, LOP3, ISETP (32-bit), SHF, S2R, LDC, LDG, STG, LDS, STS,
+    register, immediate or constant-bank sources where the instruction
+    takes them. LDG is NAK's SM 8.9 uniform-register form (0x981); STG is
+    0x386, the only STG form turingas encodes, which NAK writes below
+    SM 7.3. Refused because turingas cannot grade them: ISETP .EX, SHF
+    .U64 (NAK writes 1, turingas 0), strong-CTA memory order, and every
+    eviction priority but normal (turingas looks up .EF and .LU without
+    their dot).
+  - **Its grade:** `build/sass89-int-oracle.ps1` runs the same pinned
+    turingas over 86 vectors (`sass89-int-turingas`, every word equal);
+    `sass89-int-refuse` pins 36 refusals. Controls, run at 51 vectors: a
+    sabotaged MOV opcode changes exactly the five MOV rows, a sabotaged
+    control bit all 51. Which global-store form and which memory-order
+    values Ada executes is a hardware question (unknown 8).
+  - **The SM 8.9 plug path:** `run.ps1 -Sm 89`. `SassLower` lowers to
+    target-neutral operations; `SassLower`'s own selection expands them for
+    SM 5.2 (its listing unchanged), `Sass89Lower` for SM 8.9, with
+    `Sass89Sched` setting the controls (turingas's latencies; S2R, LDG and
+    STG through the barriers as in stage 1). A 64-bit add is IADD3 with
+    its carry in a free predicate, then IADD3.X; a 64-bit comparison is
+    three 32-bit ISETPs (low words unsigned, AND high-word equality, OR the
+    signed high-word comparison), cleared first under a guard; a 64-bit
+    multiply is IMAD.WIDE.U32 of the low words and two IMADs of the cross
+    products; a signed division by a power-of-two literal biases a negative
+    dividend by 2^k - 1 and shifts the pair right by k. A call in tail
+    position to the function being lowered (the kernel, or an inlined
+    helper that names itself) is a loop: the arguments move into the
+    parameter registers and a guarded BRA returns to the head, which waits
+    on every pending barrier. There is no BSSY/BSYNC: turingas does not
+    encode their barrier register, so nested loops could not be graded,
+    and an HMMA inside a loop needs a warp-uniform loop condition, as
+    CUDA's wmma does. The y and z thread and block indices are S2R; the
+    block and grid dimensions are constant-bank words at our layout's
+    offsets; 16- and 32-bit device loads (zero-extended) and stores are
+    LDG.E.U16, LDG.E, STG.E.U16 and STG.E at a byte address. Shared memory
+    is LDS and STS at the low word of the address in the block's shared
+    window, our layout putting the kernel's buffer at 0 (`shared-base`);
+    `sync-threads` is BAR.SYNC 0, which waits on every pending barrier.
+    LDS is 0x984 with uniform addressing clear, the only LDS turingas
+    encodes (NAK sets it at SM 8.9). SM 5.2 refuses multiply, divide,
+    loops, narrow and shared memory.
+    `codex/plugs/sass/test-turingas.ps1`
+    rebuilds the plug, lists `first-slice.codex` for SM 8.9 and runs every
+    line, control notation included, through turingas's ProcessAsmLine and
+    GenCode: 740 instructions, every word equal, and every BRA goes backward
+    inside its kernel. Controls, run at 104: a
+    sabotaged IADD3 opcode changes the 18 IADD3 rows, a sabotaged control
+    bit all 104. What a kernel computes is not graded before stage 5.
+  - **Open, toward `GemmKernels.codex` on SM 8.9**, each graded by
+    turingas the same way: division by a variable (its zero divisor traps
+    in Codex and has no GPU trap yet). Register pairs come from a busy mask,
+    the lowest free pair first; restoring a mark frees exactly the pairs
+    taken since. A binding, a `let` and a statement whose value is dropped
+    give back every pair their lowering took except the kept value's, where
+    it lies, with no MOV. An `if` takes its result pair first; each arm
+    gives back its pairs once its value is merged, and the compared
+    registers go back once the false predicate is written. A binding no
+    later statement reads (and no outer binding shares its name) keeps
+    nothing, and a block's binding gives back its pair after its last
+    mention, when the block took that pair and no live name shares it
+    (an outer register, such as an `if`'s compared operand, is never freed
+    this way); the scan is quadratic in a block's statement count, at
+    lowering time only. An inlined loop called in tail position at guard PT
+    copies only a register passed twice. A refusal for registers names the
+    function being lowered. The scoreboard already makes a
+    write wait on a register's pending read or write. Predicates are taken
+    from a busy mask (P0..P6; a carry with none free refuses). An `if` holds
+    one predicate while its arms run: the false arm's predicate is the
+    inverse comparison, written into the true arm's predicate after that
+    arm, and every lane reaching it holds the compared registers unchanged
+    (a loop's back-move, the only write to an existing register, branches
+    away under the same guard). An arm that is itself an `if` merges into
+    its parent's result and frees the parent's predicate once its own false
+    predicate is written, so an `else if` chain holds two predicates at any
+    length. `f32-add-bits`, `f32-sub-bits` and `f32-mul-bits` are FADD
+    (source 1 negated for the subtraction) and FMUL of the low words, round
+    to nearest, the high word zero, as the PTX plug's `add.rn.f32` and its
+    `cvt` back; `f32-max-bits` is FMNMX (!PT, max), `f32-ex2-bits` and
+    `f32-lg2-bits` MUFU.EX2 and MUFU.LG2 (the PTX plug's `.approx.ftz`;
+    MUFU is ordered through a barrier), `f32-to-f16-bits` F2F.F16.F32 then
+    a LOP3 keeping the low 16 bits (the PTX plug's `cvt.u32.u16`; whether
+    F2F clears the upper half is a hardware question). `gpu-float` in the
+    slice grades the forms, and SM 5.2 refuses them (`float`). `cp-async-16` is a guarded LDGSTS.E.BYPASS.128
+    for the lanes whose size is 16 and two guarded STS.64 of zeros for the
+    rest (the kernels pass 16 or 0; a size between is zero-filled whole,
+    where PTX copies its prefix), so LDGSTS's own predicate operand, whose
+    meaning no reference settles, stays !PT; `cp-async-commit` is
+    LDGDEPBAR, `cp-async-wait-one` and `-wait-all` DEPBAR.LE SB0 1 and 0.
+    `gpu-async` in the slice grades the forms; SM 5.2 refuses them (`async
+    copy`). `sync-warp` is WARPSYNC 0xffffffff (root, 2026-10-20: never a
+    NOP, wrong once a warp diverges). turingas has no WARPSYNC: the listing
+    tags its line N and `test-turingas.ps1` checks NAK's fields (Mesa
+    26.2.4 `sm70_encode.rs` `OpWarpSync`, blob SHA-256 as pinned above:
+    0x948, the mask at 32..63, PT at 87..89) over turingas's own guard and
+    control bits from a NOP; a sabotaged opcode (0x949) turns those lines
+    red. `gpu-warp` in the slice grades it; SM 5.2 refuses it (`warp
+    sync`). `kernel-gemm-wmma`, `kernel-linear-wmma`,
+    `-batched`, `kernel-linear-fp8`, the five `kernel-linear-fast` kernels,
+    `kernel-nchw-to-nhwc` and `kernel-attention-fused` (A, B and C slots
+    0..7, 128 fragment registers) list (2026-10-20: 28872 instructions, 81
+    of them WARPSYNC, every word equal, graded by `test-turingas.ps1`); the
+    other 4 refuse for division by a variable (Open, Damian's). A load takes its destination before its address, so
+    a kept load strands no address registers.
+  - **WMMA, the plan.** A 16x16x16 fragment operation is two
+    HMMA.16816.F32, one per 8-column half of the output. Fragments take the
+    per-lane layout the PTX ISA documents for `mma.m16n8k16` (g = lane >> 2,
+    t = lane & 3, the lane from S2R SR_LANEID): A is four registers of f16
+    pairs at rows g and g + 8, columns 2t and 2t + 8, each pair adjacent in
+    a row-major A, so one 32-bit load; B, per half, is two registers at k
+    rows 2t, 2t + 1 and 2t + 8, 2t + 9 of column g, not adjacent in a
+    row-major B, so two 16-bit loads packed by PRMT; C and D, per half, are
+    four f32 at rows g and g + 8, columns 2t and 2t + 1, one 64-bit access
+    a pair. Each slot's registers are fixed, a block reserved beside the
+    lowering's pairs, so a fragment lives across the loop. Words are graded
+    by turingas; the layout itself only at stage 5, by the GEMM against
+    its CPU reference. Built for global memory: `wmma-fill-f32`,
+    `wmma-load-a-f16`, `wmma-load-b-f16`, `wmma-mma-f32` and
+    `wmma-store-f32`, and from shared memory the -shared loads (A, B, B
+    column-major, C), `wmma-store-f32-shared` and `wmma-mma-rc-f32`, with
+    C slots 0..7 (8 registers each), A slots 0..1 and B slots 0..3 (4
+    each), only the slots the kernel reaches (its calls walked before
+    lowering), packed below R248: B, then A, then C, the lowering's own
+    registers below C (R199 down for the 4-2-2 GEMMs, R159 for the 8-2-4
+    fast kernels); a WMMA call's temporaries are
+    freed when it has emitted. HMMA is ordered through a barrier until its
+    latency is measured, and a load or HMMA holds its sources on its
+    barrier, so no later write overtakes a pending read.
   - **Reference boundary:** Mesa 26.2.4 `sm70_encode.rs`, `OpHmma` and
     `set_instr_deps`, provide the SM 8.9 fields. Source SHA-256:
     `A6691B6B66E4C38B6EEEEC8D44AF99D89E80C7A1FD16A6AE13BDA5CD2D9393A3`.
@@ -404,8 +536,22 @@ card, in a window or a sitting.
     write/send/delay refusal. A swapped-RPC-order control is rejected.
     Exact compiled traces passed with seed `561EEBFC3ED59D96`; coverage is
     not exhaustive. Scripted clock/read responses do not calibrate deadlines.
-    PCI discovery/reset, MMU setup, firmware preparation/authentication,
-    physical queues and transport framing remain outside this proof.
+    PCI discovery/reset, MMU setup, firmware preparation/authentication
+    and the physical queues' placement remain outside this proof.
+  - The queue transport is `codex/os/kernel/NvGspQueue.codex`: a record's
+    write segments at the write pointer (the part past the ring's end at
+    its start) and the new write pointer; `nv-gsp-send-rpc`'s split into
+    continuation records (function 71, at most 16 x slot - 80 payload bytes
+    a record, one sequence number each); and `nv-gsp-read`'s walk of the
+    status ring, the payload cut at the ring's end, the read pointer moved
+    by length rounded up to slots and moved past a failed record, where the
+    walk stops. A length that moves no slot is refused rather than walked
+    forever. `codex/test/nv-gsp-queue` is graded against tinygrad c3aec477's
+    own `NVRpcQueue` methods (`_send_rpc_record`, `send_rpc`, `read_resp`)
+    run verbatim over a stub ring (`build/nv-gsp-queue-oracle.ps1`): four
+    sends (one wrapping, two split into continuation records) and three
+    walks (one wrapping record cut short, one stopping on a failed result);
+    sabotaged continuation function and read rounding each turn it red.
     Golden-context creation is the stopping boundary after INIT_DONE.
     Hardware acceptance and a complete driver remain open.
 - **6, the diffusion engine on metal** (ops 40 to 48 served by our driver),
@@ -439,7 +585,9 @@ The 4060 Ti:
 5. Warm-reboot behaviour with WPR2 still up.
 6. Whether every CPU-sequencer opcode this board sends is in nouveau's set.
 7. The timeouts for `GSP_INIT_DONE` and the golden-context RPCs.
-8. Whether NAK's HMMA encodings give correct answers on AD106.
+8. Whether NAK's HMMA encodings give correct answers on AD106, and whether
+   it executes the 0x386 STG form, LDS with uniform addressing clear, and
+   NAK's SM 8.0+ memory-order values.
 
 The 970:
 
@@ -450,6 +598,14 @@ The 970:
 12. Behaviour on the 970's slow 0.5 GB memory segment.
 
 ## Open
+
+**Damian: Integer division by a variable on the GPU.** Codex traps on a
+zero divisor; the GPU has no trap. Four GEMM kernels need it
+(`kernel-conv2d-wmma`, `kernel-conv2d-fast`, `kernel-conv-weight-khwc`,
+`kernel-attention-fused-128`). The choice: a zero divisor answers 0 (a
+value with no diagnostic, L-BAILVALUE), or the plug refuses a division
+whose divisor it cannot prove nonzero. The plug refuses until this is
+ruled (root, 2026-10-20).
 
 **Boot allocation:** on 2026-09-30, the successful host fixture plus boot
 sequence and RPC serialization allocated 83,096 bytes before trace
@@ -464,6 +620,13 @@ per-chunk event lists. The fixture uses a bounded raw trace buffer and
 restores its per-case heap after printing; its recursive hex formatting
 also copies growing strings. Establish complete boot lifetimes, peak usage
 and the hardware memory budget during integration.
+
+**Question for Damian (asked 2026-10-20, unanswered): division by zero on
+the GPU.** Codex traps on an integer divide by zero; a GPU kernel has no
+trap. Division by a variable (`ow`, `kw`, `kh * kw` in two conv kernels of
+`GemmKernels.codex`) waits on the choice: the result is 0, the result is a
+fixed sentinel, or the plug refuses unless it can prove the divisor
+non-zero. Division by a power-of-two literal is built and needs no answer.
 
 **The firmware licence** (decision 3 stands): `LICENCE.nvidia` 2.1.2 allows
 redistribution only with an OS under an OSI-approved licence, and the

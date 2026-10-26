@@ -1,0 +1,86 @@
+Chapter: Sass89IntRefuse
+  cites Sass chapter Sass89Int
+  cites Sass chapter Sass89Hmma
+  cites Sass chapter SassCtrl
+  cites Foreword chapter Console
+
+  ctl : Integer, Integer, Integer -> CtrlCode
+  ctl (stall) (wbar) (reuse) = CtrlCode { stall = stall, yield-bit = 0, write-bar = wbar, read-bar = 7, wait-mask = 0, reuse = reuse }
+
+  at : Integer, Integer, CtrlCode, S89Body -> S89Insn
+  at (g) (gn) (c) (b) = S89Insn { body = b, guard = g, guard-neg = gn, control = c }
+
+  ok : S89Body -> S89Insn
+  ok (b) = at 7 0 (ctl 0 7 0) b
+
+  add : Integer, S89Src, Integer, Integer, Integer, Integer, Integer, Integer -> S89Body
+  add (an) (b) (bn) (c) (x) (o0) (i0) (i0n) = S89Iadd3 (S89Add {
+   dst = 0, a = 2, a-neg = an, b = b, b-neg = bn, c = c, x = x,
+   out0 = o0, out1 = 7, in0 = i0, in0-neg = i0n, in1 = 7, in1-neg = 1
+  })
+
+  setp : Integer, Integer -> S89Body
+  setp (cmp) (op) = S89Isetp (S89Cmp { pred = 0, cmp = cmp, signed = 1, bool-op = op, a = 2, b = S89Reg 4, accum = 7, accum-neg = 0 })
+
+  shf : Integer, S89Src -> S89Body
+  shf (kind) (s) = S89Shf (S89Shift { dst = 0, right = 0, kind = kind, high-half = 1, low = 2, shift = s, high = 3 })
+
+  mem : Integer, Integer, Integer, Integer, Integer -> S89Mem
+  mem (data) (addr) (off) (w) (order) = S89Mem { data = data, addr = addr, offset = off, width = w, order = order }
+
+  bad-case : Integer -> S89Insn
+  bad-case (j) =
+    when j
+     is 0 -> at 7 0 (ctl 16 7 0) S89Exit
+     is 1 -> at 7 0 (ctl 0 7 2) (S89Mov 1 (S89Imm 5))
+     is 2 -> at 7 0 (ctl 0 7 1) (S89S2r 0 33)
+     is 3 -> at 7 0 (ctl 0 6 0) S89Exit
+     is 4 -> at 8 0 (ctl 0 7 0) S89Exit
+     is 5 -> at 7 1 (ctl 0 7 0) S89Exit
+     is 6 -> ok (S89Mov 256 (S89Reg 2))
+     is 7 -> ok (S89Mov 1 (S89Imm #100000000))
+     is 8 -> ok (S89Mov 1 (S89Cb 0 #162))
+     is 9 -> ok (add 0 (S89Imm 4) 1 255 0 7 7 1)
+     is 10 -> ok (add 1 (S89Reg 4) 1 255 0 7 7 1)
+     is 11 -> ok (add 0 (S89Reg 4) 0 255 0 7 0 0)
+     is 12 -> ok (add 0 (S89Reg 4) 0 255 0 8 7 1)
+     is 13 -> ok (add 0 (S89Reg 4) 0 256 0 7 7 1)
+     is 14 -> ok (setp 0 0)
+     is 15 -> ok (setp 1 3)
+     is 16 -> ok (shf 1 (S89Imm 3))
+     is 17 -> ok (shf 3 (S89Imm 64))
+     is 18 -> ok (S89S2r 0 36)
+     is 19 -> ok (S89Ldc 3 64 0 #160)
+     is 20 -> ok (S89Ldc 2 64 0 #164)
+     is 21 -> ok (S89Ldg (mem 2 5 0 64 7))
+     is 22 -> ok (S89Ldg (mem 3 4 0 64 7))
+     is 23 -> ok (S89Stg (mem 2 4 8388608 64 7))
+     is 24 -> ok (S89Ldg (mem 2 4 0 64 5))
+     is 25 -> ok (S89Imad (S89Mad { dst = 3, a = 4, b = S89Reg 6, c = 255, wide = 1, signed = 0 }))
+     is 26 -> ok (S89Imad (S89Mad { dst = 2, a = 4, b = S89Reg 6, c = 7, wide = 1, signed = 0 }))
+     is 27 -> ok (S89Bra 8)
+     is 28 -> ok (S89Bra 2147483648)
+     is 29 -> ok (S89Ldg (mem 2 4 0 8 7))
+     is 30 -> ok (S89Ldc 2 16 0 0)
+     is 31 -> ok (S89Lds (mem 2 256 0 32 7))
+     is 32 -> ok (S89Sts (mem 2 4 0 32 4))
+     is 33 -> ok (S89Lds (mem 2 4 0 8 7))
+     is 34 -> ok (S89Lop3 0 2 (S89Reg 3) 255 256)
+     is otherwise -> ok (S89Prmt 256 2 (S89Reg 3) 4)
+
+  report-bad : Integer -> [Console] Nothing
+  report-bad (j) = act
+   when sass89-encode (bad-case j)
+    is Sass89Refused (why) -> print-line-uni (show j & " " & why)
+    is Sass89Words (lo) (hi) -> print-line-uni (show j & " ACCEPTED")
+  end
+
+  report-all : Integer -> [Console] Nothing
+  report-all (j) = act
+   if j >= 36 then print-text "" else act
+    report-bad j
+    report-all (j + 1)
+   end
+  end
+
+  opening : [Console] Nothing = report-all 0

@@ -52,7 +52,10 @@ Chapter: BritainShops
       is Err (e) -> Err ("Britain cache missing shop region: " & shop.title)
       is Ok (ground) -> when bb-floor map x y ground 0
         is Err (_) -> bb-placement w map shop (i + 1)
-        is Ok (z) -> Ok (BbSpot { x = x, y = y, z = z })
+        is Ok (z) -> if walk-buried map (walk-cell map x y) ground z 0 then bb-placement w map shop (i + 1) else Ok (BbSpot { x = x, y = y, z = z })
+ bb-floor climbs past a floor something impassable stands on to the storey above it (in the Wind Inn an impassable
+ piece 2 high on the land floor at 40, and the climb finds the upper storey at 61, which no route from the ground
+ floor reaches, UOAIX-266): a tile whose lower floor is blocked is occupied, as a tile with a mobile on it is.
   bb-materialise : GvWorld, GsiState, BbProducer, Integer, Integer, Integer, Integer, Integer, Boolean -> Result Integer Text
   bb-materialise (v) (items) (p) (parent) (graphic) (hue) (layer) (gump) (lot) =
     let obj = WorldObject { serial = 0, kind = 2, x = 20, y = 20, z = 0,
@@ -173,10 +176,36 @@ Chapter: BritainShops
   bb-debt (m) (purse) (i) = if i == m.loan-count then 0
     else let loan = list-at m.loans i
     in if loan.borrower == purse & loan.lender == 1 & loan.status /= 2 then loan.id else bb-debt m purse (i + 1)
+ Every town step asked bb-debt, a walk over every loan ever made, twice per shop (red, UOAIX audit 2026-10-18): one walk
+ tables each purse's first open crown loan, under a heap mark, and each shop's answer is kept, 8 bytes a shop.
+  bb-open-debts : EmMoney, Integer, Integer -> Integer
+  bb-open-debts (m) (table) (i) = if i == m.loan-count then 0
+    else let loan = list-at m.loans i
+    in let put = if loan.lender == 1 & loan.status /= 2 & em-valid-purse m loan.borrower & peek-qword table (loan.borrower * 8) == 0 then poke-qword table (loan.borrower * 8) loan.id else 0
+    in bb-open-debts m table (i + 1)
+  bb-blank : Integer, Integer, Integer -> Integer
+  bb-blank (b) (i) (n) = if i >= n then 0 else let z = poke-qword b (i * 8) 0 in bb-blank b (i + 1) n
+  bb-fill-debts : GvWorld, Integer, Integer, Integer -> Integer
+  bb-fill-debts (v) (out) (table) (i) = if i >= v.vendor-count then 0
+    else if not (ep-valid-actor v.currency.world (list-at v.vendors i).actor) then (let put = poke-qword out (i * 8) 0 in bb-fill-debts v out table (i + 1))
+    else let purse = (ep-actor v.currency.world (list-at v.vendors i).actor).purse
+    in let put = poke-qword out (i * 8) (if em-valid-purse v.currency.world.money purse then peek-qword table (purse * 8) else bb-debt v.currency.world.money purse 0)
+    in bb-fill-debts v out table (i + 1)
+  bb-shop-debts : GvWorld -> Integer
+  bb-shop-debts (v) = let out = alloc-bytes (max 8 (v.vendor-count * 8))
+    in let mark = __heap-save
+    in let n = v.currency.world.money.purse-count + 1
+    in let table = alloc-bytes (n * 8)
+    in let z = bb-blank table 0 n
+    in let open = bb-open-debts v.currency.world.money table 0
+    in let filled = bb-fill-debts v out table 0
+    in let restored = __heap-restore mark in out
   bb-repay : EuCurrency, Integer -> Integer
   bb-repay (x) (actor) = if not (ep-valid-actor x.world actor) then 0
+    else bb-repay-debt x actor (bb-debt x.world.money (ep-actor x.world actor).purse 0)
+  bb-repay-debt : EuCurrency, Integer, Integer -> Integer
+  bb-repay-debt (x) (actor) (id) = if not (ep-valid-actor x.world actor) then 0
     else let purse = (ep-actor x.world actor).purse
-    in let id = bb-debt x.world.money purse 0
     in if id == 0 then 0
     else let loan = em-loan x.world.money id
     in let gold = (em-purse x.world.money purse).coin
@@ -213,17 +242,23 @@ Chapter: BritainShops
  keeps (the loan's principal in gold, valued at the current rates) does not borrow again (root for Damian, UOAIX-246:
  "a shop that holds working capital does not need a new loan"), so repaying and re-borrowing does not grow the loans.
   bb-borrow-shops : GvWorld, Integer -> Integer
-  bb-borrow-shops (v) (i) = if i >= v.vendor-count then 0
-    else bb-borrow-one v.currency (list-at v.vendors i).actor + bb-borrow-shops v (i + 1)
+  bb-borrow-shops (v) (i) = bb-borrow-shops-at v (bb-shop-debts v) i
+  bb-borrow-shops-at : GvWorld, Integer, Integer -> Integer
+  bb-borrow-shops-at (v) (debts) (i) = if i >= v.vendor-count then 0
+    else bb-borrow-debt v.currency (list-at v.vendors i).actor (peek-qword debts (i * 8)) + bb-borrow-shops-at v debts (i + 1)
   bb-borrow-one : EuCurrency, Integer -> Integer
-  bb-borrow-one (x) (actor) = let purse = (ep-actor x.world actor).purse
+  bb-borrow-one (x) (actor) = bb-borrow-debt x actor (bb-debt x.world.money (ep-actor x.world actor).purse 0)
+  bb-borrow-debt : EuCurrency, Integer, Integer -> Integer
+  bb-borrow-debt (x) (actor) (debt) = let purse = (ep-actor x.world actor).purse
     in let capital = eu-value x (em-purse x.copper purse).coin (em-purse x.silver purse).coin (em-purse x.world.money purse).coin
-    in if bb-debt x.world.money purse 0 /= 0 | (em-purse x.world.money 1).coin < bb-placeholder-loan-gold | capital >= bb-placeholder-loan-gold * eu-unit x 3 then 0
+    in if debt /= 0 | (em-purse x.world.money 1).coin < bb-placeholder-loan-gold | capital >= bb-placeholder-loan-gold * eu-unit x 3 then 0
     else if eu-lend x True 1 purse 3 bb-placeholder-loan-gold bb-placeholder-loan-interest em-limit < 1 then 0 else 1
   bb-repay-shops : GvWorld, Integer -> Integer
-  bb-repay-shops (v) (i) = if i >= v.vendor-count then 0
-    else let paid = bb-repay v.currency (list-at v.vendors i).actor
-    in (if paid > 0 then paid else 0) + bb-repay-shops v (i + 1)
+  bb-repay-shops (v) (i) = bb-repay-shops-at v (bb-shop-debts v) i
+  bb-repay-shops-at : GvWorld, Integer, Integer -> Integer
+  bb-repay-shops-at (v) (debts) (i) = if i >= v.vendor-count then 0
+    else let paid = bb-repay-debt v.currency (list-at v.vendors i).actor (peek-qword debts (i * 8))
+    in (if paid > 0 then paid else 0) + bb-repay-shops-at v debts (i + 1)
   bb-populate-one : GvWorld, GsiState, WalkMap, Integer -> Result Integer Text
   bb-populate-one (v) (items) (map) (i) = if i == bb-shop-count then Ok 0
     else when bb-placement v.game.world map (list-at bb-shops i) 0

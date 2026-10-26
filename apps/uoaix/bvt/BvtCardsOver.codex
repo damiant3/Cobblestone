@@ -1,0 +1,52 @@
+Chapter: BvtCardsOver
+  cites Uoaix chapter TavernCards
+  cites Uoaix chapter GameCombat
+  cites Uoaix chapter GamePackets
+  cites Games chapter GoFish
+  cites Uoaix chapter BvtCheck
+
+ A Go Fish table between serials 1001 (seat 0, on turn) and 1002; seat 0 holds the Two of Clubs (card 0), seat 1's
+ cards are flagged from index 52, and the stock holds one card.
+  bcov-flags : List Integer, Integer, List Integer -> List Integer
+  bcov-flags (held) (i) (out) = if i >= 104 then out else bcov-flags held (i + 1) (list-push out (if i == 0 | i == list-at held 0 | i == list-at held (list-length held - 1) then 1 else 0))
+  bcov-pile : Integer, List Integer -> List Integer
+  bcov-pile (i) (out) = if i >= 52 then out else bcov-pile (i + 1) (list-push out (if i == 0 then 1 else 0))
+  bcov-table : List Integer -> Integer
+  bcov-table (held) = let buf = cb-zeroed tcd-bytes
+    in let a = tcd-put buf 0 1 1001 + tcd-put buf 0 2 1002 + tcd-put buf 0 3 2 + tcd-put buf 0 tcd-kind tcd-k-fish
+    in let b = tcd-fish-store buf 0 (GoFishState { hands = bcov-flags held 0 [], hand-sizes = [0, 0], draw-pile = bcov-pile 0 [],
+      pile-size = 1, books = [0, 0], current-player = 0, num-players = 2, game-over = False, total-books = 0 })
+    in buf
+  bcov-gump-to : List Integer, Integer -> Boolean
+  bcov-gump-to (p) (serial) = list-length p > 21 & list-at p 0 == #B0 & gp-u32 p 7 == tcd-gump-id & gp-u32 p 3 == serial
+  bcov-last : List (List Integer) -> List Integer
+  bcov-last (ps) = if list-length ps == 0 then [] else list-at ps (list-length ps - 1)
+  bcov-ended : Maybe TcdOut, Integer -> Boolean
+  bcov-ended (out) (buf) = when out
+    is None -> False
+    is Just (o) -> o.other == 1002 & list-length o.told == 3 & bcov-gump-to (bcov-last o.told) 1002
+      & bcov-gump-to (bcov-last o.reply.packets) 1001 & tcd-at buf 0 3 == 0
+  bcov-quiet : Maybe TcdOut -> Boolean
+  bcov-quiet (out) = when out
+    is None -> False
+    is Just (o) -> o.other == 0 & list-length o.told == 0
+  bcov-going : Maybe TcdOut, Integer -> Boolean
+  bcov-going (out) (buf) = when out
+    is None -> False
+    is Just (o) -> list-length o.told == 2 & bcov-gump-to (bcov-last o.told) 1002 & tcd-at buf 0 3 == 2
+ Seat 1 holds only the Two of Diamonds (65): asking for Twos empties its hand and ends the game.
+  bcov-arm-ended : Integer -> Boolean
+  bcov-arm-ended (unused) = let t = bcov-table [65] in bcov-ended (tcd-fish t 0 0 1002 200 5000) t
+  bcov-arm-turn : Integer -> Boolean
+  bcov-arm-turn (unused) = let t = bcov-table [65] in bcov-quiet (tcd-fish t 0 1 1001 200 5000)
+ Seat 1 also holds the Three of Diamonds (66), so the game goes on.
+  bcov-arm-going : Integer -> Boolean
+  bcov-arm-going (unused) = let t = bcov-table [65, 66] in bcov-going (tcd-fish t 0 0 1002 200 5000) t
+
+  bvt-cards-over : Integer -> [Console] Integer
+  bvt-cards-over (unused) = act
+    a <- bvt-check "UOAIX-230: a Go Fish ask that ends the game sends both seats a final card gump and frees the table (tcd-fish, tcd-over)" (bcov-arm-ended 0)
+    b <- bvt-check "UOAIX-230: a press out of turn tells the other seat nothing" (bcov-arm-turn 0)
+    c <- bvt-check "UOAIX-230: an ask that does not end the game tells the other seat its play gump only and keeps the table" (bcov-arm-going 0)
+    a + b + c
+  end

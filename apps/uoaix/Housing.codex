@@ -108,11 +108,15 @@ Section: House commands
       is Ok (me) -> let h = hs-home-of land me.serial me.x me.y
         in if h < 0 then Just (hs-tell "You must be in your house to do this.")
         else let serial = bit-and (gp-u32 packet 7) #7FFFFFFF
-        in if action >= 7 then Just (hs-oust s land people h serial action)
+        in if action >= 7 then Just (if hs-holds land game.world me.serial h serial then hs-oust s land people h serial action else hs-tell "You cannot eject that from the house!")
         else when world-get game.world serial
           is Err (_) -> Just (hs-tell "You cannot lock that down!")
           is Ok (it) -> if it.kind /= 2 | it.container /= 0 | serial >= #7B000000 | not (gsi-known items serial) | hs-home-of land me.serial it.x it.y /= h then Just (hs-tell "You cannot lock that down!")
             else let touched = world-touch game.world in Just (hs-cmd-apply (gsi-meta items serial) it action me.serial)
+  hs-holds : CnState, WorldTable, Integer, Integer, Integer -> Boolean
+  hs-holds (land) (world) (holder) (h) (serial) = when world-get world serial
+    is Err (_) -> False
+    is Ok (m) -> m.kind == 1 & hs-home-of land holder m.x m.y == h
   hs-cmd-apply : GsiItem, WorldObject, Integer, Integer -> GameReply
   hs-cmd-apply (meta) (it) (action) (who) =
     if action == 1 then (if meta.held /= 0 then hs-tell "This is already locked down!" else if not meta.movable then hs-tell "You cannot lock that down!"

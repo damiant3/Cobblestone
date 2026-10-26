@@ -38,7 +38,7 @@ if ((Get-FileHash -Algorithm SHA256 $Kernel).Hash -ne (Get-FileHash -Algorithm S
 
 $uoaixArt = Join-Path $Web 'uoaix-art'
 New-Item -ItemType Directory -Force -Path $uoaixArt | Out-Null
-foreach ($name in 'uoaix-hero-castle-town.jpg', 'uoaix-forge.jpg', 'uoaix-keeper.jpg', 'uoaix-isometric-village.jpg', 'uoaix-felled-tree.jpg', 'uoaix-admin.jpg',
+foreach ($name in 'uoaix-hero-castle-town.jpg', 'uoaix-forge.jpg', 'uoaix-keeper.jpg', 'uoaix-isometric-village.jpg', 'uoaix-felled-tree.jpg', 'uoaix-admin.jpg', 'uoaix-assist.jpg',
               'uoaix-desk-overview.jpg', 'uoaix-desk-treasury.jpg', 'uoaix-desk-actions.jpg', 'uoaix-desk-world.jpg', 'uoaix-desk-plays.jpg', 'uoaix-desk-activity.jpg') {
     Copy-Item -LiteralPath (Join-Path $Repo ('apps/uoaix/art/' + $name)) -Destination (Join-Path $uoaixArt $name) -Force
 }
