@@ -1237,6 +1237,9 @@ Section: Capability Scope
     else if n == "read-text" then "FileSystem.Read"
     else if n == "file-exists" then "FileSystem.Read"
     else if n == "write-file" then "FileSystem.Write"
+    else if n == "append-file" then "FileSystem.Write"
+    else if n == "make-dir" then "FileSystem.Write"
+    else if n == "list-dir" then "FileSystem.Read"
     else if n == "fetch" then "Network.Read"
     else if n == "resolve-dns" then "Network.Read"
     else if n == "post" then "Network.Write"
@@ -1262,14 +1265,13 @@ Section: Capability Scope
     if console-channel-op n == "stdin" then "Console.Read" else "Console.Write"
 
  Scope is not one relation, and reading it as one is not a
- simplification -- it is a hole. A filesystem grant is a path PREFIX.
- A network grant is an AUTHORITY. A console grant is a CHANNEL. Run
- all three through the single text-starts-with this check used to use
- and a grant over "api.example.com:443" silently admits
+ simplification -- it is a hole. A filesystem grant is a PATH: it admits
+ itself and what lies beneath it at a separator, so "A" admits "A" and
+ "A/x" and never "AB", which a string prefix would. A network grant is an
+ AUTHORITY. A console grant is a CHANNEL. Run all three through one
+ text-starts-with and a grant over "api.example.com:443" silently admits
  "api.example.com:4433", while a grant over "api.example.com" admits
- "api.example.com.evil.net". A prefix is the right relation for a path
- and the wrong one for a name, so the relation is chosen by the effect
- family and only the filesystem gets prefixes.
+ "api.example.com.evil.net".
 
   scope-kind-path : Integer = 0
   scope-kind-authority : Integer = 1
@@ -1286,7 +1288,18 @@ Section: Capability Scope
     let k = scope-kind eff
     in if k == scope-kind-authority then authority-admits grant res
     else if k == scope-kind-channel then res == grant
-    else text-starts-with res grant
+    else path-admits grant res
+
+  path-admits : Text, Text -> Boolean
+  path-admits (grant) (res) =
+    if res == grant then True
+    else if text-starts-with res grant == False then False
+    else if text-length grant == 0 then True
+    else if is-slash-at grant (text-length grant - 1) then True
+    else is-slash-at res (text-length grant)
+
+  is-slash-at : Text, Integer -> Boolean
+  is-slash-at (s) (i) = char-code (char-at s i) == char-code (char-at "/" 0)
 
   authority-admits : Text, Text -> Boolean
   authority-admits (grant) (res) =
@@ -1312,7 +1325,7 @@ Section: Capability Scope
     let k = scope-kind eff
     in if k == scope-kind-authority then authority-subsumes outer inner
     else if k == scope-kind-channel then inner == outer
-    else text-starts-with inner outer
+    else path-admits outer inner
 
   authority-subsumes : Text, Text -> Boolean
   authority-subsumes (outer) (inner) =
@@ -3925,7 +3938,10 @@ Section: Linearity Checking
      is otherwise -> lin-of env v False a
 
   lin-arg-lambda : LinResult -> LinResult
-  lin-arg-lambda (c) =
+  lin-arg-lambda (c) = lin-captured-by c "a closure passed as an argument"
+
+  lin-captured-by : LinResult, Text -> LinResult
+  lin-captured-by (c) (what) =
     if lin-flags c then
       LinResult {
         count = c.count,
@@ -3933,7 +3949,7 @@ Section: Linearity Checking
         dead = c.dead,
         ret = False,
         esc = c.esc,
-        cap = lin-esc-first (c.cap) "a closure passed as an argument"
+        cap = lin-esc-first (c.cap) what
       }
     else c
 
@@ -4057,7 +4073,9 @@ Section: Linearity Checking
   lin-list : TypeEnv, Text, List AExpr, Integer, Integer -> LinResult
   lin-list (env) (v) (elems) (i) (len) =
     if i >= len then lin-zero
-    else lin-seq (lin-of env v False (list-at elems i)) (lin-list env v elems (i + 1) len)
+    else let e = list-at elems i
+    in let use = when e is ALambdaExpr (ps) (bd) (s) -> lin-captured-by (lin-of env v False e) "a closure stored in a list" is otherwise -> lin-of env v False e
+    in lin-seq use (lin-list env v elems (i + 1) len)
 
   lin-fields : TypeEnv, Text, List AFieldExpr, Integer, Integer -> LinResult
   lin-fields (env) (v) (fields) (i) (len) =
@@ -5225,7 +5243,8 @@ Section: Type Arity Check
     name == "Integer" | name == "Real" | name == "Text" | name == "Boolean"
     | name == "Char" | name == "Nothing" | name == "Proof"
     | name == "List" | name == "LinkedList" | name == "Vector"
-    | name == "SizedVec"
+    | name == "SizedVec" | name == "Task"
+    | name == "SChan" | name == "SSend" | name == "SRecv" | name == "SEnd"
 
   type-name-known : List TypeBinding, Text -> Boolean
   type-name-known (tdm) (name) =

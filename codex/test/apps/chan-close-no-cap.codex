@@ -1,0 +1,24 @@
+Chapter: ChanCloseNoCap
+
+Section: Body
+  record-result : Integer -> Integer
+  record-result (r) = poke-byte 28000 0 (if r == (0 - 1) then 1 else 2)
+
+  close-after-restrict : Integer, Integer -> [Concurrent] Integer
+  close-after-restrict (ch) (r) = record-result (chan-kern-close ch)
+
+  child-body : Integer, Integer -> [Capability, Concurrent] Integer
+  child-body (ch) (x) = close-after-restrict ch (process-restrict-cap (process-get-pid) 11)
+
+  verdict : Integer, Integer -> [Concurrent] Text
+  verdict (ch) (child) =
+    let wt = process-wait child
+    in if peek-byte 28000 0 /= 1 then "FAIL: close without cap-ipc did not answer -1"
+    else if chan-kern-send ch 7 /= 0 then "FAIL: the channel closed anyway"
+    else "PASS: close denied without cap-ipc"
+
+  opening : [Console, Concurrent, Capability] Nothing = act
+    ch <- chan-kern-create 2
+    child <- process-spawn (\x -> child-body ch x)
+    print-line-uni (verdict ch child)
+  end

@@ -158,11 +158,40 @@ Section: Concurrent Event Loop
   fresh-listen-transport (port) =
     let sess = net-session-new local-mac local-ip gateway-ip port 0 gateway-ip 1000
     in let sess2 = set-arp sess (arp-cache-add (sess.arp) gateway-ip nat-gw-mac)
-    in transport-new-with-cap sess2 serve-recv-buf-cap
+    in web-with-deferred (transport-new-with-cap sess2 serve-recv-buf-cap)
 
   web-listen-configured : List Integer, List Integer, List Integer, Integer -> TcpTransportState
   web-listen-configured (mac) (ip) (gateway) (port) =
-    transport-new-with-cap (net-session-new mac ip gateway port 0 gateway 1000) serve-recv-buf-cap
+    web-with-deferred (transport-new-with-cap (net-session-new mac ip gateway port 0 gateway 1000) serve-recv-buf-cap)
+
+ A send blocks in its drain, which reads every frame off the NIC; a frame for
+ another connection of the mux (a new client's SYN among them) is kept in this
+ stash and fed to the mux before its next read, or it is lost and the client
+ waits for its own retransmit. Minted with the shared receive buffer, below the
+ loop's compaction mark.
+
+  web-with-deferred : TcpTransportState -> TcpTransportState
+  web-with-deferred (ts) = TcpTransportState {
+    session = ts.session,
+    recv-base = ts.recv-base,
+    recv-len = ts.recv-len,
+    recv-cap = ts.recv-cap,
+    messages-sent = ts.messages-sent,
+    messages-received = ts.messages-received,
+    arena-base = ts.arena-base,
+    deferred-base = net-io-defer-new 0,
+    gen = ts.gen
+  }
+
+  web-mux-replay : (TcpTransportState, HttpRequest, HttpResponse -> [Network.Read, Network.Write] NetSendResult), (HttpRequest -> HttpResponse), (Text -> Integer), WebMux, Integer, List Integer, Integer -> [Network.Read, Network.Write] WebMux
+  web-mux-replay (send) (route) (obs) (m) (port) (rx) (k) =
+    let d = (m.listen).deferred-base
+    in if k >= net-io-deferred-count d then let c = net-io-deferred-clear d in m
+    else let n = net-io-deferred-load d k rx
+    in act
+      m1 <- web-mux-feed-with send route obs web-event-none [0, 0, 0, 0] m rx n port
+      web-mux-replay send route obs m1 port rx (k + 1)
+    end
 
   web-mux-next-listen : WebMux, Integer -> TcpTransportState
   web-mux-next-listen (m) (port) =
@@ -177,6 +206,7 @@ Section: Concurrent Event Loop
       messages-sent = 0,
       messages-received = 0,
       arena-base = 0,
+      deferred-base = (m.listen).deferred-base,
       gen = 0
     }
 
@@ -599,6 +629,10 @@ Section: Concurrent Event Loop
     else if since >= web-sweep-interval then act
       m1 <- web-mux-sweep m 0
       web-mux-run-with send route obs (web-mux-compact m1 set mark) port (tries + 1) 0 rx set mark
+    end
+    else if net-io-deferred-count ((m.listen).deferred-base) > 0 then act
+      m1 <- web-mux-replay send route obs m port rx 0
+      web-mux-run-with send route obs (web-mux-compact m1 set mark) port 0 (since + 1) rx set mark
     end
     else let hp = __heap-save
     in act

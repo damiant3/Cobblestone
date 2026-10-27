@@ -1,0 +1,29 @@
+Chapter: BvtKeeperRetry
+  cites Uoaix chapter BritainShopHours
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-267 (trial-48654: a building raised in Britain's shop street walled keepers off their targets, and every door's
+ change ended the refusal, so they searched again each retry): a keeper's wait after failed plans. Bits: 1 none or one
+ failure waits tl-retry-seconds, as before; 2 three failures in a row wait 4 times that; 4 the wait stops at 32 times
+ however many failures; 8 a budget-ended plan clears the failures only when the job took the search, not when the job
+ was busy (trial-48791: 13 keepers sharing one job retried every tl-retry-seconds, 3,800 searches a line); 16 a search the
+ job takes clears the walk's rest and keeps its failures (trial-48864A: every keeper sealed off the entrance cycled fails
+ 3 to 6, each taken search restarting its wait at tl-retry-seconds). 31 is all.
+  bkr-checks : Integer -> Integer
+  bkr-checks (unused) =
+    let first = bsh-retry-after 0 == tl-retry-seconds & bsh-retry-after 1 == tl-retry-seconds
+    in let doubled = bsh-retry-after 3 == tl-retry-seconds * 4
+    in let capped = bsh-retry-after 6 == tl-retry-seconds * 32 & bsh-retry-after 40 == tl-retry-seconds * 32
+    in let queued = bsh-requeues True tl-ended-budget 1 & not (bsh-requeues True tl-ended-budget 0)
+      & not (bsh-requeues True tl-ended-sealed 1) & not (bsh-requeues False tl-ended-budget 1)
+    in let w = RteWalk { route = 0 - 1, generation = 0, step = 0, x = 0, y = 0, stalls = 0, fails = 5, rest = 32, blocked = 0,
+      facing = 0, moves = 0, sidestep = 0, detour = 0 - 1, pressed = 0 }
+    in let unrested = rte-unrest w
+    in let kept = w.rest == 0 & w.fails == 5
+    in (if first then 1 else 0) + (if doubled then 2 else 0) + (if capped then 4 else 0) + (if queued then 8 else 0) + (if kept then 16 else 0)
+  bvt-keeper-retry : Integer -> [Console] Integer
+  bvt-keeper-retry (unused) = act
+    n <- bkr-checks 0
+    a <- bvt-check ("UOAIX-267 a keeper walled off its target waits tl-retry-seconds doubled per failed plan, at most 32 times, a busy job clearing nothing and a taken one keeping the failures (code " & show n & ")") (n == 31)
+    a
+  end

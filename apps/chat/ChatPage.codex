@@ -13,6 +13,8 @@ Section: State Keys
   sk-active-conv : Text = "active-conv"
   sk-conv-count : Text = "conv-count"
   sk-msg-count : Text = "msg-count"
+  sk-msgs-shown : Text = "msgs-shown"
+  sk-convs-seen : Text = "convs-seen"
   sk-compose : Text = "compose-text"
   sk-ws-status : Text = "ws-status"
   sk-contact-count : Text = "contact-count"
@@ -25,9 +27,11 @@ Section: Sidebar
   sidebar-tree : Integer -> WidgetNode
   sidebar-tree (x) =
     let view = state-get sk-view
+    in let me = state-get-text sk-my-name
     in widget-box "sidebar" "sidebar" [
       widget-box "sidebar-hdr" "sidebar-hdr" [
         widget-add-child (widget-custom "brand" "box:brand" 0 0) (widget-label "brand-t" "CodexChat"),
+        widget-label "whoami" (if me == "" then "" else "You are " & me),
         widget-button "new-conv" "+"
       ],
       widget-box "search-box" "sidebar-search" [
@@ -191,8 +195,9 @@ Section: Chat Area
 
   compose-bar : Integer -> WidgetNode
   compose-bar (x) =
-    widget-box "compose" "compose" [
-      widget-add-child (widget-custom "msg-input" "input" 0 0) (widget-label "msg-placeholder" "Message"),
+    let typed = state-get-text sk-compose
+    in widget-box "compose" "compose" [
+      widget-add-child (widget-input "msg-input" typed (text-length typed)) (widget-label "msg-placeholder" "Message"),
       widget-button "send-btn" "&#x27A4;"
     ]
 
@@ -256,7 +261,7 @@ Section: Handlers
     else let conv-id = state-get-text ("conv-id-" & show active)
     in let body = url-encode msg
     in let tok = state-get-text "token"
-    in let r = fetch-then ("/api/chat/send?t=" & tok & "&to=" & conv-id & "&body=" & body) "POST" "" send-cb
+    in let r = fetch-then (chat-api & "send?t=" & tok & "&to=" & conv-id & "&body=" & body) "POST" "" send-cb
     in let s = state-set-text-render sk-compose ""
     in 0
 
@@ -267,19 +272,25 @@ Section: Handlers
 
   new-conversation : Integer -> Integer
   new-conversation (x) =
-    show-prompt "New Conversation" "Enter username:" "username" new-conv-cb
+    show-prompt "Talk to someone" "Who do you want to talk to? Enter their name:" "their name" new-conv-cb
 
   new-conv-cb : Text -> Integer
   new-conv-cb (name) =
     if name == "" then 0
     else let tok = state-get-text "token"
-    in let r = fetch-get-then ("/api/chat/start?t=" & tok & "&with=" & url-encode name) start-conv-cb
+    in let r = fetch-get-then (chat-api & "start?t=" & tok & "&with=" & url-encode name) start-conv-cb
     in 0
 
   start-conv-cb : Text -> Integer
   start-conv-cb (resp) =
-    let r = load-conversations 0
+    let err = json-obj-field (json-parse-obj resp) "error"
+    in if err == "no such user" then show-alert "Talk to someone" "Nobody has claimed that name yet." alert-done
+    else if text-length err > 0 then show-alert "Talk to someone" err alert-done
+    else let r = load-conversations 0
     in request-render 0
+
+  alert-done : Text -> Integer
+  alert-done (v) = 0
 
   select-conv : Text -> Integer
   select-conv (id) =
@@ -321,14 +332,18 @@ Section: Handlers
 
 Section: Data Loading
 
+  chat-api : Text = "api/chat/"
+
   load-conversations : Integer -> Integer
   load-conversations (x) =
     let tok = state-get-text "token"
-    in fetch-get-then ("/api/chat/conversations?t=" & tok) convs-cb
+    in fetch-get-then (chat-api & "conversations?t=" & tok) convs-cb
 
   convs-cb : Text -> Integer
   convs-cb (resp) =
-    let obj = json-parse-obj resp
+    if resp == state-get-text sk-convs-seen then 0
+    else let k = state-set-text sk-convs-seen resp
+    in let obj = json-parse-obj resp
     in let count-str = json-obj-field obj "count"
     in let count = text-to-int count-str
     in let s = state-set sk-conv-count count
@@ -354,12 +369,15 @@ Section: Data Loading
     in if active < 0 then 0
     else let tok = state-get-text "token"
     in let conv-id = state-get-text ("conv-id-" & show active)
-    in fetch-get-then ("/api/chat/messages?t=" & tok & "&conv=" & conv-id) msgs-cb
+    in fetch-get-then (chat-api & "messages?t=" & tok & "&conv=" & conv-id) msgs-cb
 
   msgs-cb : Text -> Integer
   msgs-cb (resp) =
     let obj = json-parse-obj resp
     in let count-str = json-obj-field obj "count"
+    in let shown = state-get-text ("conv-id-" & show (state-get sk-active-conv)) & "#" & count-str
+    in if shown == state-get-text sk-msgs-shown then 0
+    else let k = state-set-text sk-msgs-shown shown
     in let count = text-to-int count-str
     in let s = state-set sk-msg-count count
     in load-msg-details 0 count resp
@@ -381,7 +399,7 @@ Section: Data Loading
   load-contacts : Integer -> Integer
   load-contacts (x) =
     let tok = state-get-text "token"
-    in fetch-get-then ("/api/chat/contacts?t=" & tok) contacts-cb
+    in fetch-get-then (chat-api & "contacts?t=" & tok) contacts-cb
 
   contacts-cb : Text -> Integer
   contacts-cb (resp) =
@@ -404,10 +422,10 @@ Section: Auth
 
   check-auth : Integer -> Integer
   check-auth (x) =
-    let tok = local-storage-get "chat-token"
+    let tok = local-storage-get "codex-chat-token"
     in if tok == "" then show-login 0
     else let s = state-set-text "token" tok
-    in let r = fetch-get-then ("/api/chat/me?t=" & url-encode tok) me-cb
+    in let r = fetch-get-then (chat-api & "me?t=" & url-encode tok) me-cb
     in 0
 
   me-cb : Text -> Integer
@@ -423,20 +441,23 @@ Section: Auth
 
   show-login : Integer -> Integer
   show-login (x) =
-    show-prompt "Welcome to CodexChat" "Choose a username:" "your name" login-cb
+    show-prompt "Claim your name" "Choose a name for yourself. Once claimed, it is yours alone:" "your name" login-cb
 
   login-cb : Text -> Integer
   login-cb (name) =
     if name == "" then show-login 0
-    else let r = fetch-get-then ("/api/chat/register?name=" & url-encode name) register-cb
+    else let r = fetch-get-then (chat-api & "register?name=" & url-encode name) register-cb
     in 0
 
   register-cb : Text -> Integer
   register-cb (resp) =
     let obj = json-parse-obj resp
     in let tok = json-obj-field obj "token"
-    in if tok == "" then show-login 0
-    else let s1 = local-storage-set "chat-token" tok
+    in if tok == "" then
+      (if json-obj-field obj "error" == "name taken"
+       then show-prompt "Claim your name" "That name is already claimed. Choose another:" "your name" login-cb
+       else show-login 0)
+    else let s1 = local-storage-set "codex-chat-token" tok
     in let s2 = state-set-text "token" tok
     in let r = check-auth 0
     in 0
@@ -445,7 +466,8 @@ Section: Entry
 
   wire-compose : Integer -> Integer
   wire-compose (x) =
-    let el = dom-get "msg-input"
+    if state-get sk-active-conv < 0 then 0
+    else let el = dom-get "msg-input"
     in let w = dom-on-input el on-compose-input
     in let el2 = dom-on-key el on-compose-key
     in 0
@@ -479,7 +501,8 @@ Section: Entry
 
   scroll-messages : Integer -> Integer
   scroll-messages (x) =
-    let el = dom-get "messages"
+    if state-get sk-active-conv < 0 then 0
+    else let el = dom-get "messages"
     in let s = dom-set-style el "scrollBehavior" "smooth"
     in 0
 
@@ -491,12 +514,11 @@ Section: Entry
     in let sc = scroll-messages 0
     in 0
 
-  poll-messages : Integer -> Integer
-  poll-messages (x) =
-    let active = state-get sk-active-conv
-    in if active < 0 then set-timeout poll-messages 3000
-    else let r = load-messages 0
-    in set-timeout poll-messages 3000
+  on-chat-event : Text -> Integer
+  on-chat-event (what) =
+    let c = if state-get-text "token" == "" then 0 else load-conversations 0
+    in let active = state-get sk-active-conv
+    in if active < 0 then 0 else load-messages 0
 
   opening : [Console] Integer
   opening = act
@@ -506,7 +528,7 @@ Section: Entry
     in let s3 = set-render render-chat
     in let h = register-handlers no-pick chat-click
     in let r = render-chat 0
-    in let p = set-timeout poll-messages 3000
+    in let p = event-source-then (chat-api & "events") on-chat-event
     in check-auth 0
   end
 

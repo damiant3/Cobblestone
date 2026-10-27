@@ -75,21 +75,6 @@ Section: Keywords and Sanitization
  and var. It refuses when a derived name is missing here. Run it after any
  change to zig-prelude.
 
- IT NOW COUNTS FUNCTION NAMES TOO, AND UNTIL 2026-08-28 IT DID NOT. The regex
- that harvests parameters reads past `fn NAME` to reach the parameter list and
- dropped the name on the way, so of the prelude's 96 declarations -- 74 fn and
- 22 const/var -- this list covered the 22 and none of the 74. A zig file is a
- struct and its top-level declarations are its members, so a Codex program
- with a top-level named `cx-print` emitted a second `fn cx_print` and the file
- would not compile: `error: duplicate struct member name`. Finding 67, with
- both arms reproduced.
-
- Most of the 74 are `cx_`-prefixed, which is effectively this plug's namespace
- and is why no corpus program ever collided. Six are not: CxList and
- CxFn1..CxFn5, the comptime type constructors. Codex type names are CamelCase,
- so `CxList` is a name a program can pick without any sense of trespassing,
- and that is the collision worth caring about.
-
  The list is the UNION over the whole prelude and stays that way. A future
  that emits only the parts a program reaches must not narrow it to the parts
  that program got: the cost of keeping a name reserved for a program that
@@ -101,12 +86,12 @@ Section: Keywords and Sanitization
    "cx_heap_vtable", "cx_hp", "cx_gpa", "cx_dptr", "cx_bivy", "cx_nest",
    "cx_deck_base", "cx_deck_hw", "cx_deck_top", "cx_deck_best",
    "cx_deck_stride", "cx_deck_armed", "cx_deck_slack", "cx_deck_fd", "cx_environ", "cx_init", "cx_env", "CxFn1", "CxFn2",
-   "CxFn3", "CxFn4", "CxFn5", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
+   "CxFn3", "CxFn4", "CxFn5", "CxFn6", "CxFn7", "CxFn8", "CxFn9", "CxFn10", "CxFn11", "CxFn12", "F", "G", "J", "CxList", "cx_ll_empty", "cx_ll_push", "cx_ll_of",
    "cx_ll_concat", "cx_ll_copy", "cx_ll_tail", "cx_raw_bytes_to_text", "cx_ll_cons", "cx_ll_insert_at",
    "cx_ll_with_capacity",
-   "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx",
+   "cx_text_compare", "cx_text_to_double_bits", "cx_bits_to_real_approx", "cx_real_approx_to_bits",
    "cx_real_to_bits", "cx_bits_to_real",
-   "cx_real_to_int", "cx_real_from_int", "cx_to_real_approx", "cx_real_trap", "cx_real_sat",
+   "cx_real_to_int", "cx_real_from_int", "cx_to_real_approx", "cx_real_trap", "cx_real_sat", "cx_real_sat_approx", "cx_real_ordinal", "cx_real_near", "cx_d", "cx_o", "cx_t", "cx_u", "tol", "w32",
    "cx_w", "cx_x", "cx_real_to_text",
    "cx_char_to_text", "cx_char_encode", "cx_list_len", "cx_list_at",
    "cx_text_len", "cx_char_at", "cx_text_dup", "cx_substring", "cx_ipow",
@@ -117,7 +102,7 @@ Section: Keywords and Sanitization
    "cx_deck_pos", "cx_deck_set", "cx_utf8_to_cce", "cx_read_file_uni",
    "cx_write_all", "cx_write_binary", "cx_write_binary_buf", "cx_vtag",
    "cx_buf_write_byte", "cx_buf_write_bytes", "cx_peek_byte", "cx_peek_32",
-   "cx_poke_32", "cx_poke_16", "cx_alloc_bytes", "cx_poke_byte", "cx_memset",
+   "cx_vec_load", "cx_vec_lane", "cx_arr", "cx_k", "cx_poke_qword", "cx_poke_32", "cx_poke_16", "cx_alloc_bytes", "cx_poke_byte", "cx_memset",
    "cx_port_out_byte",
    "cx_block_host", "CxBlockHost", "cx_block_read_sector", "cx_block_write_sector", "cx_process_get_scope",
    "cx_file_host", "CxFileHost", "cx_fs_read_text", "cx_fs_write_file", "cx_fs_append_file", "cx_fs_list_dir", "cx_fs_make_dir",
@@ -290,7 +275,7 @@ Section: Type Mapping
 
   zig-closure-type : Integer, Text, Text -> Text
   zig-closure-type (n) (params) (result) =
-    if n < 1 | n > 5
+    if n < 1 | n > 12
     then "@compileError(\"closure arity " & integer-to-text n & " unsupported\")"
     else "CxFn" & integer-to-text n & "(" & params & ", " & result & ")"
 
@@ -1170,6 +1155,42 @@ Section: Builtin Emitter
        emit = \args ctx d ty -> "cx_to_real_approx(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
      },
      ZigBuiltinEmitter {
+       name = "real-approx-to-bits",
+       emit = \args ctx d ty -> "cx_real_approx_to_bits(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "real-approx-from-int",
+       emit = \args ctx d ty -> "cx_to_real_approx(@as(f64, @floatFromInt(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ")))"
+     },
+     ZigBuiltinEmitter {
+       name = "from-real-approx",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "to-real-approx-trapping",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "from-real-approx-trapping",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "to-real-approx-saturating",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "from-real-approx-saturating",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "from-real-trapping",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
+       name = "from-real-saturating",
+       emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
+     },
+     ZigBuiltinEmitter {
        name = "to-real-trapping",
        emit = \args ctx d ty -> emit-zig-expr (list-at args 0) ctx (d + 1)
      },
@@ -1456,6 +1477,24 @@ Section: Builtin Emitter
        emit = \args ctx d ty -> "cx_peek_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")"
      },
      ZigBuiltinEmitter {
+       name = "vec-load-at",
+       emit = \args ctx d ty -> when ty
+        is VectorTy (vn) (ve) -> "cx_vec_load(" & emit-zig-type ve (ctx.scope-tvars) & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+        is otherwise -> "@compileError(\"zig plug: vec-load-at of a non-vector type\")"
+     },
+     ZigBuiltinEmitter {
+       name = "vec-extract",
+       emit = \args ctx d ty -> "cx_vec_lane(" & emit-zig-type ty (ctx.scope-tvars) & ", " & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "vec-reduce-add",
+       emit = \args ctx d ty -> "@reduce(.Add, " & emit-zig-expr (list-at args 0) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
+       name = "poke-qword",
+       emit = \args ctx d ty -> "cx_poke_qword(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")"
+     },
+     ZigBuiltinEmitter {
        name = "poke-32",
        emit = \args ctx d ty -> "cx_poke_32(" & emit-zig-expr (list-at args 0) ctx (d + 1) & ", " & emit-zig-expr (list-at args 1) ctx (d + 1) & ", " & emit-zig-expr (list-at args 2) ctx (d + 1) & ")"
      },
@@ -1717,15 +1756,38 @@ Section: Binary Operator Mapping
      is IrSubInt -> "-"
      is otherwise -> "*"
 
+  zig-real-is-f32 : CodexType -> Boolean
+  zig-real-is-f32 (ty) =
+    when ty
+     is RealTy (w) (m) -> when w
+      is RwF32 -> True
+      is otherwise -> False
+     is otherwise -> False
+
+  zig-real-is-real : CodexType -> Boolean
+  zig-real-is-real (ty) =
+    when ty
+     is RealTy (w) (m) -> True
+     is otherwise -> False
+
+  zig-real-round : CodexType, Text -> Text
+  zig-real-round (ty) (e) = if zig-real-is-f32 ty then "cx_to_real_approx(" & e & ")" else e
+
   emit-zig-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, ZigCtx, Integer -> Text
   emit-zig-binary (op) (l) (r) (ty) (ctx) (d) =
     when op
      is IrAddInt | IrSubInt | IrMulInt ->
       "(" & emit-zig-expr l ctx (d + 1) & " " & (if int-ty-wraps ty then zig-bin-op-symbol op else zig-bin-op-plain op) & " " & emit-zig-expr r ctx (d + 1) & ")"
+     is IrApproxEq | IrApproxEqExact ->
+      if zig-real-is-real (zig-expr-type l) then
+       "cx_real_near(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ", " & (if zig-real-is-f32 (zig-expr-type l) then "true" else "false") & ", " & (when op is IrApproxEq -> "4" is otherwise -> "0") & ")"
+      else "(" & emit-zig-expr l ctx (d + 1) & " == " & emit-zig-expr r ctx (d + 1) & ")"
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox ->
+      "cx_to_real_approx(" & emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1) & ")"
      is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping ->
-      "cx_real_trap(" & emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1) & ")"
+      "cx_real_trap(" & zig-real-round ty (emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1)) & ")"
      is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating ->
-      "cx_real_sat(" & emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1) & ")"
+      (if zig-real-is-f32 ty then "cx_real_sat_approx(" else "cx_real_sat(") & zig-real-round ty (emit-zig-expr l ctx (d + 1) & " " & zig-bin-op-symbol op & " " & emit-zig-expr r ctx (d + 1)) & ")"
      is IrAppendText -> "cx_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
      is IrAppendList -> "cx_ll_concat(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
      is IrConsList -> "cx_ll_cons(" & emit-zig-expr l ctx (d + 1) & ", " & emit-zig-expr r ctx (d + 1) & ")"
@@ -2765,7 +2827,7 @@ Section: Match Emission
   zig-pat-nested (p) =
     when p
      is IrCtorPat (name) (subs) (ty) (sp) -> zig-subs-nested subs 0
-     is IrLitPat (text) (ty) (sp) -> when ty
+     is IrLitPat (text) (ty) (sp) -> when zig-strip-unit ty
       is TextTy -> True
       is otherwise -> False
      is otherwise -> False
@@ -2787,7 +2849,7 @@ Section: Match Emission
 
   zig-chain-lit-test : Text, Text, CodexType -> Text
   zig-chain-lit-test (sv) (text) (ty) =
-    when ty
+    when zig-strip-unit ty
      is TextTy -> "cx_text_eq(" & sv & ", \"" & zig-escape-text text & "\")"
      is otherwise -> sv & " == " & zig-lit-pat-text text ty
 
@@ -4795,6 +4857,55 @@ Section: Chapter Emission
     ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E) R };\n}\n"
   ]
 
+  zig-p-cxfn6 : List ShakeFrag
+  zig-p-cxfn6 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn6",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F) R };\n}\n"
+  ]
+
+  zig-p-cxfn7 : List ShakeFrag
+  zig-p-cxfn7 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn7",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime G: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F, G) R };\n}\n"
+  ]
+
+  zig-p-cxfn8 : List ShakeFrag
+  zig-p-cxfn8 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn8",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime G: type, comptime H: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F, G, H) R };\n}\n"
+  ]
+
+  zig-p-cxfn9 : List ShakeFrag
+  zig-p-cxfn9 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn9",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime G: type, comptime H: type, comptime I: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F, G, H, I) R };\n}\n"
+  ]
+
+  zig-p-cxfn10 : List ShakeFrag
+  zig-p-cxfn10 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn10",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime G: type, comptime H: type, comptime I: type, comptime J: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F, G, H, I, J) R };\n}\n"
+  ]
+
+  zig-p-cxfn11 : List ShakeFrag
+  zig-p-cxfn11 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn11",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime G: type, comptime H: type, comptime I: type, comptime J: type, comptime K: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F, G, H, I, J, K) R };\n}\n"
+  ]
+
+  zig-p-cxfn12 : List ShakeFrag
+  zig-p-cxfn12 = [
+    ShakeLit "fn ",
+    ShakeUse "CxFn12",
+    ShakeLit "(comptime A: type, comptime B: type, comptime C: type, comptime D: type, comptime E: type, comptime F: type, comptime G: type, comptime H: type, comptime I: type, comptime J: type, comptime K: type, comptime L: type, comptime R: type) type {\n    return struct { ctx: *anyopaque, call: *const fn (*anyopaque, A, B, C, D, E, F, G, H, I, J, K, L) R };\n}\n"
+  ]
+
   zig-p-cxlist : List ShakeFrag
   zig-p-cxlist = [
     ShakeLit "fn ",
@@ -4970,8 +5081,8 @@ Section: Chapter Emission
   ]
 
  A trapping Real traps when the result has no value (an infinity or a NaN),
- and a saturating one answers the largest finite f64 of the same sign for an
- infinity and zero for a NaN: bare metal's `emit-real-trapping-arith` and
+ and a saturating one answers the largest finite value of its width (f64, or
+ f32 after the f32 rounding) of the same sign for an infinity and zero for a NaN: bare metal's `emit-real-trapping-arith` and
  `emit-real-saturating-arith`. `v - v == 0` holds exactly for a finite v.
 
   zig-p-cx-real-trap : List ShakeFrag
@@ -4986,6 +5097,31 @@ Section: Chapter Emission
     ShakeLit "fn ",
     ShakeUse "cx_real_sat",
     ShakeLit "(v: f64) f64 {\n    if (v != v) return 0.0;\n    if (v - v == 0) return v;\n    return if (v > 0) 1.7976931348623157e308 else -1.7976931348623157e308;\n}\n"
+  ]
+
+ `~` and `~0` compare ULP distance as bare metal's `emit-approx-eq` does: the
+ pattern becomes a monotonic signed ordinal (an f32's 32 bits moved to the top
+ first, so its sign is the sign bit, and the ordinal moved back after), and the
+ operands are equal when the ordinals differ by at most 4 (`~`) or 0 (`~0`).
+
+  zig-p-cx-real-near : List ShakeFrag
+  zig-p-cx-real-near = [
+    ShakeLit "fn ",
+    ShakeUse "cx_real_ordinal",
+    ShakeLit "(v: f64, comptime w32: bool) i64 {\n    const cx_u: u64 = if (w32) @as(u64, @as(u32, @bitCast(@as(f32, @floatCast(v))))) << 32 else @bitCast(v);\n    const cx_x: i64 = @bitCast(cx_u);\n    const cx_t: i64 = cx_x >> 63;\n    const cx_o: i64 = (cx_x ^ @as(i64, @bitCast(@as(u64, @bitCast(cx_t)) >> 1))) -% cx_t;\n    return if (w32) cx_o >> 32 else cx_o;\n}\nfn ",
+    ShakeUse "cx_real_near",
+    ShakeLit "(a: f64, b: f64, comptime w32: bool, tol: u64) bool {\n    const cx_d: i64 = ",
+    ShakeUse "cx_real_ordinal",
+    ShakeLit "(a, w32) -% ",
+    ShakeUse "cx_real_ordinal",
+    ShakeLit "(b, w32);\n    const cx_t: i64 = cx_d >> 63;\n    const cx_m: u64 = @bitCast((cx_d ^ cx_t) -% cx_t);\n    return cx_m <= tol;\n}\n"
+  ]
+
+  zig-p-cx-real-sat-approx : List ShakeFrag
+  zig-p-cx-real-sat-approx = [
+    ShakeLit "fn ",
+    ShakeUse "cx_real_sat_approx",
+    ShakeLit "(v: f64) f64 {\n    if (v != v) return 0.0;\n    if (v - v == 0) return v;\n    return if (v > 0) 3.4028234663852886e38 else -3.4028234663852886e38;\n}\n"
   ]
   zig-p-cx-real-to-int : List ShakeFrag
   zig-p-cx-real-to-int = [
@@ -5007,6 +5143,13 @@ Section: Chapter Emission
  then truncate. Here the operand is ALREADY that widening, and f32 to f64 is
  exact, so truncating it is the same arithmetic on the same real number and
  `cx_real_to_int` is the right callee, guards included.
+
+  zig-p-cx-real-approx-to-bits : List ShakeFrag
+  zig-p-cx-real-approx-to-bits = [
+    ShakeLit "fn ",
+    ShakeUse "cx_real_approx_to_bits",
+    ShakeLit "(v: f64) i64 {\n    return @as(i64, @as(u32, @bitCast(@as(f32, @floatCast(v)))));\n}\n"
+  ]
 
   zig-p-cx-to-real-approx : List ShakeFrag
   zig-p-cx-to-real-approx = [
@@ -5833,6 +5976,35 @@ Section: Chapter Emission
  The value is bitcast to u64 before the shifts so they are logical: a negative
  i64 shifted arithmetically would carry sign bits down into the low byte.
 
+  zig-p-cx-vec-load : List ShakeFrag
+  zig-p-cx-vec-load = [
+    ShakeLit "fn ",
+    ShakeUse "cx_vec_load",
+    ShakeLit "(comptime T: type, b: i64) @Vector(2, T) {\n    ",
+    ShakeUse "cx_buf_want",
+    ShakeLit "(b + 16);\n    const cx_a: usize = @intCast(b);\n    var cx_out: [2]T = undefined;\n    var cx_k: usize = 0;\n    while (cx_k < 2) : (cx_k += 1) {\n        var cx_w: u64 = 0;\n        var cx_j: usize = 8;\n        while (cx_j > 0) {\n            cx_j -= 1;\n            cx_w = (cx_w << 8) | ",
+    ShakeUse "cx_heap_mem",
+    ShakeLit "[cx_a + cx_k * 8 + cx_j];\n        }\n        cx_out[cx_k] = @bitCast(cx_w);\n    }\n    return cx_out;\n}\n"
+  ]
+
+  zig-p-cx-vec-lane : List ShakeFrag
+  zig-p-cx-vec-lane = [
+    ShakeLit "fn ",
+    ShakeUse "cx_vec_lane",
+    ShakeLit "(comptime T: type, v: @Vector(2, T), i: i64) T {\n    const cx_arr: [2]T = v;\n    return cx_arr[@intCast(i)];\n}\n"
+  ]
+
+  zig-p-cx-poke-qword : List ShakeFrag
+  zig-p-cx-poke-qword = [
+    ShakeLit "fn ",
+    ShakeUse "cx_poke_qword",
+    ShakeLit "(b: i64, off: i64, v: i64) i64 {\n    ",
+    ShakeUse "cx_buf_want",
+    ShakeLit "(b + off + 8);\n    const cx_a: usize = @intCast(b + off);\n    const cx_w: u64 = @bitCast(v);\n    var cx_j: usize = 0;\n    while (cx_j < 8) : (cx_j += 1) ",
+    ShakeUse "cx_heap_mem",
+    ShakeLit "[cx_a + cx_j] = @truncate(cx_w >> @as(u6, @intCast(cx_j * 8)));\n    return 0;\n}\n"
+  ]
+
   zig-p-cx-poke-32 : List ShakeFrag
   zig-p-cx-poke-32 = [
     ShakeLit "fn ",
@@ -6236,6 +6408,13 @@ Section: Chapter Emission
      ShakePart { name = "CxFn3", frags = zig-p-cxfn3 },
      ShakePart { name = "CxFn4", frags = zig-p-cxfn4 },
      ShakePart { name = "CxFn5", frags = zig-p-cxfn5 },
+     ShakePart { name = "CxFn6", frags = zig-p-cxfn6 },
+     ShakePart { name = "CxFn7", frags = zig-p-cxfn7 },
+     ShakePart { name = "CxFn8", frags = zig-p-cxfn8 },
+     ShakePart { name = "CxFn9", frags = zig-p-cxfn9 },
+     ShakePart { name = "CxFn10", frags = zig-p-cxfn10 },
+     ShakePart { name = "CxFn11", frags = zig-p-cxfn11 },
+     ShakePart { name = "CxFn12", frags = zig-p-cxfn12 },
      ShakePart { name = "CxList", frags = zig-p-cxlist },
      ShakePart { name = "cx_ll_empty", frags = zig-p-cx-ll-empty },
      ShakePart { name = "cx_ll_push", frags = zig-p-cx-ll-push },
@@ -6250,6 +6429,7 @@ Section: Chapter Emission
      ShakePart { name = "cx_text_compare", frags = zig-p-cx-text-compare },
      ShakePart { name = "cx_text_to_double_bits", frags = zig-p-cx-text-to-double-bits },
      ShakePart { name = "cx_bits_to_real_approx", frags = zig-p-cx-bits-to-real-approx },
+     ShakePart { name = "cx_real_approx_to_bits", frags = zig-p-cx-real-approx-to-bits },
      ShakePart { name = "cx_real_to_bits", frags = zig-p-cx-real-to-bits },
      ShakePart { name = "cx_bits_to_real", frags = zig-p-cx-bits-to-real },
      ShakePart { name = "cx_real_from_int", frags = zig-p-cx-real-from-int },
@@ -6257,6 +6437,8 @@ Section: Chapter Emission
      ShakePart { name = "cx_to_real_approx", frags = zig-p-cx-to-real-approx },
      ShakePart { name = "cx_real_trap", frags = zig-p-cx-real-trap },
      ShakePart { name = "cx_real_sat", frags = zig-p-cx-real-sat },
+     ShakePart { name = "cx_real_sat_approx", frags = zig-p-cx-real-sat-approx },
+     ShakePart { name = "cx_real_near", frags = zig-p-cx-real-near },
      ShakePart { name = "cx_real_to_text", frags = zig-p-cx-real-to-text },
      ShakePart { name = "cx_char_to_text", frags = zig-p-cx-char-to-text },
      ShakePart { name = "cx_char_encode", frags = zig-p-cx-char-encode },
@@ -6321,6 +6503,9 @@ Section: Chapter Emission
      ShakePart { name = "cx_process_get_scope", frags = zig-p-cx-process-get-scope },
     ShakePart { name = "cx_fs", frags = zig-p-cx-fs },
      ShakePart { name = "cx_peek_32", frags = zig-p-cx-peek-32 },
+     ShakePart { name = "cx_vec_load", frags = zig-p-cx-vec-load },
+     ShakePart { name = "cx_vec_lane", frags = zig-p-cx-vec-lane },
+     ShakePart { name = "cx_poke_qword", frags = zig-p-cx-poke-qword },
      ShakePart { name = "cx_poke_32", frags = zig-p-cx-poke-32 },
      ShakePart { name = "cx_poke_16", frags = zig-p-cx-poke-16 },
      ShakePart { name = "cx_poke_byte", frags = zig-p-cx-poke-byte },

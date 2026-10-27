@@ -1,0 +1,48 @@
+Chapter: HttpUtf8Body
+  cites Works chapter Http
+  cites Foreword chapter CCE
+
+Section: Helpers
+
+  show-all : List Integer, Integer, Integer -> Text
+  show-all (xs) (i) (stop) =
+    if i >= stop then ""
+    else show (list-at xs i) & " " & show-all xs (i + 1) stop
+
+  body-start : List Integer, Integer -> Integer
+  body-start (bs) (i) =
+    if i + 4 > list-length bs then 0 - 1
+    else if list-at bs i == 13 & list-at bs (i + 1) == 10 & list-at bs (i + 2) == 13 & list-at bs (i + 3) == 10 then i + 4
+    else body-start bs (i + 1)
+
+  has-text : List Integer, Integer, List Integer -> Boolean
+  has-text (bs) (i) (pat) =
+    if i + list-length pat > list-length bs then False
+    else if has-at bs i pat 0 then True
+    else has-text bs (i + 1) pat
+
+  has-at : List Integer, Integer, List Integer, Integer -> Boolean
+  has-at (bs) (i) (pat) (j) =
+    if j >= list-length pat then True
+    else if list-at bs (i + j) /= list-at pat j then False
+    else has-at bs i pat (j + 1)
+
+  encode-body : Text -> List Integer
+  encode-body (body) = http-encode (HttpResponse { status = http-200, content-type = "text/plain", body = body })
+
+  report : Text, Text -> Text
+  report (name) (body) =
+    let bs = encode-body body
+    in let s = body-start bs 0
+    in let n = list-length bs - s
+    in let cl = has-text bs 0 (text-to-unicode-bytes ("Content-Length: " & show n) & [13, 10])
+    in name & ": length " & show n & " header-agrees " & (if cl then "yes" else "no") & " bytes " & show-all bs s (list-length bs)
+
+  opening : [Console] Integer
+  opening = act
+    print-line (report "ascii" "ab")
+    print-line (report "two-byte" "©é")
+    print-line (report "three-byte" "€")
+    print-line (report "mixed" "a©é€")
+    0
+  end

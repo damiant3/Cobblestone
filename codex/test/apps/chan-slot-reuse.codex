@@ -1,0 +1,60 @@
+Chapter: ChanSlotReuse
+
+Section: Body
+  cycle : Integer, Integer -> [Concurrent] Integer
+  cycle (i) (bad) =
+    if i == 0 then bad
+    else act
+      ch <- chan-kern-create 2
+      s <- chan-kern-send ch i
+      v <- chan-kern-recv ch
+      c <- chan-kern-close ch
+      cycle (i - 1) (if ch < 0 | s /= 0 | v /= i | c /= 0 then bad + 1 else bad)
+    end
+
+  stale-verdict : Integer, Integer, Integer, Integer, Integer -> Text
+  stale-verdict (a) (b) (stale-send) (fresh-send) (fresh-recv) =
+    if a == b then "FAIL: a reused slot handed back the closed handle"
+    else if stale-send /= (0 - 1) then "FAIL: a closed handle reached the slot's new channel"
+    else if fresh-send /= 0 | fresh-recv /= 6 then "FAIL: the reused slot's channel does not carry"
+    else "stale handle refused"
+
+  stale : [Concurrent] Text
+  stale = act
+    a <- chan-kern-create 2
+    ca <- chan-kern-close a
+    b <- chan-kern-create 2
+    sa <- chan-kern-send a 5
+    sb <- chan-kern-send b 6
+    rb <- chan-kern-recv b
+    cb <- chan-kern-close b
+    stale-verdict a b sa sb rb
+  end
+
+  drain-verdict : Integer, Integer, Integer, Integer -> Text
+  drain-verdict (first) (after) (c) (d) =
+    if first /= 1 then "FAIL: a closed channel lost its buffered item"
+    else if after /= (0 - 1) then "FAIL: a drained closed channel answered a receive"
+    else if c == d then "FAIL: a drained slot handed back the closed handle"
+    else "closed channel drained, then freed"
+
+  drain : [Concurrent] Text
+  drain = act
+    c <- chan-kern-create 2
+    s <- chan-kern-send c 1
+    cl <- chan-kern-close c
+    first <- chan-kern-recv c
+    after <- chan-kern-recv c
+    d <- chan-kern-create 2
+    cd <- chan-kern-close d
+    drain-verdict first after c d
+  end
+
+  opening : [Console, Concurrent] Nothing = act
+    bad <- cycle 40 0
+    print-line-uni ("cycles failed: " & integer-to-text bad)
+    st <- stale
+    print-line-uni st
+    dr <- drain
+    print-line-uni dr
+  end

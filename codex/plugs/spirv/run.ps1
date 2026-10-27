@@ -17,10 +17,10 @@ if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx")
 # must not substitute a body and delete it. See text-plug-ir-pipeline in
 # codex/compiler/IR/Passes.codex.
 $IrFile = Join-Path $PSScriptRoot "build-output\last-run-$RunTag.ir"
-# -Kernel pins the compiler the probe is measured against. With none,
-# compile.ps1 takes whatever build.ps1 last left in build-output, which is not
-# the seed and not anything this plug is being checked against.
-$kernelArgs = if ($Kernel) { @('-Kernel', $Kernel) } else { @() }
+# -Kernel pins the compiler the probe is measured against, and the seed is the
+# default: compile.ps1's own default is whatever build.ps1 last left in
+# build-output, which is not anything this plug is being checked against.
+$kernelArgs = @('-Kernel', $(if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed\Codex.cdx' }))
 & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $Src -Out $IrFile -Log $LogFile -IrCce -Passes 'text-plug' @kernelArgs
 if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("FAIL: IR; see $LogFile"); exit 3 }
 Write-Host "[spirv-run] IR: $((Get-Item $IrFile).Length) bytes (CCE)"

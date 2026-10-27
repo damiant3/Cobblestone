@@ -4,7 +4,7 @@ Chapter: X86-64 Code Generator
   cites Codex chapter CdxCodes (cdx-rt-wcet-exceeded, cdx-rt-wcet-opaque, cdx-rt-wcet-report, cdx-rt-wcet-unchecked)
   cites Codex chapter Codex Types (i64-max, i64-min)
   cites Codex chapter IR Chapter (ir-expr-span, ir-expr-type)
-  cites Emit chapter X86-64 Boot Infrastructure (fork-free-head-addr, stack-min-rsp-addr)
+  cites Emit chapter X86-64 Boot Infrastructure (fork-free-head-addr, stack-min-rsp-addr, wait-node-free-head-addr)
   cites Emit chapter CDX Binary Format Writer (compute-data-vaddr-at)
   cites Codex chapter Builtins (builtins)
   cites Codex chapter Const Share (cs-collect-defs, cs-find, cs-sort-index, shared-const-names)
@@ -1351,8 +1351,11 @@ Section: Expression Emission
   emit-fork (st) (body) (sp) =
     let body-result = emit-expr (st-set-tail-pos st False) body
     in let cl-loc = alloc-local (body-result.state)
-    in let st0 = store-local (cl-loc.state) (cl-loc.reg) (body-result.reg)
-    in let st1 = emit-fork-init-main st0
+    in emit-fork-closure (store-local (cl-loc.state) (cl-loc.reg) (body-result.reg)) (cl-loc.reg)
+
+  emit-fork-closure : CodegenState, Integer -> EmitResult
+  emit-fork-closure (st0) (cl-reg) =
+    let st1 = emit-fork-init-main st0
     in let desc-loc = alloc-local st1
     in let stk-loc = alloc-local (desc-loc.state)
     in let fh = alloc-temp (stk-loc.state)
@@ -1381,7 +1384,8 @@ Section: Expression Emission
     in let st1d = st-append-code st1c (mov-load reg-r10 reg-r11 0)
     in let desc-alloc = emit-bivy-alloc st1d task-desc-size
     in let ba0 = store-local (desc-alloc.state) (desc-loc.reg) reg-rax
-    in let stk-alloc = emit-bivy-alloc ba0 task-stack-size
+    in let ba0g = st-append-code ba0 (li reg-r11 0 & mov-store reg-rax reg-r11 task-gen-offset)
+    in let stk-alloc = emit-bivy-alloc ba0g task-stack-size
     in let ba1 = store-local (stk-alloc.state) (stk-loc.reg) reg-rax
     in let st-pool = st-append-code ba1 (li reg-r11 fork-pool-cursor-addr)
     in let st-pool2 = st-append-code st-pool (mov-store reg-r11 reg-r10 0)
@@ -1398,7 +1402,7 @@ Section: Expression Emission
     in let stk-ld = load-local st6 (stk-loc.reg)
     in let dl2 = load-local (stk-ld.state) (desc-loc.reg)
     in let st7 = st-append-code (dl2.state) (mov-store (dl2.reg) (stk-ld.reg) 32)
-    in let cl-ld = load-local st7 (cl-loc.reg)
+    in let cl-ld = load-local st7 cl-reg
     in let dl3 = load-local (cl-ld.state) (desc-loc.reg)
     in let st8 = st-append-code (dl3.state) (mov-store (dl3.reg) (cl-ld.reg) 48)
     in let stk-ld2 = load-local st8 (stk-loc.reg)
@@ -1428,7 +1432,11 @@ Section: Expression Emission
     in let dl5 = load-local st24 (desc-loc.reg)
     in let st25 = st-append-code (dl5.state) (mov-store (dl5.reg) (nx.reg) 24)
     in let st26 = st-append-code st25 (mov-store (rh.reg) (dl5.reg) 0)
-    in load-local st26 (desc-loc.reg)
+    in let hd = load-local st26 (desc-loc.reg)
+    in let gen = alloc-temp (hd.state)
+    in let st27 = st-append-code (gen.state) (mov-load (gen.reg) (hd.reg) task-gen-offset & and-ri (gen.reg) 16777215)
+    in let st28 = st-append-code st27 (shl-ri (gen.reg) task-gen-shift & or-rr (hd.reg) (gen.reg))
+    in EmitResult { state = st28, reg = hd.reg }
 
   emit-fork-init-main : CodegenState -> CodegenState
   emit-fork-init-main (st) =
@@ -1449,15 +1457,113 @@ Section: Expression Emission
     in let st9 = st-append-code st8b (li (s1.reg) sched-current-task-addr)
     in let st10 = st-append-code st9 (mov-store (s1.reg) (md.reg) 0)
     in let st10a = st-append-code st10 (li (s1.reg) fork-pool-cursor-addr)
-    in let st10b = st-append-code st10a (mov-store (s1.reg) reg-r10 0)
+    in let st10b0 = st-append-code st10a (mov-store (s1.reg) reg-r10 0)
+    in let st10b1 = st-append-code st10b0 (li (s1.reg) wait-node-free-head-addr)
+    in let st10b2 = st-append-code st10b1 (li (md.reg) 0)
+    in let st10b = st-append-code st10b2 (mov-store (s1.reg) (md.reg) 0)
     in let st10c = heap-bump-imm st10b fork-pool-reservation
     in patch-jcc-at st10c skip-pos (st10c.code-len)
+
+  emit-race-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-race-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos (fc-flush (st-refuse-hosted st "race" synthetic-span)) False) (list-at args 0)
+    in let src = alloc-local (r0.state)
+    in let st1 = store-local (src.state) (src.reg) (r0.reg)
+    in let zero = alloc-temp st1
+    in let st2 = st-append-code (zero.state) (li (zero.reg) 0)
+    in let ld0 = load-local st2 (src.reg)
+    in let st3 = emit-index-bounds (ld0.state) (zero.reg) (ld0.reg)
+    in let ld1 = load-local st3 (src.reg)
+    in let base = alloc-temp (ld1.state)
+    in let st4 = st-append-code (base.state) (mov-rr (base.reg) (ld1.reg))
+    in let cap = alloc-temp st4
+    in let st5 = st-append-code (cap.state) (mov-load (cap.reg) (base.reg) (-8))
+    in let st6 = st-append-code st5 (cmp-ri (cap.reg) 0)
+    in let plain = st6.code-len
+    in let st7 = st-append-code st6 (jcc cc-ge 0)
+    in let st8 = st-append-code st7 (mov-load (base.reg) (base.reg) 8)
+    in let st9 = patch-jcc-at st8 plain (st8.code-len)
+    in let base-loc = alloc-local st9
+    in let st10 = store-local (base-loc.state) (base-loc.reg) (base.reg)
+    in let ld2 = load-local st10 (src.reg)
+    in let n = alloc-temp (ld2.state)
+    in let st11 = st-append-code (n.state) (mov-load (n.reg) (ld2.reg) 0)
+    in let n-loc = alloc-local st11
+    in let st12 = store-local (n-loc.state) (n-loc.reg) (n.reg)
+    in let nl = load-local st12 (n-loc.reg)
+    in let st13 = st-append-code (nl.state) (mov-store reg-r10 (nl.reg) 0)
+    in let st14 = heap-bump-imm st13 8
+    in let nl2 = load-local st14 (n-loc.reg)
+    in let st15 = st-append-code (nl2.state) (mov-rr reg-rdi (nl2.reg) & add-ri reg-rdi 1 & shl-ri reg-rdi 3)
+    in let st16 = emit-call-to st15 "__alloc"
+    in let tasks = alloc-local st16
+    in let st17 = store-local (tasks.state) (tasks.reg) reg-rax
+    in let tl = load-local st17 (tasks.reg)
+    in let nl3 = load-local (tl.state) (n-loc.reg)
+    in let st18 = st-append-code (nl3.state) (mov-store (tl.reg) (nl3.reg) 0)
+    in let i-loc = alloc-local st18
+    in let iz = alloc-temp (i-loc.state)
+    in let st19 = st-append-code (iz.state) (li (iz.reg) 0)
+    in let st20 = fc-flush (store-local st19 (i-loc.reg) (iz.reg))
+    in let loop-top = st20.code-len
+    in let li1 = load-local st20 (i-loc.reg)
+    in let nl4 = load-local (li1.state) (n-loc.reg)
+    in let st21 = st-append-code (nl4.state) (cmp-rr (li1.reg) (nl4.reg))
+    in let exit-pos = st21.code-len
+    in let st22 = st-append-code st21 (jcc cc-ge 0)
+    in let li2 = load-local st22 (i-loc.reg)
+    in let addr = alloc-temp (li2.state)
+    in let st23 = st-append-code (addr.state) (mov-rr (addr.reg) (li2.reg) & shl-ri (addr.reg) 3)
+    in let bl = load-local st23 (base-loc.reg)
+    in let st24 = st-append-code (bl.state) (add-rr (addr.reg) (bl.reg))
+    in let th = alloc-temp st24
+    in let st25 = st-append-code (th.state) (mov-load (th.reg) (addr.reg) 8)
+    in let cl = alloc-local st25
+    in let st26 = store-local (cl.state) (cl.reg) (th.reg)
+    in let forked = emit-fork-closure st26 (cl.reg)
+    in let d-loc = alloc-local (forked.state)
+    in let st27 = store-local (d-loc.state) (d-loc.reg) (forked.reg)
+    in let li3 = load-local st27 (i-loc.reg)
+    in let slot = alloc-temp (li3.state)
+    in let st28 = st-append-code (slot.state) (mov-rr (slot.reg) (li3.reg) & shl-ri (slot.reg) 3)
+    in let tl2 = load-local st28 (tasks.reg)
+    in let st29 = st-append-code (tl2.state) (add-rr (slot.reg) (tl2.reg))
+    in let dl = load-local st29 (d-loc.reg)
+    in let st30 = st-append-code (dl.state) (mov-store (slot.reg) (dl.reg) 8)
+    in let li4 = load-local st30 (i-loc.reg)
+    in let inc = alloc-temp (li4.state)
+    in let st31 = st-append-code (inc.state) (mov-rr (inc.reg) (li4.reg) & add-ri (inc.reg) 1)
+    in let st32 = fc-flush (store-local st31 (i-loc.reg) (inc.reg))
+    in let back = st32.code-len
+    in let st33 = patch-jmp-at (st-append-code st32 (jmp 0)) back loop-top
+    in let st34 = patch-jcc-at st33 exit-pos (st33.code-len)
+    in let tl3 = load-local st34 (tasks.reg)
+    in let st35 = st-append-code (tl3.state) (mov-rr reg-rdi (tl3.reg))
+    in let st36 = emit-call-to st35 "__task_wait_any"
+    in let rd = alloc-temp (fc-flush st36)
+    in EmitResult {
+     state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+     reg = rd.reg
+    }
 
   emit-await : CodegenState, IRExpr -> EmitResult
   emit-await (st) (task-expr) =
     let task-result = emit-expr (st-set-tail-pos st False) task-expr
     in let tl = alloc-local (task-result.state)
-    in let st1 = store-local (tl.state) (tl.reg) (task-result.reg)
+    in let st0 = store-local (tl.state) (tl.reg) (task-result.reg)
+    in let hl = load-local st0 (tl.reg)
+    in let ptr = alloc-temp (hl.state)
+    in let sa = st-append-code (ptr.state) (mov-rr (ptr.reg) (hl.reg) & shl-ri (ptr.reg) 24 & shr-ri (ptr.reg) 24)
+    in let hg = alloc-temp sa
+    in let sb = st-append-code (hg.state) (mov-rr (hg.reg) (hl.reg) & shr-ri (hg.reg) task-gen-shift)
+    in let dg = alloc-temp sb
+    in let sc0 = st-append-code (dg.state) (mov-load (dg.reg) (ptr.reg) task-gen-offset & and-ri (dg.reg) 16777215)
+    in let sc1 = st-append-code (store-local sc0 (tl.reg) (ptr.reg)) (cmp-rr (hg.reg) (dg.reg))
+    in let fresh-pos = sc1.code-len
+    in let sd = st-append-code sc1 (jcc cc-e 0)
+    in let msg = emit-text-lit sd "await of a stale task handle: its task was already awaited and freed"
+    in let se = emit-fail-raise (msg.state) (msg.reg)
+    in let st1 = patch-jcc-at se fresh-pos (se.code-len)
     in let ld1 = load-local st1 (tl.reg)
     in let sc = alloc-temp (ld1.state)
     in let st2 = st-append-code (sc.state) (mov-load (sc.reg) (ld1.reg) 0)
@@ -1471,20 +1577,37 @@ Section: Expression Emission
     in let st7 = st-append-code (bl.state) (li (bl.reg) 2)
     in let st8 = st-append-code st7 (mov-store (cm.reg) (bl.reg) 0)
     in let ld2 = load-local st8 (tl.reg)
-    in let st9 = st-append-code (ld2.state) (mov-store (ld2.reg) (cm.reg) 56)
-    in let st10 = emit-call-to st9 "__task_yield"
-    in let st11 = patch-jcc-at st10 done-pos (st10.code-len)
+    in let st9 = st-append-code (ld2.state) (mov-store (cm.reg) (ld2.reg) 40)
+    in let ldr = load-local st9 (tl.reg)
+    in let st9a = st-append-code (ldr.state) (mov-rr reg-rdi (ldr.reg))
+    in let st9b = st-append-code st9a (li reg-rsi sched-current-task-addr & mov-load reg-rsi reg-rsi 0)
+    in let st9c = emit-call-to st9b "__wait_node_add"
+    in let st10 = emit-call-to st9c "__task_yield"
+    in let ldc = load-local st10 (tl.reg)
+    in let cnt = alloc-temp (ldc.state)
+    in let st10a = st-append-code (cnt.state) (mov-load (cnt.reg) (ldc.reg) 48 & add-ri (cnt.reg) (0 - 1))
+    in let st10b = st-append-code st10a (mov-store (ldc.reg) (cnt.reg) 48)
+    in let st10c = fc-flush st10b
+    in let st11 = patch-jcc-at st10c done-pos (st10c.code-len)
     in let ld3 = load-local st11 (tl.reg)
     in let rd = alloc-temp (ld3.state)
     in let st12 = st-append-code (rd.state) (mov-load (rd.reg) (ld3.reg) 16)
     in let ld4 = load-local st12 (tl.reg)
-    in let fh = alloc-temp (ld4.state)
+    in let left = alloc-temp (ld4.state)
+    in let st12a = st-append-code (left.state) (mov-load (left.reg) (ld4.reg) 48 & cmp-ri (left.reg) 0)
+    in let keep-pos = st12a.code-len
+    in let st12b = st-append-code st12a (jcc cc-ne 0)
+    in let fh = alloc-temp st12b
     in let st13 = st-append-code (fh.state) (li (fh.reg) fork-free-head-addr)
     in let old-head = alloc-temp st13
     in let st14 = st-append-code (old-head.state) (mov-load (old-head.reg) (fh.reg) 0)
     in let st15 = st-append-code st14 (mov-store (ld4.reg) (old-head.reg) 24)
     in let st16 = st-append-code st15 (mov-store (fh.reg) (ld4.reg) 0)
-    in EmitResult { state = st16, reg = rd.reg }
+    in let bump = alloc-temp st16
+    in let st16a = st-append-code (bump.state) (mov-load (bump.reg) (ld4.reg) task-gen-offset & add-ri (bump.reg) 1)
+    in let st16b = st-append-code st16a (mov-store (ld4.reg) (bump.reg) task-gen-offset)
+    in let st17 = patch-jcc-at st16b keep-pos (st16b.code-len)
+    in EmitResult { state = st17, reg = rd.reg }
 
   emit-handle : CodegenState, Text, IRExpr, List IRHandleClause, CodexType -> EmitResult
   emit-handle (st) (eff) (body) (clauses) (ty) =

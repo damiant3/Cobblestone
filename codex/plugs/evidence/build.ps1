@@ -5,11 +5,11 @@
 # catalogs they cite, and compiled like any bare-metal program.
 #
 #   codex/plugs/evidence/build.ps1            # -> build-output/evidence-plug.cdx
-#   codex/plugs/evidence/build.ps1 -Kernel seed/Codex.cdx
+#   codex/plugs/evidence/build.ps1 -Kernel build-output/bare-metal/Codex.cdx
 [CmdletBinding()]
 param(
-    # The compiler that builds the plug. Empty means whatever build.ps1 last
-    # left in build-output (the dev loop); pass the seed for provenance.
+    # The compiler that builds the plug. Empty means the seed; pass
+    # build-output\bare-metal\Codex.cdx to build with a compiler under development.
     [string]$Kernel = ''
 )
 Set-StrictMode -Version Latest
@@ -38,9 +38,9 @@ if ($LASTEXITCODE -ne 0) { throw "[evidence] bundle failed" }
 # corpus for good, reading as ordinary staleness that a rebuild would clear.
 . (Join-Path $Repo 'build' 'plug-source-digest.ps1')
 Write-PlugSourceManifest -BundleSrc $bundled -PlugDir $PSScriptRoot -Inputs @(Get-Content $inputsList)
-$args = @('-Src', $bundled, '-Out', $cdx, '-Log', $log)
-if ($Kernel) { $args += @('-Kernel', (Resolve-Path $Kernel).Path) }
-& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') @args
+$kernelPath = if ($Kernel) { (Resolve-Path $Kernel).Path } else { Join-Path $Repo 'seed\Codex.cdx' }
+$ca = @('-Src', $bundled, '-Out', $cdx, '-Log', $log, '-Kernel', $kernelPath)
+& pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') @ca
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $cdx)) {
     Get-Content $log -ErrorAction SilentlyContinue | Select-String 'error CDX' | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
     throw "[evidence] compile failed; see $log"
@@ -55,8 +55,7 @@ $icdx = Join-Path $out 'fact-ingest.cdx'
 $ilog = Join-Path $out 'ingest-build.log'
 & pwsh -NoProfile -File (Join-Path $Repo 'build\bundle-app.ps1') -Src (Join-Path $PSScriptRoot 'FactIngest.codex') -Out $ibundled
 if ($LASTEXITCODE -ne 0) { throw "[evidence] ingest bundle failed" }
-$iargs = @('-Src', $ibundled, '-Out', $icdx, '-Log', $ilog)
-if ($Kernel) { $iargs += @('-Kernel', (Resolve-Path $Kernel).Path) }
+$iargs = @('-Src', $ibundled, '-Out', $icdx, '-Log', $ilog, '-Kernel', $kernelPath)
 & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') @iargs
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $icdx)) {
     Get-Content $ilog -ErrorAction SilentlyContinue | Select-String 'error CDX' | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }

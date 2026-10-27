@@ -6,11 +6,15 @@ Chapter: ScopeRuntimeDeny
  comparison is the whole test -- same code, same blank disk, one scope
  literal apart:
 
-   OK.TXT   is admitted by the prefix, and the write and the read-back
-            both work. Enforcement that also denies the permitted case
-            is just a broken filesystem.
+   OK       is the grant itself, and the write and the read-back both
+            work. Enforcement that also denies the permitted case is
+            just a broken filesystem.
 
-   NO.TXT   is outside the prefix. The WRITE is refused -- and that gate
+   OK.TXT   starts with the grant's text but is not the grant and does
+            not lie beneath it at a separator, so the write and the read
+            are refused. A string-prefix check admits it.
+
+   NO.TXT   is outside the grant. The WRITE is refused -- and that gate
             is not on fat16-resolve-path, which is what makes it the
             interesting one: writes go through fat16-create-file and
             never touch the resolver, so a scope check placed only on
@@ -29,15 +33,21 @@ Section: Entry
 
   opening : [Console, FileSystem.Read "OK", Device.Block] Nothing
   opening = act
-    ok <- fat16-write-file "OK.TXT" "yes"
+    ok <- fat16-write-file "OK" "yes"
     print-line-uni ("in-scope write " & show ok)
+
+    pre <- fat16-write-file "OK.TXT" "prefix"
+    print-line-uni ("prefix-only write " & show pre)
 
     no <- fat16-write-file "NO.TXT" "nope"
     print-line-uni ("out-of-scope write " & show no)
 
     vol <- fat16-init 2048
-    back <- fat16-read-text vol "OK.TXT"
+    back <- fat16-read-text vol "OK"
     print-line-uni ("in-scope read " & maybe-text back)
+
+    pre-back <- fat16-read-text vol "OK.TXT"
+    print-line-uni ("prefix-only read " & maybe-text pre-back)
 
     deny <- fat16-read-text vol "NO.TXT"
     print-line-uni ("out-of-scope read " & maybe-text deny)

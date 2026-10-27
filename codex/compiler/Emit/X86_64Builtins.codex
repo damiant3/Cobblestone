@@ -55,6 +55,35 @@ Section: Builtin Emission
     reg = tmp.reg
   }
 
+  emit-s-new-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-s-new-builtin (st) (args) =
+    let r = emit-helper-call-0 (st-append-code st (li reg-rdi chan-max-slots)) args "chan-kern-create"
+    in EmitResult {
+    state = st-append-code (r.state) (cmp-ri (r.reg) 0 & jcc cc-ge 2 & [15, 11]),
+    reg = r.reg
+  }
+
+  emit-s-send-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-s-send-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc = alloc-local (r0.state)
+    in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let loaded = load-local (r1.state) (loc.reg)
+    in let st2 = st-append-code (loaded.state) (mov-rr reg-rsi (r1.reg))
+    in let st3 = st-append-code st2 (mov-rr reg-rdi (loaded.reg))
+    in let st4 = emit-call-to st3 "chan-kern-send-block"
+    in let st5 = st-append-code st4 (cmp-ri reg-rax 0 & jcc cc-ge 2 & [15, 11])
+    in let back = load-local st5 (loc.reg)
+    in let tmp = alloc-temp (back.state)
+    in EmitResult {
+    state = st-append-code (tmp.state) (mov-rr (tmp.reg) (back.reg)),
+    reg = tmp.reg
+  }
+
+  emit-s-recv-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-s-recv-builtin (st) (args) = emit-expr (st-set-tail-pos st False) (list-at args 0)
+
   emit-helper-call-3 : CodegenState, List IRExpr, Text -> EmitResult
   emit-helper-call-3 (st) (args) (helper) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)

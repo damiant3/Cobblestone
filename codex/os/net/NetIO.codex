@@ -195,6 +195,53 @@ Section: Send
   net-io-send-drain : TcpTransportState, Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-drain (ts) (tries) (since) = net-io-send-drain-rx ts tries since [] 0
 
+ A slot holds one Ethernet frame (at most 1,514 bytes) after its 8-byte
+ length; eight slots at 1,536 bytes take 12,296 bytes with the count word.
+
+  net-io-defer-slots : Integer = 8
+  net-io-defer-slot-bytes : Integer = 1536
+  net-io-defer-bytes : Integer = 8 + net-io-defer-slots * net-io-defer-slot-bytes
+
+  net-io-defer-new : Integer -> Integer
+  net-io-defer-new (unused) =
+    let base = __heap-save
+    in let adv = __heap-advance net-io-defer-bytes
+    in let z = poke-qword base 0 0
+    in base
+
+  net-io-frame-foreign : NetResult -> Boolean
+  net-io-frame-foreign (r) = r.output == "not-for-this-port" | r.output == "not-from-peer"
+
+  net-io-defer : Integer, List Integer, Integer -> Integer
+  net-io-defer (d) (rx) (n) =
+    if d == 0 then 0
+    else let k = peek-qword d 0
+    in if k >= net-io-defer-slots then 0
+    else if n > net-io-defer-slot-bytes - 8 then 0
+    else let slot = d + 8 + k * net-io-defer-slot-bytes
+    in let l = poke-qword slot 0 n
+    in let w = transport-write-range slot 8 rx 0 n
+    in poke-qword d 0 (k + 1)
+
+  net-io-deferred-count : Integer -> Integer
+  net-io-deferred-count (d) = if d == 0 then 0 else peek-qword d 0
+
+  net-io-deferred-load : Integer, Integer, List Integer -> Integer
+  net-io-deferred-load (d) (k) (rx) =
+    let slot = d + 8 + k * net-io-defer-slot-bytes
+    in let n = peek-qword slot 0
+    in let w = net-io-deferred-copy slot rx 0 n
+    in n
+
+  net-io-deferred-copy : Integer, List Integer, Integer, Integer -> Integer
+  net-io-deferred-copy (slot) (rx) (j) (n) =
+    if j >= n then n
+    else let s = list-set-at rx j (peek-byte slot (8 + j))
+    in net-io-deferred-copy slot rx (j + 1) n
+
+  net-io-deferred-clear : Integer -> Integer
+  net-io-deferred-clear (d) = if d == 0 then 0 else poke-qword d 0 0
+
   net-io-send-drain-rx : TcpTransportState, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] TcpTransportState
   net-io-send-drain-rx (ts) (tries) (since) (rx) (mark) =
     if tries > net-io-drain-polls then ts
@@ -215,7 +262,10 @@ Section: Send
      if n == 0 then let restored = __heap-restore hp
      in net-io-send-drain-rx ts (tries + 1) (since + 1) rx mark
      else let r = net-process-frame-within (ts.session) rx n
-     in let fed = transport-feed-range ts (r.session) (r.data) (r.data-off) (r.data-stop)
+     in if net-io-frame-foreign r then let kept = net-io-defer (ts.deferred-base) rx n
+     in let restored = __heap-restore hp
+     in net-io-send-drain-rx ts (tries + 1) (since + 1) rx mark
+     else let fed = transport-feed-range ts (r.session) (r.data) (r.data-off) (r.data-stop)
      in act
        ts1 <- flush-transport-outbox fed
        net-io-send-drain-rx (transport-compact-past ts1 mark) (tries + 1) (since + 1) rx mark

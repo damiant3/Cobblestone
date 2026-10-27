@@ -59,6 +59,12 @@ public static class HomespunTownsTests
         new TestCase("homespun towns: the house in a guard zone named \"telescope in Twotown\", the teleporter into "
         + "Twotown: no recall from home to a Twotown shop, none home from Twotown, all 60 sold, bounded recalls",
         () => Towns(false, true, 60, 40, homeWalk: true, telescope: true)),
+        // The way home by the house's town (Damian, 2026-10-26: "You bounce in to brian at the end ... hit the bank and
+        // bank gold reload reagents, then run home"; "the stop at the magic store on the way home too").
+        new TestCase("homespun towns: the outing ends in Thirdtown with gold over bank-over: home by Twotown, its "
+        + "tailor, the alchemist's recall reagents, its bank, then the walk home; all 60 sold, bounded recalls",
+        () => Towns(false, true, 60, 40, homeWalk: true, telescope: true, homeBy: true,
+            sellOrder: "Ella,Kimmie,Morena")),
         // A check for a restock is not worth a trip (Damian, 2026-10-25: "if we have to travel, it costs at least 15gp
         // of pain"): a tailor left full is recalled to only once she has surely restocked.
         new TestCase("homespun towns: tailors buying 10 a restock: no recall to a tailor still full, all 60 sold, "
@@ -75,6 +81,10 @@ public static class HomespunTownsTests
     // (Moonglow's pair, 4663,1134 and 4449,1115).
     const int PadX = 36, PadY = 36, PadLandX = 76, PadLandY = 76;
     const int BackPadX = 72, BackPadY = 72, BackLandX = 37, BackLandY = 37;
+    // The way home by the house's town: Twotown's alchemist (region 88,118 7 by 7) and bank (100,130 10 by 10, centre
+    // 105,135, its banker heard from 104,135).
+    const uint AlchemistSerial = 0x002B0401, AlchemistBox = 0x402B0402;
+    const int AlchemistAtX = 91, AlchemistAtY = 121, TwoBankSpotX = 104, TwoBankSpotY = 135;
 
     public static ImmutableArray<TestCase> Cases => s_cases;
 
@@ -138,6 +148,10 @@ public static class HomespunTownsTests
         public int HomeRecalls;
         // Recalls by the house rune made from inside Twotown.
         public int HomeFromTwotown;
+        // The way home by the house's town: Twotown's alchemist, drawn within ViewRange like the tailors, and the bank's
+        // spot ("bank" heard within 5 of it), and each box opened.
+        public VendorShard? Alchemist;
+        public int AlchemistX, AlchemistY, BankX = BankSpotX, BankY = BankSpotY, BankOpens;
         // Recalls to a shop whose tailor, asked before anything sold there, was full with shirts carried; the shirts
         // each tailor buys a restock.
         public int WastedTrips, Buys = BuysPerRestock;
@@ -225,6 +239,21 @@ public static class HomespunTownsTests
                     r.Add(Packets.Delete(sh.Vendor));
                 }
             }
+            if (Alchemist != null)
+            {
+                bool near = Math.Max(Math.Abs(AlchemistX - x), Math.Abs(AlchemistY - y)) <= ViewRange;
+                bool shown = m_shown.Contains(AlchemistSerial);
+                if (near && !shown)
+                {
+                    m_shown = m_shown.Add(AlchemistSerial);
+                    r.AddRange(Alchemist.Known(AlchemistX, AlchemistY));
+                }
+                else if (!near && shown)
+                {
+                    m_shown = m_shown.Remove(AlchemistSerial);
+                    r.Add(Packets.Delete(AlchemistSerial));
+                }
+            }
             return r;
         }
 
@@ -237,6 +266,8 @@ public static class HomespunTownsTests
             all.AddRange(step);
             foreach (Shop sh in s_shops)
                 all.AddRange(sh.Shard!.Answer(p));
+            if (Alchemist != null)
+                all.AddRange(Alchemist.Answer(p));
             if (p[0] == 0x02)
             {
                 lock (m_gate)
@@ -307,8 +338,9 @@ public static class HomespunTownsTests
                     // "bank" heard within 5 tiles of the bank's spot: the box opened with its gold piles.
                     if (said == "bank")
                     {
-                        if (Math.Max(Math.Abs(m_step.X - BankSpotX), Math.Abs(m_step.Y - BankSpotY)) > 5)
+                        if (Math.Max(Math.Abs(m_step.X - BankX), Math.Abs(m_step.Y - BankY)) > 5)
                             return ImmutableArray<byte[]>.Empty;
+                        BankOpens++;
                         List<KeyValuePair<uint, int>> gold = BoxGold.Ordered(Comparer<uint>.Default);
                         uint[] piles = new uint[gold.Count];
                         for (int i = 0; i < gold.Count; i++)
@@ -473,9 +505,9 @@ public static class HomespunTownsTests
     // maxCasts: the recalls allowed.
     static void Towns(bool silent, bool restocks, int wantSold, int maxCasts, int bankOver = 0, int bolts = 0,
         bool walksOff = false, bool threadOnly = false, bool homeWalk = false, int buys = BuysPerRestock,
-        string sellOrder = "", int startShirts = 60, int regs = 30, bool telescope = false)
+        string sellOrder = "", int startShirts = 60, int regs = 30, bool telescope = false, bool homeBy = false)
     {
-        int homeFromTwotown = 0;
+        int homeFromTwotown = 0, bankOpens = 0, alchemistBuys = 0;
         bool bank = bankOver > 0 || regs < AssistFeatures.RecallLow;
         ImmutableArray<string> walkBankWas = AssistFeatures.WalkBankShops;
         int banked = 0, goldEnd = 0, threadTrips = 0, homeRecalls = 0, wastedTrips = 0;
@@ -494,6 +526,11 @@ public static class HomespunTownsTests
         // The Moonglow house stands in a guard zone named for a landmark of the town, a town of its own to City.
         if (telescope)
             regions.Add("R 20 20 25 25 -128 127 0 JUSTICE_TWOTOWN_3 a b c d e telescope in Twotown");
+        if (homeBy)
+        {
+            regions.Add("R 88 118 7 7 -128 127 0 ALCHEMIST_TWOTOWN a b c d e Twotown Alchemy");
+            regions.Add("R 100 130 10 10 -128 127 0 BANK_TWOTOWN a b c d e Bank of Twotown");
+        }
         foreach (Shop sh in s_shops)
             regions.Add("R " + (sh.X - 3) + " " + (sh.Y - 3) + " 7 7 -128 127 0 CLOTHIER_" + sh.Town.ToUpperInvariant()
                 + " a b c d e " + sh.Name);
@@ -586,6 +623,23 @@ public static class HomespunTownsTests
                     s.ServerSends(Packets.Delete(sh.Vendor));
                 }
                 _ = first;
+                if (homeBy)
+                {
+                    VendorShard al = new(s, AlchemistSerial, AlchemistBox, AlchemistAtX, AlchemistAtY, Pack, Gold, 500,
+                        "Faye", world.Purse);
+                    al.Stock(0x402B0403, 0x0F7A, 50, 5, "Black pearl");
+                    al.Stock(0x402B0404, 0x0F7B, 50, 5, "Blood moss");
+                    al.Stock(0x402B0405, 0x0F86, 50, 3, "Mandrake root");
+                    s.ServerSends(Packets.Delete(AlchemistSerial));
+                    world.Alchemist = al;
+                    world.AlchemistX = AlchemistAtX;
+                    world.AlchemistY = AlchemistAtY;
+                    world.BankX = TwoBankSpotX;
+                    world.BankY = TwoBankSpotY;
+                    f.Cfg.Set(f.Server + "bankspot.105,135", TwoBankSpotX + "," + TwoBankSpotY);
+                    // The way home's reason: the mana comes back over an outing here, the sales' gold does not go.
+                    f.BankOver = 800;
+                }
                 s.Answer = world.Answer;
                 world.Tick();
                 if (restocks)
@@ -621,6 +675,8 @@ public static class HomespunTownsTests
                 threadTrips = world.ThreadTrips;
                 homeRecalls = world.HomeRecalls;
                 homeFromTwotown = world.HomeFromTwotown;
+                bankOpens = world.BankOpens;
+                alchemistBuys = world.Alchemist?.Buys ?? 0;
                 wastedTrips = world.WastedTrips;
                 sales.AddRange(world.SaleLog);
                 foreach (byte[] sp in s.ServerGot)
@@ -682,6 +738,18 @@ public static class HomespunTownsTests
             Check.Equal(0, wastedTrips, "no recall to a tailor still full: [" + castLog + "] " + tail);
         if (homeWalk)
             Check.Equal(0, homeRecalls, "no recall from home to a Twotown shop: [" + castLog + "] " + tail);
+        // The way home by the house's town on short mana (Damian, 2026-10-26): its tailor, its alchemist's recall
+        // reagents, its bank, then the walk home.
+        if (homeBy)
+        {
+            string notes = Around(string.Join(" | ", allNotes), "home by", 3);
+            Check.True(notes.Length > 0, "home by Twotown at the outing's end: [" + castLog + "] "
+                + Around(string.Join(" | ", allNotes), "homespun: home;", 3));
+            Check.True(alchemistBuys > 0, "the recall reagents bought of Faye: " + alchemistBuys + " " + notes + " "
+                + Around(string.Join(" | ", allNotes), "reagents", 4));
+            Check.True(bankOpens > 0, "the bank of Twotown opened: " + bankOpens + " "
+                + Around(string.Join(" | ", allNotes), "ank", 6));
+        }
         // Home walked to from the house's town (Damian, 2026-10-26: "run home from brian").
         if (telescope)
             Check.Equal(0, homeFromTwotown, "no recall home from Twotown: [" + castLog + "] "

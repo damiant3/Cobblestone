@@ -260,8 +260,10 @@ public sealed partial class AssistFeatures
             if (topUp)
                 TopUpPurse(k);
         }
-        // A failed walk home takes the rune.
-        if (walkHome && (AtHome(k) || CityOf(k) == homeTown))
+        // Asked again after the bank stop, which can bring the player into the house's town (a rune by Kimmie's shop
+        // for Twotown's bank, then the house rune from the bank: the way-home world case). A failed walk home takes the
+        // rune.
+        if (homeTown != null && (AtHome(k) || CityOf(k) == homeTown))
         {
             CircuitStatus = "Walking home to the thread pile";
             string? hw = WalkTo(pile[0], pile[1], 1);
@@ -464,6 +466,98 @@ public sealed partial class AssistFeatures
             + (why.Length > 0 ? " (" + why + ")" : ""));
         return pick.Item2;
     }
+    // Why the outing's way home goes by the house's town, or null (Damian, 2026-10-26: "you end the loop, you have a
+    // pocketfull of money and thread and probably lower on the reagent list, and maybe you have a couple residual shirts
+    // to sell ... You bounce in to brian at the end, sell 5 or 10 shirts, pickup any thread that spawned, hit the bank
+    // and bank gold reload reagents, then run home"; "not every time you return home is brian, mostly not, but once in a
+    // while it makes sense, you are low on mana, you have multiple things to do, or brian has thread, or you have shirts
+    // that he might take"): short of mana for two recalls, shirts its tailor would take, its thread due, or the bank's
+    // work (gold over bank-over, the recall reagents low). The recall there is the one home would have cost.
+    string? HomeByTownWhy(GameLink k, UoRegions.Shop shop, string town)
+    {
+        int mana;
+        lock (k.State.Gate)
+            mana = k.State.Mana;
+        List<string> l = new();
+        if (mana < 2 * RecallMana)
+            l.Add(mana + " mana");
+        if (PackCount(k, IsShirtArt) > 0 && CityBuyers(town).Exists(n =>
+            shop.Holds(n.X, n.Y, 2) && PaysFloor(n) && !Skipped(n.Serial) && TripDue(n)))
+            l.Add(PackCount(k, IsShirtArt) + " shirts its tailor may take");
+        if (ThreadCandidates(town).Exists(n => shop.Holds(n.X, n.Y, 2) && ThreadDue(n) && !ThreadOut(n.Serial)))
+            l.Add("its thread due");
+        if (PackCount(k, g => g == GoldArt) > BankOver)
+            l.Add("gold to bank");
+        if (RecallRegsLow(k))
+            l.Add("the recall reagents low");
+        return l.Count == 0 ? null : string.Join(", ", l);
+    }
+    // The house's town on the way home (HomeByTownWhy): its tailor's shop (sell, thread, kits), its mage shops for the
+    // recall reagents ("the stop at the magic store on the way home too, the alchemy shop just south of the tailor shop.
+    // buy up the recall regs there. then hit the bank, stock the recall reg storage"), its bank (the reagents bought
+    // stored, ReagentRefill of each kept, the gold over the purse in), then home on foot (ToOverflow walks it). Null, or
+    // why it stopped; a step that fails is noted and the way home goes on.
+    public const int RegsBuyUp = 200;
+    string? HomeByTown(GameLink k, List<UoRegions.Shop> order, ref int bought, ref int shirts, ref int sold,
+        ref int goldIn)
+    {
+        string? town = HomeTown(k);
+        if (!Homespun || town == null || CityOf(k) == town || AtHome(k))
+            return null;
+        int hs = order.FindIndex(s => UoRegions.City(s.CX, s.CY) == town);
+        if (hs < 0)
+            return null;
+        UoRegions.Shop shop = order[hs];
+        string? why = HomeByTownWhy(k, shop, town);
+        if (why == null || !Decide(k, "HomeByTown", !circuitStop))
+            return null;
+        Note("Circuit: homespun: home by " + town + " (" + why + ")");
+        string? w = ReachShop(k, shop, out bool reached);
+        if (w != null)
+            return w;
+        if (!reached)
+        {
+            Note("Circuit: homespun: " + UoRegions.Display(shop) + " not reached; home as ever");
+            return null;
+        }
+        Visited(shop);
+        w = ShopWork(k, shop, town, "home", ref bought, ref shirts, ref sold, ref goldIn);
+        if (w != null)
+            return w;
+        List<BuyItem> list = new();
+        ValueMap<string, int> left = ValueMap<string, int>.Empty;
+        foreach (int g in s_recallReagents)
+        {
+            BuyItem i = new()
+            {
+                Name = ReagentName(g),
+                Arts = new[] { g },
+                Count = RegsBuyUp,
+                MaxPrice = LoadoutPrice(g)
+            };
+            list.Add(i);
+            left = left.Set(i.Name!, RegsBuyUp);
+        }
+        int regsBought = 0;
+        foreach (UoRegions.Shop ms in UoRegions.ShopsIn(town, s_mageShopKinds))
+        {
+            if (circuitStop || !list.Exists(i => left.Get(i.Name!, 0) > 0))
+                break;
+            string? bw = BuyInShop(k, ms, list, ref left, ref regsBought);
+            if (bw != null)
+            {
+                Note("Circuit: homespun: the recall reagents in " + UoRegions.Display(ms) + ": " + bw);
+                break;
+            }
+        }
+        Note("Circuit: homespun: " + regsBought + " recall reagents bought in " + town);
+        if (circuitStop)
+            return null;
+        string? kw = BuyBank(k, town, false, list, PurseKeep);
+        if (kw != null)
+            Note("Circuit: homespun: the bank in " + town + ": " + kw);
+        return null;
+    }
     // The bag's first shop from home: the sell order's, else the house's town's (HomeTownShop); -1 for neither.
     int SellOrHomeShop(GameLink k, List<UoRegions.Shop> shops)
     {
@@ -663,6 +757,19 @@ public sealed partial class AssistFeatures
             if (w != null)
                 return "homespun, the thread pile: " + w;
             Note("Circuit: homespun: " + put + " thread on the pile");
+        }
+        // Bolts before shirts while no tailor of the sell order can take a bag (Damian, 2026-10-26: "if the vendors are
+        // really beaten down this might be a good time for making bolts before shirts"): the pile woven and nothing
+        // sewn, then the shops for thread; with nothing to weave, the sewing as ever.
+        if (StepWeave && SellOrder.Length > 0 && PackCount(k, IsShirtArt) == 0
+            && SellReady(k, OrderShops(), out string beaten).Count == 0)
+        {
+            w = HomeWeave(k, h, pile);
+            // Dry, not done: the shops' thread is next, and home again only once thread is carried.
+            if (w == null)
+                return HomeDry + " (bolts woven, no tailor of the sell order ready: " + beaten + ")";
+            if (!w.StartsWith("no bolts woven", StringComparison.Ordinal))
+                return "homespun, the loom: " + w;
         }
         int made;
         w = HomeSew(k, h, out made);
@@ -1468,6 +1575,9 @@ public sealed partial class AssistFeatures
                 // cycles; the Resume setting decides only where Go starts (Damian, 2026-10-21: "meant as a first run in
                 // the circuit ... not every bag of shirts").
                 int nextAt = (at + 1) % order.Count;
+                w = HomeByTown(k, order, ref bought, ref shirts, ref sold, ref goldIn);
+                if (w != null && TopEnds(w))
+                    return w;
                 w = HomeOrShops(k, ref shirts);
                 if (TopEnds(w!))
                     return w;

@@ -132,9 +132,6 @@ Section: Text Helpers
     in let d = text-replace c "'" "&#39;"
     in text-replace d "\"" "&quot;"
 
-  mba-tag : Text, Text, Text -> Text
-  mba-tag (tag) (cls) (body) = "<" & tag & " class='" & cls & "'>" & body & "</" & tag & ">"
-
  Text here is CCE, so these compare CCE codes: 3..12 are the digits, 13..38 the
  ASCII lowercase and 39..64 the ASCII uppercase in the same order, 65 is ".",
  73 "-", 81 "/", 85 "_" and 86 "\". 0 is NUL and 1 the line feed, the only
@@ -234,7 +231,7 @@ Section: The Catalogue
   mba-bg : Text -> Text
   mba-bg (id) =
     let u = mba-art id
-    in if text-length u == 0 then "" else " style='background-image:url(" & u & ")'"
+    in if text-length u == 0 then "" else "style|background-image:url(" & u & ")"
 
 Section: Selection
 
@@ -301,54 +298,107 @@ Section: Selection
 
 Section: Markup
 
-  mba-card : Integer -> Text
+  mba-tx : Text -> WidgetNode
+  mba-tx (body) = widget-text body
+
+  mba-el : Text, Text, Text, List WidgetNode -> WidgetNode
+  mba-el (tag) (cls) (attrs) (children) = widget-el tag cls attrs children
+
+  mba-tag : Text, Text, Text -> WidgetNode
+  mba-tag (tag) (cls) (body) = widget-el tag cls "" [widget-text body]
+
+  mba-attrs : Text, Text -> Text
+  mba-attrs (a) (b) = if a == "" then b else if b == "" then a else a & "|" & b
+
+  mba-btn : Text, Text, Text -> WidgetNode
+  mba-btn (id) (cls) (label) = mba-el "button" cls ("id|" & id) [mba-tx label]
+
+  mba-card : Integer -> WidgetNode
   mba-card (i) =
-    let id = mba-esc (mba-ff i "id")
-    in "<div class='card' id='card-" & id & "'><div class='art'" & mba-bg (mba-ff i "id") & "></div><span class='rune'>&#10003;</span><div class='txt'>" & mba-tag "span" "ftitle" (mba-esc (mba-ff i "title")) & mba-tag "span" "fblurb" (mba-esc (mba-ff i "blurb")) & "</div></div>"
+    let id = mba-ff i "id"
+    in mba-el "div" "card" ("id|card-" & id) [
+      mba-el "div" "art" (mba-bg id) [],
+      mba-tag "span" "rune" "&#10003;",
+      mba-el "div" "txt" "" [mba-tag "span" "ftitle" (mba-ff i "title"), mba-tag "span" "fblurb" (mba-ff i "blurb")]
+    ]
 
-  mba-cards-loop : Integer, Integer, Text -> Text
-  mba-cards-loop (i) (n) (acc) = if i >= n then acc else mba-cards-loop (i + 1) n (acc & mba-card i)
+  mba-cards-loop : Integer, Integer, List WidgetNode -> List WidgetNode
+  mba-cards-loop (i) (n) (acc) = if i >= n then acc else mba-cards-loop (i + 1) n (list-push acc (mba-card i))
 
-  mba-hero : Text
+  mba-step : Text, Text -> WidgetNode
+  mba-step (n) (word) = mba-el "span" "" "" [mba-tag "b" "" n, mba-tx word]
+
+  mba-hero : WidgetNode
   mba-hero =
-    "<header class='hero' id='hero'" & mba-bg "hero" & "><div class='wrap'>" & mba-tag "div" "eyebrow" "ModBuilder" & "<h1>Forge your <em>mod</em>.</h1>"
-    & "<p>Pick the powers you want. The mod is compiled from its Codex source right here in your browser, built against your own copy of the game, tested in a sealed copy, and dropped into your play copy. Your Steam game is never touched.</p>"
-    & "<div class='steps'><span><b>I</b>Choose</span><span><b>II</b>Forge</span><span><b>III</b>Play</span></div></div></header>"
+    mba-el "header" "hero" (mba-attrs "id|hero" (mba-bg "hero")) [
+      mba-el "div" "wrap" "" [
+        mba-tag "div" "eyebrow" "ModBuilder",
+        mba-el "h1" "" "" [mba-tx "Forge your ", mba-tag "em" "" "mod", mba-tx "."],
+        mba-tag "p" "" "Pick the powers you want. The mod is compiled from its Codex source right here in your browser, built against your own copy of the game, tested in a sealed copy, and dropped into your play copy. Your Steam game is never touched.",
+        mba-el "div" "steps" "" [mba-step "I" "Choose", mba-step "II" "Forge", mba-step "III" "Play"]
+      ]
+    ]
 
-  mba-game-section : Integer -> Text
+  mba-game-section : Integer -> WidgetNode
   mba-game-section (x) =
-    if mba-has-game 0 == False then "<p class='hint'>No game mods are built into this page.</p>"
-    else "<section class='game' id='game-" & mba-esc (mba-field "game") & "'><div class='game-head'><div>" & mba-tag "div" "eyebrow" "Choose your powers" & mba-tag "h2" "" (mba-esc (mba-field "title")) & "</div><div class='quick'><span class='count' id='count'></span><button id='q-all'>All</button><button id='q-none'>None</button></div></div><div class='cards'>" & mba-cards-loop 0 (mba-feature-count 0) "" & "</div></section>"
+    if mba-has-game 0 == False then mba-tag "p" "hint" "No game mods are built into this page."
+    else mba-el "section" "game" ("id|game-" & mba-field "game") [
+      mba-el "div" "game-head" "" [
+        mba-el "div" "" "" [mba-tag "div" "eyebrow" "Choose your powers", mba-tag "h2" "" (mba-field "title")],
+        mba-el "div" "quick" "" [mba-el "span" "count" "id|count" [], mba-btn "q-all" "" "All", mba-btn "q-none" "" "None"]
+      ],
+      mba-el "div" "cards" "" (mba-cards-loop 0 (mba-feature-count 0) [])
+    ]
 
-  mba-forge-panel : Text
+  mba-pipel : Text, Text, Text -> WidgetNode
+  mba-pipel (id) (n) (word) = mba-el "div" "pip" ("id|pip-" & id) [mba-tag "i" "" n, mba-tx word]
+
+  mba-forge-panel : WidgetNode
   mba-forge-panel =
-    "<section class='forge' id='forge'" & mba-bg "forge" & "><div class='in'>" & mba-tag "div" "eyebrow" "The forge" & "<h2>Strike the anvil</h2><div class='chosen' id='build-game'></div>"
-    & "<button class='big' id='a-forge'><span class='ham'>&#9874;</span><span>Forge &amp; Install</span><span class='sparks' id='sparks'></span></button>"
-    & "<div class='track'><div class='pip' id='pip-package'><i>1</i>Forge</div><div class='pip' id='pip-test'><i>2</i>Trial</div><div class='pip' id='pip-install'><i>3</i>Install</div></div>"
-    & "<span class='status' id='status'></span><div class='victory' id='victory'><h3 id='victory-title'></h3><p id='victory-text'></p></div></div></section>"
+    mba-el "section" "forge" (mba-attrs "id|forge" (mba-bg "forge")) [
+      mba-el "div" "in" "" [
+        mba-tag "div" "eyebrow" "The forge",
+        mba-tag "h2" "" "Strike the anvil",
+        mba-el "div" "chosen" "id|build-game" [],
+        mba-el "button" "big" "id|a-forge" [mba-tag "span" "ham" "&#9874;", mba-tag "span" "" "Forge &amp; Install", mba-el "span" "sparks" "id|sparks" []],
+        mba-el "div" "track" "" [mba-pipel "package" "1" "Forge", mba-pipel "test" "2" "Trial", mba-pipel "install" "3" "Install"],
+        mba-el "span" "status" "id|status" [],
+        mba-el "div" "victory" "id|victory" [mba-el "h3" "" "id|victory-title" [], mba-el "p" "" "id|victory-text" []]
+      ]
+    ]
 
-  mba-row : Text, Text -> Text
-  mba-row (id) (label) = "<div class='row'><label for='" & id & "'>" & label & "</label><input id='" & id & "'></div>"
+  mba-row : Text, Text -> WidgetNode
+  mba-row (id) (label) = mba-el "div" "row" "" [mba-el "label" "" ("for|" & id) [mba-tx label], mba-el "input" "" ("id|" & id) []]
 
-  mba-details : Text
+  mba-details : WidgetNode
   mba-details =
-    "<details class='more' id='more'><summary>Details: profile, bridge, single steps and receipts</summary><div class='body'><h3>Game profile</h3>"
-    & "<div class='row'><label for='p-saved'>Saved profiles</label><select id='p-saved'></select></div>"
-    & mba-row "p-id" "Profile name" & mba-row "p-gamePath" "Game directory" & mba-row "p-testSavePath" "Separate test save directory" & mba-row "p-installPath" "Play copy to install into"
-    & mba-row "p-groupLimit" "Maximum linked chests per bench (1 to 4)"
-    & "<div class='row'><label>Workbench links</label><span><button class='toggle' id='p-links'></button> explicit links only, within the game's chopping block range</span></div>"
-    & "<div class='acts'><button id='p-save'>Save profile</button><button id='p-export'>Export profile</button><button id='p-import'>Import profile</button></div>"
-    & "<h3>Local bridge</h3>" & mba-row "b-url" "Bridge address" & mba-row "b-token" "Bridge token"
-    & "<div class='hint'>Start this page with <b>pwsh apps/modbuilder/run.ps1</b> and the bridge is connected for you; or run <b>apps/prism/build-bridge.ps1</b> and paste the token it prints. <span id='b-state'></span></div>"
-    & "<h3>Single steps</h3><div class='acts'><button id='a-emit'>Emit C#</button><button id='a-inspect'>Inspect game</button><button id='a-build'>Build extension</button><button id='a-test' class='off'>Test extension</button><button id='a-install' class='off'>Install</button></div>"
-    & "<pre class='out' id='out'></pre></div></details>"
+    mba-el "details" "more" "id|more" [
+      mba-tag "summary" "" "Details: profile, bridge, single steps and receipts",
+      mba-el "div" "body" "" [
+        mba-tag "h3" "" "Game profile",
+        mba-el "div" "row" "" [mba-el "label" "" "for|p-saved" [mba-tx "Saved profiles"], mba-el "select" "" "id|p-saved" []],
+        mba-row "p-id" "Profile name",
+        mba-row "p-gamePath" "Game directory",
+        mba-row "p-testSavePath" "Separate test save directory",
+        mba-row "p-installPath" "Play copy to install into",
+        mba-row "p-groupLimit" "Maximum linked chests per bench (1 to 4)",
+        mba-el "div" "row" "" [mba-tag "label" "" "Workbench links", mba-el "span" "" "" [mba-el "button" "toggle" "id|p-links" [], mba-tx " explicit links only, within the game's chopping block range"]],
+        mba-el "div" "acts" "" [mba-btn "p-save" "" "Save profile", mba-btn "p-export" "" "Export profile", mba-btn "p-import" "" "Import profile"],
+        mba-tag "h3" "" "Local bridge",
+        mba-row "b-url" "Bridge address",
+        mba-row "b-token" "Bridge token",
+        mba-el "div" "hint" "" [mba-tx "Start this page with ", mba-tag "b" "" "pwsh apps/modbuilder/run.ps1", mba-tx " and the bridge is connected for you; or run ", mba-tag "b" "" "apps/prism/build-bridge.ps1", mba-tx " and paste the token it prints. ", mba-el "span" "" "id|b-state" []],
+        mba-tag "h3" "" "Single steps",
+        mba-el "div" "acts" "" [mba-btn "a-emit" "" "Emit C#", mba-btn "a-inspect" "" "Inspect game", mba-btn "a-build" "" "Build extension", mba-btn "a-test" "off" "Test extension", mba-btn "a-install" "off" "Install"],
+        mba-el "pre" "out" "id|out" []
+      ]
+    ]
 
-  mba-footer : Text
-  mba-footer = "<footer>Windows x64 Mono Unity games only; solo play only. Every build records a receipt of its inputs, and each install keeps the previous build and your saves for restore. Illustrations are AI-generated with Diffusion Forge.</footer>"
+  mba-footer : WidgetNode
+  mba-footer = mba-tag "footer" "" "Windows x64 Mono Unity games only; solo play only. Every build records a receipt of its inputs, and each install keeps the previous build and your saves for restore. Illustrations are AI-generated with Diffusion Forge."
 
-  mba-skeleton : Integer -> Text
-  mba-skeleton (x) = mba-hero & "<main class='wrap'>" & mba-game-section 0 & mba-forge-panel & mba-details & mba-footer & "</main>"
-
+  mba-skeleton : Integer -> List WidgetNode
+  mba-skeleton (x) = [mba-hero, mba-el "main" "wrap" "" [mba-game-section 0, mba-forge-panel, mba-details, mba-footer]]
 Section: Status
 
   mba-say : Text, Text -> Integer
@@ -859,7 +909,7 @@ Section: Entry
     in mba-probe 0
 
   mba-tree : Integer -> WidgetNode
-  mba-tree (x) = widget-box "root" "" [widget-label "" (mba-skeleton 0 & "<!--&-->")]
+  mba-tree (x) = widget-box "root" "" (mba-skeleton 0)
 
   opening : [Console] Integer
   opening = act

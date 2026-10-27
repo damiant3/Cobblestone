@@ -662,9 +662,8 @@ Section: The Pointer And Container Family
  through `__linked-list-to-list` to reach a length, and whatever that
  conversion retains is inside both readings. The CLASS is unaffected and the
  class is what the registry stores: both rows read the same bytes at 64 and at
- 256, so neither scales with the list. `__linked-list-to-list` itself stays
- `unknown` rather than being inferred from the difference between two arms
- that both contain it.
+ 256, so neither scales with the list. `__linked-list-to-list` has its own arm
+ over a list of n pushes.
 
   m-tag-equal : Integer -> Integer
   m-tag-equal (n) =
@@ -710,6 +709,77 @@ Section: The Pointer And Container Family
     let ll = __linked-list-empty n
     in let b = __heap-save
     in let r = list-length (__linked-list-to-list (__linked-list-push ll 7))
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  ba-linked : Integer, Integer, LinkedList Integer -> LinkedList Integer
+  ba-linked (n) (i) (ll) =
+    if i >= n then ll
+    else ba-linked n (i + 1) (__linked-list-push ll i)
+
+  m-linked-to-list : Integer -> Integer
+  m-linked-to-list (n) =
+    let ll = ba-linked n 0 (__linked-list-empty 4)
+    in let b = __heap-save
+    in let r = list-length (__linked-list-to-list ll)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  ba-texts : Integer, Integer, List Text -> List Text
+  ba-texts (n) (i) (acc) =
+    if i >= n then acc
+    else ba-texts n (i + 1) (list-push acc "x")
+
+  m-text-replace-none : Integer -> Integer
+  m-text-replace-none (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in let r = text-length (text-replace s "y" "z")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-text-replace-all : Integer -> Integer
+  m-text-replace-all (n) =
+    let s = mk-text n 0 ""
+    in let b = __heap-save
+    in let r = text-length (text-replace s "x" "yy")
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-text-concat-list : Integer -> Integer
+  m-text-concat-list (n) =
+    let xs = ba-texts n 0 []
+    in let b = __heap-save
+    in let r = text-length (text-concat-list xs)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-raw-bytes-to-text : Integer -> Integer
+  m-raw-bytes-to-text (n) =
+    let xs = mk-list n 0 []
+    in let b = __heap-save
+    in let r = text-length (raw-bytes-to-text xs)
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-heap-advance : Integer -> Integer
+  m-heap-advance (n) =
+    let b = __heap-save
+    in let z = __heap-advance n
+    in let a = __heap-save
+    in a - b
+
+  m-prof-start : Integer -> Integer
+  m-prof-start (n) =
+    let b = __heap-save
+    in let r = prof-start n
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-prof-dump : Integer -> Integer
+  m-prof-dump (n) =
+    let b = __heap-save
+    in let r = prof-dump n
     in let a = __heap-save
     in (a - b) + r - r
 
@@ -1568,11 +1638,189 @@ Section: The Read-Only Process And Identity Rows
       let a = __heap-save in (a - b) + (w + d + g) - (w + d + g)
     end
 
+  m-get-args : Integer -> [Process] Integer
+  m-get-args (n) =
+    let b = __heap-save
+    in act
+      xs <- get-args
+      let a = __heap-save in (a - b) + list-length xs - list-length xs
+    end
+
+  m-current-dir : Integer -> [Process] Integer
+  m-current-dir (n) =
+    let b = __heap-save
+    in act
+      d <- current-dir
+      let a = __heap-save in (a - b) + text-length d - text-length d
+    end
+
+  m-block-read : Integer -> [Device.Block] Integer
+  m-block-read (n) =
+    let b = __heap-save
+    in act
+      s <- block-read n
+      let a = __heap-save in (a - b) + s - s
+    end
+
+  m-block-read-sector : Integer -> [Device.Block] Integer
+  m-block-read-sector (n) =
+    let b = __heap-save
+    in act
+      s <- block-read-sector n
+      let a = __heap-save in (a - b) + s - s
+    end
+
+ The deck arms put the cursor back with `__deck-set` after reading it, so no
+ later arm runs on a moved deck.
+
+  m-deck-set : Integer -> Integer
+  m-deck-set (n) =
+    let p = __deck-pos
+    in let b = __heap-save
+    in let z = __deck-set p
+    in let a = __heap-save
+    in a - b
+
+  m-deck-alloc-heap : Integer -> Integer
+  m-deck-alloc-heap (n) =
+    let p = __deck-pos
+    in let b = __heap-save
+    in let q = __deck-alloc n
+    in let a = __heap-save
+    in let z = __deck-set p
+    in (a - b) + q - q
+
+  m-deck-alloc-deck : Integer -> Integer
+  m-deck-alloc-deck (n) =
+    let p = __deck-pos
+    in let q = __deck-alloc n
+    in let moved = __deck-pos - p
+    in let z = __deck-set p
+    in moved + q - q
+
+  ba-thunk : Integer, Nothing -> Integer
+  ba-thunk (n) (x) = n * 2
+
+  ba-thunks : Integer, Integer, List (Nothing -> Integer) -> List (Nothing -> Integer)
+  ba-thunks (i) (n) (acc) =
+    if i >= n then acc
+    else ba-thunks (i + 1) n (list-push acc (ba-thunk i))
+
+  m-race : Integer -> Integer
+  m-race (n) =
+    let xs = ba-thunks 0 (n / 32) []
+    in let b = __heap-save
+    in let r = race xs
+    in let a = __heap-save
+    in (a - b) + r - r
+
+  m-await-any-2 : Integer -> [Concurrent] Integer
+  m-await-any-2 (n) =
+    let f = \u -> n
+    in act
+      t1 <- fork f
+      t2 <- fork f
+      let ts = [t1, t2] in let b = __heap-save in act
+        s <- await-any ts
+        let a = __heap-save in (a - b) + s - s
+      end
+    end
+
+  m-await-any-8 : Integer -> [Concurrent] Integer
+  m-await-any-8 (n) =
+    let f = \u -> n
+    in act
+      t1 <- fork f
+      t2 <- fork f
+      t3 <- fork f
+      t4 <- fork f
+      t5 <- fork f
+      t6 <- fork f
+      t7 <- fork f
+      t8 <- fork f
+      let ts = [t1, t2, t3, t4, t5, t6, t7, t8] in let b = __heap-save in act
+        s <- await-any ts
+        let a = __heap-save in (a - b) + s - s
+      end
+    end
+
+  m-s-new : Integer -> [Concurrent] Integer
+  m-s-new (n) =
+    let b = __heap-save
+    in act
+      c0 <- s-new
+      let a = __heap-save in act
+        c1 <- s-send c0 n
+        v <- s-recv-value c1
+        c2 <- s-recv c1
+        cl <- s-close c2
+        (a - b) + (v + cl) - (v + cl)
+      end
+    end
+
+  m-s-send : Integer -> [Concurrent] Integer
+  m-s-send (n) =
+    act
+      c0 <- s-new
+      let b = __heap-save in act
+        c1 <- s-send c0 n
+        let a = __heap-save in act
+          v <- s-recv-value c1
+          c2 <- s-recv c1
+          cl <- s-close c2
+          (a - b) + (v + cl) - (v + cl)
+        end
+      end
+    end
+
+  m-s-recv-value : Integer -> [Concurrent] Integer
+  m-s-recv-value (n) =
+    act
+      c0 <- s-new
+      c1 <- s-send c0 n
+      let b = __heap-save in act
+        v <- s-recv-value c1
+        let a = __heap-save in act
+          c2 <- s-recv c1
+          cl <- s-close c2
+          (a - b) + (v + cl) - (v + cl)
+        end
+      end
+    end
+
+  m-s-recv : Integer -> [Concurrent] Integer
+  m-s-recv (n) =
+    act
+      c0 <- s-new
+      c1 <- s-send c0 n
+      v <- s-recv-value c1
+      let b = __heap-save in act
+        c2 <- s-recv c1
+        let a = __heap-save in act
+          cl <- s-close c2
+          (a - b) + (v + cl) - (v + cl)
+        end
+      end
+    end
+
+  m-s-close : Integer -> [Concurrent] Integer
+  m-s-close (n) =
+    act
+      c0 <- s-new
+      c1 <- s-send c0 n
+      v <- s-recv-value c1
+      c2 <- s-recv c1
+      let b = __heap-save in act
+        cl <- s-close c2
+        let a = __heap-save in (a - b) + (v + cl) - (v + cl)
+      end
+    end
+
 Section: Entry
 
   base : Integer = 64
 
-  opening : [Console, Device.Mmio, Device.Port, Device.Block, Network.Read, Identity, Concurrent] Nothing = act
+  opening : [Console, Device.Mmio, Device.Port, Device.Block, Network.Read, Identity, Concurrent, Process] Nothing = act
     print-line-uni (row "control       " (m-control base) (m-control (base * 4)))
     print-line-uni (row "list-length   " (m-length base) (m-length (base * 4)))
     print-line-uni (row "__list-len    " (m-list-len base) (m-list-len (base * 4)))
@@ -1640,6 +1888,29 @@ Section: Entry
     print-line-uni (row "memset        " (m-memset base) (m-memset (base * 4)))
     print-line-uni (row "linked-empty  " (m-linked-empty base) (m-linked-empty (base * 4)))
     print-line-uni (row "linked-push   " (m-linked-push base) (m-linked-push (base * 4)))
+    print-line-uni (row "linked-to-list" (m-linked-to-list base) (m-linked-to-list (base * 4)))
+    print-line-uni (row "replace-none  " (m-text-replace-none base) (m-text-replace-none (base * 4)))
+    print-line-uni (row "replace-all   " (m-text-replace-all base) (m-text-replace-all (base * 4)))
+    print-line-uni (row "concat-list   " (m-text-concat-list base) (m-text-concat-list (base * 4)))
+    print-line-uni (row "raw-bytes-text" (m-raw-bytes-to-text base) (m-raw-bytes-to-text (base * 4)))
+    print-line-uni (row "heap-advance  " (m-heap-advance base) (m-heap-advance (base * 4)))
+    print-line-uni (row "prof-start    " (m-prof-start base) (m-prof-start (base * 4)))
+    print-line-uni (row "prof-dump     " (m-prof-dump base) (m-prof-dump (base * 4)))
+    ga0 <- m-get-args base
+    ga1 <- m-get-args (base * 4)
+    print-line-uni (row "get-args      " ga0 ga1)
+    cd0 <- m-current-dir base
+    cd1 <- m-current-dir (base * 4)
+    print-line-uni (row "current-dir   " cd0 cd1)
+    br0 <- m-block-read base
+    br1 <- m-block-read (base * 4)
+    print-line-uni (row "block-read    " br0 br1)
+    brs0 <- m-block-read-sector base
+    brs1 <- m-block-read-sector (base * 4)
+    print-line-uni (row "block-rd-sect " brs0 brs1)
+    print-line-uni (row "deck-set      " (m-deck-set base) (m-deck-set (base * 4)))
+    print-line-uni (row "deck-alloc-hp " (m-deck-alloc-heap base) (m-deck-alloc-heap (base * 4)))
+    print-line-uni (row "deck-alloc-dk " (m-deck-alloc-deck base) (m-deck-alloc-deck (base * 4)))
     print-line-uni (row "approx-pair   " (m-approx-pair base) (m-approx-pair (base * 4)))
     print-line-uni (row "trapping-pair " (m-trapping-pair base) (m-trapping-pair (base * 4)))
     print-line-uni (row "saturating-pr " (m-saturating-pair base) (m-saturating-pair (base * 4)))
@@ -1743,6 +2014,25 @@ Section: Entry
     aw0 <- m-await base
     aw1 <- m-await (base * 4)
     print-line-uni (row "await         " aw0 aw1)
+    print-line-uni (row "race          " (m-race base) (m-race (base * 4)))
+    ay0 <- m-await-any-2 base
+    ay1 <- m-await-any-8 base
+    print-line-uni (row "await-any     " ay0 ay1)
+    sn0 <- m-s-new base
+    sn1 <- m-s-new (base * 4)
+    print-line-uni (row "s-new         " sn0 sn1)
+    ss0 <- m-s-send base
+    ss1 <- m-s-send (base * 4)
+    print-line-uni (row "s-send        " ss0 ss1)
+    sv0 <- m-s-recv-value base
+    sv1 <- m-s-recv-value (base * 4)
+    print-line-uni (row "s-recv-value  " sv0 sv1)
+    sr0 <- m-s-recv base
+    sr1 <- m-s-recv (base * 4)
+    print-line-uni (row "s-recv        " sr0 sr1)
+    sc0 <- m-s-close base
+    sc1 <- m-s-close (base * 4)
+    print-line-uni (row "s-close       " sc0 sc1)
     print-line-uni (row "print-line    " (m-print-line base) (m-print-line (base * 4)))
     print-line-uni (row "print-line-uni" (m-print-line-uni base) (m-print-line-uni (base * 4)))
     print-line-uni (row "print-error   " (m-print-error base) (m-print-error (base * 4)))

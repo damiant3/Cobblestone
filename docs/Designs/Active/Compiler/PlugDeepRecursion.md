@@ -178,12 +178,6 @@ Chromium's renderer.
   to the UI thread, so a worker writing it needs a dispatcher hop that
   nothing on this box can measure. Whoever runs one applies it with the
   hop.
-- **Nine of 71 `compile.ps1` invocations under `codex/plugs` pass no
-  explicit `-Kernel`** (fester, 2026-09-08), so a run driver can build
-  against whatever kernel ran last. They are named in `plugs-backlog.md`
-  1.101, which owns them. The plug BUILD half is fixed:
-  `codex/plugs/common/plug-build-lib.ps1:163` passes
-  `-Kernel <repo>/seed/Codex.cdx` on its one `compile.ps1` call.
 
 `codex/plugs/zig/**` is ordinary fleet code (Damian, 2026-08-18) and is in
 scope like any other plug.

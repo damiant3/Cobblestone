@@ -1,0 +1,288 @@
+Chapter: ChatStore
+  cites Chat chapter ChatServer
+  cites Encode chapter Json
+  cites Foreword chapter FileSystem
+  cites Foreword chapter Parse
+  cites Foreword chapter Maybe
+
+Section: The Files
+
+  chat-store-root : Text = "codex-chat"
+
+  chat-store-users : Text = "codex-chat/users"
+
+  chat-store-convs : Text = "codex-chat/convs"
+
+  chat-store-user-path : Integer -> Text
+  chat-store-user-path (n) = chat-store-users & "/" & show n & ".json"
+
+  chat-store-conv-dir : Text -> Text
+  chat-store-conv-dir (cid) = chat-store-convs & "/" & cid
+
+  chat-store-conv-path : Text -> Text
+  chat-store-conv-path (cid) = chat-store-conv-dir cid & "/conv.json"
+
+  chat-store-messages-path : Text -> Text
+  chat-store-messages-path (cid) = chat-store-conv-dir cid & "/messages.jsonl"
+
+Section: Saving
+
+  ChatStoreMark = record {
+    mk-accounts : Integer,
+    mk-messages : List Integer
+  }
+
+  chat-store-mark : ChatState -> ChatStoreMark
+  chat-store-mark (st) = ChatStoreMark {
+    mk-accounts = list-length (st.cs-accounts),
+    mk-messages = chat-store-message-counts (st.cs-convs) 0 []
+  }
+
+  chat-store-message-counts : List ChatConv, Integer, List Integer -> List Integer
+  chat-store-message-counts (convs) (i) (acc) =
+    if i >= list-length convs then acc
+    else chat-store-message-counts convs (i + 1) (list-push acc (list-length ((list-at convs i).cv-messages)))
+
+  chat-store-save : ChatStoreMark, ChatState -> [FileSystem.Write] Boolean
+  chat-store-save (mark) (after) = act
+    users <- chat-store-save-users (after.cs-accounts) (mark.mk-accounts)
+    convs <- chat-store-save-convs (mark.mk-messages) (after.cs-convs) 0
+    if users then convs else False
+  end
+
+  chat-store-save-users : List ChatAccount, Integer -> [FileSystem.Write] Boolean
+  chat-store-save-users (accts) (i) =
+    if i >= list-length accts then True
+    else let a = list-at accts i
+    in act
+      ok <- write-file (chat-store-user-path i) (json-emit (json-object [
+        json-pair "name" (json-str (a.ca-name)),
+        json-pair "token" (json-str (a.ca-token))
+      ]))
+      if ok then chat-store-save-users accts (i + 1) else False
+    end
+
+  chat-store-save-convs : List Integer, List ChatConv, Integer -> [FileSystem.Write] Boolean
+  chat-store-save-convs (counts) (convs) (i) =
+    if i >= list-length convs then True
+    else let c = list-at convs i
+    in let had = if i < list-length counts then list-at counts i else 0 - 1
+    in act
+      ok <- chat-store-save-conv c had
+      if ok then chat-store-save-convs counts convs (i + 1) else False
+    end
+
+  chat-store-save-conv : ChatConv, Integer -> [FileSystem.Write] Boolean
+  chat-store-save-conv (c) (had) =
+    if had >= 0 then chat-store-append-messages c had
+    else act
+      made <- make-dir (chat-store-conv-dir (c.cv-id))
+      ok <- write-file (chat-store-conv-path (c.cv-id)) (json-emit (json-object [
+        json-pair "id" (json-str (c.cv-id)),
+        json-pair "kind" (json-str (c.cv-kind)),
+        json-pair "name" (json-str (c.cv-name)),
+        json-pair "members" (json-array (chat-store-texts-json (c.cv-members) 0 []))
+      ]))
+      if made & ok then chat-store-append-messages c 0 else False
+    end
+
+  chat-store-append-messages : ChatConv, Integer -> [FileSystem.Write] Boolean
+  chat-store-append-messages (c) (from) =
+    if from >= list-length (c.cv-messages) then True
+    else append-file (chat-store-messages-path (c.cv-id)) (chat-store-lines (c.cv-messages) from "")
+
+  chat-store-lines : List ChatMessage, Integer, Text -> Text
+  chat-store-lines (ms) (i) (acc) =
+    if i >= list-length ms then acc
+    else let m = list-at ms i
+    in chat-store-lines ms (i + 1) (acc & json-emit (json-object [
+      json-pair "id" (json-int (m.cm-id)),
+      json-pair "sender" (json-str (m.cm-sender)),
+      json-pair "body" (json-str (m.cm-body)),
+      json-pair "time" (json-str (m.cm-time))
+    ]) & "\n")
+
+  chat-store-texts-json : List Text, Integer, List JsonValue -> List JsonValue
+  chat-store-texts-json (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else chat-store-texts-json xs (i + 1) (list-push acc (json-str (list-at xs i)))
+
+Section: Loading
+
+  ChatStoreLoad = record {
+    sl-state : ChatState,
+    sl-problem : Text
+  }
+
+  chat-store-load : [FileSystem.Read, FileSystem.Write] ChatStoreLoad
+  chat-store-load = act
+    root <- make-dir chat-store-root
+    users <- make-dir chat-store-users
+    convs <- make-dir chat-store-convs
+    if root & users & convs then chat-store-read
+    else ChatStoreLoad { sl-state = chat-state-new, sl-problem = "cannot make the codex-chat directories" }
+  end
+
+  chat-store-read : [FileSystem.Read] ChatStoreLoad
+  chat-store-read = act
+    user-names <- list-dir chat-store-users
+    accts <- chat-store-read-users (chat-store-count-json user-names 0 0) 0 []
+    conv-names <- list-dir chat-store-convs
+    let conv-dirs = chat-store-dir-names conv-names 0 []
+    in act
+      convs <- chat-store-read-convs conv-dirs 1 (chat-store-max-conv conv-dirs 0 0) []
+      chat-store-answer accts convs conv-dirs
+    end
+  end
+
+  chat-store-answer : UsersRead, ConvsRead, List Text -> ChatStoreLoad
+  chat-store-answer (accts) (convs) (conv-dirs) =
+    if text-length (accts.ur-problem) > 0 then ChatStoreLoad { sl-state = chat-state-new, sl-problem = accts.ur-problem }
+    else if text-length (convs.cr-problem) > 0 then ChatStoreLoad { sl-state = chat-state-new, sl-problem = convs.cr-problem }
+    else ChatStoreLoad {
+      sl-state = ChatState {
+        cs-accounts = chat-store-join-convs (accts.ur-accounts) (convs.cr-convs) 0,
+        cs-convs = convs.cr-convs,
+        cs-next-conv = chat-store-max-conv conv-dirs 0 0 + 1,
+        cs-next-msg = chat-store-max-msg (convs.cr-convs) 0 0 + 1
+      },
+      sl-problem = ""
+    }
+
+  chat-store-count-json : List Text, Integer, Integer -> Integer
+  chat-store-count-json (names) (i) (n) =
+    if i >= list-length names then n
+    else chat-store-count-json names (i + 1) (if text-ends-with (list-at names i) ".json" then n + 1 else n)
+
+  chat-store-dir-names : List Text, Integer, List Text -> List Text
+  chat-store-dir-names (names) (i) (acc) =
+    if i >= list-length names then acc
+    else let name = list-at names i
+    in chat-store-dir-names names (i + 1) (if text-ends-with name "/" then list-push acc (text-take name (text-length name - 1)) else acc)
+
+Section: Reading Accounts
+
+  UsersRead = record {
+    ur-accounts : List ChatAccount,
+    ur-problem : Text
+  }
+
+  chat-store-read-users : Integer, Integer, List ChatAccount -> [FileSystem.Read] UsersRead
+  chat-store-read-users (count) (i) (acc) =
+    if i >= count then UsersRead { ur-accounts = acc, ur-problem = "" }
+    else act
+      text <- read-text (chat-store-user-path i)
+      when json-parse text
+        is None -> UsersRead { ur-accounts = acc, ur-problem = chat-store-user-path i & " is missing or does not parse" }
+        is Just (v) -> chat-store-read-users count (i + 1) (list-push acc (ChatAccount {
+          ca-name = json-get-str v "name" "",
+          ca-token = json-get-str v "token" "",
+          ca-contacts = [],
+          ca-convs = []
+        }))
+    end
+
+  chat-store-join-convs : List ChatAccount, List ChatConv, Integer -> List ChatAccount
+  chat-store-join-convs (accts) (convs) (i) =
+    if i >= list-length convs then accts
+    else let c = list-at convs i
+    in chat-store-join-convs (chat-join-all accts (c.cv-members) (c.cv-id) 0) convs (i + 1)
+
+Section: Reading Conversations
+
+  ConvsRead = record {
+    cr-convs : List ChatConv,
+    cr-problem : Text
+  }
+
+  chat-store-conv-number : Text -> Integer
+  chat-store-conv-number (name) =
+    if text-length name < 2 then 0
+    else if text-take name 1 /= "c" then 0
+    else text-to-int (text-drop name 1)
+
+  chat-store-max-conv : List Text, Integer, Integer -> Integer
+  chat-store-max-conv (names) (i) (best) =
+    if i >= list-length names then best
+    else let n = chat-store-conv-number (list-at names i)
+    in chat-store-max-conv names (i + 1) (if n > best then n else best)
+
+  chat-store-has-text : List Text, Text, Integer -> Boolean
+  chat-store-has-text (xs) (x) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == x then True
+    else chat-store-has-text xs x (i + 1)
+
+  chat-store-read-convs : List Text, Integer, Integer, List ChatConv -> [FileSystem.Read] ConvsRead
+  chat-store-read-convs (names) (n) (last) (acc) =
+    if n > last then ConvsRead { cr-convs = acc, cr-problem = "" }
+    else let cid = "c" & show n
+    in if chat-store-has-text names cid 0 == False then chat-store-read-convs names (n + 1) last acc
+    else act
+      head <- read-text (chat-store-conv-path cid)
+      body <- read-text (chat-store-messages-path cid)
+      when json-parse head
+        is None -> ConvsRead { cr-convs = acc, cr-problem = chat-store-conv-path cid & " is missing or does not parse" }
+        is Just (v) -> chat-store-read-conv-messages names n last acc v (text-split body "\n")
+    end
+
+  chat-store-read-conv-messages : List Text, Integer, Integer, List ChatConv, JsonValue, List Text -> [FileSystem.Read] ConvsRead
+  chat-store-read-conv-messages (names) (n) (last) (acc) (v) (lines) =
+    let ms = chat-store-messages-of-lines lines 0 []
+    in if list-length ms < chat-store-nonblank lines 0 0 then
+      ConvsRead { cr-convs = acc, cr-problem = chat-store-messages-path ("c" & show n) & " has a line that does not parse" }
+    else chat-store-read-convs names (n + 1) last (list-push acc (ChatConv {
+      cv-id = json-get-str v "id" "",
+      cv-kind = json-get-str v "kind" "",
+      cv-members = chat-store-texts-of (chat-store-field v "members") 0 [],
+      cv-messages = ms,
+      cv-name = json-get-str v "name" ""
+    }))
+
+  chat-store-nonblank : List Text, Integer, Integer -> Integer
+  chat-store-nonblank (lines) (i) (n) =
+    if i >= list-length lines then n
+    else chat-store-nonblank lines (i + 1) (if text-length (list-at lines i) > 0 then n + 1 else n)
+
+  chat-store-messages-of-lines : List Text, Integer, List ChatMessage -> List ChatMessage
+  chat-store-messages-of-lines (lines) (i) (acc) =
+    if i >= list-length lines then acc
+    else let line = list-at lines i
+    in if text-length line == 0 then chat-store-messages-of-lines lines (i + 1) acc
+    else when json-parse line
+      is None -> chat-store-messages-of-lines lines (i + 1) acc
+      is Just (m) -> chat-store-messages-of-lines lines (i + 1) (list-push acc (ChatMessage {
+        cm-id = json-get-int m "id" 0,
+        cm-sender = json-get-str m "sender" "",
+        cm-body = json-get-str m "body" "",
+        cm-time = json-get-str m "time" ""
+      }))
+
+  chat-store-max-msg : List ChatConv, Integer, Integer -> Integer
+  chat-store-max-msg (convs) (i) (best) =
+    if i >= list-length convs then best
+    else chat-store-max-msg convs (i + 1) (chat-store-max-in ((list-at convs i).cv-messages) 0 best)
+
+  chat-store-max-in : List ChatMessage, Integer, Integer -> Integer
+  chat-store-max-in (ms) (i) (best) =
+    if i >= list-length ms then best
+    else let id = (list-at ms i).cm-id
+    in chat-store-max-in ms (i + 1) (if id > best then id else best)
+
+  chat-store-field : JsonValue, Text -> JsonValue
+  chat-store-field (v) (key) =
+    when json-get v key
+      is Just (x) -> x
+      is None -> json-array []
+
+  chat-store-texts-of : JsonValue, Integer, List Text -> List Text
+  chat-store-texts-of (arr) (i) (acc) =
+    if i >= json-array-length arr then acc
+    else when json-array-at arr i
+      is Just (x) -> chat-store-texts-of arr (i + 1) (list-push acc (chat-store-text-of x))
+      is None -> chat-store-texts-of arr (i + 1) acc
+
+  chat-store-text-of : JsonValue -> Text
+  chat-store-text-of (x) = when x
+    is JsonStr (s) -> s
+    is otherwise -> ""

@@ -1,6 +1,7 @@
 Chapter: Python Emitter
   cites Foreword chapter Sort
   cites Foreword chapter StringUtils
+cites Foreword chapter CCE
 
 Section: Keywords and Sanitization
 
@@ -25,7 +26,9 @@ Section: Keywords and Sanitization
 
   py-sanitize : Text -> Text
   py-sanitize (name) =
-    let s = text-replace name "-" "_"
+    let s0 = text-replace name "-" "_"
+    in let s1 = text-replace (text-replace s0 "@" "_at_") "[" "_lb_"
+    in let s = text-replace (text-replace (text-replace s1 "]" "_rb_") "," "_cm_") " " "_"
     in if is-py-keyword s then "_" & s
     else s
 
@@ -41,12 +44,35 @@ Section: Keywords and Sanitization
     in if slash >= 0 then py-sanitize (substring f 0 slash)
     else py-sanitize f
 
-  py-escape-text : Text -> Text
-  py-escape-text (s) =
+ A literal's characters are CCE inside the plug, and CCE's multi-byte units
+ share UTF-8's framing with different numbering, so raw bytes print 0x80 low
+ from tier-1 slice 1 on. Each non-ASCII character is decoded here and written
+ as a `\u` escape.
+
+  py-escape-ascii : Text -> Text
+  py-escape-ascii (s) =
     let s1 = text-replace s "\\" "\\\\"
     in let s2 = text-replace s1 "\"" "\\\""
     in let s3 = text-replace s2 "\n" "\\n"
     in s3
+
+  py-hex-digits : Integer, Integer -> Text
+  py-hex-digits (u) (n) =
+    if n == 0 then ""
+    else py-hex-digits (u / 16) (n - 1) & substring "0123456789abcdef" (u - u / 16 * 16) 1
+
+  py-escape-text-loop : Text, Integer, Integer, List Text -> List Text
+  py-escape-text-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = cce-decode-length (char-code (char-at s i))
+    in let u = to-unicode (cce-decode-at s i)
+    in let one = if u < 128 then py-escape-ascii (substring s i n)
+    else if u < 65536 then "\\u" & py-hex-digits u 4
+    else "\\U" & py-hex-digits u 8
+    in py-escape-text-loop s (i + n) len (list-snoc acc one)
+
+  py-escape-text : Text -> Text
+  py-escape-text (s) = text-concat-list (py-escape-text-loop s 0 (text-length s) [])
 
   py-indent : Integer -> Text
   py-indent (n) =
@@ -152,7 +178,25 @@ Section: Type Definition Emission
     in if list-length fields == 0 then
       deco & "class " & sname & ":\n    pass\n\n"
     else
-      deco & "class " & sname & ":\n" & emit-py-record-fields fields 0 & "\n"
+      let clamps = py-clamps (arec-fields-to-rfields fields 0 []) 0
+      in deco & "class " & sname & ":\n" & emit-py-record-fields fields 0
+        & (if text-length clamps == 0 then "" else "    def __post_init__(self):\n" & clamps) & "\n"
+
+  py-clamps : List RecordField, Integer -> Text
+  py-clamps (fs) (i) =
+    if i >= list-length fs then ""
+    else let f = list-at fs i
+    in let k = py-sanitize (f.name.value)
+    in let guard = "        if self." & k & " is not None: object.__setattr__(self, '" & k & "', "
+    in (when f.type-val
+     is IntegerTy (lo) (hi) (mode) ->
+      (when mode
+       is OvClamping -> guard & "min(max(self." & k & ", " & integer-to-text lo & "), " & integer-to-text hi & "))\n"
+       is OvWrapping ->
+        if lo < 0 - 4611686018427387904 | hi > 4611686018427387904 then ""
+        else guard & integer-to-text lo & " + ((self." & k & " - " & integer-to-text lo & ") % " & integer-to-text (hi - lo + 1) & "))\n"
+       is otherwise -> "")
+     is otherwise -> "") & py-clamps fs (i + 1)
 
   emit-py-record-fields : List ARecordFieldDef, Integer -> Text
   emit-py-record-fields (fields) (i) =
@@ -191,7 +235,7 @@ Section: Expression Emission
      is IrRecord (name) (fields) (ty) (sp) -> emit-py-record name fields ty ctx
      is IrFieldAccess (rec) (field) (ty) (sp) -> emit-py-expr-at rec ctx (depth + 1) & "." & py-field field
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(lambda _r: (setattr(_r, '" & py-field field & "', " & emit-py-expr-at val ctx (depth + 1) & "), _r)[-1])(" & emit-py-expr-at rec ctx (depth + 1) & ")"
-     is IrFork (body) (ty) (sp) -> "__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (" & emit-py-expr-at body ctx (depth + 1) & ")(None))"
+     is IrFork (body) (ty) (sp) -> "__import__('concurrent.futures').futures.ThreadPoolExecutor().submit(lambda: (" & emit-py-expr-at body ctx (depth + 1) & ")(None))"
      is IrAwait (task) (ty) (sp) -> "(" & emit-py-expr-at task ctx (depth + 1) & ").result()"
      is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-py-try max body fb fail-stmts ctx
      is IrError (msg) (ty) (sp) -> "(lambda: (_ for _ in ()).throw(Exception(\"" & py-escape-text msg & "\")))()"
@@ -206,7 +250,8 @@ Section: Expression Emission
     else if n == "Nothing" then "None"
     else if n == "vec-empty" then "[]"
     else if n == "get-state" then "_py_state[0]"
-    else if is-py-builtin-name n then py-sanitize n
+    else if n == "__heap-save" then "0"
+    else if is-py-builtin-name n & lookup-arity (ctx.arities) n < 0 then py-sanitize n
     else if text-length n > 0 then
       if is-upper-letter (char-code (char-at n 0)) then py-sanitize n & "()"
       else let ar = lookup-arity (ctx.arities) n
@@ -239,16 +284,59 @@ Section: Expression Emission
      is IrAppendText -> "(" & emit-py-expr l ctx & " + " & emit-py-expr r ctx & ")"
      is IrAppendList -> "(" & emit-py-expr l ctx & " + " & emit-py-expr r ctx & ")"
      is IrConsList -> "[" & emit-py-expr l ctx & "] + " & emit-py-expr r ctx
-     is IrPowInt -> "(" & emit-py-expr l ctx & " ** " & emit-py-expr r ctx & ")"
+     is IrPowInt -> "_cxb_ipow(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ")"
      is IrDivInt -> "((lambda _a, _b: (abs(_a) // abs(_b)) * (1 if (_a >= 0) == (_b >= 0) else -1))(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & "))"
      is IrRemInt -> "((lambda _a, _b: (abs(_a) % abs(_b)) * (1 if _a >= 0 else -1))(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & "))"
      is IrAnd -> "(" & emit-py-expr l ctx & " and " & emit-py-expr r ctx & ")"
      is IrOr -> "(" & emit-py-expr l ctx & " or " & emit-py-expr r ctx & ")"
+     is IrApproxEq -> py-real-near l r "4" ctx
+     is IrApproxEqExact -> py-real-near l r "0" ctx
+     is IrDivNum -> py-real-op op l r ctx
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox -> "_cxr_to_real_approx(" & py-real-op op l r ctx & ")"
+     is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping -> "_cxr_real_trap(" & py-real-round ty (py-real-op op l r ctx) & ")"
+     is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating ->
+      "_cxr_real_sat(" & py-real-round ty (py-real-op op l r ctx) & ", " & (if py-real-is-f32 ty then "True" else "False") & ")"
      is IrAddVec -> "[a + b for a, b in zip(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ")]"
      is IrSubVec -> "[a - b for a, b in zip(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ")]"
      is IrMulVec -> "[a * b for a, b in zip(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ")]"
      is IrDivVec -> "[a / b for a, b in zip(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ")]"
      is otherwise -> "(" & emit-py-expr l ctx & " " & py-bin-op-symbol op & " " & emit-py-expr r ctx & ")"
+
+  py-strip-ty : CodexType -> CodexType
+  py-strip-ty (ty) =
+    when ty
+     is UnitTy (n) (inner) -> py-strip-ty inner
+     is EffectfulTy (effs) (scopes) (inner) -> py-strip-ty inner
+     is otherwise -> ty
+
+  py-real-is-real : CodexType -> Boolean
+  py-real-is-real (ty) =
+    when py-strip-ty ty
+     is RealTy (w) (m) -> True
+     is otherwise -> False
+
+  py-real-is-f32 : CodexType -> Boolean
+  py-real-is-f32 (ty) =
+    when py-strip-ty ty
+     is RealTy (w) (m) -> when w
+      is RwF32 -> True
+      is otherwise -> False
+     is otherwise -> False
+
+  py-real-round : CodexType, Text -> Text
+  py-real-round (ty) (e) = if py-real-is-f32 ty then "_cxr_to_real_approx(" & e & ")" else e
+
+  py-real-op : IRBinaryOp, IRExpr, IRExpr, PyCtx -> Text
+  py-real-op (op) (l) (r) (ctx) =
+    when op
+     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "_cxr_fdiv(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ")"
+     is otherwise -> "(" & emit-py-expr l ctx & " " & py-bin-op-symbol op & " " & emit-py-expr r ctx & ")"
+
+  py-real-near : IRExpr, IRExpr, Text, PyCtx -> Text
+  py-real-near (l) (r) (tol) (ctx) =
+    if py-real-is-real (ir-expr-type l) then
+      "_cxr_real_near(" & emit-py-expr l ctx & ", " & emit-py-expr r ctx & ", " & (if py-real-is-f32 (ir-expr-type l) then "True" else "False") & ", " & tol & ")"
+    else "(" & emit-py-expr l ctx & " == " & emit-py-expr r ctx & ")"
 
   py-bin-op-symbol : IRBinaryOp -> Text
   py-bin-op-symbol (op) =
@@ -371,13 +459,13 @@ Section: Expression Emission
      is IrLitPat (text) (ty) (sp) ->
       let prefix = if i > 0 then " else " else ""
       in let g = if py-guard-trivial guard then "" else " and (" & emit-py-expr guard ctx & ")"
-      in prefix & "(" & emit-py-expr body ctx & " if _s == " & text & g & emit-py-match-body branches (i + 1) ctx (opens + 1)
+      in prefix & "(" & emit-py-expr body ctx & " if " & py-pat-test pat "_s" & g & emit-py-match-body branches (i + 1) ctx (opens + 1)
      is IrCtorPat (name) (subs) (ty) (sp) ->
       let prefix = if i > 0 then " else " else ""
       in let g = if py-guard-trivial guard then
         ""
       else " and " & emit-py-ctor-pat-body subs "_s" guard ctx
-      in prefix & "(" & emit-py-ctor-pat-body subs "_s" body ctx & " if isinstance(_s, " & py-sanitize name & ")" & g & emit-py-match-body branches (i + 1) ctx (opens + 1)
+      in prefix & "(" & emit-py-ctor-pat-body subs "_s" body ctx & " if " & py-pat-test pat "_s" & g & emit-py-match-body branches (i + 1) ctx (opens + 1)
      is IrVarPat (name) (ty) (sp) ->
       let prefix = if i > 0 then " else " else ""
       in if py-guard-trivial guard then
@@ -421,7 +509,23 @@ Section: Expression Emission
     in let rest = collect-py-var-bindings subs binding (i + 1)
     in when sub
      is IrVarPat (name) (ty) (sp) -> [PyVarBinding { name = name, access = binding & ".field" & integer-to-text i }] & rest
+     is IrCtorPat (n) (ss) (ty) (sp) -> collect-py-var-bindings ss (binding & ".field" & integer-to-text i) 0 & rest
      is otherwise -> rest
+
+  py-pat-test : IRPat, Text -> Text
+  py-pat-test (pat) (path) =
+    when pat
+     is IrLitPat (text) (ty) (sp) -> when py-strip-ty ty
+      is TextTy -> "(" & path & " == \"" & py-escape-text text & "\")"
+      is otherwise -> "(" & path & " == " & text & ")"
+     is IrCtorPat (name) (subs) (ty) (sp) -> "(isinstance(" & path & ", " & py-sanitize name & ")" & py-subs-test subs 0 path & ")"
+     is otherwise -> "True"
+
+  py-subs-test : List IRPat, Integer, Text -> Text
+  py-subs-test (subs) (i) (path) =
+    if i == list-length subs then ""
+    else let t = py-pat-test (list-at subs i) (path & ".field" & integer-to-text i)
+    in (if t == "True" then "" else " and " & t) & py-subs-test subs (i + 1) path
 
   emit-py-binding-names : List PyVarBinding, Integer -> Text
   emit-py-binding-names (bindings) (i) =
@@ -541,11 +645,139 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "__narrow", emit = \args ctx -> emit-py-expr (list-at args 0) ctx },
    PyBuiltinEmitter {
      name = "show",
-     emit = \args ctx -> "str(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> if py-real-is-real (ir-expr-type (list-at args 0)) then "_cxr_real_show(" & emit-py-expr (list-at args 0) ctx & ")" else "str(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "real-to-bits",
+     emit = \args ctx -> "_cxr_real_to_bits(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "bits-to-real",
+     emit = \args ctx -> "_cxr_bits_to_real(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "to-real-approx",
+     emit = \args ctx -> "_cxr_to_real_approx(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "bits-to-real-approx",
+     emit = \args ctx -> "_cxr_bits_to_real_approx(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "real-approx-to-bits",
+     emit = \args ctx -> "_cxr_real_approx_to_bits(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "real-to-int",
+     emit = \args ctx -> "_cxr_real_to_int(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "real-approx-to-int",
+     emit = \args ctx -> "_cxr_real_to_int(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "real-from-int",
+     emit = \args ctx -> "_cxr_real_from_int(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "real-approx-from-int",
+     emit = \args ctx -> "_cxr_real_approx_from_int(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "from-real-approx",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "to-real-trapping",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "from-real-trapping",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "to-real-saturating",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "from-real-saturating",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "to-real-approx-trapping",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "from-real-approx-trapping",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "to-real-approx-saturating",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "from-real-approx-saturating",
+     emit = \args ctx -> emit-py-expr (list-at args 0) ctx
+   },
+   PyBuiltinEmitter {
+     name = "alloc-bytes",
+     emit = \args ctx -> "_cxm_alloc(" & emit-py-apply-args args ctx 0 & ")"
+   },
+   PyBuiltinEmitter {
+     name = "poke-byte",
+     emit = \args ctx -> "_cxm_poke(" & emit-py-apply-args args ctx 0 & ", 1)"
+   },
+   PyBuiltinEmitter {
+     name = "poke-16",
+     emit = \args ctx -> "_cxm_poke(" & emit-py-apply-args args ctx 0 & ", 2)"
+   },
+   PyBuiltinEmitter {
+     name = "poke-32",
+     emit = \args ctx -> "_cxm_poke(" & emit-py-apply-args args ctx 0 & ", 4)"
+   },
+   PyBuiltinEmitter {
+     name = "poke-qword",
+     emit = \args ctx -> "_cxm_poke(" & emit-py-apply-args args ctx 0 & ", 8)"
+   },
+   PyBuiltinEmitter {
+     name = "peek-byte",
+     emit = \args ctx -> "_cxm_peek(" & emit-py-apply-args args ctx 0 & ", 1)"
+   },
+   PyBuiltinEmitter {
+     name = "peek-16",
+     emit = \args ctx -> "_cxm_peek(" & emit-py-apply-args args ctx 0 & ", 2)"
+   },
+   PyBuiltinEmitter {
+     name = "peek-32",
+     emit = \args ctx -> "_cxm_peek(" & emit-py-apply-args args ctx 0 & ", 4)"
+   },
+   PyBuiltinEmitter {
+     name = "peek-qword",
+     emit = \args ctx -> "_cxm_peek_qword(" & emit-py-apply-args args ctx 0 & ")"
+   },
+   PyBuiltinEmitter {
+     name = "vec-extract",
+     emit = \args ctx -> "(" & emit-py-expr (list-at args 0) ctx & ")[" & emit-py-expr (list-at args 1) ctx & "]"
+   },
+   PyBuiltinEmitter {
+     name = "vec-reduce-add",
+     emit = \args ctx -> "(lambda _v: _v[0] + _v[1])(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "bit-shru",
+     emit = \args ctx -> "_cxb_shru(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "negate",
      emit = \args ctx -> "(-" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "print-line",
+     emit = \args ctx -> "print(" & emit-py-expr (list-at args 0) ctx & ")"
+   },
+   PyBuiltinEmitter {
+     name = "print-uni",
+     emit = \args ctx -> "print(" & emit-py-expr (list-at args 0) ctx & ", end='')"
    },
    PyBuiltinEmitter {
      name = "print-line-uni",
@@ -740,7 +972,7 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "fork",
-     emit = \args ctx -> "__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (" & emit-py-expr (list-at args 0) ctx & ")(None))"
+     emit = \args ctx -> "__import__('concurrent.futures').futures.ThreadPoolExecutor().submit(lambda: (" & emit-py-expr (list-at args 0) ctx & ")(None))"
    },
    PyBuiltinEmitter {
      name = "await",
@@ -748,11 +980,11 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "par",
-     emit = \args ctx -> "list(__import__('concurrent.futures').ThreadPoolExecutor().map(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & "))"
+     emit = \args ctx -> "list(__import__('concurrent.futures').futures.ThreadPoolExecutor().map(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & "))"
    },
    PyBuiltinEmitter {
      name = "race",
-     emit = \args ctx -> "next(iter(__import__('concurrent.futures').as_completed([__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda t=_t_: _t_(None)) for _t_ in " & emit-py-expr (list-at args 0) ctx & "]))).result()"
+     emit = \args ctx -> "next(iter(__import__('concurrent.futures').futures.as_completed([__import__('concurrent.futures').futures.ThreadPoolExecutor().submit(lambda t=_t_: _t_(None)) for _t_ in " & emit-py-expr (list-at args 0) ctx & "]))).result()"
    },
    PyBuiltinEmitter {
      name = "bit-and",
@@ -768,11 +1000,11 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "bit-shl",
-     emit = \args ctx -> "(" & emit-py-expr (list-at args 0) ctx & " << " & emit-py-expr (list-at args 1) ctx & ")"
+     emit = \args ctx -> "_cxb_shl(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "bit-shr",
-     emit = \args ctx -> "(" & emit-py-expr (list-at args 0) ctx & " >> " & emit-py-expr (list-at args 1) ctx & ")"
+     emit = \args ctx -> "_cxb_shr(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "bit-not",
@@ -813,7 +1045,7 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "text-to-double-bits",
-     emit = \args ctx -> "__import__('struct').unpack('q', __import__('struct').pack('d', float(" & emit-py-expr (list-at args 0) ctx & ")))[0]"
+     emit = \args ctx -> "_cxr_text_to_double_bits(" & emit-py-expr (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "run-process-full",
@@ -829,8 +1061,8 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "__deck-exit", emit = \args ctx -> "0" },
    PyBuiltinEmitter { name = "__list-with-capacity", emit = \args ctx -> "[]" },
    PyBuiltinEmitter { name = "__buf-write-byte", emit = \args ctx -> "0" },
-   PyBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx -> "0" },
-   PyBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx -> "[]" }
+   PyBuiltinEmitter { name = "__buf-write-bytes", emit = \args ctx -> "_cxm_write_bytes(" & emit-py-apply-args args ctx 0 & ")" },
+   PyBuiltinEmitter { name = "__buf-read-bytes", emit = \args ctx -> "_cxm_read_bytes(" & emit-py-apply-args args ctx 0 & ")" }
   ]
 
   is-py-builtin-name : Text -> Boolean
@@ -876,6 +1108,12 @@ Section: Apply Emission
     else if i == list-length args - 1 then emit-py-expr (list-at args i) ctx
     else emit-py-expr (list-at args i) ctx & ", " & emit-py-apply-args args ctx (i + 1)
 
+  py-vec-load : List IRExpr, CodexType, PyCtx -> Text
+  py-vec-load (args) (ty) (ctx) =
+    when py-strip-ty ty
+     is VectorTy (vn) (ve) -> "_cxm_vec_load(" & emit-py-expr (list-at args 0) ctx & ", " & (if py-real-is-real ve then "'<d'" else "'<q'") & ")"
+     is otherwise -> "(_ for _ in ()).throw(Exception(\"vec-load-at of a non-vector type\"))"
+
   emit-py-apply : IRExpr, PyCtx -> Text
   emit-py-apply (e) (ctx) =
     let chain = collect-apply-chain e []
@@ -883,7 +1121,8 @@ Section: Apply Emission
     in let args = chain.args
     in when root
      is IrName (n) (ty) (sp) ->
-      if is-py-builtin-name n then emit-py-builtin n args ctx
+      if n == "vec-load-at" then py-vec-load args (ir-expr-type e) ctx
+      else if is-py-builtin-name n & lookup-arity (ctx.arities) n < 0 then emit-py-builtin n args ctx
       else if is-mktup-name n then
         "(" & emit-py-apply-args args ctx 0 & (if list-length args == 1 then ",)" else ")")
       else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then
@@ -980,7 +1219,7 @@ Section: Tail Call Optimization
      is IrMatch (scrut) (branches) (ty) (sp) ->
       emit-py-tco-match scrut branches func-name params ctx indent
      is IrApply (f) (a) (rty) (sp) ->
-      if is-self-call e func-name then emit-py-tco-jump e params ctx indent
+      if is-self-call e func-name & list-length ((collect-apply-chain e []).args) == list-length params then emit-py-tco-jump e params ctx indent
       else pad & "return " & emit-py-expr e ctx & "\n"
      is IrAct (stmts) (ty) (sp) ->
       emit-py-tco-act stmts func-name params ctx indent
@@ -1043,10 +1282,10 @@ Section: Tail Call Optimization
       let g = if py-guard-trivial guard then
         ""
       else " and " & emit-py-ctor-pat-body subs "_tco_s" guard ctx
-      in pad & keyword & " isinstance(_tco_s, " & py-sanitize name & ")" & g & ":\n" & emit-py-tco-ctor-bindings subs indent 0 & emit-py-tco-body body func-name params ctx (indent + 1)
+      in pad & keyword & " " & py-pat-test pat "_tco_s" & g & ":\n" & emit-py-tco-ctor-bindings subs indent 0 & emit-py-tco-body body func-name params ctx (indent + 1)
      is IrLitPat (text) (ty) (sp) ->
       let g = if py-guard-trivial guard then "" else " and (" & emit-py-expr guard ctx & ")"
-      in pad & keyword & " _tco_s == " & text & g & ":\n" & emit-py-tco-body body func-name params ctx (indent + 1)
+      in pad & keyword & " " & py-pat-test pat "_tco_s" & g & ":\n" & emit-py-tco-body body func-name params ctx (indent + 1)
      is IrVarPat (name) (ty) (sp) ->
       if py-guard-trivial guard then
         pad & "else:\n" & py-indent (indent + 1) & py-sanitize name & " = _tco_s\n" & emit-py-tco-body body func-name params ctx (indent + 1)
@@ -1064,16 +1303,12 @@ Section: Tail Call Optimization
         pad & keyword & " (" & emit-py-expr guard ctx & "):\n" & emit-py-tco-body body func-name params ctx (indent + 1)
 
   emit-py-tco-ctor-bindings : List IRPat, Integer, Integer -> Text
-  emit-py-tco-ctor-bindings (subs) (indent) (i) =
-    if i == list-length subs then ""
-    else let sub = list-at subs i
-    in emit-py-tco-ctor-binding sub indent i & emit-py-tco-ctor-bindings subs indent (i + 1)
+  emit-py-tco-ctor-bindings (subs) (indent) (i) = py-tco-binds (collect-py-var-bindings subs "_tco_s" i) indent 0
 
-  emit-py-tco-ctor-binding : IRPat, Integer, Integer -> Text
-  emit-py-tco-ctor-binding (sub) (indent) (i) =
-    when sub
-     is IrVarPat (name) (ty) (sp) -> py-indent (indent + 1) & py-sanitize name & " = _tco_s.field" & integer-to-text i & "\n"
-     is otherwise -> ""
+  py-tco-binds : List PyVarBinding, Integer, Integer -> Text
+  py-tco-binds (bs) (indent) (i) =
+    if i == list-length bs then ""
+    else py-indent (indent + 1) & py-sanitize ((list-at bs i).name) & " = " & (list-at bs i).access & "\n" & py-tco-binds bs indent (i + 1)
 
   emit-py-tco-act : List IRActStmt, Text, List IRParam, PyCtx, Integer -> Text
   emit-py-tco-act (stmts) (func-name) (params) (ctx) (indent) =
@@ -1279,9 +1514,137 @@ Section: Chapter Emission
     in let header = py-header-from (py-uses-mask body)
     in header & body
 
+ A byte buffer lives in one bytearray, _cxm_mem, addressed from 4096 so that 0
+ stays the null address; lloc-bytes bumps by the request rounded up to 8 and
+ zero-fills, as bare metal's bump allocator does. Every peek but the qword
+ zero-extends, as bare metal's do.
+
+  py-mem-helpers : Text
+  py-mem-helpers =
+    text-concat-list [
+      "_cxm_mem = bytearray(4096)\n",
+      "_cxm_hp = [4096]\n",
+      "def _cxm_want(e):\n",
+      "    if e > len(_cxm_mem):\n",
+      "        _cxm_mem.extend(bytes(e - len(_cxm_mem)))\n",
+      "def _cxm_alloc(n):\n",
+      "    a = _cxm_hp[0]\n",
+      "    _cxm_hp[0] += (n + 7) & ~7\n",
+      "    _cxm_want(_cxm_hp[0])\n",
+      "    return a\n",
+      "def _cxm_poke(b, o, v, w):\n",
+      "    _cxm_want(b + o + w)\n",
+      "    _cxm_mem[b + o:b + o + w] = (v & ((1 << (8 * w)) - 1)).to_bytes(w, 'little')\n",
+      "    return 0\n",
+      "def _cxm_peek(b, o, w):\n",
+      "    _cxm_want(b + o + w)\n",
+      "    return int.from_bytes(_cxm_mem[b + o:b + o + w], 'little')\n",
+      "def _cxm_peek_qword(b, o):\n",
+      "    _cxm_want(b + o + 8)\n",
+      "    return int.from_bytes(_cxm_mem[b + o:b + o + 8], 'little', signed=True)\n",
+      "def _cxm_read_bytes(b, o, n):\n",
+      "    _cxm_want(b + o + n)\n",
+      "    return list(_cxm_mem[b + o:b + o + n])\n",
+      "def _cxm_write_bytes(b, o, xs):\n",
+      "    _cxm_want(b + o + len(xs))\n",
+      "    for i, x in enumerate(xs):\n",
+      "        _cxm_mem[b + o + i] = x & 255\n",
+      "    return o + len(xs)\n",
+      "def _cxm_vec_load(b, f):\n",
+      "    _cxm_want(b + 16)\n",
+      "    return [struct.unpack(f, bytes(_cxm_mem[b:b + 8]))[0], struct.unpack(f, bytes(_cxm_mem[b + 8:b + 16]))[0]]\n",
+      "\n"
+    ]
+
+ A Real is a python float; a Real approximate is the float rounded to f32
+ (struct 'f'). The rules are x86-64's, as the perl plug's pl-real-helpers
+ state them; names carry _cxr_ so the header carries them only when used.
+
+  py-real-helpers : Text
+  py-real-helpers =
+    text-concat-list [
+      "import math\n",
+      "def _cxr_real_to_bits(v):\n",
+      "    return struct.unpack('=q', struct.pack('=d', v))[0]\n",
+      "def _cxr_bits_to_real(b):\n",
+      "    return struct.unpack('=d', struct.pack('=Q', b & 0xFFFFFFFFFFFFFFFF))[0]\n",
+      "def _cxr_to_real_approx(v):\n",
+      "    try:\n",
+      "        return struct.unpack('=f', struct.pack('=f', v))[0]\n",
+      "    except OverflowError:\n",
+      "        return math.copysign(math.inf, v)\n",
+      "def _cxr_bits_to_real_approx(b):\n",
+      "    return struct.unpack('=f', struct.pack('=I', b & 0xFFFFFFFF))[0]\n",
+      "def _cxr_real_approx_to_bits(v):\n",
+      "    return struct.unpack('=I', struct.pack('=f', v))[0]\n",
+      "def _cxr_real_to_int(v):\n",
+      "    if v != v or v >= 9223372036854775808.0 or v < -9223372036854775808.0:\n",
+      "        return -9223372036854775808\n",
+      "    return int(v)\n",
+      "def _cxr_real_from_int(n):\n",
+      "    return float(n)\n",
+      "def _cxr_real_approx_from_int(n):\n",
+      "    return _cxr_to_real_approx(float(n))\n",
+      "def _cxr_real_trap(v):\n",
+      "    if v != v or v - v != 0:\n",
+      "        print('CODEX_TRAP_real_not_finite', file=__import__('sys').stderr)\n",
+      "        raise SystemExit(255)\n",
+      "    return v\n",
+      "def _cxr_real_sat(v, w32):\n",
+      "    if v != v:\n",
+      "        return 0.0\n",
+      "    if v - v == 0:\n",
+      "        return v\n",
+      "    m = 3.4028234663852886e38 if w32 else 1.7976931348623157e308\n",
+      "    return m if v > 0 else -m\n",
+      "def _cxr_fdiv(a, b):\n",
+      "    if b != 0:\n",
+      "        return a / b\n",
+      "    if a != a or a == 0:\n",
+      "        return math.nan\n",
+      "    nb = struct.unpack('=Q', struct.pack('=d', b))[0] >> 63\n",
+      "    return -math.inf if ((1 if a < 0 else 0) ^ nb) else math.inf\n",
+      "def _cxr_ordinal(v, w32):\n",
+      "    x = (struct.unpack('=I', struct.pack('=f', v))[0] << 32) if w32 else struct.unpack('=Q', struct.pack('=d', v))[0]\n",
+      "    if x >= 9223372036854775808:\n",
+      "        x -= 18446744073709551616\n",
+      "    t = -1 if x < 0 else 0\n",
+      "    o = (x ^ (9223372036854775807 if t else 0)) - t\n",
+      "    return o >> 32 if w32 else o\n",
+      "def _cxr_real_near(a, b, w32, tol):\n",
+      "    return abs(_cxr_ordinal(a, w32) - _cxr_ordinal(b, w32)) <= tol\n",
+      "def _cxr_real_show(v):\n",
+      "    neg = '-' if (struct.unpack('=Q', struct.pack('=d', v))[0] >> 63) else ''\n",
+      "    e = abs(v)\n",
+      "    acc = float(math.trunc(e)) if math.isfinite(e) else e\n",
+      "    s = str(_cxr_real_to_int(acc))\n",
+      "    f = e - acc\n",
+      "    d = ''\n",
+      "    last = 0\n",
+      "    for k in range(1, 16):\n",
+      "        f *= 10.0\n",
+      "        x = int(f) if math.isfinite(f) else 0\n",
+      "        f -= x\n",
+      "        d += str(x)\n",
+      "        if x != 0:\n",
+      "            last = k\n",
+      "    return neg + s + '.' + (d[:last] if last else '0')\n",
+      "def _cxr_text_to_double_bits(s):\n",
+      "    neg = s[:1] == '-'\n",
+      "    r = s[1:] if neg else s\n",
+      "    if not any(c in '123456789' for c in r):\n",
+      "        return -9223372036854775808 if neg else 0\n",
+      "    try:\n",
+      "        v = float(r)\n",
+      "    except ValueError:\n",
+      "        v = 0.0\n",
+      "    return _cxr_real_to_bits(-v if neg else v)\n",
+      "\n"
+    ]
+
   py-uses-mask : Text -> Integer
   py-uses-mask (body) =
-    (if text-contains body "_cx_lpush" then 1 else 0) + (if text-contains body "_cx_char_encode" then 2 else 0) + (if text-contains body "_cx_text_replace" then 4 else 0) + (if text-contains body "_cx_text_split" then 8 else 0) + (if text-contains body "_cx_text_to_integer" then 16 else 0)
+    (if text-contains body "_cx_lpush" then 1 else 0) + (if text-contains body "_cx_char_encode" then 2 else 0) + (if text-contains body "_cx_text_replace" then 4 else 0) + (if text-contains body "_cxr_" then 32 else 0) + (if text-contains body "_cxm_" then 64 else 0) + (if text-contains body "_cxb_" then 128 else 0) + (if text-contains body "_cx_text_split" then 8 else 0) + (if text-contains body "_cx_text_to_integer" then 16 else 0)
 
   py-helper-if : Integer, Integer, Text -> Text
   py-helper-if (mask) (bit) (src) = if bit-and mask bit /= 0 then src else ""
@@ -1291,6 +1654,9 @@ Section: Chapter Emission
     "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
       & py-helper-if mask 1 "def _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
       & py-helper-if mask 2 "def _cx_char_encode(_c):\n    _c = int(_c)\n    if _c < 128:\n        return chr(_c)\n    if _c < 2176:\n        _v = _c - 128\n        return chr(192 | (_v >> 6)) + chr(128 | (_v & 63))\n    if _c < 67712:\n        _v = _c - 2176\n        return chr(224 | (_v >> 12)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n    _v = _c - 67712\n    return chr(240 | (_v >> 18)) + chr(128 | ((_v >> 12) & 63)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n\n"
+      & py-helper-if mask 32 py-real-helpers
+      & py-helper-if mask 64 py-mem-helpers
+      & py-helper-if mask 128 "def _cxb_wrap(v):\n    return ((v + 9223372036854775808) % 18446744073709551616) - 9223372036854775808\n\ndef _cxb_shl(a, b):\n    return _cxb_wrap(a << (b & 63))\n\ndef _cxb_shr(a, b):\n    return a >> (b & 63)\n\ndef _cxb_shru(a, b):\n    return _cxb_wrap((a & 18446744073709551615) >> (b & 63))\n\ndef _cxb_ipow(a, b):\n    if b < 0:\n        return 0\n    return _cxb_wrap(pow(a, b, 18446744073709551616))\n\n"
       & py-helper-if mask 4 "def _cx_text_replace(_s, _a, _b):\n    if len(_a) == 0:\n        return _s\n    return _s.replace(_a, _b)\n\n"
       & py-helper-if mask 8 "def _cx_text_split(_s, _sep):\n    if len(_sep) == 0:\n        return [_s]\n    return _s.split(_sep)\n\n"
       & py-helper-if mask 16 "def _cx_text_to_integer(_s):\n    _t = str(_s)\n    _i = 0\n    _neg = False\n    if _t[:1] == '-':\n        _neg = True\n        _i = 1\n    _v = 0\n    while _i < len(_t) and '0' <= _t[_i] <= '9':\n        _v = _v * 10 + (ord(_t[_i]) - 48)\n        _i += 1\n    return -_v if _neg else _v\n\n"

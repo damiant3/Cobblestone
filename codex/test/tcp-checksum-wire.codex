@@ -1,0 +1,44 @@
+Chapter: TcpChecksumWire
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Fixtures
+
+  tcw-src : List Integer = [10, 0, 2, 15]
+  tcw-dst : List Integer = [10, 0, 2, 2]
+
+  tcw-segment : List Integer -> List Integer
+  tcw-segment (payload) =
+    tcp-with-checksum (tcp-build-segment 9300 50000 1 1 tcp-flag-ack 8192 payload) tcw-src tcw-dst
+
+  tcw-low-bytes : List Integer, Integer, List Integer -> List Integer
+  tcw-low-bytes (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else tcw-low-bytes xs (i + 1) (list-push acc (bit-and (list-at xs i) 255))
+
+  tcw-field : List Integer -> Integer
+  tcw-field (seg) = bit-or (bit-shl (list-at seg 16) 8) (list-at seg 17)
+
+ The wire arm is what the NIC sends: the low byte of every element. The
+ byte arm builds the same payload from those low bytes; its checksum field
+ must equal the wide payload's.
+
+  tcw-verdict : Text, List Integer -> Text
+  tcw-verdict (name) (payload) =
+    let seg = tcw-segment payload
+    in let wire = tcw-low-bytes seg 0 []
+    in let bytes = tcw-segment (tcw-low-bytes payload 0 [])
+    in name & " wire-holds=" & show (tcp-checksum-valid wire tcw-src tcw-dst)
+       & " field-equals-bytes=" & show (tcw-field seg == tcw-field bytes)
+       & " field=" & show (tcw-field seg)
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni (tcw-verdict "byte-169" [0, 169, 0])
+    print-line-uni (tcw-verdict "wide-8364" [0, 8364, 0])
+    print-line-uni (tcw-verdict "wide-8364-odd-tail" [0, 0, 8364])
+    print-line-uni (tcw-verdict "wide-65535" [1, 65535, 2, 3])
+  end

@@ -94,7 +94,7 @@ $families=@('mint','walk','say','go','goto','vendor','bank','harvest','craft','c
     'camping','cartography','taste','forensics','spirit','poisoning','stealing','herding',
     'bard','tracking','healing','alchemy','inscription','arms','slay','cull','fallen','dungeons','smite','pick','pet','sell',
     'petname','mappins','book','decay','venom','speechbuy','trade','play','duel','eat','donate','gm','build','trinsic','cove','minoc','vesper','vesperwork','minocwork','covework','moonglowwork','yewwork','windwork','buccwork','bucc','jhelom','serpents','moonglow','yew','wind','skara','nujelm','ocllo','magincia','spells','wild',
-    'eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon','graded','castle','cheer','loom','fell','farm','reekgraded','festergraded','redgraded','load','widen','coroner')
+    'eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon','graded','castle','cheer','loom','fell','farm','reekgraded','festergraded','redgraded','load','widen','coroner','streetbuild')
 # UOAIX-254: -Only load gives every bot, British too, a draw from this mix; bot names soakbot and a letter cap -Bots at 26.
 $loadMix=@('walk','say','combat','craft','vendor','trade','bank','harvest')
 # -Only runs only the named families (a scenario run); British's own draw is limited to them too.
@@ -284,7 +284,9 @@ $gmSteps=[ordered]@{
     'decor-place'={param($B) Send-Plain $B (Say '[decor place 0B90');Pump-Bot $B 32;Send-Plain $B (Say '[decor list');Send-Plain $B (Say '[decor markarea 3')}
     'decor-mark'={param($B) Gm-Decor $B '[decor mark' 'mark';Gm-Decor $B '[decor unmark' 'unmark';Gm-Decor $B '[decor nudge 1 0' 'nudge'}
     'decor-remove'={param($B) Gm-Decor $B '[decor remove' 'decor-remove';$B.Decor=0}
-    'decor-build'={param($B) Use-Then-Target $B 0 {Target-Ground $B ($B.X+3) $B.Y $B.Z} 'gm-run' -Speech '[decor run 0080';Use-Then-Target $B 0 {Target-Ground $B ($B.X+1) ($B.Y+1) $B.Z} 'gm-fill' -Speech '[decor fill 0519'
+    # UOAIX-267: the build always goes up on open ground outside the town (1452,1529), never where British happens to stand:
+    # trial-48654 raised it on Britain's shop street and the keepers there lost their routes for the rest of the run.
+    'decor-build'={param($B) Send-Plain $B (Say '[go 1452 1529');Pump-Bot $B 32;Use-Then-Target $B 0 {Target-Ground $B ($B.X+3) $B.Y $B.Z} 'gm-run' -Speech '[decor run 0080';Use-Then-Target $B 0 {Target-Ground $B ($B.X+1) ($B.Y+1) $B.Z} 'gm-fill' -Speech '[decor fill 0519'
         # A cut design (UoaixMultis.md, ids from 0x200) placed at British's tile, then a walk east across its site: main 45460 fixed a ring of walls every placed design raised.
         Send-Plain $B (Say '[decor multi 200');Pump-Bot $B 16;$blocked=$B.Blocked.Count;for($i=0;$i -lt 8;$i++){Walk $B 2;Pump-Bot $B 8};Count $(if($B.Blocked.Count -gt $blocked){'multi-walk-blocked'}else{'multi-walk-clear'})
         Send-Plain $B (Say '[decor multi 1')}
@@ -1517,6 +1519,8 @@ function Act($B,[string]$Force=''){
         'reekgraded'{if($B.Index -ne 1){return};if(-not (Test-Path variable:script:reekStep)){$script:reekStep=0};$name=@($reekSteps.Keys)[($script:reekStep++) % $reekSteps.Count];& $reekSteps[$name] $B;Count "reekgraded-$name"}
         'festergraded'{if($B.Index -ne 1){return};Prime $B 'magery';Send-Plain $B (Say '[attr int 100');if(-not (Test-Path variable:script:festerStep)){$script:festerStep=0};$name=@($festerSteps.Keys)[($script:festerStep++) % $festerSteps.Count];& $festerSteps[$name] $B;Count "festergraded-$name"}
         'coroner'{if($B.Index -ne 1 -or (Test-Path variable:script:corDone)){return};Cor-Run $B;Cor-Park $B;Count 'coroner-draw'}
+# UOAIX-267: British raises trial-48791's building on Britain's shop street once (wall run 1497..1500 at y 1618, fill, multi 0x1), walling the keepers off; grade Britain cells and britain-why reason 0 in WHEEL TOTAL against the lines before it.
+'streetbuild'{if($B.Index -ne 1 -or (Test-Path variable:script:streetDone)){Act $B 'walk';return};$script:streetDone=$true;Send-Plain $B (Say '[go 1497 1618');Pump-Bot $B 32;Use-Then-Target $B 0 {Target-Ground $B ($B.X+3) $B.Y $B.Z} 'gm-run' -Speech '[decor run 0080';Use-Then-Target $B 0 {Target-Ground $B ($B.X+1) ($B.Y+1) $B.Z} 'gm-fill' -Speech '[decor fill 0519';Send-Plain $B (Say '[decor multi 1');Pump-Bot $B 16;Count 'streetbuild-done'}
         'redgraded'{if($B.Index -ne 1){return};if(-not (Test-Path variable:script:redStep)){$script:redStep=0};$name=@($redSteps.Keys)[($script:redStep++) % $redSteps.Count];& $redSteps[$name] $B;Count "redgraded-$name"}
         {@('eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon') -contains $_}{if($B.Index -eq 1){Tavern-Game $B $f}}
         'pick'{Send-Plain $B (Say '[go 1230 1591');Pump-Bot $B 64;$c=@($B.Crops.Keys|Where-Object{$B.Crops[$_][0] -eq 1230 -and $B.Crops[$_][1] -eq 1590})

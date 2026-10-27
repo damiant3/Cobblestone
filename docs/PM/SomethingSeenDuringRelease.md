@@ -28,6 +28,31 @@ count does.
 ## Open
 
 ## Done
+### Update 72 -- a printer defect, five wasm gaps and a moved lambda name, all seen only by release-only runners
+
+- **text-stage2: the printer dropped the parentheses of an `await` argument.** `par` (main 48854) holds `list-push deeper (await t)`, printed `list-push deeper await (t)`, so the printed compiler refused (CDX2001, CDX2087 at `par-forked-from`). `needs-parens` listed no `IrFork` or `IrAwait` (seed 9E200018, main 49081). Only the full gate's text leg compiles printed source; a compiler change that adds a construct to compiler or foreword source runs the leg on its candidate:
+
+```powershell
+# build.ps1's Invoke-BuildText run by hand: TEXT-compile the concat with the candidate (stage1),
+# TEXT-compile stage1 (stage2), require stage1 == stage2 byte for byte; then
+build/compare-codex-semantic.ps1 -Source <concat.codex> -Stage1 <stage1.codex>
+```
+
+- **wasm-run: six subjects new this cycle had never run on the wasm plug.** `tail-self-over-apply` (COMPILER-139) jumped on an over-applied self call (fixed, main 49087); the five concurrency subjects need task state the wasm plug's synchronous `fork` and `await` lack, baselined under plugs 2.118 (root). A `.hosted-refusal` binds the hosted ELF arm only, so a new subject carrying one still runs on wasm. After adding a test subject:
+
+```powershell
+pwsh -NoProfile -Command "& codex/plugs/wasm/hosted-wasm-test.ps1 -Kernel seed\Codex.cdx -Subject @('<name>')"
+```
+
+- **ir-fidelity: three cases and ablation A named `def:__lam_0`, now `__lam_1`.** Every unit carries ListUtils, and `par`'s lambda lifts first (it is then dropped as dead). The Update 71 seed answers `__lam_1` today too, so the source moved, not the kernel (main 49089). A foreword lambda added to a chapter every unit carries moves these paths again; `-Grade` is the check.
+- **`seed/Codex.img` carried a stale compiler source.** `build-boot-img.ps1` takes `build-output/Codex.codex` whenever it exists, and red's was a 2026-10-07 concat (3,629,441 bytes against 3,692,952). Delete it before building the image and read the `src=` size in the OK line:
+
+```powershell
+Remove-Item build-output\Codex.codex; build/build-boot-img.ps1 -Kernel seed\Codex.cdx
+```
+
+- **A failed phase did not stop the gate.** `text-stage2`'s `exit 1` inside `Measure-Phase` returned to the script, which ran `text-fixedpoint` and died on `Get-FileHash` of the missing stage2; the verdict was right and the message was not. `apps/lz77-hostile` timed out once in the 16-way wasm run and passed alone in 2 s.
+
 ### Update 71 -- six reds past the preflight, one an app regression, the rest the bed
 
 Step 0b, 2026-10-26, at main 48729; the compiler stages were green first time
@@ -38,12 +63,16 @@ Step 0b, 2026-10-26, at main 48729; the compiler stages were green first time
   left its sidecar entry behind; `check-annotation-targets` runs only in the
   full gate. The entry moved with the function (main 48729).
 - **test-run and the battery: GPU-model subjects past the 60 s wall budget
-  under 16 guests on one GPU** (8 in the gate, 7 in the battery: the SDXL UNet
+  under 16 guests, from the model DISK, not the GPU** (8 in the gate, 7 in the battery: the SDXL UNet
   arms, `clip-sdxl-prompt`, `diffusion-dat`, `lora-resident`). Every one passed
   alone on the release SUT, except `sdxl-euler`, which takes 156 to 166 s alone
   on a cold file cache on two seeds with exact output and now carries `.slow`
-  (main 48747). Run the GPU subjects alone after a fan-out rather than reading
-  their reds as the compiler.
+  (main 48747). Measured after (red, 2026-10-26): `sdxl-unet-step` takes 35.3 s
+  alone on a cold cache and 5.4 s with two copies at once on a warm one, both
+  exact, so the cost is reading the checkpoints off the D: SATA HDD, and several
+  subjects reading different checkpoints at once slow each other and evict each
+  other's pages. `test.ps1` and `bvt.ps1` now run `-gpu-files` subjects in their
+  serial slot, one guest at a time (main 48820, 48823).
 - **cross-smoke: an empty arm64 capture under load read as a wrong answer**
   (every `.expected` line missing) and was not retried, the Update 62 class;
   `check-cross-smoke.ps1` passed twice alone at once.

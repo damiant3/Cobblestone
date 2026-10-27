@@ -23,19 +23,11 @@ $LogFile = Join-Path $OutDir "run-$RunTag.log"
 # to create.
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-# compile.ps1 refuses with "run build.ps1 first, or pass -Kernel seed\Codex.cdx"
-# when the self-hosted kernel is absent. Take it at its word rather than
-# requiring a full build.ps1 before the plug can run at all: the plug's output
-# does not depend on which compiler produced the IR it is handed.
-#
-# -Kernel IS PASSED IN BOTH BRANCHES. Testing an ABSOLUTE path and then passing
-# nothing leaves compile.ps1 on its own default, which is RELATIVE: from any
-# working directory but the repo root the test passes and the compile fails
-# anyway. Passing it explicitly also puts the choice in the `kernel:` digest
-# line, where a reader can see which compiler produced the IR.
-$Kernel = Join-Path $Repo 'build-output' 'bare-metal' 'Codex.cdx'
-if (-not (Test-Path $Kernel)) { $Kernel = Join-Path $Repo 'seed' 'Codex.cdx' }
-$KernelArgs = @('-Kernel', $Kernel)
+# The IR comes from the seed, never from build-output\bare-metal, which holds
+# whichever compiler ran last and can be several seeds stale. Passing it
+# explicitly also puts the choice in the `kernel:` digest line, where a reader
+# can see which compiler produced the IR.
+$KernelArgs = @('-Kernel', (Join-Path $Repo 'seed' 'Codex.cdx'))
 
 # -Passes 'text-plug' is what a SOURCE plug must receive: the default pipeline
 # inlines, and an inlined call site never reaches the emitter at all. Measured

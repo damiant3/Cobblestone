@@ -2,6 +2,77 @@ Chapter: X86-64 Code Generator
 
 Section: IPC and Network Helpers
 
+ A channel handle is its slot plus the slot's generation shifted left by chan-gen-shift: 4 bits hold the 16 slots of
+ chan-max-channels. The generation word sits in the entry's unused bytes 48 to 55, between the owner and the buffer.
+
+  chan-gen-offset : Integer = 48
+
+  chan-gen-shift : Integer = 4
+
+  emit-chan-handle-check : CodegenState -> CheckExpiryResult
+
+  emit-chan-handle-check (st) =
+
+    let st1 = st-append-code st (mov-rr reg-rax reg-rbx)
+
+    in let st2 = st-append-code st1 (shr-ri reg-rax chan-gen-shift)
+
+    in let st3 = st-append-code st2 (mov-rr reg-rdx reg-rbx)
+
+    in let st4 = st-append-code st3 (and-ri reg-rdx (chan-max-channels - 1))
+
+    in let st5 = st-append-code st4 (shl-ri reg-rdx 7)
+
+    in let st6 = st-append-code st5 (add-ri reg-rdx chan-table-base)
+
+    in let st7 = st-append-code st6 (mov-load reg-rcx reg-rdx chan-gen-offset)
+
+    in let st8 = st-append-code st7 (cmp-rr reg-rax reg-rcx)
+
+    in let deny-off = st8.code-len
+
+    in let st9 = st-append-code st8 (jcc cc-ne 0)
+
+    in let st10 = st-append-code st9 (and-ri reg-rbx (chan-max-channels - 1))
+
+    in CheckExpiryResult { state = st10, deny-offset = deny-off }
+
+  emit-chan-free-if-drained : CodegenState -> CodegenState
+
+  emit-chan-free-if-drained (st) =
+
+    let st1 = st-append-code st (mov-load reg-rax reg-rdx chan-count-offset)
+
+    in let st2 = st-append-code st1 (test-rr reg-rax reg-rax)
+
+    in let holds-items = st2.code-len
+
+    in let st3 = st-append-code st2 (jcc cc-ne 0)
+
+    in let st4 = st-append-code st3 (mov-load reg-rax reg-rdx chan-state-offset)
+
+    in let st5 = st-append-code st4 (cmp-ri reg-rax chan-state-closed)
+
+    in let not-closed = st5.code-len
+
+    in let st6 = st-append-code st5 (jcc cc-ne 0)
+
+    in let st7 = st-append-code st6 (mov-load reg-rax reg-rdx chan-gen-offset)
+
+    in let st8 = st-append-code st7 (add-ri reg-rax 1)
+
+    in let st9 = st-append-code st8 (mov-store reg-rdx reg-rax chan-gen-offset)
+
+    in let st10 = st-append-code st9 (xor-rr reg-rax reg-rax)
+
+    in let st11 = st-append-code st10 (mov-store reg-rdx reg-rax chan-state-offset)
+
+    in let free-end = st11.code-len
+
+    in let st12 = patch-jcc-at st11 holds-items free-end
+
+    in patch-jcc-at st12 not-closed free-end
+
   emit-ipc-cap-check : CodegenState, Integer -> CheckExpiryResult
 
   emit-ipc-cap-check (st) (deny-placeholder) =
@@ -80,7 +151,9 @@ Section: IPC and Network Helpers
 
     in let st13 = st-append-code st12 (add-ri reg-rcx 1)
 
-    in let st14 = st-append-code st13 (jmp scan-top)
+    in let back = st13.code-len
+
+    in let st14 = patch-jmp-at (st-append-code st13 (jmp 0)) back scan-top
 
     in let found-pos = st14.code-len
 
@@ -114,7 +187,11 @@ Section: IPC and Network Helpers
 
     in let st26 = st-append-code st25 (mov-store reg-rdx reg-rax chan-owner-offset)
 
-    in let st27 = st-append-code st26 (mov-rr reg-rax reg-rcx)
+    in let st26a = st-append-code st26 (mov-load reg-rax reg-rdx chan-gen-offset)
+
+    in let st26b = st-append-code st26a (shl-ri reg-rax chan-gen-shift)
+
+    in let st27 = st-append-code st26b (add-rr reg-rax reg-rcx)
 
     in let st28 = st-append-code st27 (pop-r reg-rbx)
 
@@ -156,11 +233,11 @@ Section: IPC and Network Helpers
 
     in let st5 = chk.state
 
-    in let st6 = st-append-code st5 (cmp-ri reg-rbx chan-max-channels)
+    in let hc = emit-chan-handle-check st5
 
-    in let range-deny = st6.code-len
+    in let range-deny = hc.deny-offset
 
-    in let st7 = st-append-code st6 (jcc cc-ge 0)
+    in let st7 = hc.state
 
     in let st8 = st-append-code st7 (mov-rr reg-rdi reg-rbx)
 
@@ -262,11 +339,11 @@ Section: IPC and Network Helpers
 
     in let st3 = chk.state
 
-    in let st4 = st-append-code st3 (cmp-ri reg-rbx chan-max-channels)
+    in let hc = emit-chan-handle-check st3
 
-    in let range-deny = st4.code-len
+    in let range-deny = hc.deny-offset
 
-    in let st5 = st-append-code st4 (jcc cc-ge 0)
+    in let st5 = hc.state
 
     in let st6 = st-append-code st5 (mov-rr reg-rdi reg-rbx)
 
@@ -320,7 +397,9 @@ Section: IPC and Network Helpers
 
     in let st27 = st-append-code st26 (mov-store reg-rdx reg-rax chan-count-offset)
 
-    in let st28 = st-append-code st27 (mov-rr reg-rax reg-rbx)
+    in let st27a = emit-chan-free-if-drained st27
+
+    in let st28 = st-append-code st27a (mov-rr reg-rax reg-rbx)
 
     in let st29 = st-append-code st28 (pop-r reg-rbx)
 
@@ -354,19 +433,19 @@ Section: IPC and Network Helpers
 
     in let st0 = __record-set (__record-set st "fo-names" n) "fo-offsets" o
 
-    in let chk = emit-ipc-cap-check st0 0
+    in let st1 = st-append-code st0 (push-r reg-rbx)
 
-    in let st1 = chk.state
+    in let chk = emit-ipc-cap-check st1 0
 
-    in let st2 = st-append-code st1 (push-r reg-rbx)
+    in let st2 = chk.state
 
     in let st3 = st-append-code st2 (mov-rr reg-rbx reg-rdi)
 
-    in let st4 = st-append-code st3 (cmp-ri reg-rbx chan-max-channels)
+    in let hc = emit-chan-handle-check st3
 
-    in let range-deny = st4.code-len
+    in let range-deny = hc.deny-offset
 
-    in let st5 = st-append-code st4 (jcc cc-ge 0)
+    in let st5 = hc.state
 
     in let st6 = st-append-code st5 (mov-rr reg-rdi reg-rbx)
 
@@ -378,7 +457,9 @@ Section: IPC and Network Helpers
 
     in let w1 = emit-chan-wake-all-with-err st9
 
-    in let st10 = st-append-code w1 (xor-rr reg-rax reg-rax)
+    in let w2 = emit-chan-free-if-drained w1
+
+    in let st10 = st-append-code w2 (xor-rr reg-rax reg-rax)
 
     in let st11 = st-append-code st10 (pop-r reg-rbx)
 
@@ -1162,11 +1243,11 @@ Section: IPC and Network Helpers
 
     in let st5 = chk.state
 
-    in let st6 = st-append-code st5 (cmp-ri reg-rbx chan-max-channels)
+    in let hc = emit-chan-handle-check st5
 
-    in let range-deny = st6.code-len
+    in let range-deny = hc.deny-offset
 
-    in let st7 = st-append-code st6 (jcc cc-ge 0)
+    in let st7 = hc.state
 
     in let st8 = st-append-code st7 (mov-rr reg-rdi reg-rbx)
 
@@ -1384,11 +1465,11 @@ Section: IPC and Network Helpers
 
     in let st3 = chk.state
 
-    in let st4 = st-append-code st3 (cmp-ri reg-rbx chan-max-channels)
+    in let hc = emit-chan-handle-check st3
 
-    in let range-deny = st4.code-len
+    in let range-deny = hc.deny-offset
 
-    in let st5 = st-append-code st4 (jcc cc-ge 0)
+    in let st5 = hc.state
 
     in let st6 = st-append-code st5 (mov-rr reg-rdi reg-rbx)
 
@@ -1562,7 +1643,9 @@ Section: IPC and Network Helpers
 
     in let r16 = emit-chan-wake-blocked-sender r15
 
-    in let r17 = st-append-code r16 (mov-rr reg-rax reg-r12)
+    in let r16a = emit-chan-free-if-drained r16
+
+    in let r17 = st-append-code r16a (mov-rr reg-rax reg-r12)
 
     in let r18 = st-append-code r17 (pop-r reg-r12)
 

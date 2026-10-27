@@ -562,6 +562,19 @@ Effect declarations:
     read-line      : [Console.Read] Text
 ```
 
+**A scope on an effect is a contract, and each family has its own relation**
+(`scope-admits` in `Types/TypeChecker.codex` at compile time,
+`fat16-scope-admits` in `foreword/core/Fat16.codex` at run time):
+
+- **FileSystem: a path.** `FileSystem.Read "A"` admits `A` and everything
+  beneath it at a `/` (`A/x`, `A/x/y`), never `AB` or `A.TXT`. A grant
+  ending in `/` (`"/config/"`) admits what follows it. To grant one file,
+  name it: `FileSystem.Write "OK.TXT"`. A path with a `.` or `..`
+  component is refused whatever the grant. An empty grant admits every path.
+- **Network: an authority.** `host[:port]`; the host must be equal, and a
+  grant that names no port admits every port.
+- **Console: a channel.** The channel name must be equal.
+
 **`print-line` CONVERTS; `print-line-raw` is the byte-exact one.**
 `print-line` and `print-line-uni` both lower to `emit-print-line-builtin`
 (`Types/Builtins.codex`), which converts CCE to bytes at the I/O boundary,

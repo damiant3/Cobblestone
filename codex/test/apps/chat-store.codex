@@ -1,0 +1,98 @@
+Chapter: ChatStoreSession
+  cites Chat chapter ChatServer
+  cites Chat chapter ChatStore
+  cites Works chapter Http
+  cites Foreword chapter Console
+  cites Foreword chapter FileSystem
+
+Section: Requests
+
+  chat-get : Text -> HttpRequest
+  chat-get (path) = HttpRequest { method = "GET", path = path, body = "", valid = True }
+
+  boot-host : Text -> ChatHost
+  boot-host (tok) = ChatHost { ch-time = "10:00", ch-token = tok }
+
+  StepResult = record {
+    sr-state : ChatState,
+    sr-saved : Boolean
+  }
+
+  step : ChatState, Text, Text -> [FileSystem.Write] StepResult
+  step (st) (tok) (path) =
+    let mark = chat-store-mark st
+    in let (st2, resp) = chat-route st (boot-host tok) (chat-get path)
+    in act
+      ok <- chat-store-save mark st2
+      StepResult { sr-state = st2, sr-saved = ok }
+    end
+
+  first-boot : ChatState -> [FileSystem.Write] StepResult
+  first-boot (st) = act
+    a <- step st "tok-alice" "/api/chat/register?name=alice"
+    b <- step (a.sr-state) "tok-bob" "/api/chat/register?name=bob"
+    c <- step (b.sr-state) "" "/api/chat/start?t=tok-alice&with=bob"
+    d <- step (c.sr-state) "" "/api/chat/group?t=tok-bob&name=log&members=alice"
+    StepResult { sr-state = d.sr-state, sr-saved = a.sr-saved & b.sr-saved & c.sr-saved & d.sr-saved }
+  end
+
+  every-boot : ChatState, Integer -> [FileSystem.Write] StepResult
+  every-boot (st) (boot) = act
+    a <- step st "" ("/api/chat/send?t=tok-alice&to=c1&body=alice+boot+" & show boot)
+    b <- step (a.sr-state) "" ("/api/chat/send?t=tok-bob&to=c1&body=bob+boot+" & show boot)
+    StepResult { sr-state = b.sr-state, sr-saved = a.sr-saved & b.sr-saved }
+  end
+
+Section: What Each Sees
+
+  view : ChatState, Text -> Text
+  view (st) (q) =
+    let (s, r) = chat-route st (boot-host "") (chat-get q)
+    in r.body
+
+  views : ChatState -> Text
+  views (st) =
+    view st "/api/chat/conversations?t=tok-alice" & "\n"
+    & view st "/api/chat/conversations?t=tok-bob" & "\n"
+    & view st "/api/chat/messages?t=tok-bob&conv=c1"
+
+  message-total : ChatState -> Integer
+  message-total (st) = message-total-loop (st.cs-convs) 0 0
+
+  message-total-loop : List ChatConv, Integer, Integer -> Integer
+  message-total-loop (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else message-total-loop cs (i + 1) (acc + list-length ((list-at cs i).cv-messages))
+
+  counts : ChatState -> Text
+  counts (st) =
+    show (list-length (st.cs-accounts)) & " accounts, " & show (list-length (st.cs-convs)) & " conversations, "
+    & show (message-total st) & " messages, next conversation " & show (st.cs-next-conv) & ", next message " & show (st.cs-next-msg)
+
+  joined : List Text, Integer, Text -> Text
+  joined (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else joined xs (i + 1) (if i == 0 then list-at xs i else acc & " " & list-at xs i)
+
+Section: Entry
+
+  opening : [Console, FileSystem.Read, FileSystem.Write] Nothing
+  opening = act
+    loaded <- chat-store-load
+    let before = loaded.sl-state
+    in let boot = message-total before / 2
+    in act
+      print-line-uni ("loaded " & counts before & (if text-length (loaded.sl-problem) > 0 then "; problem: " & loaded.sl-problem else ""))
+      made <- if list-length (before.cs-accounts) == 0 then first-boot before else StepResult { sr-state = before, sr-saved = True }
+      sent <- every-boot (made.sr-state) boot
+      print-line-uni ("saved " & show (made.sr-saved & sent.sr-saved))
+      again <- chat-store-load
+      print-line-uni ("on disk: " & counts (again.sl-state))
+      print-line-uni ("read back is the state in hand: " & show (views (again.sl-state) == views (sent.sr-state)))
+      print-line-uni (views (again.sl-state))
+      users <- list-dir "codex-chat/users"
+      convs <- list-dir "codex-chat/convs"
+      files <- list-dir "codex-chat/convs/c1"
+      print-line-uni ("users: " & joined users 0 "" & "; convs: " & joined convs 0 "" & "; c1: " & joined files 0 "")
+    end
+  end

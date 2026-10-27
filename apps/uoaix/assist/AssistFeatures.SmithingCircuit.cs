@@ -1420,7 +1420,9 @@ public sealed partial class AssistFeatures
     // final: where the circuit ends, everything bought goes into the bank, none kept back for travel, and the purse
     // drops to PurseKeep (Damian, 2026-10-17: "the ending should have included putting the pearl in the bank bag, and
     // dropping back to 300gp rest purse").
-    string? BuyBank(GameLink k, string? city, bool final = false, List<BuyItem>? goods = null)
+    // purseTo: the purse left at the end, gold only deposited down to it, never taken (homespun's way home); -1 the buy
+    // circuit's.
+    string? BuyBank(GameLink k, string? city, bool final = false, List<BuyItem>? goods = null, int purseTo = -1)
     {
         city = ToBankTown(k, city!);
         if (city == null)
@@ -1542,7 +1544,7 @@ public sealed partial class AssistFeatures
                 if (it.Container == store && arts.Contains(it.Graphic))
                     stored += Math.Max(1, it.Amount);
         Note("Buy: the bank in " + city + " holds " + stored + " of the list's goods in " + store.ToString("X"));
-        int purse = PackCount(k, g => g == GoldArt), target = final ? PurseKeep : BuyPurse;
+        int purse = PackCount(k, g => g == GoldArt), target = purseTo >= 0 ? purseTo : final ? PurseKeep : BuyPurse;
         if (purse > target)
         {
             int put;
@@ -1550,7 +1552,7 @@ public sealed partial class AssistFeatures
             if (w != null)
                 return "depositing: " + w;
         }
-        else if (!final && purse < BuyPurse)
+        else if (!final && purseTo < 0 && purse < BuyPurse)
         {
             string taken;
             string? w = BankTake(new List<int> { GoldArt }, BuyPurse, out taken);

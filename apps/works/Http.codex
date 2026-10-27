@@ -54,7 +54,7 @@ Section: Binary Response
 Section: Serialize Response
   http-encode : HttpResponse -> List Integer
   http-encode (resp) =
-    let body-bytes = http-text-to-ascii (resp.body)
+    let body-bytes = http-text-to-utf8 (resp.body)
     in let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
     in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
     in let h2 = http-text-to-ascii ("Content-Length: " & show (list-length body-bytes)) & [13, 10]
@@ -64,6 +64,24 @@ Section: Serialize Response
 
   http-text-to-ascii : Text -> List Integer
   http-text-to-ascii (s) = text-to-unicode-bytes s
+
+  http-text-to-utf8 : Text -> List Integer
+  http-text-to-utf8 (s) = http-utf8-loop s 0 (text-length s) []
+
+  http-utf8-loop : Text, Integer, Integer, List Integer -> List Integer
+  http-utf8-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = cce-decode-length (char-code-at t i)
+    in http-utf8-loop t (i + n) len (http-utf8-push acc (to-unicode-with cce-to-unicode-table (cce-decode-at t i)))
+
+  http-utf8-push : List Integer, Integer -> List Integer
+  http-utf8-push (acc) (u) =
+    if u < 128 then list-push acc u
+    else if u < 2048 then list-push (list-push acc (bit-or 192 (bit-shru u 6))) (bit-or 128 (bit-and u 63))
+    else if u < 65536 then
+      list-push (list-push (list-push acc (bit-or 224 (bit-shru u 12))) (bit-or 128 (bit-and (bit-shru u 6) 63))) (bit-or 128 (bit-and u 63))
+    else
+      list-push (list-push (list-push (list-push acc (bit-or 240 (bit-shru u 18))) (bit-or 128 (bit-and (bit-shru u 12) 63))) (bit-or 128 (bit-and (bit-shru u 6) 63))) (bit-or 128 (bit-and u 63))
 
 Section: Request Parsing
 

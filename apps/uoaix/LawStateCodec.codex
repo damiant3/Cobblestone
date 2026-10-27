@@ -100,7 +100,7 @@ Chapter: LawStateCodec
       & lsc-range c.x 6143 & lsc-range c.y 4095 & lsc-range c.status 5 & lsc-range c.guard w.guard-count
       & c.term >= 1 & c.term <= 8760 & lsc-range c.due 1000000000000
       & (c.status == 0 | (c.known & c.guard > 0) | (c.kind == 4 & not c.known & c.guard == 0 & c.status >= 4))
-      & (c.guard == 0 | c.known) & c.known == lsc-known w (i + 1) 0
+      & (c.guard == 0 | c.known) & (c.known | not (lsc-known w (i + 1) 0))
       & lsc-case-unique w i 0 & lsc-case-valid w (i + 1)
   lsc-witness-unique : LawWorld, Integer, Integer -> Boolean
   lsc-witness-unique (w) (i) (j) = if j == i then True
@@ -143,7 +143,10 @@ Chapter: LawStateCodec
       & lsc-bool buf (lsc-witnesses-at + i * 40 + 32) & lsc-bools buf (i + 1)
   lsc-encode : LawWorld, Integer, Integer -> Result Integer Text
   lsc-encode (w) (buf) (capacity) = if capacity < lsc-bytes | not (lsc-valid w) then Err "Law checkpoint state or capacity"
-    else let a = poke-qword buf 0 #3143534C
+    else lsc-write w buf
+ lsc-write and lsc-decode-tail skip lsc-valid: the composite owner always saves and loads (UOAIX-286).
+  lsc-write : LawWorld, Integer -> Result Integer Text
+  lsc-write (w) (buf) = let a = poke-qword buf 0 #3143534C
     in let b = poke-qword buf 8 2
     in let c = poke-qword buf 16 lsc-bytes
     in let d = poke-qword buf 24 (min w.count lw-case-block)
@@ -167,7 +170,9 @@ Chapter: LawStateCodec
       & lsc-zero-range buf (lsc-witnesses-at + witnesses * 40) lsc-bytes
       & lsc-zero-range buf (lsc-guards-at + guards * 32) lsc-cases-at
   lsc-decode : Integer, Integer, WorldTable -> Result LawWorld Text
-  lsc-decode (buf) (size) (world) = lsc-decode-tail buf size world 0 0
+  lsc-decode (buf) (size) (world) = when lsc-decode-tail buf size world 0 0
+    is Err (e) -> Err e
+    is Ok (w) -> if lsc-valid w then Ok w else Err "Law checkpoint invariants"
  The law tail holds the rows past the first blocks: the case and witness extra counts, then those case rows (88 bytes)
  and witness rows (40). The composite closes its image with it after the account tail.
   lsc-tail-size : LawWorld -> Integer
@@ -233,4 +238,4 @@ Chapter: LawStateCodec
     in let cases = lsc-cases w buf True 0
     in let witnesses = lsc-witnesses w buf True 0
     in if tail-size > 0 & lsc-read-tail w tail tail-size < 0 then Err "Law checkpoint tail"
-    else if lsc-valid w then Ok w else Err "Law checkpoint invariants"
+    else Ok w

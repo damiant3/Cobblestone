@@ -85,6 +85,23 @@ function Write-CrossFailDetail([string]$text) {
     }
 }
 
+# A capture that is a STRICT PREFIX of the expected output (L-SHORT) is the emulator killed at the
+# budget before it finished, contention-shaped like no log at all: every differing line is
+# (missing) except at most the first, which is a prefix of its expected line. Measured at the
+# Update 71 gate: arm64/factorial wrote an empty log under 16 guests and passed twice alone.
+function Test-CutOffCapture([string]$text) {
+    if ($text -notmatch 'output mismatch') { return $false }
+    $rows = @([regex]::Matches($text, '(?m)^\s*line \d+:\s+exp=\[(.*)\]\s+act=\[(.*)\]\s*$'))
+    if ($rows.Count -eq 0) { return $false }
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $e = $rows[$i].Groups[1].Value; $a = $rows[$i].Groups[2].Value
+        if ($a -eq '(missing)') { continue }
+        if ($i -eq 0 -and $e -ne '(missing)' -and $e.StartsWith($a)) { continue }
+        return $false
+    }
+    return $true
+}
+
 foreach ($arch in @('arm64','riscv64')) {
     foreach ($t in $Tests) {
         $r = Invoke-CrossTest $arch $t
@@ -103,7 +120,7 @@ foreach ($arch in @('arm64','riscv64')) {
             Write-CrossFailDetail $r.Text
             # Only a lane that produced NO log is contention-shaped. A wrong
             # answer is the program's and is never re-run.
-            if ($r.Text -match 'no uart output') {
+            if ($r.Text -match 'no uart output' -or (Test-CutOffCapture $r.Text)) {
                 $silent += "$arch/$t"
             } else {
                 $fail += "$arch/$t"
@@ -132,7 +149,7 @@ if ($silent.Count -gt 0) {
 
 # Stated even when zero, so a run that absorbed a flake does not read like a
 # run that never had one.
-Write-Host "check-cross-smoke: serial retries $recovered/$retried recovered (silent lanes only; a wrong answer is never re-run)"
+Write-Host "check-cross-smoke: serial retries $recovered/$retried recovered (silent or cut-off lanes only; a wrong answer is never re-run)"
 
 if ($skipped.Count -gt 0) {
     Write-Host "check-cross-smoke: NOT EXECUTED: $($skipped -join ', ')"

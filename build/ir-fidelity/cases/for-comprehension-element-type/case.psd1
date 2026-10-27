@@ -5,8 +5,8 @@
     knows     = 'knows.codex'
     knowsCode = 'CDX2001'
     # The comprehension desugars to map-list (lambda) list, and the lambda is
-    # lifted to the top-level def __lam_0, as in lambda-param-type.
-    path      = 'def:__lam_0/param/0'
+    # lifted to the top-level def __lam_1, as in lambda-param-type.
+    path      = 'def:__lam_1/param/0'
     # DROPPED until 2026-09-07: Desugarer.codex:79 built the comprehension's
     # lambda with synthetic-span while var-tok was in scope, so the param cell
     # read (tvar 23) -- map-list's own forall variable, free in the lambda's

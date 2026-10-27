@@ -42,7 +42,15 @@ $Rows = @(
     @{ Plug = 'zig';        Ext = 'zig'; Analyzer = 'zig' }
     @{ Plug = 'csharp';     Ext = 'cs'; Analyzer = 'dotnet' }
     @{ Plug = 'wasm';       Ext = 'wat'; Analyzer = 'wat2wasm' }
+    @{ Plug = 'perl';       Ext = 'pl'; Analyzer = 'perl' }
 )
+
+# Perl resolves a sub call only when it runs, so `perl -c` passes a missing
+# one. B::Xref, in perl's core, lists every sub the file defines and every sub
+# it calls by name, called or not; a `main` sub used and defined nowhere is
+# the missing callee. Builtins are ops, not subs, so Xref never lists them.
+# The perl is Git for Windows', as plug-oracle-test.ps1 runs the subject with.
+$PerlExe = 'C:\Program Files\Git\usr\bin\perl.exe'
 
 # Zig analyses lazily: a helper nothing calls is never semantically checked,
 # so `zig run` passes a prelude that calls a missing name from dead code.
@@ -179,6 +187,18 @@ function Invoke-Analyzer([string]$analyzer, [string]$file) {
         $called = @([regex]::Matches($text, '\b(?:call|return_call|ref\.func)\s+\$([^\s()]+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique).Count
         return @{ Called = $called; Missing = $missing }
     }
+    if ($analyzer -eq 'perl') {
+        if (-not (Test-Path -PathType Leaf $PerlExe)) { return @{ Error = "no perl at $PerlExe" } }
+        $raw = @(& $PerlExe '-MO=Xref,-r' $file 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { return @{ Error = "B::Xref failed: $(($raw | Select-Object -Last 3) -join ' ')" } }
+        $defined = @{}; $used = @{}
+        foreach ($line in $raw) {
+            if ($line -match '\s+main\s+&\s+(\S+)\s+subdef\s*$') { $defined[$Matches[1]] = 1 }
+            elseif ($line -match '\s+main\s+&\s+(\S+)\s+subused\s*$') { $used[$Matches[1]] = 1 }
+        }
+        $missing = @($used.Keys | Where-Object { -not $defined.ContainsKey($_) } | Sort-Object)
+        return @{ Called = $used.Count; Missing = $missing }
+    }
     if ($analyzer -eq 'dotnet') {
         if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) { return @{ Error = "'dotnet' is not on PATH" } }
         $d = Join-Path $work ('cs-' + [System.IO.Path]::GetRandomFileName())
@@ -213,6 +233,7 @@ try {
             @{ Analyzer = 'node';   Ext = 'ts'; Text = "function helper<T>(x: T[]): number { return x.length; }`nconst g = (a: bigint): bigint => a;`nconsole.log(helper<number>([1]), g(1n), BigInt(3), ``v=`${String(codex_planted_missing(2))}``);`n" }
             @{ Analyzer = 'zig';    Ext = 'zig'; Text = "const std = @import(`"std`");`nfn helper(x: i64) i64 { return x + 1; }`nfn never_called() i64 { return codex_planted_missing(2); }`npub fn main() void { std.debug.print(`"{}\n`", .{helper(1)}); }`n" }
             @{ Analyzer = 'dotnet'; Ext = 'cs'; Text = "using System;`nstatic class P {`n  static long Helper(long x) { return x + 1; }`n  static long NeverCalled() { return codex_planted_missing(2); }`n  static void Main() { Console.WriteLine(Helper(1)); }`n}`n" }
+            @{ Analyzer = 'perl';   Ext = 'pl'; Text = "use strict;`nsub helper { return 1 + `$_[0]; }`nsub never_called { return codex_planted_missing(2); }`nmy `$f = sub { 3 };`nprint helper(1), `$f->(), length('codex_in_string(1)');`n" }
             @{ Analyzer = 'wat2wasm'; Ext = 'wat'; Text = "(module`n  (func `$helper (param i64) (result i64) local.get 0 i64.const 1 i64.add)`n  (func `$loop (param i64) (result i64) local.get 0 return_call `$helper)`n  (func `$never_called (result i64) i64.const 2 call `$codex_planted_missing)`n  (func (export `"_start`") i64.const 1 call `$loop drop)`n)`n" }
         )
         $bad = 0

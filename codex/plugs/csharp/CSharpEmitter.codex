@@ -348,7 +348,7 @@ Section: Tail Call Optimization
   emit-tco-def (d) (ctx) =
     let ret = get-return-type (d.type-val) (list-length (d.params))
     in if is-lam-def (d.name) then
-      "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
+      "    public static " & cs-type-lam ret & " " & sanitize (d.name) & lam-generic-suffix (d.params) & "(" & emit-def-params-lam (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
     else let gen = generic-suffix (d.type-val)
     in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ")\n    {\n        while (true)\n        {\n" & emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "        }\n    }\n"
 
@@ -528,7 +528,7 @@ Section: Definition Emission
     in if should-tco d then emit-tco-def d dctx
     else let ret = get-return-type (d.type-val) (list-length (d.params))
     in if dyn-lam then
-      "    public static " & cs-type-lam ret & " " & sanitize (d.name) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
+      "    public static " & cs-type-lam ret & " " & sanitize (d.name) & lam-generic-suffix (d.params) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
     else let gen = generic-suffix (d.type-val)
     in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
 
@@ -589,6 +589,18 @@ Section: Definition Emission
     when ty
      is TypeVar (id) -> "dynamic"
      is otherwise -> cs-type ty
+
+ A type variable nested in a lifted lambda's parameter (`Func<T39, T40>`, `List<T39>`) names a type parameter of the
+ enclosing generic method, which the lambda's own method does not have (CS0246); the lambda's method takes those as its
+ own type parameters, inferred at its call from the arguments.
+  lam-generic-suffix : List IRParam -> Text
+  lam-generic-suffix (params) = let ids = lam-nested-tvar-ids params 0 []
+    in if list-length ids == 0 then "" else "<" & emit-type-params ids 0 & ">"
+
+  lam-nested-tvar-ids : List IRParam, Integer, List Integer -> List Integer
+  lam-nested-tvar-ids (ps) (i) (acc) = if i >= list-length ps then acc
+    else let p = list-at ps i
+    in lam-nested-tvar-ids ps (i + 1) (when p.type-val is TypeVar (id) -> acc is otherwise -> collect-type-var-ids (p.type-val) acc)
 
   emit-def-params-lam : List IRParam, Integer -> Text
   emit-def-params-lam (params) (i) =

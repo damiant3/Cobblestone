@@ -332,8 +332,8 @@ the class beside the name and the type, and `cost-builtin-nonalloc` reads
 `builtin-alloc-by-name` rather than a hand-kept list, so a measurement widens
 what `bounded none` accepts by editing one row.
 
-**Measured 2026-10-26 off `Builtins.codex`, 317 rows: `none` 218,
-`unknown` 64, `fixed` 25, `input` 8, `budgeted` 1, `budgeted:3` 1.**
+**Measured 2026-10-26 off `Builtins.codex`, 317 rows: `none` 236,
+`unknown` 35, `fixed` 29, `input` 15, `budgeted` 1, `budgeted:3` 1.**
 `vec-eq`, `vec-ne`, `vec-approx-eq`, `vec-approx-exact`, `vec4-approx-eq` and
 `vec4-approx-exact` are `fixed` at 16 bytes at both sizes
 (`codex/test/cost/builtin-alloc`, 2026-10-20): each returns one boxed mask,
@@ -435,17 +435,49 @@ ends (`__read_line`, `__bare_metal_read_serial`), so what they retain is the
 input's size, which no argument carries: `chan-text-recv`'s case, and an arm
 would block on stdin. `fork` is `fixed` in fact and stays `unknown`: its first
 call in a program reserves the task pool on the main heap
-(`emit-fork-init-main`, 64 + 4,194,304 = 4,194,368 bytes, the `fork cold`
+(`emit-fork-init-main`, 80 + 4,194,304 = 4,194,384 bytes, the `fork cold`
 line), every later call takes a task from the free list or the pool and
 retains 0, but both bumps are named constants (`task-desc-size`,
 `fork-pool-reservation`), and `check-builtin-alloc.ps1` rule 1 judges only a
 literal. And the five sized-vector names are BROKEN rather than
 unmeasured: `vec-empty` is CDX2040 unresolved, `vec-singleton` answers wrong,
 `vec-cons` faults, with the account under the unowned registers in
-`docs/PM/CurrentPlan.md`. So are `par` and `race` (CDX2040 unresolved, no
-lowering: COMPILER-133) and the five `s-*` session rows, which no chapter
-calls: `s-send` and `s-recv` hand back the helper's answer where their type
-promises the channel, and `s-close` on that faults (COMPILER-134).
+`docs/PM/CurrentPlan.md`.
+
+`race` is `input`: 32 bytes over 2 branches and 80 over 8, which is
+8 + 8 x (branches + 1), the count cell `emit-race-builtin` bumps and the task
+list it `__alloc`s; the forks come from the reserved pool and retain 0.
+`await-any` and the five `s-*` rows are `none`: a channel lives in the fixed
+channel table at `chan-table-base`, and `s-recv` emits its argument.
+
+Each of these allocates its output and is `input`: `text-replace` 8 + the
+output's length on both the no-match and the all-match path,
+`text-concat-list` and `raw-bytes-to-text` 8 + n, `__linked-list-to-list`
+16 + 8n, and `__heap-advance` its argument rounded to 8. `prof-start` and
+`prof-dump` are `none`: they store to and print from the fixed profile buffer.
+
+On bare metal `get-args` is `fixed` at 16 bytes (an empty list, two literal
+bumps in `emit-get-args-builtin`) and `current-dir` at 8 (an empty Text).
+`__deck-set` is `none`. `__deck-alloc` retains 0 on the heap and moves the
+deck cursor by its argument, so it is `input` on the deck. `__deck-enter` and
+`__deck-exit` stay `unknown`: each swaps `r10` between the heap and the deck,
+so a frontier difference across either one measures the swap, not an
+allocation.
+
+`block-read` and `block-read-sector` are `fixed` at 512 bytes, the sector
+buffer bumped before the syscall on both the multiboot and the UEFI path, and
+read so by the bed. Nine rows are classified from the EMITTER, because this
+bed has no disk and no NIC, so an arm would read the refusal path, and the
+writes would mutate the machine: `block-write`, `block-write-sector` (both
+paths save and restore `r10` around the call), `key-load` and `key-zero`
+(the syscall handlers copy to or zero the fixed identity cells),
+`process-exit` (stores the status and jumps to `__idle_dispatch`),
+`net-send-raw`, `net-recv-raw`, `write-binary` and `write-binary-buf` (no
+`r10`, bump or call in the helper body) are `none`. `fail` and
+`__heap-restore` stay `unknown`: each moves the frontier back to a mark the
+caller chose, so what it "retains" is that mark, not a property of the
+builtin. `get-env`, `run-process`, `run-process-full` and
+`external-compile-bare` have no x86-64 lowering for a bed to arm.
 
 ### 5.5 Published results that changed what can be built
 
@@ -665,7 +697,7 @@ than a claim made here.
 
 ## 5.7 What is open
 
-- **64 registry rows read `unknown`** (2026-10-26), eight of them unread (5.4); each of the other 56 refusing one
+- **35 registry rows read `unknown`** (2026-10-26), eight of them unread (5.4); each of the other 27 refusing one
   declaration at one call site. 5.4 names the ones that are deliberate or broken.
 - **`bs-alloc` cannot key on instantiation**, which is what `show` and
   `__list_tail` need, and 5.2 is the account.

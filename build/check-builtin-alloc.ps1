@@ -136,6 +136,10 @@ $Sites = @{
     'vec4d-select'        = @('emit-wide-select-builtin')
     'vec-empty'           = @('emit-list', 'emit-list-bivy')
     'vec-singleton'       = @('emit-list', 'emit-list-bivy')
+    'get-args'            = @('emit-get-args-builtin')
+    'current-dir'         = @('emit-current-dir-builtin')
+    'block-read'          = @('emit-block-read-helper')
+    'block-read-sector'   = @('emit-block-read-sector-helper', 'emit-uefi-block-read-sector-helper')
 }
 
 $pin = [ordered]@{}

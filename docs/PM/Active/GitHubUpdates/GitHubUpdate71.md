@@ -93,7 +93,7 @@ Numbers in parentheses are main changelists.
 
 - **Full gate** (`build/build.ps1`, every phase) at main 48729: the compiler is a hard fixed point in one pass and byte-identical to the shipped seed `967435BD`. Red, and named rather than blocking: the browser check of ModBuilder, whose page renders its markup as text since HTML labels are set as text (val 45875); ModBuilder and six more pages holding HTML-string labels go to val.
 - **IR fidelity**: 9 cases, 0 unexpected.
-- **Battery** (`-Tier all`): 2304 tests, 2233 pass and 64 skip; the 7 red are GPU-model subjects past the 60 s wall budget with 16 guests on one GPU, and each passes alone on the release compiler. `sdxl-euler` takes 156 to 166 s alone and is marked `.slow` (red 48747).
+- **Battery** (`-Tier all`): 2304 tests, 2233 pass and 64 skip; the 7 red are GPU-model subjects past the 60 s wall budget with 16 guests reading their checkpoints off one disk at once (the GPU is not the limit: two copies of one subject run together in 5.4 s on a warm cache), and each passes alone on the release compiler. `sdxl-euler` takes 156 to 166 s alone and is marked `.slow` (red 48747).
 - **App sweep**: 562 units against the baseline, 559 clean and 3 known.
 - **Poison build** (0xCD fill, `-Tier all`): no uninitialized-field read; 2230 pass and 64 skip, and the 10 red are the same GPU-model wall-budget subjects, all 10 passing alone against the poison compiler.
 - **Images**: `seed/Codex.img` rebuilt from the release seed (SHA-256 `993C4875`); `seed/Codex.map` taken from the gate, all 5,843 rows matching the seed's embedded MAP1; `build/boot/diag.img` (SHA-256 `72B6C771A5019C897BA3A02CB2B8A0B0608F1D75B8A088F947EC13216CDE2ADB`) rehearsed on all 60 arms on Codex VM and QEMU/OVMF, and the shipping check passes.

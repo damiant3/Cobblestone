@@ -214,7 +214,7 @@ Section: Expression Emission
     if depth >= js-max-emit-depth then "undefined"
     else when e
      is IrIntLit (n) (sp) -> integer-to-text n & "n"
-     is IrNumLit (n) (sp) -> "Number(BigInt.asIntN(64, " & integer-to-text n & "n))"
+     is IrNumLit (n) (sp) -> "_cxr_bits_to_real(" & integer-to-text n & "n)"
      is IrTextLit (s) (sp) -> "\"" & js-escape-text s & "\""
      is IrBoolLit (b) (sp) -> if b then "true" else "false"
      is IrCharLit (n) (sp) -> integer-to-text n & "n"
@@ -233,8 +233,8 @@ Section: Expression Emission
      is IrRecord (name) (fields) (ty) (sp) -> js-emit-record name fields ty ctx
      is IrFieldAccess (rec) (field) (ty) (sp) -> js-emit-expr-at rec ctx (depth + 1) & "." & js-field field
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((_r, _v) => (_r." & js-field field & " = _v, _r))(" & js-emit-expr-at rec ctx (depth + 1) & ", " & js-emit-expr-at val ctx (depth + 1) & ")"
-     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => (" & js-emit-expr-at body ctx (depth + 1) & ")(null))"
-     is IrAwait (task) (ty) (sp) -> "(await " & js-emit-expr-at task ctx (depth + 1) & ")"
+     is IrFork (body) (ty) (sp) -> "({ v: (" & js-emit-expr-at body ctx (depth + 1) & ")(null) })"
+     is IrAwait (task) (ty) (sp) -> "(" & js-emit-expr-at task ctx (depth + 1) & ").v"
      is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-js-try max body fb fail-stmts ctx
      is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & js-escape-text msg & "\"); })()"
 
@@ -299,12 +299,47 @@ Section: Expression Emission
      is IrAppendText -> "(" & js-emit-expr l ctx & " + " & js-emit-expr r ctx & ")"
      is IrAppendList -> "[..." & js-emit-expr l ctx & ", ..." & js-emit-expr r ctx & "]"
      is IrConsList -> "[" & js-emit-expr l ctx & ", ..." & js-emit-expr r ctx & "]"
+     is IrApproxEq -> js-real-near l r "4n" ctx
+     is IrApproxEqExact -> js-real-near l r "0n" ctx
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox -> "Math.fround(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")"
+     is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping -> "_cxr_real_trap(" & js-real-round ty ("(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")") & ")"
+     is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating -> "_cxr_real_sat(" & js-real-round ty ("(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")") & ", " & (if js-real-is-f32 ty then "true" else "false") & ")"
      is IrPowInt -> "(" & js-emit-expr l ctx & " ** " & js-emit-expr r ctx & ")"
      is IrAddVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v + " & js-emit-expr r ctx & "[i]))"
      is IrSubVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v - " & js-emit-expr r ctx & "[i]))"
      is IrMulVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v * " & js-emit-expr r ctx & "[i]))"
      is IrDivVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v / " & js-emit-expr r ctx & "[i]))"
      is otherwise -> "(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")"
+
+  js-strip-ty : CodexType -> CodexType
+  js-strip-ty (ty) =
+    when ty
+     is UnitTy (n) (inner) -> js-strip-ty inner
+     is EffectfulTy (effs) (scopes) (inner) -> js-strip-ty inner
+     is otherwise -> ty
+
+  js-real-is-real : CodexType -> Boolean
+  js-real-is-real (ty) =
+    when js-strip-ty ty
+     is RealTy (w) (m) -> True
+     is otherwise -> False
+
+  js-real-is-f32 : CodexType -> Boolean
+  js-real-is-f32 (ty) =
+    when js-strip-ty ty
+     is RealTy (w) (m) -> when w
+      is RwF32 -> True
+      is otherwise -> False
+     is otherwise -> False
+
+  js-real-round : CodexType, Text -> Text
+  js-real-round (ty) (e) = if js-real-is-f32 ty then "Math.fround(" & e & ")" else e
+
+  js-real-near : IRExpr, IRExpr, Text, JsCtx -> Text
+  js-real-near (l) (r) (tol) (ctx) =
+    if js-real-is-real (ir-expr-type l) then
+      "_cxr_real_near(" & js-emit-expr l ctx & ", " & js-emit-expr r ctx & ", " & (if js-real-is-f32 (ir-expr-type l) then "true" else "false") & ", " & tol & ")"
+    else "(" & js-emit-expr l ctx & " === " & js-emit-expr r ctx & ")"
 
   js-emit-bin-op : IRBinaryOp -> Text
   js-emit-bin-op (op) =
@@ -581,7 +616,16 @@ Section: Expression Emission
   js-try-builtin : Text , List IRExpr , JsCtx -> Text
   js-try-builtin (n) (args) (ctx) =
     if n == "__narrow" then js-emit-expr (list-at args 0) ctx
-    else if n == "show" then "String(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "show" & js-real-is-real (ir-expr-type (list-at args 0)) then "_cxr_real_show(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "real-to-bits" then "_cxr_real_to_bits(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "bits-to-real" then "_cxr_bits_to_real(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "to-real-approx" then "Math.fround(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "bits-to-real-approx" then "_cxr_bits_to_real_approx(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "real-approx-to-bits" then "_cxr_real_approx_to_bits(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "real-to-int" | n == "real-approx-to-int" then "_cxr_real_to_int(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "real-from-int" then "Number(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "real-approx-from-int" then "Math.fround(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "from-real-approx" | n == "to-real-trapping" | n == "from-real-trapping" | n == "to-real-saturating" | n == "from-real-saturating" | n == "to-real-approx-trapping" | n == "from-real-approx-trapping" | n == "to-real-approx-saturating" | n == "from-real-approx-saturating" then js-emit-expr (list-at args 0) ctx    else if n == "show" then "String(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "negate" then "(-" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "print-line-uni" then "console.log(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "print-error-uni" then "console.error(" & js-emit-expr (list-at args 0) ctx & ")"
@@ -667,13 +711,13 @@ Section: Expression Emission
     else if n == "abs" & list-length args == 1 then
       "((" & js-emit-expr (list-at args 0) ctx & ") < 0n ? -(" & js-emit-expr (list-at args 0) ctx & ") : (" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "fork" & list-length args == 1 then
-      "Promise.resolve().then(() => (" & js-emit-expr (list-at args 0) ctx & ")(null))"
+      "({ v: (" & js-emit-expr (list-at args 0) ctx & ")(null) })"
     else if n == "await" & list-length args == 1 then
-      "(await " & js-emit-expr (list-at args 0) ctx & ")"
+      "(" & js-emit-expr (list-at args 0) ctx & ").v"
     else if n == "par" & list-length args == 2 then
-      "await Promise.all(" & js-emit-expr (list-at args 1) ctx & ".map(_x_ => Promise.resolve().then(() => (" & js-emit-expr (list-at args 0) ctx & ")(_x_))))"
+      "(" & js-emit-expr (list-at args 1) ctx & ").map(_x_ => (" & js-emit-expr (list-at args 0) ctx & ")(_x_))"
     else if n == "race" & list-length args == 1 then
-      "await Promise.race(" & js-emit-expr (list-at args 0) ctx & ".map(_t_ => Promise.resolve().then(() => _t_(null))))"
+      "((_r_) => _r_.length === 0 ? (() => { throw new Error(\"CODEX_TRAP_race_empty\"); })() : _r_[0](null))(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "process-exit" & list-length args == 1 then
       "process.exit(Number(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "get-args" then "process.argv"
@@ -1088,13 +1132,33 @@ Section: Chapter Emission
     if i == len then ""
     else js-emit-def (list-at defs i) ctx & "\n" & js-emit-defs-loop defs (i + 1) len ctx
 
+ A Real is a javascript Number; a Real approximate is the Number rounded by
+ Math.fround. The rules are x86-64's, as the perl plug's `pl-real-helpers`
+ state them.
+
+  js-real-helpers : Text
+  js-real-helpers =
+    text-concat-list [
+      "const _cxr_dv = new DataView(new ArrayBuffer(8));\n",
+      "function _cxr_bits_to_real(b) { _cxr_dv.setBigInt64(0, BigInt.asIntN(64, BigInt(b))); return _cxr_dv.getFloat64(0); }\n",
+      "function _cxr_real_to_bits(v) { _cxr_dv.setFloat64(0, v); return _cxr_dv.getBigInt64(0); }\n",
+      "function _cxr_bits_to_real_approx(b) { _cxr_dv.setUint32(0, Number(BigInt.asUintN(32, BigInt(b)))); return _cxr_dv.getFloat32(0); }\n",
+      "function _cxr_real_approx_to_bits(v) { _cxr_dv.setFloat32(0, v); return BigInt(_cxr_dv.getUint32(0)); }\n",
+      "function _cxr_real_to_int(v) { if (v !== v || v >= 9223372036854775808 || v < -9223372036854775808) return -9223372036854775808n; return BigInt(Math.trunc(v)); }\n",
+      "function _cxr_real_trap(v) { if (!Number.isFinite(v)) { console.error(\"CODEX_TRAP_real_not_finite\"); process.exit(255); } return v; }\n",
+      "function _cxr_real_sat(v, w32) { if (v !== v) return 0; if (Number.isFinite(v)) return v; const m = w32 ? 3.4028234663852886e38 : 1.7976931348623157e308; return v > 0 ? m : -m; }\n",
+      "function _cxr_ordinal(v, w32) { let x; if (w32) { _cxr_dv.setFloat32(0, v); x = BigInt.asIntN(64, BigInt(_cxr_dv.getUint32(0)) << 32n); } else { _cxr_dv.setFloat64(0, v); x = _cxr_dv.getBigInt64(0); } const t = x < 0n ? -1n : 0n; const o = (x ^ (t ? 9223372036854775807n : 0n)) - t; return w32 ? (o >> 32n) : o; }\n",
+      "function _cxr_real_near(a, b, w32, tol) { let d = _cxr_ordinal(a, w32) - _cxr_ordinal(b, w32); if (d < 0n) d = -d; return d <= tol; }\n",
+      "function _cxr_real_show(v) { _cxr_dv.setFloat64(0, v); const neg = (_cxr_dv.getBigUint64(0) >> 63n) ? \"-\" : \"\"; const e = Math.abs(v); const acc = Number.isFinite(e) ? Math.trunc(e) : e; const s = String(_cxr_real_to_int(acc)); let f = e - acc; let d = \"\"; let last = 0; for (let k = 1; k <= 15; k++) { f *= 10; const x = Number.isFinite(f) ? Math.trunc(f) : 0; f -= x; d += String(x); if (x !== 0) last = k; } return neg + s + \".\" + (last ? d.slice(0, last) : \"0\"); }\n"
+    ]
+
   js-emit-header : Text
   js-emit-header = "\"use strict\";\nlet _js_state_value = 0n;\nfunction _cx_text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction _cx_text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction _cx_text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
 
   emit-javascript-chapter : IRChapter , List ATypeDef -> Text
   emit-javascript-chapter (m) (type-defs) =
     let ctx = JsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
-    in let header = js-emit-header
+    in let header = js-emit-header & js-real-helpers
     in let types = js-emit-type-defs type-defs 0
     in let defs = js-emit-defs-loop (m.defs) 0 (list-length (m.defs)) ctx
     in let entry = js-emit-entry (js-opening-return-type (m.defs))

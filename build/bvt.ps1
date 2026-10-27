@@ -458,6 +458,9 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
         $s = $Jobs
         if ($wallSec -gt $longWall) { $longWall = $wallSec }
     }
+    # A -gpu-files subject reads a multi-GB checkpoint off the model disk and misses its budget beside
+    # another such read (Update 71: 35.3 s alone cold, 5.4 s two at once warm), so it joins slot $Jobs too.
+    if ((Test-Path -PathType Leaf $vmArgsFile) -and @(Get-Content -LiteralPath $vmArgsFile | Where-Object { $_.TrimStart().StartsWith('-gpu-files') }).Count -gt 0) { $s = $Jobs }
     # Every token double-quoted: that is what -run-list's splitter takes.
     $slotLines[$s].Add((($tokens | ForEach-Object { '"' + $_ + '"' }) -join ' '))
     $lineKey[$base] = "$s/$($slotLines[$s].Count)"
@@ -476,7 +479,7 @@ for ($s = 0; $s -le $Jobs; $s++) {
     # because GetTempFileName() lands on C:.
     $slotErrs[$s] = [System.IO.Path]::GetTempFileName()
     $listArgs = @('-run-list', $lf)
-    if ($s -eq $Jobs) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
+    if ($s -eq $Jobs -and $longWall -gt 0) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
     $sa = @{ FilePath = $vmExe; ArgumentList = $listArgs; PassThru = $true; RedirectStandardError = $slotErrs[$s] }
     if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
     $supervisors[$s] = Start-Process @sa

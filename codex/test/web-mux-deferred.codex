@@ -1,0 +1,65 @@
+Chapter: WebMuxDeferred
+  cites Net chapter WebServer
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Works chapter Http
+  cites Foreword chapter Console
+
+ We say:
+
+Section: Wire Fixtures
+  srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  srv-ip : List Integer = [10, 0, 2, 15]
+  a-ip : List Integer = [10, 0, 2, 100]
+  b-ip : List Integer = [10, 0, 2, 101]
+
+  mk-frame : Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mk-frame (src-port) (src-ip) (seq) (ack) (flags) (payload) =
+    let seg = tcp-with-checksum (tcp-build-segment src-port 80 seq ack flags 8192 payload) src-ip srv-ip
+    in let ip = ip-build-packet src-ip srv-ip ip-proto-tcp seg
+    in eth-build-frame srv-mac cli-mac eth-type-ipv4 ip
+
+  a-syn : List Integer = mk-frame 50000 a-ip 1000 0 tcp-flag-syn []
+  b-syn : List Integer = mk-frame 50001 b-ip 2000 0 tcp-flag-syn []
+
+Section: Route
+  test-route : HttpRequest -> HttpResponse
+  test-route (req) = http-json "{\"ok\":true}"
+
+Section: Observation
+  server-next : WebMux, Integer -> Integer
+  server-next (m) (i) = ((((list-at (m.conns) i).transport).session).conn).send-next
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if n <= 0 then acc else zeros (n - 1) (list-push acc 0)
+
+Section: Entry
+  opening : [Console, Network.Read, Network.Write] Nothing = act
+    let m0 = WebMux { listen = net-io-listen (fresh-listen-transport 80), conns = [], served = 0 }
+    in act
+      m1 <- web-mux-feed test-route (\line -> 0) m0 a-syn 80
+      m2 <- web-mux-feed test-route (\line -> 0) m1 (mk-frame 50000 a-ip 1001 (server-next m1 0) tcp-flag-ack []) 80
+      let a-sess = ((list-at (m2.conns) 0).transport).session
+      in let d = (m2.listen).deferred-base
+      in let foreign = net-io-frame-foreign (net-process-frame-within a-sess b-syn (list-length b-syn))
+      in let a-ack = mk-frame 50000 a-ip 1001 (server-next m2 0) tcp-flag-ack []
+      in let own = net-io-frame-foreign (net-process-frame-within a-sess a-ack (list-length a-ack))
+      in let kept = net-io-defer d b-syn (list-length b-syn)
+      in act
+        print-line-uni ("stash minted: " & yn (d /= 0))
+        print-line-uni ("another connection's SYN is foreign to A: " & yn foreign)
+        print-line-uni ("A's own ACK is not: " & yn (own == False))
+        print-line-uni ("stashed: " & show (net-io-deferred-count d))
+        print-line-uni ("conns before replay: " & show (list-length (m2.conns)))
+        m3 <- web-mux-replay web-send-default test-route (\line -> 0) m2 80 (zeros 1600 []) 0
+        print-line-uni ("conns after replay: " & show (list-length (m3.conns)))
+        print-line-uni ("stash after replay: " & show (net-io-deferred-count d))
+      end
+    end
+  end

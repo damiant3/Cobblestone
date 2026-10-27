@@ -149,14 +149,22 @@ Section: ARP
     }
 
 Section: IPv4
- RFC 1071. read-be16 answers zero past the end, so the odd-tail arm is what
- sums a final odd byte, as the HIGH half of its word.
+ RFC 1071. ip-word answers zero past the end, so the odd-tail arm is what
+ sums a final odd byte, as the HIGH half of its word. Every element is summed
+ as its low byte because the NIC transmits only the low byte of each element:
+ an element past 255 summed whole gives a checksum the peer refuses on every
+ retransmission.
+
+  ip-word : List Integer, Integer -> Integer
+  ip-word (buf) (off) =
+    if off + 2 > list-length buf then 0
+    else bit-or (bit-shl (bit-and (list-at buf off) 255) 8) (bit-and (list-at buf (off + 1)) 255)
 
   ip-sum : List Integer, Integer, Integer, Integer -> Integer
   ip-sum (buf) (i) (len) (sum) =
     if i >= len then sum
-    else if i + 1 >= len then sum + bit-shl (list-at buf i) 8
-    else ip-sum buf (i + 2) len (sum + read-be16 buf i)
+    else if i + 1 >= len then sum + bit-shl (bit-and (list-at buf i) 255) 8
+    else ip-sum buf (i + 2) len (sum + ip-word buf i)
 
  The unfolded sum is a separate function so a caller summing two ranges can
  carry the accumulator across them rather than concatenating the ranges into

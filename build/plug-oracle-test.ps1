@@ -27,6 +27,7 @@
 #   build/plug-oracle-test.ps1                 # every wired plug
 #   build/plug-oracle-test.ps1 -Only python
 #   build/plug-oracle-test.ps1 -KeepArtifacts  # keep emitted source + output
+#   build/plug-oracle-test.ps1 -Subject codex/test/plug-oracle-par.codex   # another subject
 #
 # A plug is wired here only when BOTH its CDX and a runtime for its
 # language exist on the box. Anything else is reported as SKIPPED with the
@@ -35,6 +36,7 @@
 [CmdletBinding()]
 param(
     [string]$Only = '',
+    [string]$Subject = '',
     [string]$Kernel = '',
     [switch]$KeepArtifacts,
     [int]$TimeoutSec = 240
@@ -44,7 +46,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo    = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$Subject = Join-Path $Repo 'codex\test\plug-oracle-arith.codex'
+$Arith   = Join-Path $Repo 'codex\test\plug-oracle-arith.codex'
+$Subject = if ($Subject) { [IO.Path]::GetFullPath((Join-Path $Repo $Subject)) } else { $Arith }
 $Work    = Join-Path $Repo 'build-output\plug-oracle'
 if (-not $Kernel) { $Kernel = Join-Path $Repo 'seed\Codex.cdx' }
 
@@ -188,7 +191,7 @@ Write-Host "[oracle] truth: $($truth.Count) values from x86-64"
 # The subject must exercise negative operands, or every rounding rule on
 # earth passes it. Guard the harness against its own subject being
 # weakened later.
-if (-not ($truth -match '^-')) {
+if ($Subject -eq $Arith -and -not ($truth -match '^-')) {
     Write-Host "FAIL: no negative results in the truth set -- the subject cannot discriminate"
     exit 3
 }

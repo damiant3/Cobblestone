@@ -20,6 +20,7 @@ Chapter: CompositePaging
   cites Uoaix chapter ActiveSkillsTracking
   cites Uoaix chapter Housing
   cites Uoaix chapter MultiDesigns
+  cites Uoaix chapter TownEntrances
 
   cp-cover : MapCacheState, CompositeOwner, GameShard, GameInput -> [Console, Device.Block] Result Integer Text
   cp-cover (cache) (owner) (game) (input) =
@@ -594,7 +595,8 @@ Chapter: CompositePaging
         in if size > most then act Ok (cp-say input "decor:refused" ((if fill then "A fill" else "A run") & " covers at most " & show most & " tiles; that one is " & show size & ".")) end
         else let tiles = if fill then cp-build-rect (min me.x x1) (min me.y y1) (max me.x x1) (max me.y y1) (min me.x x1) (min me.y y1) []
           else cp-build-line me.x me.y x1 y1 n 0 []
-        in if list-length tiles > room then act Ok (cp-say input "decor:refused" ("Room for " & show room & " decorations until the next save grows the table; that needs " & show (list-length tiles) & ".")) end
+        in if te-blocks (min me.x x1) (min me.y y1) (max me.x x1) (max me.y y1) then act Ok (cp-say input "decor:refused" te-refusal) end
+        else if list-length tiles > room then act Ok (cp-say input "decor:refused" ("Room for " & show room & " decorations until the next save grows the table; that needs " & show (list-length tiles) & ".")) end
         else when cp-build-place owner art me.z (ga-bound game.accounts) tiles 0 []
           is Err (e) -> act Ok (cp-say input "decor:refused" ("Building stopped, " & e)) end
           is Ok (shown) -> act
@@ -619,7 +621,9 @@ Chapter: CompositePaging
       is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
       is Ok (me) -> let short = md-fits owner.state.designs map multi me.x me.y
         in let solid = md-count owner.state.designs multi
-        in if short > 0 then act Ok (cp-say input "decor:refused" ("No room for the multi's walls and floors in " & show short & " tiles here.")) end
+        in let b = md-bounds owner.state.designs multi
+        in if te-blocks (me.x + list-at b 0) (me.y + list-at b 1) (me.x + list-at b 2) (me.y + list-at b 3) then act Ok (cp-say input "decor:refused" te-refusal) end
+        else if short > 0 then act Ok (cp-say input "decor:refused" ("No room for the multi's walls and floors in " & show short & " tiles here.")) end
         else when dc-place owner.state.decor owner.state.items (#4000 + multi) 0 me.x me.y me.z (ga-bound game.accounts)
         is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
         is Ok (shown) -> act
@@ -692,7 +696,8 @@ Chapter: CompositePaging
     in if list-at art 2 == 0 then act Ok (cp-say input "decor:help" "Usage: [decor place <art hex> [hue hex]") end
     else when world-get game.world input.session.serial
       is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
-      is Ok (me) -> when dc-place owner.state.decor owner.state.items (list-at art 0) (list-at hue 0) me.x me.y me.z (ga-bound game.accounts)
+      is Ok (me) -> if te-blocks me.x me.y me.x me.y then act Ok (cp-say input "decor:refused" te-refusal) end
+        else when dc-place owner.state.decor owner.state.items (list-at art 0) (list-at hue 0) me.x me.y me.z (ga-bound game.accounts)
         is Err (e) -> act Ok (cp-say input "decor:refused" ("Cannot place: " & e)) end
         is Ok (shown) -> act
           logged <- slg-line game.log slg-world slg-info ("DECOR place gm=" & show input.session.serial & " account=" & show (ga-bound game.accounts)

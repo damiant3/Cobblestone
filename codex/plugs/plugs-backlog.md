@@ -246,7 +246,7 @@ permanently. 1.59's four no-closure targets refuse by name under it.
 Do not open an item whose acceptance step is "install X, then run the
 subjects".
 
-**Latent, taken on their trigger:** 1.48 (red), 1.54, 1.72, 2.01, 2.07.
+**Latent, taken on their trigger:** 1.48 (red), 1.54, 2.01, 2.07.
 **Deferred, not to be reopened without the ruler:** 1.1, 2.08, 2.09, 2.57 (Damian).
 **Standing notes, not work:** 1.73, 2.11 (ruled not built), 2.14, 2.16, 2.17, 2.39, 2.53 (root 2026-10-09: playable path first), 2.66.
 
@@ -318,23 +318,6 @@ quoting its score:
   arguments now PASSES the shape check**, and only the no-closure list catches
   the four that do.
 - **`recheck` does not build**, so it has no row and no verdict.
-
-**1.72 -- the python plug's TCO matches a self-call by NAME and not by arity, so
-its argument loop and its parameter loop can disagree. LATENT: whether any
-well-typed program reaches it is UNESTABLISHED, and that is the weakest part of
-this row.** `is-self-call-root` (`PythonEmitter.codex:706`) compares the chain's
-ROOT name to the definition's name and nothing compares argument count to
-parameter count; the jump evaluates one temporary per ARGUMENT and assigns one
-parameter per PARAMETER, so the loops agree only at exact arity. Fewer
-arguments: `NameError` on the first turn, and a STALE python local on later
-turns, so the loop continues with the wrong argument and no diagnostic. The zig
-plug is the control: `zig-tail-self-call` requires
-`list-length (chain.args) == (tl.tail-arity)`. Filed because "the type system
-happens to prevent it" and "the emitter checks" are different statements and
-only the second survives a change to either. **What would settle it, in order:**
-the type-checker question (does the shape exist at all), then emit and READ the
-output. The fix is not one clause: `is-self-call` has no arity access (signature
-change, three call sites).
 
 **1.73 (residue) -- 49 of the 50 source runners are MEASURED cross-host; one
 (babbage, shelved) is not, and six take wire input.** The QEMU per-run port
@@ -691,7 +674,7 @@ routed: it is fixed on OUR side, `$f64_to_text` in `WasmEmitter.codex` at head
 2026-09-07. His items 7 and 8 belong to `angry-gopher` and are not ours.
 
 
-## 2.38 -- OPEN: the undefined-callee check covers WGSL, PTX and the six text plugs whose toolchain is on the box; the rest need an analyzer or a toolchain
+## 2.38 -- OPEN: the undefined-callee check covers WGSL, PTX and the seven text plugs whose toolchain is on the box; the rest need an analyzer or a toolchain
 
 `codex/plugs/wgsl/run.ps1` refuses (exit 6, nothing written) a module that calls a
 name it neither declares (`fn`, `struct`, `alias`) nor finds among WGSL's predeclared
@@ -702,7 +685,7 @@ the 88 tracked `.wgsl` files pass it and a planted missing callee fails it (red,
 `build/check-plug-callees.ps1` reads the source `plug-oracle-test.ps1 -KeepArtifacts`
 leaves in `build-output/plug-oracle` and fails on a name that is called, bound
 nowhere in the file, and not a global of the language's own runtime (python's
-`ast` and `builtins`; node's `typeof globalThis`); zig by `zig ast-check`, csharp by a Roslyn build (CS0103), and wasm by `wat2wasm --enable-tail-call`, each of which resolves every function including those nothing calls. Six rows; `-SelfTest` plants a missing callee per analyzer. Measured 2026-09-25 on freshly built plugs: python 57, javascript 50, typescript 75, zig 109, csharp 92 and wasm 71 callees, all PASS. The box carries no toolchain for any other text plug (on PATH 2026-09-25: python, node, zig, dotnet, wat2wasm, wasmtime; no JVM, Go, Rust, Ruby, Lua, Perl, PHP, GHC, OCaml, Julia, Nim, Swift, D, Fortran, Pascal, Ada, COBOL, Elixir or Scheme), and the framework plugs (react, vue, svelte, angular, electron, compose) take UI IR the oracle's subject is not. Each of those joins with a toolchain install or an analyzer written for it.
+`ast` and `builtins`; node's `typeof globalThis`); zig by `zig ast-check`, csharp by a Roslyn build (CS0103), wasm by `wat2wasm --enable-tail-call`, and perl by `B::Xref` (a `main` sub used and defined nowhere), each of which resolves every function including those nothing calls. Seven rows; `-SelfTest` plants a missing callee per analyzer. Measured 2026-09-25 on freshly built plugs: python 57, javascript 50, typescript 75, zig 109, csharp 92 and wasm 71 callees, all PASS; perl 25, PASS (red, 2026-10-26, Git for Windows' perl 5.38). The box carries no toolchain for any other text plug (on PATH 2026-09-25: python, node, zig, dotnet, wat2wasm, wasmtime; no JVM, Go, Rust, Ruby, Lua, PHP, GHC, OCaml, Julia, Nim, Swift, D, Fortran, Pascal, Ada, COBOL, Elixir or Scheme), and the framework plugs (react, vue, svelte, angular, electron, compose) take UI IR the oracle's subject is not. Each of those joins with a toolchain install or an analyzer written for it.
 
 ## 2.42 -- OPEN (reek, measured 2026-09-07): the compiler lifts every lambda before IR text, so no compiled subject can reach any plug's lambda arms; hand-authored IR is the only route
 
@@ -828,25 +811,66 @@ No runtime for any of the four is on this box, so the oracle cannot grade a repa
 reads text only (L-VACUOUS): a repair here needs a toolchain decision first (WE DO NOT DO TOOLCHAINS,
 Damian 2026-09-07), or a refusal of guarded matches as the honest answer.
 
-## 2.111 -- the perl plug answers 32 of `codex/test/ops`'s 71 graded subjects
+## 2.111 -- the perl plug answers 63 of `codex/test/ops`'s 71 graded subjects
 
-Measured 2026-10-19 (red): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, compiled `-IrUni -Passes text-plug`, emitted by `perl-stdio.wasm` under wasmtime, run under Git for Windows' perl 5.38 with the console read as UTF-8, and compared to the `.expected` line by line: 32 PASS, 39 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only perl` stays 59/59). The failures, by first cause:
+Measured 2026-10-26 (red, seed 031D2953): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/perl/run.ps1`, run under Git for Windows' perl 5.38 with the console read as UTF-8, and its stdout compared to the `.expected` line by line: 63 PASS, 8 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only perl` passes). The failures, by first cause:
 
-- **Real numbers (about 20 subjects):** no `real-to-bits`, `bits-to-real`, `bits-to-real-approx`, `to-real-approx`, `to-real-trapping`, `to-real-saturating`, `real-to-int` or `real-from-int`, and `show` of a Real prints its bit pattern (`real-mode-show` 2.5 as 4612811918334230528).
-- **Heap and byte buffers:** `alloc-bytes`, `address-of`, `__record-set` and `raw-bytes-to-text` are absent, and `list-growth` measures heap growth a hosted runtime does not have.
-- **The Char model:** a Char is a codepoint here where Codex has a CCE code, so a text built from tier-0 codes (`code-to-char 113`) prints the codepoint of that number (`tier0-cyrillic-print`, `tier0-cyrillic-print-uni`: codes 113-127 print as `qrstuvwxyz{|}~`, 97-104 as `abcdefgh`); text from literals and tiers 1 and 2 prints correctly.
-- **Ordering and values:** `text-compare` is perl's `cmp`, not CCE collation (`collate-order`, `text-order-allowed`).
-- **Emission shape:** a local closure is applied to all its arguments in one call, so a curried value answers a code reference (`closure-seven-values`, `over-apply-keeps-heap`, `saturated-call-returning-function`): a value made by `\&def` takes the definition's arity and a lambda its own parameters, and the fix is one convention for both, a nested pattern binds an undeclared `$c` (`native-nested-pattern`, `native-nested-tags`), and `closure-under-apply`, `saturated-call-returning-function` and `char-at-bounds` emit text perl parses as a regex or a bareword.
+- **Text is Unicode, not CCE (6):** the cross-plug gap 2.114.
+- **Bare metal's heap (2):** `variant-address` asserts `address-of` inside a `__heap-save` window, and `list-growth` measures heap growth; a hosted runtime has neither.
 
 Owner red.
 
-## 2.112 -- the zig plug answers 60 of `codex/test/ops`'s 71 graded subjects
+## 2.114 -- python, javascript and perl answer Unicode where x86-64 answers CCE, on six `codex/test/ops` subjects
 
-Measured 2026-10-19 (red), the 2.111 method with `zig-stdio.wasm` and `zig run` under zig 0.16.0, the console read as UTF-8 (read as the OEM code page, the four tier print subjects look wrong and are not): 60 PASS, 11 FAIL, 7 skipped for other sidecars. The 11, by first cause (bounded-modes-smoke and cce-builtin-bounds pass since red's wrapping-field and `is-whitespace` change):
-
-- **Real numbers (8):** no emitter for `real-approx-to-bits`, `from-real-saturating` or `from-real-trapping`; `real-approx` leaves an unused local constant; `real-approx-equality`'s f32 tiny straddle answers False.
-- **Absent builtins:** `poke-qword` (`cap-word-64`), `vec-extract` (`vec-lanes-smoke`).
-- **Closures of more than six values** refuse (`closure-seven-values`: "closure arity 7 unsupported").
-- **`unit-pattern-lit`** calls an undeclared `sin`.
+Measured 2026-10-26 (red, seed 031D2953), each subject through the plug's `run.ps1` and its runtime, stdout against the `.expected`: python, javascript and perl each fail these six, the same way; C# fails only `collate-order` and passes the other five. A Char is a codepoint, so `char-code-at` answers 97 where the `.expected` has 15 (`char-at-bounds`) and text built from codes prints the codepoint of the number (`tier0-cyrillic-print`, `tier0-cyrillic-print-uni`: codes 113-127 print as `qrstuvwxyz{|}~`); `text-compare` orders by codepoint, not CCE collation (`collate-order`, `text-order-allowed`: `cmp-d-b` answers 1 where the `.expected` has -1); `bytes-to-text` is absent or decodes Unicode (`unicode-bytes-roundtrip`). The model is C#'s (root, 2026-10-26): the program's text is CCE at run time and converts only at its edges, by a `_Cce` class the plug emits (`emit-cce-runtime`, `CSharpEmitter.codex`: a `_toUni` table, `CceToUni` at output, `UniToCce` and `FromUnicode` at input), so character codes and comparisons are CCE's; python, javascript and perl take the same runtime class to close this.
 
 Owner red.
+
+## 2.115 -- the python plug answers 63 of `codex/test/ops`'s 71 graded subjects
+
+Measured 2026-10-26 (red, seed BA856C62): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/python/run.ps1`, run under python 3.11 with `PYTHONIOENCODING=utf-8`, and its stdout compared to the `.expected` line by line: 63 PASS, 8 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only python`: 59 values match x86-64). The failures, by first cause:
+
+- **Text is Unicode, not CCE (6):** the cross-plug gap 2.114.
+- **Heap (2):** `variant-address` and `list-growth` probe bare metal's heap, which a hosted runtime does not have.
+
+Owner red.
+
+## 2.116 -- the javascript plug answers 43 of `codex/test/ops`'s 71 graded subjects
+
+Measured 2026-10-26 (red, seed BA856C62): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/javascript/run.ps1`, run under node, and its stdout compared to the `.expected` line by line: 43 PASS, 28 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only javascript`: 59 values match x86-64). The failures are the shapes 2.115 closed for python (main 49044 to 49058), by first cause:
+
+- **Real numbers (1):** `text-to-double-bits` of empty text answers NaN's bits where x86-64 answers 0 (`real-literal-rounding`).
+- **Text is Unicode, not CCE (6):** the cross-plug gap 2.114.
+- **Heap and byte buffers (6):** `alloc-bytes`, `address-of` and the vector builtins are absent (`cap-word-64`, `runtime-bytes-unsigned`, `variant-address`, `vec-lanes-smoke`); `list-growth` and `list-index-bounds` answer wrong values.
+- **Bit operations (5):** `bit-shru` is absent (`cap-grant-arm64`, `cap-grant-riscv`), a shift does not wrap at 64 bits (`int-min-literal`: `shl63`), `int-pow` throws on a negative exponent, `lir-bitops-shadow` calls the builtin a user definition shadows.
+- **Printing (2):** `print-line` is absent (`char-encode-bands`, `match-shadowed-arm`).
+- **Equality and names (3):** `list-equality`, `record-equality`, `record-generic-eq` emit javascript that does not parse.
+- **Patterns (3):** a nested pattern binds nothing (`native-nested-pattern`, `native-nested-tags`), and `unit-pattern-lit` emits a text literal unquoted.
+- **Other (3):** `cap-grant-emit` fails to run, `bounded-modes-smoke` keeps an out-of-bounds field, `unit-show` answers wrong text.
+
+Owner red.
+
+## 2.117 -- the C# plug answers 30 of `codex/test/ops`'s 71 graded subjects
+
+Measured 2026-10-26 (red, seed BA856C62): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/csharp/run.ps1`, built with `dotnet build` (net9.0, the project `check-plug-callees.ps1` uses) and run, its stdout compared to the `.expected` line by line: 30 PASS, 41 FAIL, 7 skipped for other sidecars. The failures, by first cause:
+
+- **Real numbers (18):** the Real builtins are absent (`real_to_bits`, `bits_to_real`, `to_real_approx`, `real_to_int`, `to_real_trapping` and the rest, CS0103); `int-min-literal` and `vec-lanes-smoke` reach one first.
+- **Equality and vector types (5):** `list-equality`, `record-equality`, `record-generic-eq`, `record-equality-vector` and `vec-sized` emit C# that does not compile (CS1003, CS1026, CS1031).
+- **Heap (5):** `poke-qword` is absent (`cap-word-64`); `runtime-bytes-unsigned`, `variant-address`, `list-growth` answer wrong values; `list-index-bounds` passes a `List<long>` where a string is expected.
+- **Unit types (4):** a unit-typed parameter or local is emitted `void` (`unit-pattern-lit`, `unit-real-arith`, `unit-real-compare`, `unit-show`; CS1536, CS1547).
+- **Records passed as text (3):** `cap-grant-arm64`, `cap-grant-emit`, `cap-grant-riscv` pass a `Machine` where a string is expected (CS1503).
+- **Other (6):** `_cx_ipow` is absent (`int-pow`), `-` is applied to a string (`int-wrapping-spelling`), a nested pattern binds nothing (`native-nested-pattern`), `lir-bitops-shadow` calls the builtin a user definition shadows, `bounded-modes-smoke` keeps an out-of-bounds field, and `collate-order` orders by codepoint (2.114).
+
+Owner red.
+
+## 2.118 -- the wasm plug runs `fork` at once and `await` as the identity, and has no `race` or `await-any`
+
+Measured 2026-10-26 (red, Update 72 release gate, seed 9E200018): `WasmEmitter.codex` emits `IrFork` as an immediate `clo_apply1` and `IrAwait` as its operand, so a task has no handle and no state. `await-twice` answers `stale: 505` where x86-64 refuses a second await of a spent handle; `race-first`, `race-blocked-loser`, `race-nested-loser` and `waiters-mixed` trap on the emitter's `unreachable` bail at `race`'s `await-any`. The five are known red in `wasm-run-baseline.txt`. Open: a task record (value, done, awaited) with a refused second await, and `await-any` over already-run tasks, which the synchronous model can answer as the first ready.
+
+Owner red.
+
+## 2.113 -- OPEN: a call of `par` is unchecked on rust
+
+Python, JavaScript and C# run `par` to x86-64's answer: `build/plug-oracle-test.ps1 -Subject codex/test/plug-oracle-par.codex` (negative values, a lambda capturing a value lifted inside `par`, an empty list) passes 3 of 3 values on each (red, 2026-10-26), and the Python emitter before its fix fails it with the original AttributeError. The JavaScript plug runs `fork` eagerly (`{ v: f(null) }`, `await` reads `.v`) because its functions are not `async`. Open: rust, no `rustc` on the box. The harness is run by hand; no gate runs either subject.
+
+Owner red (moved from val by root, 2026-10-26).

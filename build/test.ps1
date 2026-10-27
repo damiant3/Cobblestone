@@ -1095,6 +1095,12 @@ if ($needsRun.Count -gt 0) {
                 if ($wallSec -gt $longWall) { $longWall = $wallSec }
                 continue
             }
+            # A -gpu-files subject reads a multi-GB checkpoint off the model disk and misses its budget beside
+            # another such read (Update 71: 35.3 s alone cold, 5.4 s two at once warm), so it joins slot $Jobs too.
+            if ((Test-Path -PathType Leaf $t.VmArgs) -and @(Get-Content -LiteralPath $t.VmArgs | Where-Object { $_.TrimStart().StartsWith('-gpu-files') }).Count -gt 0) {
+                $slotMembers[$Jobs].Add($t)
+                continue
+            }
             $k = 0
             if ($runWeight[$t.Name] -gt 0) {
                 for ($s = 1; $s -lt $Jobs; $s++) {
@@ -1168,7 +1174,7 @@ if ($needsRun.Count -gt 0) {
         for ($s = 0; $s -le $Jobs; $s++) {
             if ($slotMembers[$s].Count -eq 0) { continue }
             $listArgs = @('-run-list', $slotLists[$s])
-            if ($s -eq $Jobs) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
+            if ($s -eq $Jobs -and $longWall -gt 0) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
             $sa = @{ FilePath = $vmBin; ArgumentList = $listArgs; PassThru = $true; RedirectStandardError = $slotErrs[$s] }
             if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
             $supervisors[$s] = Start-Process @sa

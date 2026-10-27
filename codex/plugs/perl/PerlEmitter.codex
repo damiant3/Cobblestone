@@ -1,5 +1,6 @@
 Chapter: Perl Emitter
   cites Foreword chapter Sort
+  cites Foreword chapter CCE
 
 Section: Keywords and Sanitization
 
@@ -9,7 +10,8 @@ Section: Keywords and Sanitization
      "given", "goto", "grep", "if", "keys", "last", "length", "local",
      "map", "my", "next", "no", "our", "package", "print", "push",
      "redo", "require", "return", "say", "shift", "sort", "split",
-     "sub", "unless", "until", "use", "values", "warn", "when", "while"]
+     "sub", "unless", "until", "use", "values", "warn", "when", "while",
+     "m", "q", "qq", "qr", "qw", "qx", "s", "tr", "y"]
 
   pl-is-keyword : Text, Integer -> Boolean
   pl-is-keyword (name) (i) =
@@ -46,6 +48,30 @@ Section: Keywords and Sanitization
     let s1 = text-replace s "\\" "\\\\"
     in let s2 = text-replace s1 "\"" "\\\""
     in text-replace s2 "\n" "\\n"
+
+ A literal's characters are CCE inside the plug, and CCE's multi-byte units
+ share UTF-8's framing with different numbering, so raw bytes print 0x80 low
+ from tier-1 slice 1 on. Each non-ASCII character is decoded here and written
+ as its UTF-8 bytes, which keeps perl's strings byte strings.
+
+  pl-hex-byte : Integer -> Text
+  pl-hex-byte (b) = "\\x" & substring "0123456789ABCDEF" (b / 16) 1 & substring "0123456789ABCDEF" (b - b / 16 * 16) 1
+
+  pl-utf8-escape : Integer -> Text
+  pl-utf8-escape (u) =
+    if u < 2048 then pl-hex-byte (192 + u / 64) & pl-hex-byte (128 + u - u / 64 * 64)
+    else if u < 65536 then pl-hex-byte (224 + u / 4096) & pl-hex-byte (128 + u / 64 - u / 4096 * 64) & pl-hex-byte (128 + u - u / 64 * 64)
+    else pl-hex-byte (240 + u / 262144) & pl-hex-byte (128 + u / 4096 - u / 262144 * 64) & pl-hex-byte (128 + u / 64 - u / 4096 * 64) & pl-hex-byte (128 + u - u / 64 * 64)
+
+  pl-escape-text-loop : Text, Integer, Integer, List Text -> List Text
+  pl-escape-text-loop (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let n = cce-decode-length (char-code (char-at s i))
+    in let u = to-unicode (cce-decode-at s i)
+    in pl-escape-text-loop s (i + n) len (list-snoc acc (if u < 128 then pl-escape (substring s i n) else pl-utf8-escape u))
+
+  pl-escape-text : Text -> Text
+  pl-escape-text (s) = text-concat-list (pl-escape-text-loop s 0 (text-length s) [])
 
   pl-indent : Integer -> Text
   pl-indent (n) = if n <= 0 then "" else "    " & pl-indent (n - 1)
@@ -227,8 +253,8 @@ Section: Expression Emission
     if depth >= 256 then "undef"
     else when e
      is IrIntLit (n) (sp) -> integer-to-text n
-     is IrNumLit (n) (sp) -> integer-to-text n
-     is IrTextLit (s) (sp) -> "\"" & pl-escape s & "\""
+     is IrNumLit (n) (sp) -> "_cx_bits_to_real(" & integer-to-text n & ")"
+     is IrTextLit (s) (sp) -> "\"" & pl-escape-text s & "\""
      is IrBoolLit (b) (sp) -> if b then "1" else "0"
      is IrCharLit (n) (sp) -> integer-to-text n
      is IrName (n) (ty) (sp) -> emit-pl-name n arities
@@ -237,7 +263,9 @@ Section: Expression Emission
      is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-pl-expr-at c arities (depth + 1) & " ? " & emit-pl-expr-at t arities (depth + 1) & " : " & emit-pl-expr-at el arities (depth + 1) & ")"
      is IrLet (name) (ty) (val) (body) (sp) -> "(sub { my $" & pl-sanitize name & " = " & emit-pl-expr-at val arities (depth + 1) & "; " & emit-pl-expr-at body (pl-with-local name ty arities) (depth + 1) & " })->()"
      is IrApply (f) (a) (ty) (sp) -> emit-pl-apply e arities
-     is IrLambda (params) (body) (ty) (sp) -> "sub { my (" & emit-pl-lambda-params params 0 & ") = @_; " & emit-pl-expr body (pl-with-locals params 0 arities) & " }"
+     is IrLambda (params) (body) (ty) (sp) ->
+      if list-length params == 0 then "sub { " & emit-pl-expr body arities & " }"
+      else pl-curried-lambda params 0 body (pl-with-locals params 0 arities)
      is IrList (elems) (ty) (sp) -> "[" & emit-pl-list-elems elems 0 arities & "]"
      is IrMatch (scrut) (branches) (ty) (sp) -> emit-pl-match scrut branches arities depth
      is IrAct (stmts) (ty) (sp) -> emit-pl-act stmts arities
@@ -262,7 +290,7 @@ Section: Expression Emission
     else let ar = lookup-arity arities n
     in if ar < 0 then "$" & pl-sanitize n
     else if ar == 0 then pl-sanitize n & "()"
-    else "\\&" & pl-sanitize n
+    else emit-pl-partial-open 0 ar & pl-sanitize n & "(" & emit-pl-partial-params 0 ar & ")" & emit-pl-partial-close ar
 
   emit-pl-int-call : Text, IRExpr, IRExpr, CodexType, List ArityEntry -> Text
   emit-pl-int-call (op) (l) (r) (ty) (arities) =
@@ -280,8 +308,15 @@ Section: Expression Emission
      is IrConsList -> "[" & emit-pl-expr l arities & ", @{" & emit-pl-expr r arities & "}]"
      is IrEq -> "(" & emit-pl-expr l arities & (if pl-is-text l then " eq " else " == ") & emit-pl-expr r arities & ")"
      is IrNotEq -> "(" & emit-pl-expr l arities & (if pl-is-text l then " ne " else " != ") & emit-pl-expr r arities & ")"
-     is IrApproxEq -> "(" & emit-pl-expr l arities & " == " & emit-pl-expr r arities & ")"
-     is IrApproxEqExact -> "(" & emit-pl-expr l arities & " == " & emit-pl-expr r arities & ")"
+     is IrDivNum -> pl-real-op op l r arities
+     is IrApproxEq -> pl-real-near l r "4" arities
+     is IrApproxEqExact -> pl-real-near l r "0" arities
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox ->
+      "to_real_approx(" & pl-real-op op l r arities & ")"
+     is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping ->
+      "_cx_real_trap(" & pl-real-round ty (pl-real-op op l r arities) & ")"
+     is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating ->
+      "_cx_real_sat(" & pl-real-round ty (pl-real-op op l r arities) & ", " & (if pl-real-is-f32 ty then "1" else "0") & ")"
      is IrAnd -> "(" & emit-pl-expr l arities & " && " & emit-pl-expr r arities & ")"
      is IrOr -> "(" & emit-pl-expr l arities & " || " & emit-pl-expr r arities & ")"
      is IrPowInt -> "_cx_ipow(" & emit-pl-expr l arities & ", " & emit-pl-expr r arities & ")"
@@ -298,6 +333,29 @@ Section: Expression Emission
     when ty
      is UnitTy (n) (b) -> pl-base-ty b
      is otherwise -> ty
+
+  pl-real-is-f32 : CodexType -> Boolean
+  pl-real-is-f32 (ty) =
+    when pl-base-ty ty
+     is RealTy (w) (m) -> when w
+      is RwF32 -> True
+      is otherwise -> False
+     is otherwise -> False
+
+  pl-real-round : CodexType, Text -> Text
+  pl-real-round (ty) (e) = if pl-real-is-f32 ty then "to_real_approx(" & e & ")" else e
+
+  pl-real-op : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  pl-real-op (op) (l) (r) (arities) =
+    when op
+     is IrDivNum | IrDivRealApprox | IrDivRealTrapping | IrDivRealSaturating -> "_cx_fdiv(" & emit-pl-expr l arities & ", " & emit-pl-expr r arities & ")"
+     is otherwise -> "(" & emit-pl-expr l arities & " " & pl-bin-op op & " " & emit-pl-expr r arities & ")"
+
+  pl-real-near : IRExpr, IRExpr, Text, List ArityEntry -> Text
+  pl-real-near (l) (r) (tol) (arities) =
+    when pl-base-ty (ir-expr-type l)
+     is RealTy (w) (m) -> "_cx_real_near(" & emit-pl-expr l arities & ", " & emit-pl-expr r arities & ", " & (if pl-real-is-f32 (ir-expr-type l) then "1" else "0") & ", " & tol & ")"
+     is otherwise -> "(" & emit-pl-expr l arities & " == " & emit-pl-expr r arities & ")"
 
   pl-is-text : IRExpr -> Boolean
   pl-is-text (e) =
@@ -368,9 +426,32 @@ Section: Expression Emission
      is IrBoolLit (v) (sp) -> v
      is otherwise -> False
 
-  pl-ctor-guard : List IRPat, IRExpr, List ArityEntry -> Text
-  pl-ctor-guard (subs) (guard) (arities) =
-    " && (sub { " & emit-pl-ctor-bindings subs 0 & emit-pl-expr guard arities & " })->()"
+  pl-pat-test : IRPat, Text -> Text
+  pl-pat-test (pat) (path) =
+    when pat
+     is IrLitPat (text) (ty) (sp) -> when pl-base-ty ty
+      is TextTy -> "(" & path & " eq \"" & pl-escape-text text & "\")"
+      is otherwise -> "(" & path & " == " & pl-lit-pat text & ")"
+     is IrCtorPat (name) (subs) (ty) (sp) -> "(" & path & "->{'tag'} eq \"" & name & "\"" & pl-subs-test subs 0 path & ")"
+     is otherwise -> "1"
+
+  pl-subs-test : List IRPat, Integer, Text -> Text
+  pl-subs-test (subs) (i) (path) =
+    if i == list-length subs then ""
+    else let t = pl-pat-test (list-at subs i) (path & "->{'field" & integer-to-text i & "'}")
+    in (if t == "1" then "" else " && " & t) & pl-subs-test subs (i + 1) path
+
+  pl-pat-binds : IRPat, Text -> Text
+  pl-pat-binds (pat) (path) =
+    when pat
+     is IrVarPat (name) (ty) (sp) -> "my $" & pl-sanitize name & " = " & path & "; "
+     is IrCtorPat (name) (subs) (ty) (sp) -> pl-subs-binds subs 0 path
+     is otherwise -> ""
+
+  pl-subs-binds : List IRPat, Integer, Text -> Text
+  pl-subs-binds (subs) (i) (path) =
+    if i == list-length subs then ""
+    else pl-pat-binds (list-at subs i) (path & "->{'field" & integer-to-text i & "'}") & pl-subs-binds subs (i + 1) path
 
   pl-lit-pat : Text -> Text
   pl-lit-pat (text) =
@@ -381,8 +462,8 @@ Section: Expression Emission
   emit-pl-match-arm : IRPat, IRExpr, IRExpr, List IRBranch, Integer, List ArityEntry, Integer -> Text
   emit-pl-match-arm (pat) (guard) (body) (branches) (i) (arities) (depth) =
     when pat
-     is IrLitPat (text) (ty) (sp) -> "($_s == " & pl-lit-pat text & (if pl-guard-trivial guard then "" else " && (" & emit-pl-expr guard arities & ")") & " ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
-     is IrCtorPat (name) (subs) (ty) (sp) -> "($_s->{'tag'} eq \"" & name & "\"" & (if pl-guard-trivial guard then "" else pl-ctor-guard subs guard arities) & " ? " & emit-pl-ctor-bind subs body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+     is IrLitPat (text) (ty) (sp) -> "(" & pl-pat-test pat "$_s" & (if pl-guard-trivial guard then "" else " && (" & emit-pl-expr guard arities & ")") & " ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
+     is IrCtorPat (name) (subs) (ty) (sp) -> "(" & pl-pat-test pat "$_s" & (if pl-guard-trivial guard then "" else " && (sub { " & pl-pat-binds pat "$_s" & emit-pl-expr guard arities & " })->()") & " ? (sub { " & pl-pat-binds pat "$_s" & emit-pl-expr body arities & " })->() : " & emit-pl-match-body branches (i + 1) arities depth & ")"
      is IrVarPat (name) (ty) (sp) ->
       if pl-guard-trivial guard then
         "(sub { my $" & pl-sanitize name & " = $_s; " & emit-pl-expr body arities & " })->()"
@@ -396,18 +477,6 @@ Section: Expression Emission
       if pl-guard-trivial guard then emit-pl-expr body arities
       else
         "((" & emit-pl-expr guard arities & ") ? " & emit-pl-expr body arities & " : " & emit-pl-match-body branches (i + 1) arities depth & ")"
-
-  emit-pl-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
-  emit-pl-ctor-bind (subs) (body) (arities) =
-    "(sub { " & emit-pl-ctor-bindings subs 0 & emit-pl-expr body arities & " })->()"
-
-  emit-pl-ctor-bindings : List IRPat, Integer -> Text
-  emit-pl-ctor-bindings (subs) (i) =
-    if i == list-length subs then ""
-    else let sub = list-at subs i
-    in (when sub
-     is IrVarPat (name) (ty) (sp) -> "my $" & pl-sanitize name & " = $_s->{'field" & integer-to-text i & "'}; "
-     is otherwise -> "") & emit-pl-ctor-bindings subs (i + 1)
 
   emit-pl-act : List IRActStmt, List ArityEntry -> Text
   emit-pl-act (stmts) (arities) =
@@ -442,7 +511,8 @@ Section: Apply Emission
     in let args = chain.args
     in when root
      is IrName (n) (ty) (sp) ->
-      if pl-is-local arities n then "$" & pl-sanitize n & "->(" & emit-pl-apply-args args arities 0 & ")"
+      if pl-is-local arities n then emit-pl-curried ("$" & pl-sanitize n) args arities 0
+      else if n == "vec-load-at" & lookup-arity arities n < 0 then pl-vec-load args (ir-expr-type e) arities
       else let bi = if lookup-arity arities n >= 0 then "" else pl-try-builtin n args arities
       in if text-length bi > 0 then bi
       else let ar = lookup-arity arities n
@@ -452,12 +522,26 @@ Section: Apply Emission
       else if list-length args < ar then emit-pl-partial n args arities (ar - list-length args)
       else
         emit-pl-curried (pl-sanitize n & "(" & emit-pl-apply-args-upto args arities 0 ar & ")") args arities ar
-     is otherwise -> emit-pl-expr root arities & "->(" & emit-pl-apply-args args arities 0 & ")"
+     is otherwise -> emit-pl-curried ("(" & emit-pl-expr root arities & ")") args arities 0
 
- Perl calls a code reference with `->(...)`, so an application past the
- callee's arity calls at the arity and then applies the surplus one argument
- at a time. A definition applied to fewer arguments than it takes is
- eta-wrapped as nested subs.
+ Every function VALUE takes one argument a call: a definition named as a
+ value, a partial application and a lambda are all nested one-argument subs,
+ so a call of a local or of an expression applies its arguments one at a
+ time, and an application past a definition's arity calls at the arity and
+ applies the surplus the same way.
+
+  pl-vec-load : List IRExpr, CodexType, List ArityEntry -> Text
+  pl-vec-load (args) (ty) (arities) =
+    when pl-base-ty ty
+     is VectorTy (vn) (ve) -> when pl-base-ty ve
+      is RealTy (w) (m) -> "_cx_vec_load(" & emit-pl-expr (list-at args 0) arities & ", 'd<')"
+      is otherwise -> "_cx_vec_load(" & emit-pl-expr (list-at args 0) arities & ", 'q<')"
+     is otherwise -> "die('vec-load-at of a non-vector type')"
+
+  pl-curried-lambda : List IRParam, Integer, IRExpr, List ArityEntry -> Text
+  pl-curried-lambda (params) (i) (body) (arities) =
+    if i >= list-length params then emit-pl-expr body arities
+    else "sub { my ($" & pl-sanitize ((list-at params i).name) & ") = @_; " & pl-curried-lambda params (i + 1) body arities & " }"
 
   emit-pl-curried : Text, List IRExpr, List ArityEntry, Integer -> Text
   emit-pl-curried (base) (args) (arities) (i) =
@@ -700,6 +784,138 @@ Section: Apply Emission
      emit = \args arities -> "[" & emit-pl-expr (list-at args 0) arities & "]"
    },
    PlBuiltinEmitter {
+     name = "bits-to-real",
+     emit = \args arities -> "bits_to_real(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "real-to-bits",
+     emit = \args arities -> "real_to_bits(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "to-real-approx",
+     emit = \args arities -> "to_real_approx(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "bits-to-real-approx",
+     emit = \args arities -> "bits_to_real_approx(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "real-approx-to-bits",
+     emit = \args arities -> "real_approx_to_bits(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "real-to-int",
+     emit = \args arities -> "real_to_int(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "real-approx-to-int",
+     emit = \args arities -> "real_approx_to_int(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "real-from-int",
+     emit = \args arities -> "real_from_int(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "real-approx-from-int",
+     emit = \args arities -> "real_approx_from_int(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "from-real-approx",
+     emit = \args arities -> "from_real_approx(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "to-real-trapping",
+     emit = \args arities -> "to_real_trapping(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "from-real-trapping",
+     emit = \args arities -> "from_real_trapping(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "to-real-saturating",
+     emit = \args arities -> "to_real_saturating(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "from-real-saturating",
+     emit = \args arities -> "from_real_saturating(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "to-real-approx-trapping",
+     emit = \args arities -> "to_real_approx_trapping(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "from-real-approx-trapping",
+     emit = \args arities -> "from_real_approx_trapping(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "to-real-approx-saturating",
+     emit = \args arities -> "to_real_approx_saturating(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "from-real-approx-saturating",
+     emit = \args arities -> "from_real_approx_saturating(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "text-to-double-bits",
+     emit = \args arities -> "text_to_double_bits(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "alloc-bytes",
+     emit = \args arities -> "alloc_bytes(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "poke-byte",
+     emit = \args arities -> "poke_byte(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "peek-byte",
+     emit = \args arities -> "peek_byte(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "poke-16",
+     emit = \args arities -> "poke_16(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "peek-16",
+     emit = \args arities -> "peek_16(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "poke-32",
+     emit = \args arities -> "poke_32(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "peek-32",
+     emit = \args arities -> "peek_32(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "poke-qword",
+     emit = \args arities -> "poke_qword(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "peek-qword",
+     emit = \args arities -> "peek_qword(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "__buf-read-bytes",
+     emit = \args arities -> "_cx_buf_read_bytes(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "__record-set",
+     emit = \args arities -> "_cx_record_set(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "__buf-write-bytes",
+     emit = \args arities -> "_cx_buf_write_bytes(" & emit-pl-apply-args args arities 0 & ")"
+   },
+   PlBuiltinEmitter {
+     name = "vec-extract",
+     emit = \args arities -> emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]"
+   },
+   PlBuiltinEmitter {
+     name = "vec-reduce-add",
+     emit = \args arities -> "(sub { my $v = $_[0]; $v->[0] + $v->[1] })->(" & emit-pl-expr (list-at args 0) arities & ")"
+   },
+   PlBuiltinEmitter {
      name = "write-file",
      emit = \args arities -> "(sub { open my $fh, '>', " & emit-pl-expr (list-at args 0) arities & "; print $fh " & emit-pl-expr (list-at args 1) arities & " })->()"
    }
@@ -709,6 +925,7 @@ Section: Apply Emission
   pl-show (e) (arities) =
     when pl-base-ty (ir-expr-type e)
      is BooleanTy -> "(" & emit-pl-expr e arities & " ? \"True\" : \"False\")"
+     is RealTy (w) (m) -> "_cx_real_show(" & emit-pl-expr e arities & ")"
      is otherwise -> "\"\" . " & emit-pl-expr e arities
 
   is-pl-builtin-name : Text -> Boolean
@@ -775,7 +992,85 @@ Section: Chapter Emission
       "sub _cx_char_encode { my $c = int($_[0]); return chr($c) if $c < 128;\n",
       "  if ($c < 2176) { my $v = $c - 128; return chr(192 | ($v >> 6)) . chr(128 | ($v & 63)); }\n",
       "  if ($c < 67712) { my $v = $c - 2176; return chr(224 | ($v >> 12)) . chr(128 | (($v >> 6) & 63)) . chr(128 | ($v & 63)); }\n",
-      "  my $v = $c - 67712; return chr(240 | ($v >> 18)) . chr(128 | (($v >> 12) & 63)) . chr(128 | (($v >> 6) & 63)) . chr(128 | ($v & 63)); }\n"
+      "  my $v = $c - 67712; return chr(240 | ($v >> 18)) . chr(128 | (($v >> 12) & 63)) . chr(128 | (($v >> 6) & 63)) . chr(128 | ($v & 63)); }\n",
+      pl-real-helpers,
+      pl-heap-helpers
+    ]
+
+ A byte buffer lives in one perl string, `$_cx_mem`, addressed from 4096 so
+ that 0 stays the null address; `alloc-bytes` bumps `$_cx_hp` by the request
+ rounded up to 8 and zero-fills, as bare metal's bump allocator does. Every
+ peek zero-extends, as bare metal's do.
+
+  pl-heap-helpers : Text
+  pl-heap-helpers =
+    text-concat-list [
+      "my $_cx_mem = \"\\0\" x 4096; my $_cx_hp = 4096;\n",
+      "sub _cx_want { my $e = $_[0]; $_cx_mem .= \"\\0\" x ($e - length($_cx_mem)) if $e > length($_cx_mem); }\n",
+      "sub alloc_bytes { my $a = $_cx_hp; $_cx_hp += ($_[0] + 7) & ~7; _cx_want($_cx_hp); return $a; }\n",
+      "sub poke_byte { my ($b, $o, $v) = @_; _cx_want($b + $o + 1); substr($_cx_mem, $b + $o, 1) = chr($v & 255); return 0; }\n",
+      "sub peek_byte { my ($b, $o) = @_; _cx_want($b + $o + 1); return ord(substr($_cx_mem, $b + $o, 1)); }\n",
+      "sub poke_16 { my ($b, $o, $v) = @_; _cx_want($b + $o + 2); substr($_cx_mem, $b + $o, 2) = pack('v', $v & 0xFFFF); return 0; }\n",
+      "sub peek_16 { my ($b, $o) = @_; _cx_want($b + $o + 2); return unpack('v', substr($_cx_mem, $b + $o, 2)); }\n",
+      "sub poke_32 { my ($b, $o, $v) = @_; _cx_want($b + $o + 4); substr($_cx_mem, $b + $o, 4) = pack('V', $v & 0xFFFFFFFF); return 0; }\n",
+      "sub peek_32 { my ($b, $o) = @_; _cx_want($b + $o + 4); return unpack('V', substr($_cx_mem, $b + $o, 4)); }\n",
+      "sub poke_qword { my ($b, $o, $v) = @_; _cx_want($b + $o + 8); substr($_cx_mem, $b + $o, 8) = pack('q<', $v); return 0; }\n",
+      "sub peek_qword { my ($b, $o) = @_; _cx_want($b + $o + 8); return unpack('q<', substr($_cx_mem, $b + $o, 8)); }\n",
+      "sub _cx_buf_read_bytes { my ($b, $o, $n) = @_; _cx_want($b + $o + $n); return [map { ord(substr($_cx_mem, $b + $o + $_, 1)) } 0 .. $n - 1]; }\n",
+      "sub _cx_buf_write_bytes { my ($b, $o, $xs) = @_; my $n = scalar(@$xs); _cx_want($b + $o + $n); for my $i (0 .. $n - 1) { substr($_cx_mem, $b + $o + $i, 1) = chr($xs->[$i] & 255); } return $o + $n; }\n",
+      "sub _cx_vec_load { my ($b, $f) = @_; _cx_want($b + 16); return [unpack($f, substr($_cx_mem, $b, 8)), unpack($f, substr($_cx_mem, $b + 8, 8))]; }\n",
+      "sub _cx_record_set { my ($r, $f, $v) = @_; $f =~ s{/.*}{}; $f =~ tr/-/_/; $r->{$f} = $v; return $r; }\n"
+    ]
+
+ A Real is a perl NV, an f64; a Real approximate is the NV rounded to f32
+ (`pack 'f<'`). The rules are x86-64's: `real-to-int` is cvttsd2si, which
+ answers INT64_MIN for a NaN, an infinity or anything out of range;
+ `real-approx-from-int` goes through f64 as cvtsi2sd + cvtsd2ss do; an f32
+ pattern is zero-extended as movd leaves it. A trapping Real traps when its
+ result is not finite, a saturating one answers the largest finite value of
+ its width for an infinity and 0 for a NaN. `~` and `~0` compare ULP distance
+ on the monotonic ordinal (`emit-approx-eq`), tolerance 4 and 0. `show`
+ prints the integer part, a point and up to 15 fractional digits, trailing
+ zeros dropped and one kept, the sign from the sign bit.
+
+  pl-real-helpers : Text
+  pl-real-helpers =
+    text-concat-list [
+      "sub _cx_bits_to_real { return unpack('d<', pack('q<', $_[0])); }\n",
+      "sub bits_to_real { return _cx_bits_to_real($_[0]); }\n",
+      "sub real_to_bits { return unpack('q<', pack('d<', $_[0])); }\n",
+      "sub to_real_approx { return unpack('f<', pack('f<', $_[0])); }\n",
+      "sub bits_to_real_approx { return unpack('f<', pack('L<', $_[0] & 0xFFFFFFFF)); }\n",
+      "sub real_approx_to_bits { return unpack('L<', pack('f<', $_[0])); }\n",
+      "sub real_to_int { my $v = $_[0]; return -9223372036854775807 - 1 if $v != $v || $v >= 9223372036854775808.0 || $v < -9223372036854775808.0; return int($v); }\n",
+      "sub real_approx_to_int { return real_to_int($_[0]); }\n",
+      "sub real_from_int { return $_[0] * 1.0; }\n",
+      "sub real_approx_from_int { return to_real_approx($_[0] * 1.0); }\n",
+      "sub from_real_approx { return $_[0]; }\n",
+      "sub to_real_trapping { return $_[0]; }\n",
+      "sub from_real_trapping { return $_[0]; }\n",
+      "sub to_real_saturating { return $_[0]; }\n",
+      "sub from_real_saturating { return $_[0]; }\n",
+      "sub to_real_approx_trapping { return $_[0]; }\n",
+      "sub from_real_approx_trapping { return $_[0]; }\n",
+      "sub to_real_approx_saturating { return $_[0]; }\n",
+      "sub from_real_approx_saturating { return $_[0]; }\n",
+      "sub text_to_double_bits { my $s = $_[0]; my $neg = substr($s, 0, 1) eq '-' ? 1 : 0; my $r = $neg ? substr($s, 1) : $s;\n",
+      "  return $neg ? -9223372036854775807 - 1 : 0 if $r !~ /[1-9]/; no warnings; return real_to_bits(($neg ? -1 : 1) * ($r + 0)); }\n",
+      "sub _cx_fdiv { my ($a, $b) = @_; return $a / $b if $b != 0; my $inf = 9**9**9; return $inf - $inf if $a != $a || $a == 0;\n",
+      "  my $nb = (unpack('Q<', pack('d<', $b)) >> 63); return (($a < 0 ? 1 : 0) ^ $nb) ? -$inf : $inf; }\n",
+      "sub _cx_real_trap { my $v = $_[0]; if ($v != $v || $v - $v != 0) { print STDERR \"CODEX_TRAP_real_not_finite\\n\"; exit 255; } return $v; }\n",
+      "sub _cx_real_sat { my ($v, $w32) = @_; return 0.0 if $v != $v; return $v if $v - $v == 0;\n",
+      "  my $m = $w32 ? 3.4028234663852886e38 : 1.7976931348623157e308; return $v > 0 ? $m : -$m; }\n",
+      "sub _cx_real_ordinal { my ($v, $w32) = @_; use integer;\n",
+      "  my $x = $w32 ? (unpack('L<', pack('f<', $v)) << 32) : unpack('q<', pack('d<', $v));\n",
+      "  my $t = $x >> 63; my $o = ($x ^ ($t ? 9223372036854775807 : 0)) - $t; return $w32 ? ($o >> 32) : $o; }\n",
+      "sub _cx_real_near { my ($a, $b, $w32, $tol) = @_; use integer;\n",
+      "  my $d = _cx_real_ordinal($a, $w32) - _cx_real_ordinal($b, $w32); $d = -$d if $d < 0; return ($d >= 0 && $d <= $tol) ? 1 : 0; }\n",
+      "sub _cx_real_show { my $v = $_[0]; my $neg = (unpack('Q<', pack('d<', $v)) >> 63) ? '-' : '';\n",
+      "  my $e = abs($v); my $acc = int($e); my $s = real_to_int($acc); my $f = $e - $acc; my $d = ''; my $last = 0;\n",
+      "  for my $k (1..15) { $f *= 10.0; my $x = int($f); $f -= $x; $d .= $x; $last = $k if $x != 0; }\n",
+      "  return $neg . $s . '.' . ($last ? substr($d, 0, $last) : '0'); }\n"
     ]
 
   emit-perl-chapter : IRChapter, List ATypeDef -> Text
@@ -822,7 +1117,18 @@ Section: Chapter Emission
     if i >= list-length defs then ""
     else let d = list-at defs i
     in if d.name == opening-entry-point then
-      if list-length (d.params) == 0 then pl-sanitize opening-entry-point & "();\n" else ""
+      if list-length (d.params) == 0 then pl-entry-call (pl-sanitize opening-entry-point & "()") (d.type-val) else ""
     else pl-emit-entry-loop defs (i + 1)
+
+  pl-entry-call : Text, CodexType -> Text
+  pl-entry-call (call) (ret) =
+    when ret
+     is EffectfulTy (effs) (scopes) (inner) -> pl-entry-call call inner
+     is UnitTy (n) (inner) -> pl-entry-call call inner
+     is IntegerTy (lo) (hi) (mode) -> "say(" & call & ");\n"
+     is TextTy -> "say(" & call & ");\n"
+     is BooleanTy -> "say(" & call & " ? \"True\" : \"False\");\n"
+     is RealTy (w) (m) -> "say(_cx_real_show(" & call & "));\n"
+     is otherwise -> call & ";\n"
 
 Page 1

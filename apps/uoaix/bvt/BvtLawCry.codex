@@ -1,0 +1,40 @@
+Chapter: BvtLawCry
+  cites Uoaix chapter LawStateCodec
+  cites Uoaix chapter GameSession
+  cites Uoaix chapter BvtCheck
+  cites Foreword chapter Result
+
+  bvlc-made : Result Integer Text -> Integer
+  bvlc-made (r) = when r
+    is Ok (serial) -> serial
+    is Err (_) -> 0
+  bvt-law-cry : Integer -> [Console] Integer
+  bvt-law-cry (unused) = when world-new 64
+    is Err (e) -> bvt-check ("law cry fixture world: " & e) False
+    is Ok (world) -> act
+      w <- lw-new world
+      killer <- bvlc-made (world-create world (__record-set (gs-mobile 0 1450 1531 0 400 1002) "health" 50))
+      guard <- bvlc-made (world-create world (__record-set (gs-mobile 0 1452 1531 0 400 1002) "health" 50))
+      g <- lw-add-guard w True guard 1
+      id <- lw-deed w True 1 killer 3 1
+      known <- __record-set (lw-case w id) "known" True
+      assigned <- lw-assign w g id 1
+      bound <- __record-set (lw-case w id) "guard" g
+      buf <- alloc-bytes lsc-bytes
+      saved <- lsc-encode w buf lsc-bytes
+      back <- lsc-decode buf lsc-bytes world
+      a <- bvt-check "a murder a guard found the body of is known with no reported witness, and LSC1 saves and restores it (cg-raise-cry, UOAIX-286)" (g == 1 & id == 1 & w.witness-count == 0 & is-ok saved
+        & (when back is Ok (r) -> (lw-case r id).known & (lw-case r id).guard == g & (list-at r.guards 0).state == 1 is Err (_) -> False))
+      forged <- lw-new world
+      theft <- lw-deed forged True 1 killer 1 1
+      seen <- lw-observe forged True theft guard False True
+      reported <- __record-set (list-at forged.witnesses 0) "reported" True
+      fbuf <- alloc-bytes lsc-bytes
+      refused <- lsc-encode forged fbuf lsc-bytes
+      written <- lsc-write forged fbuf
+      tolerant <- lsc-decode-tail fbuf lsc-bytes world 0 0
+      strict <- lsc-decode fbuf lsc-bytes world
+      b <- bvt-check "a reported witness on a case nobody knows is refused by lsc-encode and lsc-decode, yet the composite path writes and reads it (a save never refuses)" (theft == 1 & seen == 1
+        & not (is-ok refused) & is-ok written & is-ok tolerant & not (is-ok strict))
+      a + b
+    end

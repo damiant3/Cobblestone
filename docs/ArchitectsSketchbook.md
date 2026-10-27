@@ -194,6 +194,7 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 36368 | dbg-last-dr6-addr | 8 | DR6 at the most recent hit: B0-B3 name the breakpoint that fired |
 | 36376 | dbg-last-rip-addr | 8 | The interrupted RIP at the most recent hit. Read with 36360 and 36368 by `codex/test/apps/cpu-debug-watch.codex` |
 | 36384 | **avx-admitted-addr** | 8 | 1 once the boot processor has set CR4.OSXSAVE and XCR0 = 7 (CPUID leaf 1 reports XSAVE and AVX), else 0; zeroed by the boot processor before interrupt setup. `__fx_save`, `__fx_init` and `__process_resume` use XSAVE/XRSTOR while it reads 1 (COMPILER-77 stage 3). Read by `codex/test/cpuid-avx` and `cpuid-no-avx` |
+| 36392 | wait-node-free-head-addr | 8 | Free-list head of the 16-byte task waiter nodes (`__wait_node_add`, `Emit/X86_64Helpers.codex`); zeroed by the first `fork` |
 
 **Do not claim a cell in this band without grepping `tools/codex-vm.c` AND
 `apps/works/**` AND `codex/compiler/Emit/**` AND `codex/foreword/**` first,

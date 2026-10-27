@@ -1728,7 +1728,10 @@ Section: I/O Boundary Helpers
 
     in let st30 = emit-task-entry-helper st29
 
-    in let st30a = emit-process-entry-helper st30
+    in let st30n = emit-task-cancel-helper (emit-wait-node-remove-helper (emit-wait-node-add-helper st30))
+    in let st30w = emit-task-wait-any-helper st30n
+
+    in let st30a = emit-process-entry-helper st30w
 
     in let st31 = emit-block-read-helper st30a
 
@@ -1958,57 +1961,37 @@ Section: I/O Boundary Helpers
 
     in emit-fs-servicer-helpers st90
 
+  fs-deny-false : Integer = 0
+  fs-deny-empty-text : Integer = 1
+  fs-deny-empty-list : Integer = 2
+
   emit-fs-servicer-helpers : CodegenState -> CodegenState
   emit-fs-servicer-helpers (st) =
     if find-effect-op-addr (st.effect-op-addrs) "read-text" 0 (list-length (st.effect-op-addrs)) < 0 then
       st
-    else let st1 = emit-fs-read-servicer-helper st
-    in emit-fs-write-servicer-helper st1
+    else let st1 = emit-fs-servicer-helper st "__fs-read-servicer" cap-filesystem-read "fat16-servicer-read" 1 fs-deny-empty-text
+    in let st2 = emit-fs-servicer-helper st1 "__fs-write-servicer" cap-filesystem-write "fat16-servicer-write" 2 fs-deny-false
+    in let st3 = emit-fs-servicer-helper st2 "__fs-append-servicer" cap-filesystem-write "fat16-servicer-append" 2 fs-deny-false
+    in let st4 = emit-fs-servicer-helper st3 "__fs-list-servicer" cap-filesystem-read "fat16-servicer-list" 1 fs-deny-empty-list
+    in emit-fs-servicer-helper st4 "__fs-make-dir-servicer" cap-filesystem-write "fat16-servicer-make-dir" 1 fs-deny-false
 
-  emit-fs-read-servicer-helper : CodegenState -> CodegenState
-  emit-fs-read-servicer-helper (st) =
+  emit-fs-servicer-helper : CodegenState, Text, Integer, Text, Integer, Integer -> CodegenState
+  emit-fs-servicer-helper (st) (stub) (cap) (servicer) (args) (deny-kind) =
     let fn-off = st.code-len
-    in let n = list-push (st.fo-names) "__fs-read-servicer"
+    in let n = list-push (st.fo-names) stub
     in let o = list-push (st.fo-offsets) fn-off
     in let st0 = emit-consume-arg-count (__record-set (__record-set st "fo-names" n) "fo-offsets" o)
-    in let st1 = emit-check-capability st0 cap-filesystem-read
+    in let st1 = emit-check-capability st0 cap
     in let deny-pos = st1.code-len
     in let st2 = st-append-code st1 (jcc cc-ae 0)
     in let st3 = st-append-code st2 (push-r reg-rdi)
-    in let st4 = st-append-code st3 (li reg-rax fs-elevated-addr)
-    in let st5 = st-append-code st4 (li reg-rcx 1)
-    in let st6 = st-append-code st5 (mov-store reg-rax reg-rcx 0)
-    in let st7 = st-append-code st6 (pop-r reg-rdi)
-    in let st8 = emit-call-to st7 "fat16-servicer-read"
-    in let st9 = st-append-code st8 (push-r reg-rax)
-    in let st10 = st-append-code st9 (li reg-rax fs-elevated-addr)
-    in let st11 = st-append-code st10 (li reg-rcx 0)
-    in let st12 = st-append-code st11 (mov-store reg-rax reg-rcx 0)
-    in let st13 = st-append-code st12 (pop-r reg-rax)
-    in let st14 = st-append-code st13 x86-ret
-    in let deny = st14.code-len
-    in let empty = emit-text-lit st14 ""
-    in let st15 = st-append-code (empty.state) (mov-rr reg-rax (empty.reg))
-    in let st16 = st-append-code st15 x86-ret
-    in patch-jcc-at st16 deny-pos deny
-
-  emit-fs-write-servicer-helper : CodegenState -> CodegenState
-  emit-fs-write-servicer-helper (st) =
-    let fn-off = st.code-len
-    in let n = list-push (st.fo-names) "__fs-write-servicer"
-    in let o = list-push (st.fo-offsets) fn-off
-    in let st0 = emit-consume-arg-count (__record-set (__record-set st "fo-names" n) "fo-offsets" o)
-    in let st1 = emit-check-capability st0 cap-filesystem-write
-    in let deny-pos = st1.code-len
-    in let st2 = st-append-code st1 (jcc cc-ae 0)
-    in let st3 = st-append-code st2 (push-r reg-rdi)
-    in let st3b = st-append-code st3 (push-r reg-rsi)
+    in let st3b = if args == 2 then st-append-code st3 (push-r reg-rsi) else st3
     in let st4 = st-append-code st3b (li reg-rax fs-elevated-addr)
     in let st5 = st-append-code st4 (li reg-rcx 1)
     in let st6 = st-append-code st5 (mov-store reg-rax reg-rcx 0)
-    in let st6b = st-append-code st6 (pop-r reg-rsi)
+    in let st6b = if args == 2 then st-append-code st6 (pop-r reg-rsi) else st6
     in let st7 = st-append-code st6b (pop-r reg-rdi)
-    in let st8 = emit-call-to st7 "fat16-servicer-write"
+    in let st8 = emit-call-to st7 servicer
     in let st9 = st-append-code st8 (push-r reg-rax)
     in let st10 = st-append-code st9 (li reg-rax fs-elevated-addr)
     in let st11 = st-append-code st10 (li reg-rcx 0)
@@ -2016,9 +1999,17 @@ Section: I/O Boundary Helpers
     in let st13 = st-append-code st12 (pop-r reg-rax)
     in let st14 = st-append-code st13 x86-ret
     in let deny = st14.code-len
-    in let st15 = st-append-code st14 (li reg-rax 0)
-    in let st16 = st-append-code st15 x86-ret
-    in patch-jcc-at st16 deny-pos deny
+    in patch-jcc-at (emit-fs-deny st14 deny-kind) deny-pos deny
+
+  emit-fs-deny : CodegenState, Integer -> CodegenState
+  emit-fs-deny (st) (deny-kind) =
+    if deny-kind == fs-deny-empty-text then
+      let empty = emit-text-lit st ""
+      in st-append-code (st-append-code (empty.state) (mov-rr reg-rax (empty.reg))) x86-ret
+    else if deny-kind == fs-deny-empty-list then
+      let empty = emit-list st []
+      in st-append-code (st-append-code (empty.state) (mov-rr reg-rax (empty.reg))) x86-ret
+    else st-append-code (st-append-code st (li reg-rax 0)) x86-ret
 
   emit-prof-start-helper : CodegenState -> CodegenState
   emit-prof-start-helper (st) =
@@ -2903,30 +2894,281 @@ Section: Task Scheduler Helpers
 
     in let st11 = st-append-code st10 (mov-store reg-rcx reg-rsi 0)
 
-    in let st12 = st-append-code st11 (mov-load reg-rdx reg-rcx 56)
+    in let st12 = st-append-code st11 (mov-load reg-rdx reg-rcx 56 & li reg-rsi 0 & mov-store reg-rcx reg-rsi 56)
 
-    in let st13 = st-append-code st12 (cmp-ri reg-rdx 0)
+    in let st13 = st-append-code st12 (li reg-rdi 0)
 
-    in let skip-wake = st13.code-len
+    in let wake-loop = st13.code-len
 
-    in let st14 = st-append-code st13 (jcc cc-e 0)
+    in let st14a = st-append-code st13 (cmp-ri reg-rdx 0)
 
-    in let st15 = st-append-code st14 (li reg-rsi 0)
+    in let wake-end = st14a.code-len
 
-    in let st16 = st-append-code st15 (mov-store reg-rdx reg-rsi 0)
+    in let st14b = st-append-code st14a (jcc cc-e 0 & add-ri reg-rdi 1 & mov-load reg-rsi reg-rdx 0 & mov-load reg-rax reg-rsi 0)
 
-    in let st17 = st-append-code st16 (li reg-rax sched-ready-head-addr)
+    in let st14d = st-append-code st14b (cmp-ri reg-rax 5)
 
-    in let st18 = st-append-code st17 (mov-load reg-rsi reg-rax 0)
+    in let any-wait = st14d.code-len
 
-    in let st19 = st-append-code st18 (mov-store reg-rdx reg-rsi 24)
+    in let st14e = st-append-code st14d (jcc cc-e 0)
 
-    in let st20 = st-append-code st19 (mov-store reg-rax reg-rdx 0)
+    in let st14c = st-append-code st14e (cmp-ri reg-rax 2)
 
-    in let st21 = patch-jcc-at st20 skip-wake (st20.code-len)
+    in let skip-woken = st14c.code-len
 
-    in emit-call-to st21 "__task_yield"
+    in let st14f = st-append-code st14c (jcc cc-ne 0)
 
+    in let st14 = patch-jcc-at st14f any-wait (st14f.code-len)
+
+    in let st15 = st-append-code st14 (li reg-rax 0 & mov-store reg-rsi reg-rax 0)
+
+    in let st17 = st-append-code st15 (li reg-rax sched-ready-head-addr)
+
+    in let st18 = st-append-code st17 (mov-load reg-r11 reg-rax 0)
+
+    in let st19 = st-append-code st18 (mov-store reg-rsi reg-r11 24)
+
+    in let st20 = st-append-code st19 (mov-store reg-rax reg-rsi 0)
+
+    in let st20a = patch-jcc-at st20 skip-woken (st20.code-len)
+
+    in let st20b = st-append-code st20a (mov-load reg-r11 reg-rdx 8 & li reg-rax wait-node-free-head-addr)
+
+    in let st20c = st-append-code st20b (mov-load reg-rsi reg-rax 0 & mov-store reg-rdx reg-rsi 8 & mov-store reg-rax reg-rdx 0)
+
+    in let st20d = st-append-code st20c (mov-rr reg-rdx reg-r11)
+
+    in let st20e = wa-jmp-back st20d wake-loop
+
+    in let st21 = patch-jcc-at st20e wake-end (st20e.code-len)
+
+    in let st21b = st-append-code st21 (mov-store reg-rcx reg-rdi 48)
+
+    in emit-call-to st21b "__task_yield"
+
+ A task's waiters are a chain of 16-byte nodes {waiter task at 0, next node at 8} headed at the task's word 56,
+ carved from the fork pool and recycled through the free list at wait-node-free-head-addr. At finish __task_entry
+ wakes every waiter at state 2 or 5, frees every node, and writes the number of nodes into word 48 (the closure,
+ dead once the task has started): that is how many waiters will read the result, and the descriptor is freed by
+ the one that brings it to zero.
+
+  emit-wait-node-add-helper : CodegenState -> CodegenState
+  emit-wait-node-add-helper (st) =
+    let st0 = record-func-offset st "__wait_node_add"
+    in let st1 = st-append-code st0 (li reg-r11 wait-node-free-head-addr & mov-load reg-rax reg-r11 0 & cmp-ri reg-rax 0)
+    in let carve = st1.code-len
+    in let st2 = st-append-code st1 (jcc cc-e 0 & mov-load reg-rdx reg-rax 8 & mov-store reg-r11 reg-rdx 0)
+    in let have = st2.code-len
+    in let st3 = st-append-code st2 (jmp 0)
+    in let st4 = patch-jcc-at st3 carve (st3.code-len)
+    in let st5 = st-append-code st4 (li reg-r11 fork-pool-cursor-addr & mov-load reg-rax reg-r11 0)
+    in let st6 = st-append-code st5 (mov-rr reg-rdx reg-rax & add-ri reg-rdx 16 & mov-store reg-r11 reg-rdx 0)
+    in let st7 = patch-jmp-at st6 have (st6.code-len)
+    in let st8 = st-append-code st7 (mov-store reg-rax reg-rsi 0 & mov-load reg-rdx reg-rdi 56)
+    in let st9 = st-append-code st8 (mov-store reg-rax reg-rdx 8 & mov-store reg-rdi reg-rax 56)
+    in st-append-code st9 x86-ret
+
+ __wait_node_remove (rdi task, rsi waiter) unlinks and frees the first node of rdi's chain naming rsi, and answers
+ the chain's head after it in rax.
+
+  emit-wait-node-remove-helper : CodegenState -> CodegenState
+  emit-wait-node-remove-helper (st) =
+    let st0 = record-func-offset st "__wait_node_remove"
+    in let st1 = st-append-code st0 (mov-rr reg-rdx reg-rdi & add-ri reg-rdx 56)
+    in let walk = st1.code-len
+    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdx 0 & cmp-ri reg-rax 0)
+    in let done = st2.code-len
+    in let st3 = st-append-code st2 (jcc cc-e 0 & mov-load reg-r11 reg-rax 0 & cmp-rr reg-r11 reg-rsi)
+    in let hit = st3.code-len
+    in let st4 = st-append-code st3 (jcc cc-e 0 & mov-rr reg-rdx reg-rax & add-ri reg-rdx 8)
+    in let st5 = wa-jmp-back st4 walk
+    in let st6 = patch-jcc-at st5 hit (st5.code-len)
+    in let st7 = st-append-code st6 (mov-load reg-r11 reg-rax 8 & mov-store reg-rdx reg-r11 0)
+    in let st8 = st-append-code st7 (li reg-rdx wait-node-free-head-addr & mov-load reg-r11 reg-rdx 0)
+    in let st9 = st-append-code st8 (mov-store reg-rax reg-r11 8 & mov-store reg-rdx reg-rax 0)
+    in let st10 = patch-jcc-at st9 done (st9.code-len)
+    in let st11 = st-append-code st10 (mov-load reg-rax reg-rdi 56)
+    in st-append-code st11 x86-ret
+
+ __task_wait_any (rdi a List of tasks) answers the first finished task's result. It registers one waiter node in
+ every task (once: the flag at [rsp+16]), and on wake removes its nodes. A finished task is released by the reader
+ count in word 48 and freed at zero; an unfinished loser is cancelled by __task_cancel only when no other waiter
+ remains on it. Task words: 0 state (2 in await, 3 done, 5 in wait-any), 16 result, 24 next, 40 the awaited task
+ (state 2) or the racer list (state 5), 48 closure, then readers once done, 56 waiter chain, 64 generation. List: length
+ at 0, elements from 8, or through the pointer at 8 when the word at -8 is negative.
+  emit-wait-any-base : CodegenState -> CodegenState
+  emit-wait-any-base (st) =
+    let st1 = st-append-code st (mov-load reg-rdi reg-rsp 0)
+    in let st2 = st-append-code st1 (mov-rr reg-r8 reg-rdi)
+    in let st3 = st-append-code st2 (mov-load reg-rax reg-rdi (-8))
+    in let st4 = st-append-code st3 (cmp-ri reg-rax 0)
+    in let plain = st4.code-len
+    in let st5 = st-append-code st4 (jcc cc-ge 0)
+    in let st6 = st-append-code st5 (mov-load reg-r8 reg-rdi 8)
+    in let st8 = patch-jcc-at st6 plain (st6.code-len)
+    in st-append-code st8 (mov-load reg-rcx reg-rdi 0)
+  wa-jmp-back : CodegenState, Integer -> CodegenState
+  wa-jmp-back (st) (target) = let at = st.code-len in patch-jmp-at (st-append-code st (jmp 0)) at target
+  emit-wait-any-load : CodegenState -> CodegenState
+  emit-wait-any-load (st) =
+    let st1 = st-append-code st (mov-rr reg-rax reg-r9)
+    in let st2 = st-append-code st1 (shl-ri reg-rax 3)
+    in let st3 = st-append-code st2 (add-rr reg-rax reg-r8)
+    in st-append-code st3 (mov-load reg-rsi reg-rax 8 & shl-ri reg-rsi 24 & shr-ri reg-rsi 24)
+ __task_cancel (rdi an unfinished task nobody else waits on) detaches it from what it waits for, unlinks it from
+ the ready list and frees it. A task blocked in a race of its own (state 5, its racer list in word 40) first removes
+ its node from each racer and cancels, recursively, every racer left with no waiter.
+
+  emit-task-cancel-helper : CodegenState -> CodegenState
+  emit-task-cancel-helper (st) =
+    let st0 = record-func-offset st "__task_cancel"
+    in let st1 = st-append-code st0 (push-r reg-rbx & push-r reg-r12 & push-r reg-r13 & push-r reg-r14 & mov-rr reg-rbx reg-rdi)
+    in let st2 = st-append-code st1 (mov-load reg-rax reg-rbx 0 & cmp-ri reg-rax 5)
+    in let not-racing = st2.code-len
+    in let st3 = st-append-code st2 (jcc cc-ne 0 & mov-load reg-rax reg-rbx 40 & mov-rr reg-r13 reg-rax & mov-load reg-r14 reg-rax 0)
+    in let st4 = st-append-code st3 (mov-load reg-rdx reg-rax (0 - 8) & cmp-ri reg-rdx 0)
+    in let plain = st4.code-len
+    in let st5 = st-append-code st4 (jcc cc-ge 0 & mov-load reg-r13 reg-rax 8)
+    in let st6 = patch-jcc-at st5 plain (st5.code-len)
+    in let st7 = st-append-code st6 (li reg-r12 0)
+    in let walk = st7.code-len
+    in let st8 = st-append-code st7 (cmp-rr reg-r12 reg-r14)
+    in let walk-end = st8.code-len
+    in let st9 = st-append-code st8 (jcc cc-ge 0 & mov-rr reg-rax reg-r12 & shl-ri reg-rax 3 & add-rr reg-rax reg-r13)
+    in let st10 = st-append-code st9 (mov-load reg-rdi reg-rax 8 & shl-ri reg-rdi 24 & shr-ri reg-rdi 24 & mov-rr reg-rsi reg-rbx)
+    in let st11 = emit-call-to st10 "__wait_node_remove"
+    in let st12 = st-append-code st11 (cmp-ri reg-rax 0)
+    in let shared = st12.code-len
+    in let st13 = st-append-code st12 (jcc cc-ne 0 & mov-load reg-rax reg-rdi 0 & cmp-ri reg-rax 3)
+    in let done-racer = st13.code-len
+    in let st14 = emit-call-to (st-append-code st13 (jcc cc-e 0)) "__task_cancel"
+    in let next = st14.code-len
+    in let st15 = patch-jcc-at (patch-jcc-at st14 shared next) done-racer next
+    in let st16 = st-append-code st15 (add-ri reg-r12 1)
+    in let st17 = wa-jmp-back st16 walk
+    in let st18 = patch-jcc-at st17 walk-end (st17.code-len)
+    in let to-unlink = st18.code-len
+    in let st19 = st-append-code st18 (jmp 0)
+    in let st20 = patch-jcc-at st19 not-racing (st19.code-len)
+    in let st21 = st-append-code st20 (cmp-ri reg-rax 2)
+    in let not-awaiting = st21.code-len
+    in let st22 = st-append-code st21 (jcc cc-ne 0 & mov-load reg-rdi reg-rbx 40 & mov-rr reg-rsi reg-rbx)
+    in let st23 = emit-call-to st22 "__wait_node_remove"
+    in let st24 = patch-jmp-at (patch-jcc-at st23 not-awaiting (st23.code-len)) to-unlink (st23.code-len)
+    in let st25 = st-append-code st24 (li reg-rdx sched-ready-head-addr)
+    in let unlink-loop = st25.code-len
+    in let st26 = st-append-code st25 (mov-load reg-rax reg-rdx 0 & cmp-ri reg-rax 0)
+    in let unlink-end = st26.code-len
+    in let st27 = st-append-code st26 (jcc cc-e 0 & cmp-rr reg-rax reg-rbx)
+    in let unlink-hit = st27.code-len
+    in let st28 = st-append-code st27 (jcc cc-e 0 & mov-rr reg-rdx reg-rax & add-ri reg-rdx 24)
+    in let st29 = wa-jmp-back st28 unlink-loop
+    in let st30 = patch-jcc-at st29 unlink-hit (st29.code-len)
+    in let st31 = st-append-code st30 (mov-load reg-rax reg-rbx 24 & mov-store reg-rdx reg-rax 0)
+    in let st32 = patch-jcc-at st31 unlink-end (st31.code-len)
+    in let st33 = st-append-code st32 (li reg-rdx fork-free-head-addr & mov-load reg-rax reg-rdx 0 & mov-store reg-rbx reg-rax 24 & mov-store reg-rdx reg-rbx 0)
+    in let st34 = st-append-code st33 (mov-load reg-rax reg-rbx task-gen-offset & add-ri reg-rax 1 & mov-store reg-rbx reg-rax task-gen-offset)
+    in let st35 = st-append-code st34 (pop-r reg-r14 & pop-r reg-r13 & pop-r reg-r12 & pop-r reg-rbx)
+    in st-append-code st35 x86-ret
+ The scan refuses a stale handle (its generation is not the descriptor's) with a trap. Only the scan checks: the
+ cancel loop reloads elements after freeing them, when their generation has already moved on.
+
+  emit-wa-checked-load : CodegenState -> CodegenState
+  emit-wa-checked-load (st) =
+    let st1 = emit-wait-any-load st
+    in let st2 = st-append-code st1 (mov-load reg-rdx reg-rax 8 & shr-ri reg-rdx task-gen-shift & mov-load reg-r11 reg-rsi task-gen-offset)
+    in st-append-code st2 (and-ri reg-r11 16777215 & cmp-rr reg-rdx reg-r11 & jcc cc-e 2 & [15, 11])
+  emit-wa-call-saved : CodegenState, Text -> CodegenState
+  emit-wa-call-saved (st) (fn) =
+    let st1 = st-append-code st (push-r reg-rcx & push-r reg-r8 & push-r reg-r9 & push-r reg-rdx)
+    in let st2 = emit-call-to st1 fn
+    in st-append-code st2 (pop-r reg-rdx & pop-r reg-r9 & pop-r reg-r8 & pop-r reg-rcx)
+  emit-wa-release : CodegenState -> CodegenState
+  emit-wa-release (st) =
+    let st1 = st-append-code st (mov-load reg-rax reg-rsp 16 & cmp-ri reg-rax 0)
+    in let unreg = st1.code-len
+    in let st2 = st-append-code st1 (jcc cc-e 0 & mov-load reg-rax reg-rsi 48 & add-ri reg-rax (0 - 1) & mov-store reg-rsi reg-rax 48)
+    in let st3 = patch-jcc-at st2 unreg (st2.code-len)
+    in let st4 = st-append-code st3 (mov-load reg-rax reg-rsi 48 & cmp-ri reg-rax 0)
+    in let keep = st4.code-len
+    in let st5 = st-append-code st4 (jcc cc-ne 0 & li reg-rdx fork-free-head-addr & mov-load reg-rax reg-rdx 0)
+    in let st6 = st-append-code st5 (mov-store reg-rsi reg-rax 24 & mov-store reg-rdx reg-rsi 0)
+    in let st7 = st-append-code st6 (mov-load reg-rax reg-rsi task-gen-offset & add-ri reg-rax 1 & mov-store reg-rsi reg-rax task-gen-offset)
+    in patch-jcc-at st7 keep (st7.code-len)
+  emit-task-wait-any-helper : CodegenState -> CodegenState
+  emit-task-wait-any-helper (st) =
+    let st0 = record-func-offset st "__task_wait_any"
+    in let st1 = st-append-code st0 (push-i32 0 & push-i32 0 & push-r reg-rdi)
+    in let scan-top = st1.code-len
+    in let st2 = emit-wait-any-base st1
+    in let st3 = st-append-code st2 (li reg-r9 0)
+    in let scan-loop = st3.code-len
+    in let st4 = st-append-code st3 (cmp-rr reg-r9 reg-rcx)
+    in let scan-end = st4.code-len
+    in let st5 = st-append-code st4 (jcc cc-ge 0)
+    in let st6 = emit-wa-checked-load st5
+    in let st7 = st-append-code st6 (mov-load reg-rax reg-rsi 0 & cmp-ri reg-rax 3)
+    in let found = st7.code-len
+    in let st8 = st-append-code st7 (jcc cc-e 0 & add-ri reg-r9 1)
+    in let st9 = wa-jmp-back st8 scan-loop
+    in let st10 = patch-jcc-at st9 scan-end (st9.code-len)
+    in let st11 = st-append-code st10 (mov-load reg-rax reg-rsp 16 & cmp-ri reg-rax 0)
+    in let already = st11.code-len
+    in let st12 = st-append-code st11 (jcc cc-ne 0 & li reg-rdx sched-current-task-addr & mov-load reg-rdx reg-rdx 0 & li reg-r9 0)
+    in let reg-loop = st12.code-len
+    in let st13 = st-append-code st12 (cmp-rr reg-r9 reg-rcx)
+    in let reg-end = st13.code-len
+    in let st14 = st-append-code st13 (jcc cc-ge 0)
+    in let st15 = emit-wait-any-load st14
+    in let st16 = st-append-code st15 (mov-rr reg-rdi reg-rsi & mov-rr reg-rsi reg-rdx)
+    in let st17 = emit-wa-call-saved st16 "__wait_node_add"
+    in let st18 = st-append-code st17 (add-ri reg-r9 1)
+    in let st19 = wa-jmp-back st18 reg-loop
+    in let st20 = patch-jcc-at st19 reg-end (st19.code-len)
+    in let st21 = st-append-code st20 (li reg-rax 1 & mov-store reg-rsp reg-rax 16)
+    in let st22 = patch-jcc-at st21 already (st21.code-len)
+    in let st22a = st-append-code st22 (li reg-rdx sched-current-task-addr & mov-load reg-rdx reg-rdx 0 & mov-load reg-rax reg-rsp 0 & mov-store reg-rdx reg-rax 40)
+    in let st23 = st-append-code st22a (li reg-rax 5 & mov-store reg-rdx reg-rax 0)
+    in let st24 = emit-call-to st23 "__task_yield"
+    in let st25 = wa-jmp-back st24 scan-top
+    in let st26 = patch-jcc-at st25 found (st25.code-len)
+    in let st27 = st-append-code st26 (mov-store reg-rsp reg-rsi 8 & li reg-r9 0)
+    in let cancel-loop = st27.code-len
+    in let st28 = st-append-code st27 (cmp-rr reg-r9 reg-rcx)
+    in let cancel-end = st28.code-len
+    in let st29 = st-append-code st28 (jcc cc-ge 0)
+    in let st30 = emit-wait-any-load st29
+    in let st31 = st-append-code st30 (mov-load reg-rdi reg-rsi 56 & mov-load reg-rax reg-rsp 16 & cmp-ri reg-rax 0)
+    in let unreg = st31.code-len
+    in let st32 = st-append-code st31 (jcc cc-e 0 & mov-rr reg-rdi reg-rsi & li reg-rsi sched-current-task-addr & mov-load reg-rsi reg-rsi 0)
+    in let st33 = emit-wa-call-saved st32 "__wait_node_remove"
+    in let st34 = st-append-code st33 (mov-rr reg-rdi reg-rax)
+    in let st35 = emit-wait-any-load st34
+    in let st36 = patch-jcc-at st35 unreg (st35.code-len)
+    in let st37 = st-append-code st36 (mov-load reg-rax reg-rsp 8 & cmp-rr reg-rax reg-rsi)
+    in let is-winner = st37.code-len
+    in let st38 = st-append-code st37 (jcc cc-e 0 & mov-load reg-rax reg-rsi 0 & cmp-ri reg-rax 3)
+    in let unfinished = st38.code-len
+    in let st39 = st-append-code st38 (jcc cc-ne 0)
+    in let st40 = emit-wa-release st39
+    in let fin-done = st40.code-len
+    in let st41 = st-append-code st40 (jmp 0)
+    in let st42 = patch-jcc-at st41 unfinished (st41.code-len)
+    in let st43 = st-append-code st42 (cmp-ri reg-rdi 0)
+    in let shared = st43.code-len
+    in let st44 = st-append-code st43 (jcc cc-ne 0 & mov-rr reg-rdi reg-rsi)
+    in let st58a0 = emit-wa-call-saved st44 "__task_cancel"
+    in let st58a = emit-wait-any-load st58a0
+    in let next-at = st58a.code-len
+    in let st59 = patch-jcc-at (patch-jcc-at st58a is-winner next-at) shared next-at
+    in let st60 = patch-jmp-at st59 fin-done next-at
+    in let st61 = st-append-code st60 (add-ri reg-r9 1)
+    in let st62 = wa-jmp-back st61 cancel-loop
+    in let st63 = patch-jcc-at st62 cancel-end (st62.code-len)
+    in let st64 = st-append-code st63 (mov-load reg-rsi reg-rsp 8)
+    in let st65 = emit-wa-release st64
+    in let st66 = st-append-code st65 (mov-load reg-rax reg-rsi 16 & pop-r reg-rdi & pop-r reg-r11 & pop-r reg-r11)
+    in st-append-code st66 x86-ret
 Section: Buffer Helpers
 
   emit-buf-write-bytes-helper : CodegenState -> CodegenState

@@ -4,7 +4,7 @@
     b         = 'b.codex'
     knows     = 'knows.codex'
     knowsCode = 'CDX2001'
-    # Since main 20176 the -IrUni dump is lifted: the lambda is def __lam_0.
-    path      = 'def:__lam_0/param/0'
+    # Since main 20176 the -IrUni dump is lifted: the lambda is def __lam_1.
+    path      = 'def:__lam_1/param/0'
     expect    = 'CARRIED'
 }
