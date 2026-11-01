@@ -7,26 +7,16 @@ Chapter: TestSelfVerifyScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
- THE FOURTEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
- script is byte-identical to the one that shipped before the migration.
-
- ONE REFUSAL HERE IS A THROW AND NOT AN EXIT. A missing seed raises `ScThrow`,
- which ends the script without an exit code this model can name: `PipeOutcome`
- spells exit codes only. The stage below says so in its `ps-why` rather than
- leaving the reader to infer it from an empty verdict list.
-
 Section: Parameters
 
   default-seed : ShellExpr = SePathJoin SeScriptRoot (SeLit "..\\seed\\Codex.cdx")
 
-  selfverify-params : List ShellParam = [sh-param-default "Seed" SptString default-seed, sh-param-default "Kernel" SptString default-seed, sh-param-optional "AllowStaleKernel" SptSwitch, sh-param-default "PCore" SptInt (SeInt 1)]
-
- `Kernel` defaults to the depot seed and NOT to `compile.ps1`'s default, which
- is `build-output\bare-metal\Codex.cdx`, whichever compiler ran last. A
- build-output kernel is refused only when its digest differs from the seed under
- test, because staging one there is what the gate does.
+  selfverify-params : List ShellParam =
+    [ sh-param-default "Seed" SptString default-seed
+    , sh-param-default "Kernel" SptString default-seed
+    , sh-param-optional "AllowStaleKernel" SptSwitch
+    , sh-param-default "PCore" SptInt (SeInt 1)
+    ]
 
 Section: The pipeline, declared before it is spelled
 
@@ -54,82 +44,190 @@ Section: The pipeline, declared before it is spelled
 
 Section: S01 -- Read The Seed
 
-  seed-message : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "Seed: ") (pipe-ref sv-arts selfverify-params "Seed")) (SeConcat (SeLit " (") (pipe-ref sv-arts selfverify-params "seedLen"))) (SeLit " bytes)")
+  s01-body : List ShellCmd =
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScBlank
+    , pipe-produce compile-art
+    , pipe-produce run-art
+    , ScBlank
+    , ScIf (SeNot (SeFileExists (pipe-ref sv-arts selfverify-params "Seed"))) [ScThrow missing-seed] []
+    , ScReadBytes "seedBytes" (SePathResolve (pipe-ref sv-arts selfverify-params "Seed"))
+    , pipe-produce seed-len-art
+    , ScEcho seed-message
+    ]
 
   missing-seed : ShellExpr = SeConcat (SeLit "Seed not found: ") (pipe-ref sv-arts selfverify-params "Seed")
 
-  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, pipe-produce compile-art, pipe-produce run-art, ScBlank, ScIf (SeNot (SeFileExists (pipe-ref sv-arts selfverify-params "Seed"))) [ScThrow missing-seed] [], ScReadBytes "seedBytes" (SePathResolve (pipe-ref sv-arts selfverify-params "Seed")), pipe-produce seed-len-art, ScEcho seed-message]
+  seed-message : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "Seed: ") (pipe-ref sv-arts selfverify-params "Seed")) (SeConcat (SeLit " (") (pipe-ref sv-arts selfverify-params "seedLen"))) (SeLit " bytes)")
 
   s01 : PipeStage = PipeStage { ps-name = "read the seed", ps-why = "read the seed under test; a missing seed THROWS rather than exiting, so no verdict below names it", ps-in = ["Seed"], ps-out = [compile-art, run-art, seed-bytes-art, seed-len-art], ps-needs = [], ps-verdict = [], ps-body = s01-body }
 
 Section: S01b -- Name The Kernel
 
-  s01b-body : List ShellCmd = [ScBlank, ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }", ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)", ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $Seed).Hash.Substring(0, 16)", ScRaw "Write-Host \"Kernel: $Kernel [$kernelDigest]\"", ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {", ScRaw "    Write-Host 'REFUSED: the kernel is a build-output binary and is not the seed under test.'", ScRaw "    Write-Host \"         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.\"", ScRaw "    Write-Host '         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.'", ScRaw "    exit 2", ScRaw "}"]
+  s01b-body : List ShellCmd =
+    [ ScBlank
+    , ScRaw "if (-not (Test-Path -PathType Leaf $Kernel)) { throw \"Kernel not found: $Kernel\" }"
+    , ScRaw "$kernelDigest = (Get-FileHash -Algorithm SHA256 $Kernel).Hash.Substring(0, 16)"
+    , ScRaw "$seedDigest = (Get-FileHash -Algorithm SHA256 $Seed).Hash.Substring(0, 16)"
+    , ScEcho (SeText "Kernel: $Kernel [$kernelDigest]")
+    , ScRaw "if ((-not $AllowStaleKernel) -and ($Kernel -like '*build-output*') -and ($kernelDigest -ne $seedDigest)) {"
+    , ScIndent stale-kernel-refused
+    , ScRaw "}"
+    ]
 
-  s01b : PipeStage = PipeStage { ps-name = "name the kernel", ps-why = "refuse a build-output kernel whose digest is not the seed's, because build-output holds whichever compiler ran last", ps-in = ["Kernel", "Seed", "AllowStaleKernel"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 2 "the kernel is a build-output binary and does not match the seed under test; pass -Kernel, or -AllowStaleKernel if that is meant. Spelled inside a raw payload"], ps-body = s01b-body }
+  stale-kernel-refused : List ShellCmd =
+    [ ScEcho (SeLit "REFUSED: the kernel is a build-output binary and is not the seed under test.")
+    , ScEcho (SeText "         kernel $kernelDigest, seed $seedDigest. build-output holds whichever compiler ran last.")
+    , ScEcho (SeLit "         Pass -Kernel explicitly, or -AllowStaleKernel if that is what you mean.")
+    , ScExit (SeInt 2)
+    ]
+
+  s01b : PipeStage = PipeStage { ps-name = "name the kernel", ps-why = "refuse a build-output kernel whose digest is not the seed's, because build-output holds whichever compiler ran last", ps-in = ["Kernel", "Seed", "AllowStaleKernel"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 2 "the kernel is a build-output binary and does not match the seed under test; pass -Kernel, or -AllowStaleKernel if that is meant"], ps-body = s01b-body }
 
 Section: S02 -- Header Bytes
 
- The CDX header is the first 224 bytes and the program is handed it as a
- literal list, which is why it is rendered here as decimal text rather than
- read by the program itself: the program under test must not depend on file
- IO to answer a question about a file.
+  s02-body : List ShellCmd =
+    [ ScBlank
+    , pipe-produce header-bytes-art
+    , ScAssign "headerLiteral" header-literal
+    , ScAssign "signerFile" (SePathJoin SeScriptRoot (SeLit "..\\seed\\signer.pub"))
+    , ScAssign "signerHex" (SeLit "")
+    , ScIf (SeFileExists (SeVar "signerFile")) [ScAssign "signerHex" (SeMethodCall (SeStaticCall "System.IO.File" "ReadAllText" [SeVar "signerFile"]) "Trim" [])] []
+    , ScAssign "headerKeyHex" (SeJoin (SePipe (SeSlice (SeVar "seedBytes") 40 71) [StMap (SeMethodCall SeItem "ToString" [SeLit "x2"])]) (SeLit ""))
+    , ScIf (SeStringEq (SeVar "signerHex") (SeVar "headerKeyHex")) [ScEcho (SeLit "SIGNER-FILE: seed/signer.pub matches the seed header key")] [ScEcho signer-mismatch]
+    , ScRaw "$flags = [BitConverter]::ToUInt16($seedBytes, 6)"
+    , ScRaw "$sectionEnd = 0"
+    , ScRaw "foreach ($at in 136, 152, 168, 184) { $e = [BitConverter]::ToInt64($seedBytes, $at) + [BitConverter]::ToInt64($seedBytes, $at + 8); if ($e -gt $sectionEnd) { $sectionEnd = $e } }"
+    , ScRaw "$contentEnd = if (($flags -band 8) -ne 0) { $seedLen } elseif ($sectionEnd -lt 224) { 224 } else { $sectionEnd }"
+    , ScRaw "$bodyOk = 'False'"
+    , ScRaw "if ($contentEnd -le $seedLen) { $sha = [System.Security.Cryptography.SHA256]::Create(); $bodyHash = $sha.ComputeHash($seedBytes, 224, $contentEnd - 224); $boundHash = $sha.ComputeHash([byte[]]($seedBytes[0..7] + $seedBytes[136..223] + $bodyHash)); if ([Linq.Enumerable]::SequenceEqual([byte[]]$boundHash, [byte[]]$seedBytes[8..39])) { $bodyOk = 'True' } }"
+    ]
 
   header-literal : ShellExpr = SeJoin (SePipe (pipe-ref sv-arts selfverify-params "headerBytes") [StMap (SeMethodCall SeItem "ToString" [])]) (SeLit ",")
 
-  s02-body : List ShellCmd = [ScBlank, pipe-produce header-bytes-art, ScAssign "headerLiteral" header-literal, ScAssign "signerFile" (SePathJoin SeScriptRoot (SeLit "..\\seed\\signer.pub")), ScAssign "signerHex" (SeLit ""), ScIf (SeFileExists (SeVar "signerFile")) [ScAssign "signerHex" (SeMethodCall (SeStaticCall "System.IO.File" "ReadAllText" [SeVar "signerFile"]) "Trim" [])] [], ScAssign "headerKeyHex" (SeJoin (SePipe (SeSlice (SeVar "seedBytes") 40 71) [StMap (SeMethodCall SeItem "ToString" [SeLit "x2"])]) (SeLit "")), ScIf (SeStringEq (SeVar "signerHex") (SeVar "headerKeyHex")) [ScEcho (SeLit "SIGNER-FILE: seed/signer.pub matches the seed header key")] [ScEcho (SeConcat (SeConcat (SeConcat (SeLit "SIGNER-FILE: MISMATCH, seed/signer.pub '") (SeVar "signerHex")) (SeLit "', seed header ")) (SeVar "headerKeyHex"))]]
+  signer-mismatch : ShellExpr = SeConcat (SeConcat (SeConcat (SeLit "SIGNER-FILE: MISMATCH, seed/signer.pub '") (SeVar "signerHex")) (SeLit "', seed header ")) (SeVar "headerKeyHex")
 
   s02 : PipeStage = PipeStage { ps-name = "header bytes", ps-why = "the seed's first 224 bytes as decimal text, to be inlined as a literal", ps-in = ["seedBytes"], ps-out = [header-bytes-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- The Generated Program
 
+  s03-body : List ShellCmd =
+    [ ScBlank
+    , ScAssign "src" (SeLines program-lines)
+    ]
+
+  program-lines : List ShellExpr =
+    [ SeLit "Chapter: SelfVerifySeed"
+    , SeLit "  cites Verify chapter CdxBinary"
+    , SeLit "  cites Foreword chapter Ed25519"
+    , SeLit "  cites Foreword chapter Sha256"
+    , SeLit "  cites Foreword chapter Sha512"
+    , SeLit "  cites Foreword chapter Maybe"
+    , SeLit ""
+    , SeLit "Section: Body"
+    , SeLit ""
+    , SeLit "  opening : [Console] Nothing = act"
+    , header-line
+    , SeLit "    in let magic-ok = cdx-verify-magic header"
+    , SeLit "    in let pub-key = list-slice header 40 72"
+    , SeLit "    in let sig = list-slice header 72 136"
+    , SeLit "    in let content-hash = cdx-read-content-hash header"
+    , SeLit "    in let sig-valid = ed25519-verify pub-key content-hash sig"
+    , SeLit "    in let pinned = cdx-signed-by-project header"
+    , SeLit "    in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43"
+    , body-line
+    , SeLit "    in act"
+    , size-line
+    , SeLit "      print-line-uni (\"MAGIC: \" & show magic-ok)"
+    , SeLit "      print-line-uni (\"SIGNATURE: \" & show sig-valid)"
+    , SeLit "      print-line-uni (\"AUTHOR-KEY-PRESENT: \" & show (has-author > 0))"
+    , SeLit "      print-line-uni (\"SIGNER-PINNED: \" & show pinned)"
+    , SeLit "      print-line-uni (\"CONTENT-HASH: \" & show body-ok)"
+    , SeLit "      if magic-ok then if body-ok == False then print-line-uni \"CONTENT HASH MISMATCH\" else if pinned then"
+    , SeLit "        print-line-uni \"THE SEED VERIFIES ITSELF\""
+    , SeLit "      else if sig-valid then print-line-uni \"SIGNED BY A KEY THAT IS NOT THE PROJECT SIGNER\""
+    , SeLit "      else print-line-uni \"SIGNATURE INVALID\""
+    , SeLit "      else print-line-uni \"BAD MAGIC\""
+    , SeLit "    end"
+    , SeLit "  end"
+    ]
+
   header-line : ShellExpr = SeConcat (SeConcat (SeLit "    let header = [") (SeVar "headerLiteral")) (SeLit "]")
 
+  body-line : ShellExpr = SeConcat (SeLit "    in let body-ok = ") (SeVar "bodyOk")
+
   size-line : ShellExpr = SeConcat (SeConcat (SeLit "      print-line-uni (\"SIZE: ") (pipe-ref sv-arts selfverify-params "seedLen")) (SeLit "\")")
-
-  program-lines : List ShellExpr = [SeLit "Chapter: SelfVerifySeed", SeLit "  cites Verify chapter CdxBinary", SeLit "  cites Foreword chapter Ed25519", SeLit "  cites Foreword chapter Sha256", SeLit "  cites Foreword chapter Sha512", SeLit "  cites Foreword chapter Maybe", SeLit "", SeLit "Section: Body", SeLit "", SeLit "  opening : [Console] Nothing = act", header-line, SeLit "    in let magic-ok = cdx-verify-magic header", SeLit "    in let pub-key = list-slice header 40 72", SeLit "    in let sig = list-slice header 72 136", SeLit "    in let content-hash = cdx-read-content-hash header", SeLit "    in let sig-valid = ed25519-verify pub-key content-hash sig", SeLit "    in let pinned = cdx-signed-by-project header",SeLit "    in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43", SeLit "    in act", size-line, SeLit "      print-line-uni (\"MAGIC: \" & show magic-ok)", SeLit "      print-line-uni (\"SIGNATURE: \" & show sig-valid)", SeLit "      print-line-uni (\"AUTHOR-KEY-PRESENT: \" & show (has-author > 0))", SeLit "      print-line-uni (\"SIGNER-PINNED: \" & show pinned)", SeLit "      if magic-ok then if pinned then", SeLit "        print-line-uni \"THE SEED VERIFIES ITSELF\"", SeLit "      else if sig-valid then print-line-uni \"SIGNED BY A KEY THAT IS NOT THE PROJECT SIGNER\"", SeLit "      else print-line-uni \"SIGNATURE INVALID\"",SeLit "      else print-line-uni \"BAD MAGIC\"", SeLit "    end", SeLit "  end"]
-
-  s03-body : List ShellCmd = [ScBlank, ScAssign "src" (SeLines program-lines)]
 
   s03 : PipeStage = PipeStage { ps-name = "the generated program", ps-why = "a Codex chapter that checks the seed's magic and signature against the header handed to it", ps-in = ["headerBytes", "seedLen"], ps-out = [src-art], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Temporary Files
+
+  s04-body : List ShellCmd =
+    [ ScBlank
+    , ScAssign "tmpSrc" (temp-with ".codex")
+    , ScAssign "tmpCdx" (temp-with ".cdx")
+    , ScAssign "tmpLog" (temp-with ".log")
+    , ScAssign "tmpOut" (temp-with ".out")
+    , ScBlank
+    , ScDotNetCall "System.IO.File" "WriteAllText" [pipe-ref sv-arts selfverify-params "tmpSrc", pipe-ref sv-arts selfverify-params "src"]
+    , ScEcho generated-message
+    ]
 
   temp-with : Text -> ShellExpr
   temp-with (suffix) = SeConcat (SeStaticCall "System.IO.Path" "GetTempFileName" []) (SeLit suffix)
 
   generated-message : ShellExpr = SeConcat (SeConcat (SeLit "Generated source: ") (SeProperty (SeStaticCall "System.IO.File" "ReadAllBytes" [pipe-ref sv-arts selfverify-params "tmpSrc"]) "Length")) (SeLit " bytes")
 
-  s04-body : List ShellCmd = [ScBlank, ScAssign "tmpSrc" (temp-with ".codex"), ScAssign "tmpCdx" (temp-with ".cdx"), ScAssign "tmpLog" (temp-with ".log"), ScAssign "tmpOut" (temp-with ".out"), ScBlank, ScDotNetCall "System.IO.File" "WriteAllText" [pipe-ref sv-arts selfverify-params "tmpSrc", pipe-ref sv-arts selfverify-params "src"], ScEcho generated-message]
-
   s04 : PipeStage = PipeStage { ps-name = "temporary files", ps-why = "four temporaries: the source, its binary, the compile log and the captured output", ps-in = ["src"], ps-out = [tmp-src-art, tmp-cdx-art, tmp-log-art, tmp-out-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 
 Section: S05 -- Compile And Run
 
-  compile-args : List ShellArg = [SaNamed "File" (pipe-ref sv-arts selfverify-params "compile"), SaNamed "Src" (pipe-ref sv-arts selfverify-params "tmpSrc"), SaNamed "Out" (pipe-ref sv-arts selfverify-params "tmpCdx"), SaNamed "Log" (pipe-ref sv-arts selfverify-params "tmpLog"), SaNamed "Kernel" (pipe-ref sv-arts selfverify-params "Kernel"), SaNamed "PCore" (pipe-ref sv-arts selfverify-params "PCore")]
+  s05-body : List ShellCmd =
+    [ ScBlank
+    , ScEchoStyled (SeLit "Compiling...") ClBrightCyan True
+    , ScRunArgs (SeLit "pwsh") compile-args
+    , ScIf (SeNot (SeExitCodeEq 0)) compile-failed []
+    , ScBlank
+    , ScEchoStyled (SeLit "Running...") ClBrightCyan True
+    , ScRunArgs (SeLit "pwsh") run-args
+    , ScIf (SeNot (SeExitCodeEq 0)) run-failed []
+    ]
 
-  run-args : List ShellArg = [SaNamed "File" (pipe-ref sv-arts selfverify-params "run"), SaNamed "Kernel" (pipe-ref sv-arts selfverify-params "tmpCdx"), SaNamed "OutFile" (pipe-ref sv-arts selfverify-params "tmpOut")]
+  compile-args : List ShellArg =
+    [ SaNamed "File" (pipe-ref sv-arts selfverify-params "compile")
+    , SaNamed "Src" (pipe-ref sv-arts selfverify-params "tmpSrc")
+    , SaNamed "Out" (pipe-ref sv-arts selfverify-params "tmpCdx")
+    , SaNamed "Log" (pipe-ref sv-arts selfverify-params "tmpLog")
+    , SaNamed "Kernel" (pipe-ref sv-arts selfverify-params "Kernel")
+    , SaNamed "PCore" (pipe-ref sv-arts selfverify-params "PCore")
+    ]
 
-  compile-failed : List ShellCmd = [ScEchoStyled (SeLit "COMPILE FAILED") ClBrightRed True, ScPrintFile (pipe-ref sv-arts selfverify-params "tmpLog"), ScExit (SeInt 1)]
+  compile-failed : List ShellCmd =
+    [ ScEchoStyled (SeLit "COMPILE FAILED") ClBrightRed True
+    , ScPrintFile (pipe-ref sv-arts selfverify-params "tmpLog")
+    , ScExit (SeInt 1)
+    ]
 
-  run-failed : List ShellCmd = [ScEchoStyled (SeLit "RUN FAILED") ClBrightRed True, ScExit (SeInt 1)]
+  run-args : List ShellArg =
+    [ SaNamed "File" (pipe-ref sv-arts selfverify-params "run")
+    , SaNamed "Kernel" (pipe-ref sv-arts selfverify-params "tmpCdx")
+    , SaNamed "OutFile" (pipe-ref sv-arts selfverify-params "tmpOut")
+    ]
 
-  s05-body : List ShellCmd = [ScBlank, ScEchoStyled (SeLit "Compiling...") ClBrightCyan True, ScRunArgs (SeLit "pwsh") compile-args, ScIf (SeNot (SeExitCodeEq 0)) compile-failed [], ScBlank, ScEchoStyled (SeLit "Running...") ClBrightCyan True, ScRunArgs (SeLit "pwsh") run-args, ScIf (SeNot (SeExitCodeEq 0)) run-failed []]
-
- TWO GUESTS IN SEQUENCE, never at once: the generated chapter is compiled under
- `-Kernel`, then the binary it produced is booted.
+  run-failed : List ShellCmd =
+    [ ScEchoStyled (SeLit "RUN FAILED") ClBrightRed True
+    , ScExit (SeInt 1)
+    ]
 
   s05 : PipeStage = PipeStage { ps-name = "compile and run", ps-why = "compile the generated chapter under the named kernel, then boot what it produced", ps-in = ["compile", "run", "tmpSrc", "tmpCdx", "tmpLog", "tmpOut", "Kernel", "PCore"], ps-out = [], ps-needs = [PrGuests 1, PrKernel (SeVar "Kernel")], ps-verdict = [PoExit 1 "the generated verification chapter did not compile; its log is printed above", PoExit 1 "the verification binary compiled and did not run to completion"], ps-body = s05-body }
 
 Section: S06 -- Output
 
-  s06-body : List ShellCmd = [ScBlank, ScPrintFile (pipe-ref sv-arts selfverify-params "tmpOut")]
-
- THE VERDICT OF THIS SCRIPT IS ITS TEXT, NOT ITS EXIT CODE. The captured output
- is printed and the script ends at zero whatever the program said, so a caller
- reading only the exit code cannot tell "THE SEED VERIFIES ITSELF" from
- "SIGNATURE INVALID". That is why the seed path in `CLAUDE.md` requires a human
- or a caller to READ this output rather than gate on the run.
+  s06-body : List ShellCmd =
+    [ ScBlank
+    , ScPrintFile (pipe-ref sv-arts selfverify-params "tmpOut")
+    ]
 
   s06 : PipeStage = PipeStage { ps-name = "output", ps-why = "print what the verification program said; the answer is the text, and the exit code is zero either way", ps-in = ["tmpOut"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 

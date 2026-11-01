@@ -1,0 +1,198 @@
+Chapter: ApprovalCheckTest
+  cites Trust chapter Approval
+  cites Trust chapter AgentProtocol
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+ The approver secret is RFC 8032 section 7.1 TEST 1 and the stranger's is
+ TEST 2. The small-order key is the encoding of the identity point.
+
+  approver-secret : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  stranger-secret : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  zero-key : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  identity-key : List Integer = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  lease-a : List Integer = [10, 11, 12, 13]
+
+  lease-b : List Integer = [10, 11, 12, 14]
+
+  fact : List Integer = [7, 7, 7, 7]
+
+  mail-fields : List ApprovalField = [
+    ApprovalField { name = "to", value = "GARY@example.org" },
+    ApprovalField { name = "subject", value = "Urgent: the roof" },
+    ApprovalField { name = "urgent", value = "True" },
+    ApprovalField { name = "amount", value = "101" },
+    ApprovalField { name = "small", value = "-5" },
+    ApprovalField { name = "sci", value = "1e3" },
+    ApprovalField { name = "huge", value = "1234567890123456789" }
+  ]
+
+  request : List Integer, Integer -> ApprovalRequest
+  request (args) (seq) = ApprovalRequest {
+    label = "Email.Send",
+    scope = "smtp.example.org",
+    argument-sha256 = sha256-bytes args,
+    fields = mail-fields,
+    lease-sha256 = lease-a,
+    request-fact = fact,
+    sequence = seq,
+    expires = 5000
+  }
+
+  bare-request : ApprovalRequest
+  bare-request = ApprovalRequest {
+    label = "Email.Send",
+    scope = "smtp.example.org",
+    argument-sha256 = [],
+    fields = [],
+    lease-sha256 = lease-a,
+    request-fact = fact,
+    sequence = 1,
+    expires = 5000
+  }
+
+  standing : List Integer, ApprovalCondition, List Integer -> StandingApproval
+  standing (lease) (c) (approver) = StandingApproval {
+    lease-sha256 = lease,
+    condition = c,
+    not-before = 1000,
+    not-after = 3000,
+    max-uses = 3,
+    approver = approver,
+    signature = []
+  }
+
+  with-signature : StandingApproval, List Integer -> StandingApproval
+  with-signature (s) (sig) = StandingApproval {
+    lease-sha256 = s.lease-sha256,
+    condition = s.condition,
+    not-before = s.not-before,
+    not-after = s.not-after,
+    max-uses = s.max-uses,
+    approver = s.approver,
+    signature = sig
+  }
+
+  approval-with : Approval, List Integer, List Integer -> Approval
+  approval-with (a) (key) (sig) = Approval { request-digest = a.request-digest, approver = key, verdict = a.verdict, signature = sig }
+
+  flip-first : List Integer -> List Integer
+  flip-first (bs) = [bit-xor (list-at bs 0) 1] & substring-bytes bs 1
+
+  substring-bytes : List Integer, Integer -> List Integer
+  substring-bytes (bs) (i) = if i >= list-length bs then [] else [list-at bs i] & substring-bytes bs (i + 1)
+
+  verdict-text : ApprovalVerdict -> Text
+  verdict-text (v) = when v
+    is Approved (t) -> "approved " & substring t 0 9
+    is Unapproved (why) -> "refused: " & why
+
+  truth : CondResult -> Text
+  truth (r) = if r.known == False then "unknown" else if r.holds then "yes" else "no"
+
+  ctx-at : Integer, Integer -> ApprovalContext
+  ctx-at (now) (wm) = ApprovalContext { label = "Email.Send", scope = "smtp.example.org", fields = mail-fields, now = now, week-minute = wm }
+
+  ev : Text, ApprovalCondition, ApprovalContext -> [Console] Nothing
+  ev (label) (c) (ctx) = print-line-uni (label & " " & truth (approval-eval c ctx))
+
+  clock : Integer, Integer -> ApprovalClock
+  clock (now) (wm) = ApprovalClock { now = now, week-minute = wm }
+
+  one : Text, ApprovalVerdict -> [Console] Nothing
+  one (label) (v) = print-line-uni (label & " " & verdict-text v)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let pk = ed25519-public-key approver-secret
+    in let sk = ed25519-public-key stranger-secret
+    in let approvers = [AgentIdentity { public-key = pk }]
+    in let req = request [1, 2, 3] 1
+    in let digest = approval-request-digest req
+    in let yes = approval-sign digest 1 approver-secret pk
+    in let no = approval-sign digest 0 approver-secret pk
+    in let by-stranger = approval-sign digest 1 stranger-secret sk
+    in let replayed = approval-sign (approval-request-digest (request [1, 2, 3] 2)) 1 approver-secret pk
+    in let bare = approval-sign (approval-request-digest bare-request) 1 approver-secret pk
+    in let week = WeekWindow [0, 1, 2, 3, 4] 540 1020
+    in let st = standing-sign (standing lease-a week pk) approver-secret
+    in let st-all = standing-sign (standing lease-a (CondAll []) pk) approver-secret
+    in let st-any = standing-sign (standing lease-a (CondAny []) pk) approver-secret
+    in let st-other = standing-sign (standing lease-b week pk) approver-secret
+    in let st-stranger = standing-sign (standing lease-a week sk) stranger-secret
+    in act
+      print-line-uni ("approver key " & bytes-to-hex pk)
+      print-line-uni ("request digest " & bytes-to-hex digest)
+      one "one-call approve" (approval-check req yes approvers 4999)
+      one "one-call stranger" (approval-check req by-stranger approvers 100)
+      one "one-call stranger in set" (approval-check req by-stranger [AgentIdentity { public-key = sk }] 100)
+      one "one-call flipped signature" (approval-check req (approval-with yes pk (flip-first yes.signature)) approvers 100)
+      one "one-call other arguments" (approval-check (request [1, 2, 4] 1) yes approvers 100)
+      one "one-call replay next sequence" (approval-check (request [1, 2, 3] 2) yes approvers 100)
+      one "one-call its own sequence" (approval-check (request [1, 2, 3] 2) replayed approvers 100)
+      one "one-call at expiry" (approval-check req yes approvers 5000)
+      one "one-call denied" (approval-check req no approvers 100)
+      one "one-call zero key" (approval-check req (approval-with yes zero-key (zero-key & zero-key)) [AgentIdentity { public-key = zero-key }] 100)
+      one "one-call identity key" (approval-check req (approval-with yes identity-key (identity-key & zero-key)) [AgentIdentity { public-key = identity-key }] 100)
+      one "one-call empty arguments" (approval-check bare-request bare approvers 100)
+      one "empty-argument approval on sha of empty" (approval-check (request [] 1) bare approvers 100)
+      one "standing signature as one-call" (approval-check req (approval-with yes pk st.signature) approvers 100)
+      one "standing approve" (standing-check req st 0 approvers (clock 1000 600))
+      one "standing before not-before" (standing-check req st 0 approvers (clock 999 600))
+      one "standing last instant" (standing-check req st 0 approvers (clock 2999 600))
+      one "standing at not-after" (standing-check req st 0 approvers (clock 3000 600))
+      one "standing last use" (standing-check req st 2 approvers (clock 1500 600))
+      one "standing uses spent" (standing-check req st 3 approvers (clock 1500 600))
+      one "standing other lease" (standing-check req st-other 0 approvers (clock 1500 600))
+      one "standing stranger" (standing-check req st-stranger 0 approvers (clock 1500 600))
+      one "standing condition false" (standing-check req st 0 approvers (clock 1500 (5 * 1440 + 600)))
+      one "standing no local clock" (standing-check req st 0 approvers (clock 1500 (0 - 1)))
+      one "standing empty all" (standing-check req st-all 0 approvers (clock 1500 (0 - 1)))
+      one "standing empty any" (standing-check req st-any 0 approvers (clock 1500 600))
+      one "one-call signature as standing" (standing-check req (with-signature st yes.signature) 0 approvers (clock 1500 600))
+      one "standing flipped signature" (standing-check req (with-signature st (flip-first st.signature)) 0 approvers (clock 1500 600))
+      ev "between 99" (TimeBetween 100 200) (ctx-at 99 0)
+      ev "between 100" (TimeBetween 100 200) (ctx-at 100 0)
+      ev "between 199" (TimeBetween 100 200) (ctx-at 199 0)
+      ev "between 200" (TimeBetween 100 200) (ctx-at 200 0)
+      ev "week mon 08:59" week (ctx-at 0 539)
+      ev "week mon 09:00" week (ctx-at 0 540)
+      ev "week fri 16:59" week (ctx-at 0 (4 * 1440 + 1019))
+      ev "week fri 17:00" week (ctx-at 0 (4 * 1440 + 1020))
+      ev "week sat 10:00" week (ctx-at 0 (5 * 1440 + 600))
+      ev "week no clock" week (ctx-at 0 (0 - 1))
+      ev "to folded" (FieldIs "to" "gary@EXAMPLE.org") (ctx-at 0 0)
+      ev "to other" (FieldIs "to" "gary@example.or") (ctx-at 0 0)
+      ev "missing field" (FieldIs "cc" "") (ctx-at 0 0)
+      ev "subject has" (FieldHas "subject" "URGENT") (ctx-at 0 0)
+      ev "subject lacks" (FieldHas "subject" "late") (ctx-at 0 0)
+      ev "flag urgent" (FlagSet "urgent") (ctx-at 0 0)
+      ev "flag subject" (FlagSet "subject") (ctx-at 0 0)
+      ev "amount above 100" (FieldAbove "amount" 100) (ctx-at 0 0)
+      ev "amount above 101" (FieldAbove "amount" 101) (ctx-at 0 0)
+      ev "small below 0" (FieldBelow "small" 0) (ctx-at 0 0)
+      ev "small above -6" (FieldAbove "small" (0 - 6)) (ctx-at 0 0)
+      ev "sci above 0" (FieldAbove "sci" 0) (ctx-at 0 0)
+      ev "huge above 0" (FieldAbove "huge" 0) (ctx-at 0 0)
+      ev "call family" (CallIs "Email" "smtp.example.org") (ctx-at 0 0)
+      ev "call other scope" (CallIs "Email.Send" "smtp.example.com") (ctx-at 0 0)
+      ev "call other label" (CallIs "Payment" "smtp.example.org") (ctx-at 0 0)
+      ev "all yes no" (CondAll [CondAlways, CondNot CondAlways]) (ctx-at 0 0)
+      ev "any no yes" (CondAny [CondNot CondAlways, CondAlways]) (ctx-at 0 0)
+      ev "not unknown" (CondNot week) (ctx-at 0 (0 - 1))
+      ev "any unknown yes" (CondAny [week, CondAlways]) (ctx-at 0 (0 - 1))
+      ev "all unknown no" (CondAll [week, CondNot CondAlways]) (ctx-at 0 (0 - 1))
+      ev "all unknown yes" (CondAll [week, CondAlways]) (ctx-at 0 (0 - 1))
+      ev "empty all" (CondAll []) (ctx-at 0 0)
+      ev "empty any" (CondAny []) (ctx-at 0 0)
+  end
+
+Page 1

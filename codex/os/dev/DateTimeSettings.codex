@@ -1,6 +1,8 @@
 Chapter: DateTimeSettings
   cites UI chapter Widget
   cites UI chapter Layout
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone
 
 Section: Time Format
 
@@ -26,61 +28,17 @@ Section: First Day
 
 Section: Timezone
 
-  TimezoneEntry = record {
-    tz-id : Text,
-    tz-label : Text,
-    tz-offset-minutes : Integer
-  }
+ The clock fields of DateTimeState hold UTC, as the RTC does unless a machine
+ says otherwise (TimeZones.md ruling T3); the zone is applied only where the
+ time is shown.
 
-  tz-utc : TimezoneEntry = TimezoneEntry {
-    tz-id = "UTC",
-    tz-label = "UTC (GMT+0)",
-    tz-offset-minutes = 0
-  }
-  tz-est : TimezoneEntry = TimezoneEntry {
-    tz-id = "EST",
-    tz-label = "Eastern (GMT-5)",
-    tz-offset-minutes = -300
-  }
-  tz-cst : TimezoneEntry = TimezoneEntry {
-    tz-id = "CST",
-    tz-label = "Central (GMT-6)",
-    tz-offset-minutes = -360
-  }
-  tz-mst : TimezoneEntry = TimezoneEntry {
-    tz-id = "MST",
-    tz-label = "Mountain (GMT-7)",
-    tz-offset-minutes = -420
-  }
-  tz-pst : TimezoneEntry = TimezoneEntry {
-    tz-id = "PST",
-    tz-label = "Pacific (GMT-8)",
-    tz-offset-minutes = -480
-  }
-  tz-gmt : TimezoneEntry = TimezoneEntry {
-    tz-id = "GMT",
-    tz-label = "London (GMT+0)",
-    tz-offset-minutes = 0
-  }
-  tz-cet : TimezoneEntry = TimezoneEntry {
-    tz-id = "CET",
-    tz-label = "Central Europe (GMT+1)",
-    tz-offset-minutes = 60
-  }
-  tz-jst : TimezoneEntry = TimezoneEntry {
-    tz-id = "JST",
-    tz-label = "Japan (GMT+9)",
-    tz-offset-minutes = 540
-  }
-  tz-aest : TimezoneEntry = TimezoneEntry {
-    tz-id = "AEST",
-    tz-label = "Australia East (GMT+10)",
-    tz-offset-minutes = 600
-  }
+  dt-zone-fixed : Text, Integer, Text -> Zone
+  dt-zone-fixed (name) (seconds) (abbr) =
+    let kind = TzType { utoff = seconds, dst = False, abbr = abbr }
+    in Zone { name = name, initial = kind, trans = [], footer = TzFooter { stdoff = seconds, format = abbr, rules = [] } }
 
-  tz-list-common : List TimezoneEntry
-  tz-list-common = [tz-utc, tz-est, tz-cst, tz-mst, tz-pst, tz-gmt, tz-cet, tz-jst, tz-aest]
-
+  dt-zone-utc : Zone
+  dt-zone-utc = dt-zone-fixed "UTC" 0 "UTC"
 Section: State
 
   DateTimeState = record {
@@ -90,22 +48,24 @@ Section: State
     dt-hour : Integer,
     dt-minute : Integer,
     dt-second : Integer,
-    dt-timezone : TimezoneEntry,
+    dt-zone : Zone,
     dt-format : TimeFormat,
     dt-first-day : FirstDay,
     dt-ntp-enabled : Boolean,
     dt-ntp-server : Text,
     dt-ntp-last-sync : Integer,
-    dt-ntp-synced : Boolean
+    dt-ntp-synced : Boolean,
+    dt-rtc-read : Boolean
   }
 
   datetime-new : DateTimeState
   datetime-new = DateTimeState {
     dt-year = 2026, dt-month = 1, dt-day = 1,
     dt-hour = 0, dt-minute = 0, dt-second = 0,
-    dt-timezone = tz-utc, dt-format = Fmt24h, dt-first-day = FdSunday,
+    dt-zone = dt-zone-utc, dt-format = Fmt24h, dt-first-day = FdSunday,
     dt-ntp-enabled = True, dt-ntp-server = "pool.ntp.org",
-    dt-ntp-last-sync = 0, dt-ntp-synced = False
+    dt-ntp-last-sync = 0, dt-ntp-synced = False,
+    dt-rtc-read = False
   }
 
 Section: Updates
@@ -118,8 +78,8 @@ Section: Updates
   dt-set-date (st) (y) (m) (d) =
     __record-set (__record-set (__record-set st "dt-year" y) "dt-month" m) "dt-day" d
 
-  dt-set-timezone : DateTimeState, TimezoneEntry -> DateTimeState
-  dt-set-timezone (st) (tz) = __record-set st "dt-timezone" tz
+  dt-set-timezone : DateTimeState, Zone -> DateTimeState
+  dt-set-timezone (st) (z) = __record-set st "dt-zone" z
 
   dt-toggle-format : DateTimeState -> DateTimeState
   dt-toggle-format (st) = when st.dt-format
@@ -152,9 +112,84 @@ Section: Updates
   dt-advance-hour : DateTimeState -> DateTimeState
   dt-advance-hour (st) =
     let h = st.dt-hour + 1
-    in if h >= 24 then __record-set st "dt-hour" 0
+    in if h >= 24 then dt-advance-day (__record-set st "dt-hour" 0)
     else __record-set st "dt-hour" h
 
+  dt-advance-day : DateTimeState -> DateTimeState
+  dt-advance-day (st) =
+    let d = st.dt-day + 1
+    in if d <= dt-month-days st.dt-year st.dt-month then __record-set st "dt-day" d
+    else if st.dt-month >= 12 then
+      __record-set (__record-set (__record-set st "dt-day" 1) "dt-month" 1) "dt-year" (st.dt-year + 1)
+    else __record-set (__record-set st "dt-day" 1) "dt-month" (st.dt-month + 1)
+
+  dt-month-days : Integer, Integer -> Integer
+  dt-month-days (y) (m) =
+    if m == 2 then
+      if int-mod y 400 == 0 | (int-mod y 4 == 0 & int-mod y 100 /= 0) then 29 else 28
+    else if m == 4 | m == 6 | m == 9 | m == 11 then 30
+    else 31
+
+Section: Clock
+
+ MC146818 CMOS clock, status register B: bit 2 set means the time registers
+ hold binary rather than BCD; bit 1 set means 24-hour mode, and in 12-hour
+ mode bit 7 of the hours register marks PM. The year register holds two
+ digits and this board family keeps no standard century register.
+
+  dt-rtc-binary-bit : Integer = 4
+  dt-rtc-24h-bit : Integer = 2
+  dt-rtc-pm-bit : Integer = 128
+
+  dt-rtc-field : Integer, Integer -> Integer
+  dt-rtc-field (v) (status-b) =
+    if bit-and status-b dt-rtc-binary-bit /= 0 then v
+    else (bit-shru v 4) * 10 + bit-and v 15
+
+  dt-rtc-hour : Integer, Integer -> Integer
+  dt-rtc-hour (v) (status-b) =
+    if bit-and status-b dt-rtc-24h-bit /= 0 then dt-rtc-field v status-b
+    else dt-rtc-hour-12 (dt-rtc-field (bit-and v 127) status-b) (bit-and v dt-rtc-pm-bit /= 0)
+
+  dt-rtc-hour-12 : Integer, Boolean -> Integer
+  dt-rtc-hour-12 (h) (pm) =
+    if pm then (if h == 12 then 12 else h + 12)
+    else if h == 12 then 0 else h
+
+  dt-rtc-plausible : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  dt-rtc-plausible (y) (mo) (d) (h) (mi) (s) =
+    if mo < 1 | mo > 12 then False
+    else if d < 1 | d > dt-month-days y mo then False
+    else if h < 0 | h > 23 then False
+    else if mi < 0 | mi > 59 then False
+    else s >= 0 & s <= 59
+
+  dt-from-rtc : DateTimeState, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> DateTimeState
+  dt-from-rtc (st) (status-b) (sec) (min) (hour) (day) (month) (year) =
+    let y = 2000 + dt-rtc-field year status-b
+    in let mo = dt-rtc-field month status-b
+    in let d = dt-rtc-field day status-b
+    in let h = dt-rtc-hour hour status-b
+    in let mi = dt-rtc-field min status-b
+    in let s = dt-rtc-field sec status-b
+    in if dt-rtc-plausible y mo d h mi s then __record-set (dt-set-time (dt-set-date st y mo d) h mi s) "dt-rtc-read" True
+    else __record-set st "dt-rtc-read" False
+
+Section: Certificate Clock
+
+ X.509 validity is compared as the 14 ASCII digits YYYYMMDDHHMMSS of a UTC
+ instant (X509Chain x509-valid-at). The digits come from the clock fields,
+ which hold UTC; a clock that was not read gives no digits, which every
+ certificate refuses as not yet valid.
+
+  dt-x509-now : DateTimeState -> List Integer
+  dt-x509-now (st) =
+    if st.dt-rtc-read == False then []
+    else dt-ascii-digits (st.dt-year) 4 & dt-ascii-digits (st.dt-month) 2 & dt-ascii-digits (st.dt-day) 2
+      & dt-ascii-digits (st.dt-hour) 2 & dt-ascii-digits (st.dt-minute) 2 & dt-ascii-digits (st.dt-second) 2
+
+  dt-ascii-digits : Integer, Integer -> List Integer
+  dt-ascii-digits (n) (width) = if width <= 0 then [] else dt-ascii-digits (n / 10) (width - 1) & [48 + n - (n / 10) * 10]
 Section: Display
 
   dt-format-time : DateTimeState -> Text
@@ -171,9 +206,56 @@ Section: Display
   dt-format-date (st) =
     show (st.dt-year) & "-" & dt-pad2 (st.dt-month) & "-" & dt-pad2 (st.dt-day)
 
+ Civil days from 1970-01-01 and back, by the proleptic Gregorian era
+ arithmetic (146097 days per 400-year era; 719468 is the day count from
+ 0000-03-01 to 1970-01-01), exact for every year.
+
+  dt-floor-div : Integer, Integer -> Integer
+  dt-floor-div (a) (b) = if a >= 0 then a / b else (a - b + 1) / b
+
+  dt-days-of-civil : Integer, Integer, Integer -> Integer
+  dt-days-of-civil (y0) (m) (d) =
+    let y = if m <= 2 then y0 - 1 else y0
+    in let era = dt-floor-div y 400
+    in let yoe = y - era * 400
+    in let doy = (153 * (if m > 2 then m - 3 else m + 9) + 2) / 5 + d - 1
+    in let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    in era * 146097 + doe - 719468
+
+  dt-unix : DateTimeState -> Integer
+  dt-unix (st) = dt-days-of-civil (st.dt-year) (st.dt-month) (st.dt-day) * 86400 + st.dt-hour * 3600 + st.dt-minute * 60 + st.dt-second
+
+ The local copy is a fresh record: the dt-set functions write through the
+ caller's pointer, so building it with them would turn the UTC clock itself
+ into local time.
+
+  dt-local : DateTimeState -> DateTimeState
+  dt-local (st) =
+    let t = utc-to-local (st.dt-zone) (dt-unix st)
+    in let days = dt-floor-div t 86400
+    in let secs = t - days * 86400
+    in let z = days + 719468
+    in let era = dt-floor-div z 146097
+    in let doe = z - era * 146097
+    in let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    in let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    in let mp = (5 * doy + 2) / 153
+    in let m = if mp < 10 then mp + 3 else mp - 9
+    in DateTimeState {
+      dt-year = yoe + era * 400 + (if m <= 2 then 1 else 0), dt-month = m, dt-day = doy - (153 * mp + 2) / 5 + 1,
+      dt-hour = secs / 3600, dt-minute = (secs - (secs / 3600) * 3600) / 60, dt-second = secs - (secs / 60) * 60,
+      dt-zone = st.dt-zone, dt-format = st.dt-format, dt-first-day = st.dt-first-day,
+      dt-ntp-enabled = st.dt-ntp-enabled, dt-ntp-server = st.dt-ntp-server,
+      dt-ntp-last-sync = st.dt-ntp-last-sync, dt-ntp-synced = st.dt-ntp-synced,
+      dt-rtc-read = st.dt-rtc-read
+    }
+  dt-abbrev : DateTimeState -> Text
+  dt-abbrev (st) = (zone-type-at (zone-cover (st.dt-zone) (dt-unix st)) (dt-unix st)).abbr
+
   dt-format-full : DateTimeState -> Text
   dt-format-full (st) =
-    dt-format-date st & " " & dt-format-time st & " " & (st.dt-timezone).tz-id
+    let l = dt-local st
+    in dt-format-date l & " " & dt-format-time l & " " & dt-abbrev st
 
   dt-pad2 : Integer -> Text
   dt-pad2 (n) = if n < 10 then "0" & show n else show n
@@ -183,8 +265,8 @@ Section: Widget
   dt-settings-widget : DateTimeState -> WidgetNode
   dt-settings-widget (st) =
     let title = widget-label "dt-title" "Date & Time"
-    in let time-display = widget-label "dt-time" (dt-format-full st)
-    in let tz-label = widget-label "dt-tz" ("Timezone: " & (st.dt-timezone).tz-label)
+    in let time-display = widget-label "dt-time" (if st.dt-rtc-read then dt-format-full st else "Clock not read")
+    in let tz-label = widget-label "dt-tz" ("Timezone: " & (st.dt-zone).name & " (" & dt-abbrev st & ")")
     in let fmt-btn = widget-button "dt-fmt" ("Format: " & time-format-label (st.dt-format))
     in let fd-btn = widget-button "dt-fd" ("Week starts: " & first-day-label (st.dt-first-day))
     in let ntp-btn = widget-button "dt-ntp" (if st.dt-ntp-enabled then "NTP Sync: ON" else "NTP Sync: OFF")

@@ -9,8 +9,6 @@ Chapter: Vector
  that can be rasterized to pixels or exported as SVG-like output.
  Uses fixed-point scale-1000 arithmetic for coordinates.
 
- We say:
-
 Section: Types
 
   PathCmd =
@@ -166,16 +164,6 @@ Section: Rasterization (Bresenham Line)
 
 Section: Coverage
 
- A path could only be stroked. `vs-filled` and `vs-fill-color` were set by
- `vec-style-fill` and read by nothing, `PcBezierTo` and `PcArcTo` fell to the
- `otherwise` arm of the rasterizer and never produced a pixel, and `VecPixel`
- carries a colour with no coverage, so an outline came out as a staircase.
-
- `GlyphRasterizer` has done coverage-based filling since it was written, for
- glyphs. Its `Edge` is a plain segment record and `gr-render-edges` is a
- scanline fill over a list of them, so a path reaches it by being flattened
- into edges rather than by a second rasterizer being written.
-
  The edge space is SIXTY-FOURTHS OF A SUPERSAMPLED PIXEL, which is what
  `gr-scale-pts` produces for a glyph and what `gr-scanline-loop` samples at
  `y * 64 + 32`. Coordinates are scaled once on the way in, so every
@@ -276,14 +264,6 @@ Section: Coverage
     in let edges = vec-edges p (vec-super * vec-sub)
     in gr-downsample-4x (gr-render-edges edges sw sh 0 sh) sw sh w h
 
- A path has no size of its own, so the grid it is rasterized into is a CROP
- of its own coordinates unless something maps one onto the other.
- `vec-coverage` crops, which is what a caller working in pixel coordinates
- asks for. Artwork is drawn in a box of its own and wants the box mapped onto
- the grid instead, so the ratio multiplies into the same factor `vec-edges`
- already applies and the flatness test underneath still means one unit of the
- box.
-
   vec-coverage-in : VecPath, Integer, Integer -> List Integer
   vec-coverage-in (p) (em) (n) =
     if em <= 0 then vec-coverage p n n
@@ -295,11 +275,6 @@ Section: Coverage
   vec-coverage-at (cov) (w) (x) (y) = list-at cov (y * w + x)
 
 Section: Stroke Coverage
-
- A stroke is a FILLED region, so an antialiased one is the coverage the fill
- already produces rather than a second rasterizer. Each segment becomes a
- quad, extended by half a width along its own axis at both ends so a join is
- covered without a miter calculation and a cap has square ends.
 
  THE QUADS ARE RENDERED ONE AT A TIME AND MERGED BY MAXIMUM, and that is the
  whole reason this is not one edge list handed to `gr-render-edges` once.
@@ -313,11 +288,6 @@ Section: Stroke Coverage
  than the grid. There is no collector: a per-quad full grid would stay
  resident for the whole paint, which for a twenty segment icon is twenty
  copies of the supersampled surface.
-
- The width is in PATH UNITS, the same units as the coordinates. `VecStyle`'s
- `vs-stroke-width` is not read here: it is capped at 1000 and its scale was
- never settled, and a caller that has a width in that convention converts at
- its own boundary rather than having a guess about it baked in.
 
   vec-half-w : Integer, Integer -> Integer
   vec-half-w (width) (k) = width * k / 2
@@ -390,9 +360,6 @@ Section: Stroke Coverage
   vec-stroke-coverage (p) (w) (h) (width) =
     let k = vec-super * vec-sub
     in vec-stroke-cov-k p (w * vec-super) (h * vec-super) w h (vec-half-w width k) k
-
- The em-mapped form, matching `vec-coverage-in`: artwork authored in a box of
- its own is scaled onto the grid, and the width scales with it.
 
   vec-stroke-coverage-in : VecPath, Integer, Integer, Integer -> List Integer
   vec-stroke-coverage-in (p) (em) (n) (width) =

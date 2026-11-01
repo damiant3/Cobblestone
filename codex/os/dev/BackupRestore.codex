@@ -1,5 +1,6 @@
 Chapter: BackupRestore
   cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
   cites UI chapter Widget
   cites UI chapter Layout
 
@@ -111,6 +112,64 @@ Section: Actions
       be-label = "Backup " & show (st.bk-next-id)
     }
     in __record-set (__record-set (__record-set (__record-set (__record-set st "bk-running" False) "bk-progress" 100) "bk-history" (list-push (st.bk-history) entry)) "bk-history-count" (st.bk-history-count + 1)) "bk-next-id" (st.bk-next-id + 1)
+
+Section: World Backup Plan
+
+ The plan `apps/uoaix/switch-live.ps1` copies by: each leaving disk backs up as
+ `<parent folder>-<disk base>-<stamp><ext>` in one directory, and a path two
+ disks would share, or one already taken, refuses the whole plan before
+ anything stops (UOAIX-289).
+
+  BackupPlan = record {
+    bp-copies : List Text,
+    bp-refused : Text
+  }
+
+  bk-last-sep : Text, Integer -> Integer
+  bk-last-sep (t) (i) =
+    if i < 0 then 0 - 1
+    else if substring t i 1 == "\\" | substring t i 1 == "/" then i
+    else bk-last-sep t (i - 1)
+
+  bk-last-dot : Text, Integer -> Integer
+  bk-last-dot (t) (i) =
+    if i < 0 then 0 - 1
+    else if substring t i 1 == "." then i
+    else bk-last-dot t (i - 1)
+
+  bk-plan-name : Text, Text, Text -> Text
+  bk-plan-name (dir) (stamp) (disk) =
+    let s = bk-last-sep disk (text-length disk - 1)
+    in let file = substring disk (s + 1) (text-length disk - s - 1)
+    in let parent-path = if s < 0 then "" else substring disk 0 s
+    in let p = bk-last-sep parent-path (text-length parent-path - 1)
+    in let parent = substring parent-path (p + 1) (text-length parent-path - p - 1)
+    in let d = bk-last-dot file (text-length file - 1)
+    in let base = if d <= 0 then file else substring file 0 d
+    in let ext = if d <= 0 then "" else substring file d (text-length file - d)
+    in dir & "\\" & parent & "-" & base & "-" & stamp & ext
+
+  bk-text-in : Text, List Text, Integer -> Boolean
+  bk-text-in (t) (xs) (i) =
+    if i >= list-length xs then False
+    else if text-to-lower (list-at xs i) == text-to-lower t then True
+    else bk-text-in t xs (i + 1)
+
+  bk-plan : Text, Text, List Text, List Text -> BackupPlan
+  bk-plan (dir) (stamp) (disks) (taken) = bk-plan-loop dir stamp disks taken 0 []
+
+  bk-plan-loop : Text, Text, List Text, List Text, Integer, List Text -> BackupPlan
+  bk-plan-loop (dir) (stamp) (disks) (taken) (i) (acc) =
+    if i >= list-length disks then BackupPlan { bp-copies = acc, bp-refused = "" }
+    else let copy = bk-plan-name dir stamp (list-at disks i)
+    in if bk-text-in copy acc 0 then BackupPlan { bp-copies = [], bp-refused = "Backups of two leaving disks would share " & copy }
+    else if bk-text-in copy taken 0 then BackupPlan { bp-copies = [], bp-refused = "Backup exists: " & copy }
+    else bk-plan-loop dir stamp disks taken (i + 1) (acc & [copy])
+
+  bk-record-plan : BackupState, BackupPlan, Integer, Integer -> BackupState
+  bk-record-plan (st) (plan) (ts) (i) =
+    if i >= list-length (plan.bp-copies) then st
+    else bk-record-plan (bk-complete (bk-set-destination st (list-at (plan.bp-copies) i)) ts 0 1 True) plan ts (i + 1)
 
 Section: Widget
 

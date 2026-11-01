@@ -7,19 +7,6 @@ Chapter: SweepAppsScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
- THE TENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
- script is byte-identical to the one that shipped before the migration.
-
- THE SUMMARY STAGE'S VERDICT IS EMPTY AND THAT IS NOT AN OVERSIGHT: this script
- exits with `crash + timeout`, a COMPUTED code, and `PipeOutcome` can spell a
- literal (`PoExit`) or a child's own code (`PoPassthrough`) and nothing else.
- Declaring a number here would be false. That is the second time the verdict
- vocabulary has come up short, so it is recorded on the design page as one
- decision for the second pass rather than answered with a third constructor
- added on the spot.
-
 Section: Parameters
 
   sweep-params : List ShellParam = [sh-param-default "Dir" SptString (SeLit "games"), sh-param-default "TimeoutSec" SptInt (SeInt 60)]
@@ -29,11 +16,6 @@ Section: The pipeline, declared before it is spelled
   repo-art : PipeArtifact = PipeArtifact { pa-name = "Repo", pa-kind = PkDir, pa-expr = SeVar "Repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
 
   compile-script-art : PipeArtifact = PipeArtifact { pa-name = "CompileScript", pa-kind = PkFile, pa-expr = SeVar "CompileScript", pa-from = Just (SePathJoin SeScriptRoot (SeLit "compile.ps1")) }
-
- `stage0` IS THE KERNEL THE SWEEP COMPILES WITH, and this stage copies the
- DEPOT SEED over it before any compile runs. `build-output\bare-metal\Codex.cdx`
- otherwise holds whichever compiler ran last, so the copy is what makes the
- sweep a statement about the seed (OperatorsManual, "Pass -Kernel when you do").
 
   stage0-art : PipeArtifact = PipeArtifact { pa-name = "stage0", pa-kind = PkFile, pa-expr = SeVar "stage0", pa-from = Just (SePathJoin (SeVar "Repo") (SeLit "build-output\\bare-metal\\Codex.cdx")) }
 
@@ -104,10 +86,6 @@ Section: S06 -- Sweep Loop
   s06-body-inner : List ShellCmd = [ScAssign "name" (SeProperty (SeVar "f") "BaseName"), ScAssign "rel" (SeSubstringFrom (SeProperty (SeVar "f") "FullName") (SeAdd (SeTextLength (pipe-ref sweep-arts sweep-params "Repo")) (SeInt 1))), ScAssign "cdxOut" (SePathJoin (pipe-ref sweep-arts sweep-params "outDir") (SeConcat (SeVar "name") (SeLit ".cdx"))), ScAssign "logOut" (SePathJoin (pipe-ref sweep-arts sweep-params "outDir") (SeConcat (SeVar "name") (SeLit ".log"))), ScBlank, sh-start-process-stderr "proc" (SeLit "pwsh") compile-args (SePathJoin (pipe-ref sweep-arts sweep-params "outDir") (SeConcat (SeVar "name") (SeLit ".stderr"))), ScAssign "exited" (SeMethodCall (SeVar "proc") "WaitForExit" [SeMul (pipe-ref sweep-arts sweep-params "TimeoutSec") (SeInt 1000)]), ScIf (SeNot (SeVar "exited")) s06-timeout [], ScBlank, ScSequence s06-exit-check]
 
   s06-body : List ShellCmd = [ScBlank, ScForEach "f" (pipe-ref sweep-arts sweep-params "files") s06-body-inner]
-
- ONE GUEST AT A TIME: the loop waits on each compile before starting the next,
- so `-Jobs` names a number this script never uses and the sweep holds a single
- guest however many files it finds.
 
   s06 : PipeStage = PipeStage { ps-name = "sweep loop", ps-why = "compile each chapter under the staged seed and sort the outcome into pass, diagnostic halt, crash or timeout", ps-in = ["files", "CompileScript", "outDir", "Repo", "TimeoutSec"], ps-out = [], ps-needs = [PrGuests 1], ps-verdict = [], ps-body = s06-body }
 

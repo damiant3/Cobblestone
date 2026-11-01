@@ -6,7 +6,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugCdx = Join-Path $PSScriptRoot 'build-output\wgsl-plug.cdx'
-if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
+. (Join-Path $PSScriptRoot '..' 'common' 'plug-fresh.ps1')
+Update-StalePlug -PlugDir $PSScriptRoot -PlugCdx $PlugCdx
 
 # Scratch is keyed to $Out so two concurrent runs cannot share it. A fixed
 # last-run.ir crossed two runs' outputs and cost ten guests on 2026-09-02

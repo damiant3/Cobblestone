@@ -138,10 +138,9 @@ it frees no block alone either.
 
 ## 3. The ratchet
 
-`build/check-shell-raw.ps1` is the runner. Prose was not: `ScRaw` was marked
-DEPRECATED in `ShellTypes` prose at main 15606 and the count then rose for three
-weeks, because nothing read the prose. A campaign whose method is conversion
-cannot finish while addition outruns conversion.
+`build/check-shell-raw.ps1` is the runner, because a deprecation stated only in
+prose is read by nothing, and a campaign whose method is conversion cannot
+finish while addition outruns conversion.
 
 `-List` prints the per-generator table, `-Update` writes
 `build/shell-raw-baseline.txt`, and the bare form compares. **It fails a RISE and
@@ -233,6 +232,52 @@ and a whole-tree pass is unreviewable. Splitting `g01` into
 `g01-head & g01b & g01-tail` is the worked example for a wall, and it cost
 nothing in emission.
 
+**The unit that converts is a hand rewrite of one generator**, not a line rule.
+Every body becomes a leading-comma list with one statement a line. A block
+becomes `ScIf`, `ScForEach`, `ScTry` or `ScWhile` over a named list, and a
+branch of one or two short statements stays inline. The stage's own list comes
+first and its named blocks follow in order of use. A line with no node that
+renders it byte for byte stays `ScRaw`, but INSIDE the real block node, so the
+AST holds the block. Where the opener has no node (a compound condition,
+`ForEach-Object -Parallel`, a `function` with a `param` block), the opener and
+`}` stay raw around an `ScIndent` of the body; that adds no `SeRaw`. Prose about
+the generator goes (R-PROSE), and a fact a caller needs moves to the reference
+doc. Keep every `ScSequence` that is already there: its trailing newline is a
+shipped blank line, and adding one adds a blank line. `checkerrors`,
+`checkvmdifferential`, `testselfverify`, `cleanzombies`, `runplugchain`,
+`resolvetrace`, `gdbwatchpoint`, `testboards`, `testdiskcompile`, `buildapps`,
+`cvmmbuild`, `runplug` and `plugrun` are done this way (2026-10-26), and
+`test`, `build`, `vmconfig`, `buildimg`, `comparecodexsemantic`, `bvt`, `quiremap`,
+`plugbuildlib`, `cdxtope`, `concatcodexself` and `bootarm64` by a
+structural pass that applies the same rule mechanically: every raw `{` opener
+is matched to the `}` at its own indent, a block whose every inner line sits
+deeper converts, and the line rules then run on the inner lines at their new
+depth. A long heredoc payload is spliced from the old file by script rather
+than retyped.
+
+**Every single-atom payload is converted** (2026-10-26, all 56 generators byte
+level afterwards). An `SeRaw` became its node where the node renders the same
+text: `$true`, `$false`, `@()`, `@{}`, one variable, a double-quoted message with
+no backtick or escaped quote (`SeText`), `(Test-Path -PathType Leaf $x)`, a
+comparison of two variables, properties or integers (`SeBare` over the
+comparison node), and the UTF-8 encoder. An `ScRaw` with NO leading whitespace
+became its node for an assignment of one atom, `++`/`--`, `exit N`, `Start-Sleep
+-Milliseconds`, a one-message `Write-Host` or `[Console]::Error.WriteLine`, a
+bare `New-Item` directory and `Get-Content $x`; an indented payload sits inside
+a raw block and converts only with it. The rules now find nothing outside
+`testrunBash`, whose 2 have no shipped `.sh` to grade against. The record is
+3,982 ScRaw and 121 SeRaw (2026-10-26). What is left: lines with no node
+inside the block nodes, openers with no node (`ForEach-Object -Parallel`,
+hashtable and scriptblock literals, conditions with hex literals or method
+calls), one-line `if`s around cmdlet calls, kept
+raw around an `ScIndent`, and `cdxtopeScript`'s stub below (696 in all). A
+naive-reader
+probe on `checkerrors` before and after found two costs the form still has: a
+bare `return` or `break` is an opaque raw string, and raw braces around an
+`ScIndent` hide the final depth. The corpus holds 9 bare `return` payloads
+(2026-10-26), too few to pay for a `ShellCmd` constructor's deck cost; `break`
+and `continue` already have nodes and convert with the block that holds them.
+
 **The bare `Join-Path` set, and it is a decision rather than a mechanical step.**
 Re-measured 2026-09-08 over the raw payloads in `codex/build/*Script.codex`:
 
@@ -265,8 +310,19 @@ constructor should model an instruction encoder, and step 4's node would not.
 It converts by moving the stub's encoding into Codex beside the PE writer
 (`codex/plugs/pe/PeWriter.codex`), leaving the script to pass `-ChainFile`,
 `-ChainKey` and `-ChainWindowMs`; until then the lines stay raw and booked.
-**Step 4, the cmdlet residue, is last and needs a node designed against real
-call sites.** `g01b`'s body is `ScRaw` on purpose: an ordered hashtable literal,
-a generic HashSet and a `$(if ...)` subexpression have no constructor. Do not
-force it, and do not start it until step 3 is done and the residue can be
-measured against what is actually left.
+**Step 4, nodes designed against the measured residue.** Eight are landed:
+`SePostIncrement` (the `$i++` step of `ScForLoop`), `SptUntyped` (an
+untyped inline `function` parameter), `SptByteArray` and `SptHashtable`,
+`SePathExists` (a bare `Test-Path`), `ScBlockCall` (a command whose last
+argument is a script block, such as `Measure-Phase 'x' { ... }`) and
+`ScFunctionBlock` (`function Name {` with a `param()` block) and `ScIfLine`
+(a one-line `if`, taken only where every statement inside is a node: 26 of
+303). Bash and ksh answer `# <unknown-cmd>` for the last three, having no
+script-block argument, no handling of `ScFunction`, and no one-line form. A condition needs no node of its own:
+PowerShell gives `-and` and `-or` equal precedence and left association, so a
+flat chain is a left fold of `SeAnd`/`SeOr` with `SeBare` on each
+unparenthesised side, and the same holds for arithmetic inside a comparison.
+None of the eight moved any unit's required deck scale (`deck-headroom -Quire
+codex\build -WithSelf`, 62 units, before and after each). `g01b`'s body stays
+`ScRaw`: an ordered hashtable literal, a generic HashSet and a `$(if ...)`
+subexpression have no constructor.

@@ -7,39 +7,91 @@ Chapter: CvmmBuildScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
   cvmm-params : List ShellParam = [sh-switch "Force"]
 
 Section: S01 -- Preamble
 
-  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path"), ScAssign "AppDir" (SeRaw "(Resolve-Path $PSScriptRoot).Path"), ScAssign "OutDir" (SeBare (SePathJoinN [SeVar "AppDir", SeLit "build-output"])), ScAssign "OutFile" (SeBare (SePathJoinN [SeVar "OutDir", SeLit "cvmm-server.cdx"])), ScAssign "BundleSrc" (SeBare (SePathJoinN [SeVar "OutDir", SeLit "cvmm-source.codex"])), ScAssign "LogFile" (SeBare (SePathJoinN [SeVar "OutDir", SeLit "build.log"])), ScBlank, ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+  s01-body : List ShellCmd =
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScBlank
+    , ScAssign "Repo" (SePathResolve (SePathJoinN [SeScriptRoot, SeLit "..", SeLit ".."]))
+    , ScAssign "AppDir" (SePathResolve SeScriptRoot)
+    , ScAssign "OutDir" (SeBare (SePathJoinN [SeVar "AppDir", SeLit "build-output"]))
+    , ScAssign "OutFile" (SeBare (SePathJoinN [SeVar "OutDir", SeLit "cvmm-server.cdx"]))
+    , ScAssign "BundleSrc" (SeBare (SePathJoinN [SeVar "OutDir", SeLit "cvmm-source.codex"]))
+    , ScAssign "LogFile" (SeBare (SePathJoinN [SeVar "OutDir", SeLit "build.log"]))
+    , ScBlank
+    , ScRaw "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"
+    ]
 
 Section: S02 -- App Chapter List
 
-  s02-body : List ShellCmd = [ScBlank,ScComment "App chapters in dependency order (leaf deps first, entry point last)", ScAssign "AppChapters" (SeRaw "@('CvmmTypes','ResourceModel','Command','CvmmState','CvmmTheme','CvmmDashboard','FileExplorer','DriveManager','UsbManager','ProcessManager','ServiceManager','PortMonitor','NetworkManager','DisplayManager','ServerManager','FleetManager','DeployManager','CvmmDisplay','LogViewer','Terminal','ProductivityDb','Monitor','Calendar','Notes','MeshBridge','DataBinding','Keybindings','Serialize','CvmmSettingsViews','CvmmShell','CvmmRoutes','CvmmServer')")]
+  s02-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "App chapters in dependency order (leaf deps first, entry point last)"
+    , ScAssign "AppChapters" (SeRaw "@('CvmmTypes','ResourceModel','Command','CvmmState','CvmmTheme','CvmmDashboard','FileExplorer','DriveManager','UsbManager','ProcessManager','ServiceManager','PortMonitor','NetworkManager','DisplayManager','ServerManager','FleetManager','DeployManager','CvmmDisplay','LogViewer','Terminal','ProductivityDb','Monitor','Calendar','Notes','MeshBridge','DataBinding','Keybindings','Serialize','CvmmSettingsViews','CvmmShell','CvmmRoutes','CvmmServer')")
+    ]
 
 Section: S03 -- Build App Ordered List
 
-  s03-loop-body : List ShellCmd = [ScAssign "path" (SeBare (SePathJoinN [SeVar "AppDir", SeText "$ch.codex"])), ScIf (SeNot (SeRaw "(Test-Path -PathType Leaf $path)")) [ScWriteError (SeRaw "\"MISSING: $path\""), ScExit (SeInt 3)] [], ScRaw "$appOrdered.Add(@{ Quire = 'Cvmm'; Name = $ch; Path = $path; Lines = [System.IO.File]::ReadAllLines($path) })"]
+  s03-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "App chapters render through Format-CiteChapters so their headers carry"
+    , ScComment "the Cvmm-- prefix; compile.ps1's embedded-chapter detection only matches"
+    , ScComment "that form, and plain headers make it re-pull every Cvmm chapter into its"
+    , ScComment "own prelude (duplicate-definition CDX3001s)."
+    , ScRunDot (SePathJoin (SeVar "Repo") (SeLit "build\\quire-map.ps1"))
+    , ScDotNetCallAssign "appOrdered" "System.Collections.Generic.List[hashtable]" "new" []
+    , ScForEach "ch" (SeVar "AppChapters") s03-one-chapter
+    , ScAssign "lines" (SeBare (SeCallArgs "Format-CiteChapters" [SaNamed "Ordered" (SeVar "appOrdered")]))
+    ]
 
-  s03-body : List ShellCmd = [ScBlank,ScComment "App chapters render through Format-CiteChapters so their headers carry", ScComment "the Cvmm-- prefix; compile.ps1's embedded-chapter detection only matches", ScComment "that form, and plain headers make it re-pull every Cvmm chapter into its", ScComment "own prelude (duplicate-definition CDX3001s).", ScRunDot (SeRaw "(Join-Path $Repo 'build\\quire-map.ps1')"), ScDotNetCallAssign "appOrdered" "System.Collections.Generic.List[hashtable]" "new" [], ScForEach "ch" (SeVar "AppChapters") s03-loop-body, ScAssign "lines" (SeRaw "Format-CiteChapters -Ordered $appOrdered")]
+  s03-one-chapter : List ShellCmd =
+    [ ScAssign "path" (SeBare (SePathJoinN [SeVar "AppDir", SeText "$ch.codex"]))
+    , ScIf (SeNot (SeFileExists (SeVar "path"))) [ScWriteError (SeText "MISSING: $path"), ScExit (SeInt 3)] []
+    , ScCallMethod (SeVar "appOrdered") "Add" [app-chapter]
+    ]
+
+  app-chapter : ShellExpr = SeRecord [SfField "Quire" (SeLit "Cvmm"), SfField "Name" (SeVar "ch"), SfField "Path" (SeVar "path"), SfField "Lines" (SeBare (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "path"]))]
 
 Section: S04 -- Resolve Foreword and OS Cites
 
-  s04-body : List ShellCmd = [ScBlank,ScComment "-- Resolve foreword/OS cites -------------------------------------------", ScComment "Cvmm intra-quire cites are already bundled above -- skip them", ScTry [ScAssign "ordered" (SeRaw "Resolve-CiteOrder -RootLines $lines -Repo $Repo -ExcludeQuires @('Cvmm')")] [ScWriteError (SeRaw "\"MISSING: $($_.Exception.Message)\""), ScExit (SeInt 3)] [], ScAssign "preLines" (SeRaw "Format-CiteChapters -Ordered $ordered")]
+  s04-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "-- Resolve foreword/OS cites -------------------------------------------"
+    , ScComment "Cvmm intra-quire cites are already bundled above -- skip them"
+    , ScTry [ScAssign "ordered" (SeBare (SeCallArgs "Resolve-CiteOrder" resolve-args))] [ScWriteError (SeText "MISSING: $($_.Exception.Message)"), ScExit (SeInt 3)] []
+    , ScAssign "preLines" (SeBare (SeCallArgs "Format-CiteChapters" [SaNamed "Ordered" (SeVar "ordered")]))
+    ]
+
+  resolve-args : List ShellArg =
+    [ SaNamed "RootLines" (SeVar "lines")
+    , SaNamed "Repo" (SeVar "Repo")
+    , SaNamed "ExcludeQuires" (SeArrayLiteral [SeLit "Cvmm"])
+    ]
 
 Section: S05 -- Bundle Source
 
-  s05-body : List ShellCmd = [ScBlank,ScAssign "body" (SeRaw "(@($preLines) + @($lines) -join \"`n\") + \"`n\""), ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "BundleSrc", SeVar "body", SeRaw "[System.Text.UTF8Encoding]::new($false)"], ScEcho (SeRaw "\"[cvmm] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes\"")]
+  s05-body : List ShellCmd =
+    [ ScBlank
+    , ScAssign "body" (SeRaw "(@($preLines) + @($lines) -join \"`n\") + \"`n\"")
+    , ScDotNetCall "System.IO.File" "WriteAllText" [SeVar "BundleSrc", SeVar "body", SeBare (SeStaticCall "System.Text.UTF8Encoding" "new" [SeBool False])]
+    , ScEcho (SeText "[cvmm] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes")
+    ]
 
 Section: S06 -- Compile via compile.ps1
 
-  s06-fail : List ShellCmd = [ScWriteError (SeRaw "\"FAIL: compile errors; see $LogFile\""), ScExit (SeInt 5)]
-
-  s06-body : List ShellCmd = [ScBlank,ScComment "-- Compile via compile.ps1 ------------------------------------------", ScAssign "compileScript" (SeBare (SePathJoinN [SeVar "Repo", SeLit "build\\compile.ps1"])), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") s06-fail [], ScEcho (SeRaw "\"[cvmm] OK: $OutFile ($((Get-Item $OutFile).Length) bytes)\"")]
+  s06-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "-- Compile via compile.ps1 ------------------------------------------"
+    , ScAssign "compileScript" (SeBare (SePathJoinN [SeVar "Repo", SeLit "build\\compile.ps1"]))
+    , ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundleSrc -Out $OutFile -Log $LogFile"
+    , ScIf (SeBare (SeStringNeq SeLastExit (SeInt 0))) [ScWriteError (SeText "FAIL: compile errors; see $LogFile"), ScExit (SeInt 5)] []
+    , ScEcho (SeText "[cvmm] OK: $OutFile ($((Get-Item $OutFile).Length) bytes)")
+    ]
 
 Section: Assembly
 

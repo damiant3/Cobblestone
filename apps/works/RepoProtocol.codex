@@ -11,8 +11,6 @@ Chapter: RepoProtocol
   cites Foreword chapter Maybe
   cites Foreword chapter Hamt
 
- We say:
-
 Section: Proposal
 
   Proposal = record {
@@ -70,7 +68,7 @@ Section: Verdict
 
   create-verdict : Keypair, Text, VerdictKind, Text, Integer -> Verdict
   create-verdict (kp) (proposal-id) (kind) (reason) (ts) =
-    let content = proposal-id & "|" & verdict-kind-name kind & "|" & reason
+    let content = verdict-signed-content proposal-id kind reason ts
     in let id = sha256-to-hex (sha256 (text-to-bytes content))
     in let sig = sign-content kp content
     in Verdict {
@@ -85,7 +83,7 @@ Section: Verdict
 
   create-verdict-loaded : Text, VerdictKind, Text, Integer -> [Identity] Maybe Verdict
   create-verdict-loaded (proposal-id) (kind) (reason) (ts) =
-    let content = proposal-id & "|" & verdict-kind-name kind & "|" & reason
+    let content = verdict-signed-content proposal-id kind reason ts
     in when loaded-fingerprint
       is None -> None
       is Just (fp) -> when sign-content-loaded content
@@ -108,8 +106,16 @@ Section: Verdict
     is Abstain -> "abstain"
 
   verdict-content-string : Verdict -> Text
-  verdict-content-string (v) =
-    v.proposal-id & "|" & verdict-kind-name (v.kind) & "|" & v.reason
+  verdict-content-string (v) = verdict-signed-content (v.proposal-id) (v.kind) (v.reason) (v.timestamp)
+
+  verdict-signed-content : Text, VerdictKind, Text, Integer -> Text
+  verdict-signed-content (proposal-id) (kind) (reason) (ts) =
+    proposal-id & "|" & verdict-kind-name kind & "|" & show (text-length (verdict-note kind)) & ":" & verdict-note kind & "|" & show (text-length reason) & ":" & reason & "|" & show ts
+
+  verdict-note : VerdictKind -> Text
+  verdict-note (k) = when k
+    is Amend (note) -> note
+    is otherwise -> ""
 
   verify-verdict-signature : Keyring, Verdict -> Boolean
   verify-verdict-signature (kr) (v) =

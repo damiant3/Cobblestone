@@ -1,0 +1,52 @@
+Chapter: RtcUtcBoot
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone (Zone, zone-from-db)
+  cites Works chapter GopRtc
+  cites Works chapter GopZone (ZoneMachine)
+  cites Works chapter GopRtcZone
+
+Section: Fixtures
+
+  civil : Integer, Integer, Integer, Integer, Integer -> RtcCivil
+  civil (y) (mo) (d) (h) (mi) = RtcCivil { rc-ok = True, rc-year = y, rc-month = mo, rc-day = d, rc-hour = h, rc-minute = mi, rc-second = 0 }
+
+  torn : RtcCivil
+  torn = RtcCivil { rc-ok = False, rc-year = 2026, rc-month = 7, rc-day = 1, rc-hour = 12, rc-minute = 0, rc-second = 0 }
+
+  machine : Text, Boolean -> ZoneMachine
+  machine (name) (local) = ZoneMachine { zm-name = name, zm-rtc-local = local }
+
+Section: Rendering
+
+  pad2 : Integer -> Text
+  pad2 (v) = if v < 10 then "0" & show v else show v
+
+  answer : RtcCivil, ZoneMachine, Maybe Zone -> Text
+  answer (c) (zm) (mz) =
+    when rtc-utc-of c zm mz
+      is None -> "none"
+      is Just (u) ->
+        let t = int-mod u 86400
+        in "utc " & pad2 (t / 3600) & ":" & pad2 (int-mod t 3600 / 60) & " offset " & show (rtc-civil-seconds c - u)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let london = zone-from-db (tz-parse tz-sources) "Europe/London"
+    in let lm = machine "Europe/London" True
+    in act
+      print-line-uni ("zone loaded       : " & (when london is None -> "no" is Just (z) -> z.name))
+      print-line-uni ("utc rtc           : " & answer (civil 2026 11 1 1 30) (machine "Europe/London" False) london)
+      print-line-uni ("utc rtc no zone   : " & answer (civil 2026 11 1 1 30) (machine "" False) None)
+      print-line-uni ("london summer     : " & answer (civil 2026 7 1 12 0) lm london)
+      print-line-uni ("london winter     : " & answer (civil 2026 1 15 12 0) lm london)
+      print-line-uni ("london fold 01:30 : " & answer (civil 2026 10 25 1 30) lm london)
+      print-line-uni ("london gap 01:30  : " & answer (civil 2026 3 29 1 30) lm london)
+      print-line-uni ("local, no zone    : " & answer (civil 2026 7 1 12 0) lm None)
+      print-line-uni ("local, wrong zone : " & answer (civil 2026 7 1 12 0) (machine "Europe/Paris" True) london)
+      print-line-uni ("torn read         : " & answer torn lm london)
+    end

@@ -1,5 +1,7 @@
 Chapter: HttpsClient
   cites Net chapter HttpFetch
+  cites Works chapter GopRtc
+  cites Dev chapter DateTimeSettings
   cites Encode chapter X509
   cites Encode chapter X509Chain
   cites Foreword chapter Console
@@ -135,12 +137,6 @@ Section: Configuration
     [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
      117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]
 
- The date the certificates are checked against, supplied rather than read
- from a clock. The fixtures are pinned to 2020..2040 so this stays inside
- their validity whatever the wall clock says.
-
-  https-cal-now : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
-
   https-expected-body : Text = "codex-https-interop-ok"
 
   https-ec-url : Text = "https://10.0.2.2:4443/probe.txt"
@@ -172,13 +168,35 @@ Section: Reporting
 
 Section: Entry
 
-  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
-    print-line-uni ("https anchors=" & show (list-length https-anchors))
-    ec <- fetch-tls https-ec-url https-priv https-random https-anchors https-cal-now
+  opening : [Network.Read, Network.Write, Console.Write, Device.Port] Nothing =
+    if list-length https-anchors /= 2 then print-line-uni ("https anchors=" & show (list-length https-anchors) & " of 2: a CA does not parse; refusing to fetch")
+    else https-clocked
+
+  https-clocked : [Network.Read, Network.Write, Console.Write, Device.Port] Nothing = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- rtc-read rtc-reg-status-b
+    s <- rtc-read 0
+    mi <- rtc-read 2
+    h <- rtc-read 4
+    day <- rtc-read 7
+    mo <- rtc-read 8
+    y <- rtc-read 9
+    https-at (dt-x509-now (if idle == 0 then datetime-new else dt-from-rtc datetime-new b s mi h day mo y))
+  end
+
+  https-at : List Integer -> [Network.Read, Network.Write, Console.Write] Nothing
+  https-at (now) =
+    if list-length now == 0 then print-line-uni "https clock unread: refusing to fetch"
+    else https-fetch-all now
+
+  https-fetch-all : List Integer -> [Network.Read, Network.Write, Console.Write] Nothing
+  https-fetch-all (now) = act
+    print-line-uni ("https anchors=" & show (list-length https-anchors) & " clock=" & text-concat-list (for d in now -> show (d - 48)))
+    ec <- fetch-tls https-ec-url https-priv https-random https-anchors now
     print-line-uni (https-show "https ec" ec)
-    rsa <- fetch-tls https-rsa-url https-priv https-random https-anchors https-cal-now
+    rsa <- fetch-tls https-rsa-url https-priv https-random https-anchors now
     print-line-uni (https-show "https rsa" rsa)
-    rogue <- fetch-tls https-rogue-url https-priv https-random https-anchors https-cal-now
+    rogue <- fetch-tls https-rogue-url https-priv https-random https-anchors now
     print-line-uni (https-show "https rogue" rogue)
     print-line-uni "https done"
   end

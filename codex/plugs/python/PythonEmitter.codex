@@ -13,7 +13,13 @@ Section: Keywords and Sanitization
      "is", "lambda", "nonlocal", "not", "or",
      "pass", "raise", "return", "try", "type",
      "while", "with", "yield",
-     "True", "False", "None"]
+     "True", "False", "None",
+     "len", "ord", "chr", "str", "int", "float", "bool", "list", "dict", "set",
+     "tuple", "print", "range", "isinstance", "max", "min", "abs", "round",
+     "pow", "divmod", "bytes", "bytearray", "open", "input", "iter", "next",
+     "sum", "any", "all", "map", "repr", "sorted", "reversed", "enumerate",
+     "zip", "object", "super", "hash", "id", "format", "struct", "dataclass",
+     "Any"]
 
   is-py-keyword-loop : List Text, Text, Integer, Integer -> Boolean
   is-py-keyword-loop (kws) (name) (i) (len) =
@@ -44,17 +50,9 @@ Section: Keywords and Sanitization
     in if slash >= 0 then py-sanitize (substring f 0 slash)
     else py-sanitize f
 
- A literal's characters are CCE inside the plug, and CCE's multi-byte units
- share UTF-8's framing with different numbering, so raw bytes print 0x80 low
- from tier-1 slice 1 on. Each non-ASCII character is decoded here and written
- as a `\u` escape.
-
-  py-escape-ascii : Text -> Text
-  py-escape-ascii (s) =
-    let s1 = text-replace s "\\" "\\\\"
-    in let s2 = text-replace s1 "\"" "\\\""
-    in let s3 = text-replace s2 "\n" "\\n"
-    in s3
+ A Text is CCE at run time: each character of the python str is one byte of
+ CCE's UTF-8-shaped framing, so a literal is written byte by byte as `\x`
+ escapes and converts to Unicode only at the program's edges.
 
   py-hex-digits : Integer, Integer -> Text
   py-hex-digits (u) (n) =
@@ -64,12 +62,7 @@ Section: Keywords and Sanitization
   py-escape-text-loop : Text, Integer, Integer, List Text -> List Text
   py-escape-text-loop (s) (i) (len) (acc) =
     if i >= len then acc
-    else let n = cce-decode-length (char-code (char-at s i))
-    in let u = to-unicode (cce-decode-at s i)
-    in let one = if u < 128 then py-escape-ascii (substring s i n)
-    else if u < 65536 then "\\u" & py-hex-digits u 4
-    else "\\U" & py-hex-digits u 8
-    in py-escape-text-loop s (i + n) len (list-snoc acc one)
+    else py-escape-text-loop s (i + 1) len (list-snoc acc ("\\x" & py-hex-digits (char-code-at s i) 2))
 
   py-escape-text : Text -> Text
   py-escape-text (s) = text-concat-list (py-escape-text-loop s 0 (text-length s) [])
@@ -89,7 +82,8 @@ Section: Arity Map
 
   PyCtx = record {
    arities : List ArityEntry,
-   type-defs : List ATypeDef
+   type-defs : List ATypeDef,
+   ops : List Text
   }
 
   bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
@@ -242,8 +236,12 @@ Section: Expression Emission
 
   emit-py-name : Text, CodexType, PyCtx -> Text
   emit-py-name (n) (ty) (ctx) =
-    if n == "read-line" then "input()"
-    else if n == "show" then "str"
+    if py-is-op ctx n then
+      (let ar = py-fun-arity (py-strip-ty ty)
+       in if ar == 0 then "_cxh_perform(\"" & py-sanitize n & "\")"
+       else emit-py-partial-open 0 ar & "_cxh_perform(\"" & py-sanitize n & "\", " & emit-py-partial-params 0 ar & ")" & emit-py-partial-close ar)
+    else if n == "read-line" then "_cce_from_uni(input())"
+    else if n == "show" then "_cce_show"
     else if n == "negate" then "(lambda x: -x)"
     else if n == "True" then "True"
     else if n == "False" then "False"
@@ -365,14 +363,6 @@ Section: Expression Emission
   emit-py-let : Text, IRExpr, IRExpr, PyCtx -> Text
   emit-py-let (name) (val) (body) (ctx) =
     "(lambda " & py-sanitize name & ": " & emit-py-expr body ctx & ")(" & emit-py-expr val ctx & ")"
-
- A multi-parameter lambda is emitted CURRIED, one `lambda` per parameter,
- because that is how the wire APPLIES it: `\x y -> x + y` arrives as an N-ary
- `IrLambda` and its use arrives as nested one-argument applications. Emitting
- `lambda x, y:` and letting the call site spell `(a)(b)` raises
- `TypeError: missing 1 required positional argument`, which is what
- `lam-two` did. Currying also makes partial application work, where matching
- the N-ary form against the chain would need the arity to agree at every site.
 
   emit-py-lambda : List IRParam, IRExpr, PyCtx -> Text
   emit-py-lambda (params) (body) (ctx) =
@@ -590,7 +580,7 @@ Section: Expression Emission
   emit-py-handle (body) (clauses) (ctx) (depth) =
     if list-length clauses == 0 then emit-py-expr-at body ctx (depth + 1)
     else
-      "(lambda: (" & emit-py-handle-clauses clauses ctx depth & emit-py-expr-at body ctx (depth + 1) & "))()"
+      "_cxh_with({" & emit-py-handle-clauses clauses ctx depth & "}, (lambda: " & emit-py-expr-at body ctx (depth + 1) & "))"
 
   emit-py-handle-clauses : List IRHandleClause, PyCtx, Integer -> Text
   emit-py-handle-clauses (clauses) (ctx) (depth) =
@@ -600,15 +590,33 @@ Section: Expression Emission
   emit-py-handle-clauses-loop (clauses) (i) (ctx) (depth) =
     if i == list-length clauses then ""
     else let c = list-at clauses i
-    in let body-expr = emit-py-unwrap-clause-lambda (c.body) (list-length (c.params))
-    in "(lambda " & py-sanitize (c.resume-name) & ": " & emit-py-expr-at body-expr ctx (depth + 1) & "), " & emit-py-handle-clauses-loop clauses (i + 1) ctx depth
+    in "\"" & py-sanitize (c.op-name) & "\": (lambda " & py-sanitize (c.resume-name) & ": " & emit-py-expr-at (c.body) ctx (depth + 1) & "), " & emit-py-handle-clauses-loop clauses (i + 1) ctx depth
 
-  emit-py-unwrap-clause-lambda : IRExpr, Integer -> IRExpr
-  emit-py-unwrap-clause-lambda (e) (n) =
-    if n == 0 then e
-    else when e
-     is IrLambda (ps) (b) (t) (s) -> b
-     is otherwise -> e
+  py-handled-ops : List Text, Integer, List Text -> List Text
+  py-handled-ops (names) (i) (acc) =
+    if i >= list-length names then acc
+    else let n = list-at names i
+    in py-handled-ops names (i + 1) (if is-py-builtin-name n | py-name-is-special n then acc else list-push acc n)
+
+  py-name-is-special : Text -> Boolean
+  py-name-is-special (n) =
+    n == "read-line" | n == "show" | n == "get-state" | n == "set-state" | n == "run-state" | n == "now"
+
+  py-is-op : PyCtx, Text -> Boolean
+  py-is-op (ctx) (n) =
+    if lookup-arity (ctx.arities) n >= 0 then False else py-text-in (ctx.ops) n 0
+
+  py-text-in : List Text, Text, Integer -> Boolean
+  py-text-in (xs) (n) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == n then True
+    else py-text-in xs n (i + 1)
+
+  py-fun-arity : CodexType -> Integer
+  py-fun-arity (t) =
+    when t
+     is FunTy (a) (r) (b) -> 1 + py-fun-arity (py-strip-ty b)
+     is otherwise -> 0
 
 Section: Builtin Dispatch
 
@@ -645,7 +653,7 @@ Section: Builtin Dispatch
    PyBuiltinEmitter { name = "__narrow", emit = \args ctx -> emit-py-expr (list-at args 0) ctx },
    PyBuiltinEmitter {
      name = "show",
-     emit = \args ctx -> if py-real-is-real (ir-expr-type (list-at args 0)) then "_cxr_real_show(" & emit-py-expr (list-at args 0) ctx & ")" else "str(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> if py-real-is-real (ir-expr-type (list-at args 0)) then "_cce_from_uni(_cxr_real_show(" & emit-py-expr (list-at args 0) ctx & "))" else "_cce_show(" & emit-py-expr (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "real-to-bits",
@@ -773,23 +781,23 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "print-line",
-     emit = \args ctx -> "print(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "print(" & py-u (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "print-uni",
-     emit = \args ctx -> "print(" & emit-py-expr (list-at args 0) ctx & ", end='')"
+     emit = \args ctx -> "print(" & py-u (list-at args 0) ctx & ", end='')"
    },
    PyBuiltinEmitter {
      name = "print-line-uni",
-     emit = \args ctx -> "print(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "print(" & py-u (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "fail",
-     emit = \args ctx -> "(_ for _ in ()).throw(Exception(" & emit-py-expr (list-at args 0) ctx & "))"
+     emit = \args ctx -> "(_ for _ in ()).throw(Exception(" & py-u (list-at args 0) ctx & "))"
    },
    PyBuiltinEmitter {
      name = "print-error-uni",
-     emit = \args ctx -> "__import__('sys').stderr.write(" & emit-py-expr (list-at args 0) ctx & " + \"\\n\")"
+     emit = \args ctx -> "__import__('sys').stderr.write(" & py-u (list-at args 0) ctx & " + \"\\n\")"
    },
    PyBuiltinEmitter {
      name = "text-length",
@@ -809,11 +817,11 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "text-to-integer",
-     emit = \args ctx -> "_cx_text_to_integer(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "_cx_text_to_integer(" & py-u (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "integer-to-text",
-     emit = \args ctx -> "str(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "_cce_from_uni(str(" & emit-py-expr (list-at args 0) ctx & "))"
    },
    PyBuiltinEmitter { name = "char-code", emit = \args ctx -> emit-py-expr (list-at args 0) ctx },
    PyBuiltinEmitter {
@@ -834,27 +842,27 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "char-at",
-     emit = \args ctx -> "ord(" & emit-py-expr (list-at args 0) ctx & "[" & emit-py-expr (list-at args 1) ctx & "])"
+     emit = \args ctx -> "ord(_cx_at(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & "))"
    },
    PyBuiltinEmitter {
      name = "char-code-at",
-     emit = \args ctx -> "ord(" & emit-py-expr (list-at args 0) ctx & "[" & emit-py-expr (list-at args 1) ctx & "])"
+     emit = \args ctx -> "ord(_cx_at(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & "))"
    },
    PyBuiltinEmitter {
      name = "substring",
-     emit = \args ctx -> emit-py-expr (list-at args 0) ctx & "[" & emit-py-expr (list-at args 1) ctx & ":" & emit-py-expr (list-at args 1) ctx & " + " & emit-py-expr (list-at args 2) ctx & "]"
+     emit = \args ctx -> "_cx_at_sub(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "list-at",
-     emit = \args ctx -> emit-py-expr (list-at args 0) ctx & "[" & emit-py-expr (list-at args 1) ctx & "]"
+     emit = \args ctx -> "_cx_at(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "list-insert-at",
-     emit = \args ctx -> "(lambda _l, _i, _v: (_l.insert(_i, _v), _l)[1])(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")"
+     emit = \args ctx -> "_cx_at_insert(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "list-set-at",
-     emit = \args ctx -> "(lambda _l, _i, _v: (_l.__setitem__(_i, _v), _l)[1])(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")"
+     emit = \args ctx -> "_cx_at_set(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ", " & emit-py-expr (list-at args 2) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "list-snoc",
@@ -906,11 +914,11 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "open-file",
-     emit = \args ctx -> "open(" & emit-py-expr (list-at args 0) ctx & ", 'r')"
+     emit = \args ctx -> "open(" & py-u (list-at args 0) ctx & ", 'r')"
    },
    PyBuiltinEmitter {
      name = "read-all",
-     emit = \args ctx -> emit-py-expr (list-at args 0) ctx & ".read()"
+     emit = \args ctx -> "_cce_from_uni(" & emit-py-expr (list-at args 0) ctx & ".read())"
    },
    PyBuiltinEmitter {
      name = "close-file",
@@ -918,45 +926,45 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "read-text",
-     emit = \args ctx -> "open(" & emit-py-expr (list-at args 0) ctx & ", 'r').read()"
+     emit = \args ctx -> "_cce_from_uni(open(" & py-u (list-at args 0) ctx & ", 'r').read())"
    },
    PyBuiltinEmitter {
      name = "write-file",
-     emit = \args ctx -> "open(" & emit-py-expr (list-at args 0) ctx & ", 'w').write(" & emit-py-expr (list-at args 1) ctx & ")"
+     emit = \args ctx -> "open(" & py-u (list-at args 0) ctx & ", 'w').write(" & py-u (list-at args 1) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "file-exists",
-     emit = \args ctx -> "__import__('os').path.exists(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "__import__('os').path.exists(" & py-u (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "list-files",
-     emit = \args ctx -> "__import__('glob').glob(__import__('os').path.join(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & "))"
+     emit = \args ctx -> "[_cce_from_uni(f) for f in __import__('glob').glob(__import__('os').path.join(" & py-u (list-at args 0) ctx & ", " & py-u (list-at args 1) ctx & "))]"
    },
    PyBuiltinEmitter {
      name = "list-directories",
-     emit = \args ctx -> "[d for d in __import__('os').listdir(" & emit-py-expr (list-at args 0) ctx & ") if __import__('os').path.isdir(__import__('os').path.join(" & emit-py-expr (list-at args 0) ctx & ", d))]"
+     emit = \args ctx -> "(lambda _p: [_cce_from_uni(d) for d in __import__('os').listdir(_p) if __import__('os').path.isdir(__import__('os').path.join(_p, d))])(" & py-u (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "create-directory",
-     emit = \args ctx -> "__import__('os').makedirs(" & emit-py-expr (list-at args 0) ctx & ", exist_ok=True)"
+     emit = \args ctx -> "__import__('os').makedirs(" & py-u (list-at args 0) ctx & ", exist_ok=True)"
    },
    PyBuiltinEmitter {
      name = "path-combine",
-     emit = \args ctx -> "__import__('os').path.join(" & emit-py-expr (list-at args 0) ctx & ", " & emit-py-expr (list-at args 1) ctx & ")"
+     emit = \args ctx -> "_cce_from_uni(__import__('os').path.join(" & py-u (list-at args 0) ctx & ", " & py-u (list-at args 1) ctx & "))"
    },
    PyBuiltinEmitter {
      name = "path-filename",
-     emit = \args ctx -> "__import__('os').path.basename(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "_cce_from_uni(__import__('os').path.basename(" & py-u (list-at args 0) ctx & "))"
    },
-   PyBuiltinEmitter { name = "get-args", emit = \args ctx -> "__import__('sys').argv" },
+   PyBuiltinEmitter { name = "get-args", emit = \args ctx -> "[_cce_from_uni(a) for a in __import__('sys').argv]" },
    PyBuiltinEmitter {
      name = "get-env",
-     emit = \args ctx -> "__import__('os').environ.get(" & emit-py-expr (list-at args 0) ctx & ", \"\")"
+     emit = \args ctx -> "_cce_from_uni(__import__('os').environ.get(" & py-u (list-at args 0) ctx & ", \"\"))"
    },
-   PyBuiltinEmitter { name = "current-dir", emit = \args ctx -> "__import__('os').getcwd()" },
+   PyBuiltinEmitter { name = "current-dir", emit = \args ctx -> "_cce_from_uni(__import__('os').getcwd())" },
    PyBuiltinEmitter {
      name = "run-process",
-     emit = \args ctx -> "__import__('subprocess').check_output(" & emit-py-expr (list-at args 0) ctx & " + \" \" + " & emit-py-expr (list-at args 1) ctx & ", shell=True, text=True)"
+     emit = \args ctx -> "_cce_from_uni(__import__('subprocess').check_output(" & py-u (list-at args 0) ctx & " + \" \" + " & py-u (list-at args 1) ctx & ", shell=True, text=True))"
    },
    PyBuiltinEmitter {
      name = "process-exit",
@@ -1026,7 +1034,8 @@ Section: Builtin Dispatch
      name = "abs",
      emit = \args ctx -> "abs(" & emit-py-expr (list-at args 0) ctx & ")"
    },
-   PyBuiltinEmitter { name = "read-line", emit = \args ctx -> "input()" },
+   PyBuiltinEmitter { name = "read-line", emit = \args ctx -> "_cce_from_uni(input())" },
+   PyBuiltinEmitter { name = "raw-bytes-to-text", emit = \args ctx -> "''.join(chr(_b) for _b in " & emit-py-expr (list-at args 0) ctx & ")" },
    PyBuiltinEmitter { name = "__record-set", emit = \args ctx -> emit-py-record-set args ctx },
    PyBuiltinEmitter { name = "get-state", emit = \args ctx -> "_py_state[0]" },
    PyBuiltinEmitter {
@@ -1045,7 +1054,7 @@ Section: Builtin Dispatch
    },
    PyBuiltinEmitter {
      name = "text-to-double-bits",
-     emit = \args ctx -> "_cxr_text_to_double_bits(" & emit-py-expr (list-at args 0) ctx & ")"
+     emit = \args ctx -> "_cxr_text_to_double_bits(" & py-u (list-at args 0) ctx & ")"
    },
    PyBuiltinEmitter {
      name = "run-process-full",
@@ -1096,9 +1105,12 @@ Section: Builtin Dispatch
 
   emit-py-run-process-full : List IRExpr, PyCtx -> Text
   emit-py-run-process-full (args) (ctx) =
-    let a0 = emit-py-expr (list-at args 0) ctx
-    in let a1 = emit-py-expr (list-at args 1) ctx
-    in "(lambda: (lambda _r: ProcessResult(stdout=_r.stdout, stderr=_r.stderr, exit_code=_r.returncode))(__import__('subprocess').run(" & a0 & " + \" \" + " & a1 & ", shell=True, capture_output=True, text=True)))()"
+    let a0 = py-u (list-at args 0) ctx
+    in let a1 = py-u (list-at args 1) ctx
+    in "(lambda: (lambda _r: ProcessResult(stdout=_cce_from_uni(_r.stdout), stderr=_cce_from_uni(_r.stderr), exit_code=_r.returncode))(__import__('subprocess').run(" & a0 & " + \" \" + " & a1 & ", shell=True, capture_output=True, text=True)))()"
+
+  py-u : IRExpr, PyCtx -> Text
+  py-u (a) (ctx) = "_cce_to_uni(" & emit-py-expr a ctx & ")"
 
 Section: Apply Emission
 
@@ -1121,7 +1133,8 @@ Section: Apply Emission
     in let args = chain.args
     in when root
      is IrName (n) (ty) (sp) ->
-      if n == "vec-load-at" then py-vec-load args (ir-expr-type e) ctx
+      if py-is-op ctx n then "_cxh_perform(\"" & py-sanitize n & "\", " & emit-py-apply-args args ctx 0 & ")"
+      else if n == "vec-load-at" then py-vec-load args (ir-expr-type e) ctx
       else if is-py-builtin-name n & lookup-arity (ctx.arities) n < 0 then emit-py-builtin n args ctx
       else if is-mktup-name n then
         "(" & emit-py-apply-args args ctx 0 & (if list-length args == 1 then ",)" else ")")
@@ -1339,16 +1352,52 @@ Section: Definition Emission
     let name = py-sanitize (d.name)
     in let params-text = emit-py-def-params (d.params) 0
     in let is-effectful = is-effectful-type (d.type-val)
+    in let guards = py-param-guards (d.params) 0
     in if is-effectful then
-      "def " & name & "(" & params-text & "):\n" & emit-py-statement (d.body) ctx 1 & "\n"
+      "def " & name & "(" & params-text & "):\n" & guards & emit-py-statement (d.body) ctx 1 & "\n"
     else
-      "def " & name & "(" & params-text & "):\n    return " & emit-py-expr (d.body) ctx & "\n\n"
+      "def " & name & "(" & params-text & "):\n" & guards & "    return " & py-return-guard d (emit-py-expr (d.body) ctx) & "\n\n"
 
   emit-py-tco-def : IRDef, PyCtx -> Text
   emit-py-tco-def (d) (ctx) =
     let name = py-sanitize (d.name)
     in let params-text = emit-py-def-params (d.params) 0
-    in "def " & name & "(" & params-text & "):\n    while True:\n" & emit-py-tco-body (d.body) (d.name) (d.params) ctx 2 & "\n"
+    in "def " & name & "(" & params-text & "):\n" & py-param-guards (d.params) 0 & "    while True:\n" & emit-py-tco-body (d.body) (d.name) (d.params) ctx 2 & "\n"
+
+  py-bounded-trap : CodexType -> Boolean
+  py-bounded-trap (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> lo > i64-min | hi < i64-max
+       is otherwise -> False
+     is otherwise -> False
+
+  py-bound-args : CodexType -> Text
+  py-bound-args (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) -> ", " & integer-to-text lo & ", " & integer-to-text hi
+     is otherwise -> ""
+
+  py-param-guards : List IRParam, Integer -> Text
+  py-param-guards (params) (i) =
+    if i >= list-length params then ""
+    else let p = list-at params i
+    in let g = if py-bounded-trap (p.type-val) then "    _cx_bound(" & py-sanitize (p.name) & py-bound-args (p.type-val) & ")\n" else ""
+    in g & py-param-guards params (i + 1)
+
+  py-return-bound : CodexType, Integer -> CodexType
+  py-return-bound (ty) (n) =
+    if n <= 0 then ty
+    else when ty
+     is FunTy (p) (row) (r) -> py-return-bound r (n - 1)
+     is ForAllTy (id) (b) -> py-return-bound b n
+     is otherwise -> ty
+
+  py-return-guard : IRDef, Text -> Text
+  py-return-guard (d) (body) =
+    let rt = py-return-bound (d.type-val) (list-length (d.params))
+    in if py-bounded-trap rt then "_cx_bound(" & body & py-bound-args rt & ")" else body
 
   emit-py-def-params : List IRParam, Integer -> Text
   emit-py-def-params (params) (i) =
@@ -1378,7 +1427,7 @@ Section: Definition Emission
       pad & py-sanitize name & " = " & emit-py-expr val ctx & "\n" & emit-py-statement body ctx indent
      is IrMatch (scrut) (branches) (ty) (sp) ->
       emit-py-stmt-match scrut branches ctx indent
-     is otherwise -> pad & emit-py-expr e ctx & "\n"
+     is otherwise -> pad & "return " & emit-py-expr e ctx & "\n"
 
   emit-py-stmt-match : IRExpr, List IRBranch, PyCtx, Integer -> Text
   emit-py-stmt-match (scrut) (branches) (ctx) (indent) =
@@ -1504,7 +1553,7 @@ Section: Chapter Emission
 
   emit-python-chapter : IRChapter, List ATypeDef -> Text
   emit-python-chapter (m) (type-defs) =
-    let ctx = PyCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
+    let ctx = PyCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, ops = py-handled-ops (m.effect-op-names) 0 [] }
     in let types-text = emit-py-type-defs type-defs 0
     in let defs-text = emit-py-defs (m.defs) 0 ctx
     in let ret-ty = opening-return-type (m.defs)
@@ -1518,6 +1567,85 @@ Section: Chapter Emission
  stays the null address; lloc-bytes bumps by the request rounded up to 8 and
  zero-fills, as bare metal's bump allocator does. Every peek but the qword
  zero-extends, as bare metal's do.
+
+  py-cce-helpers : Text
+  py-cce-helpers =
+    text-concat-list [
+      "_cce_u = [0,10,32,48,49,50,51,52,53,54,55,56,57,101,116,97,111,105,110,115,104,114,100,108,99,117,109,119,102,103,121,112,98,118,107,106,120,113,122,69,84,65,79,73,78,83,72,82,68,76,67,85,77,87,70,71,89,80,66,86,75,74,88,81,90,46,44,33,63,58,59,39,34,45,40,41,43,61,42,60,62,47,64,35,38,95,92,124,91,93,123,125,126,96,94,36,37,233,232,234,235,225,224,226,228,243,244,246,250,252,241,231,237,1072,1086,1077,1080,1085,1090,1089,1088,1074,1083,1082,1084,1076,1087,1091]\n",
+      "_cce_f = {u: i for i, u in enumerate(_cce_u)}\n",
+      "_cce_t1 = [128,256,1024,128,880,128,1536,128,1424,128,2304,128,3584,128,4352,128,19968,512,12352,256,8704,128]\n",
+      "_cce_t1c = [128,384,512,640,768,896,1024,1152,1280,1792,2048]\n",
+      "_cce_t2 = [12288,64,12352,96,12448,96,19968,20992,13312,6592,44032,11172,3584,256,8192,512,127744,1024,9728,256,9984,192]\n",
+      "def _cce_cp_uni(cp):\n",
+      "    if cp < 0:\n",
+      "        return 65533\n",
+      "    if cp < 128:\n",
+      "        return _cce_u[cp]\n",
+      "    if cp < 2176:\n",
+      "        for b in range(10, -1, -1):\n",
+      "            if cp >= _cce_t1c[b]:\n",
+      "                return _cce_t1[2*b] + (cp - _cce_t1c[b])\n",
+      "        return 65533\n",
+      "    if cp < 67712:\n",
+      "        c = 2176\n",
+      "        for b in range(11):\n",
+      "            n = _cce_t2[2*b+1]\n",
+      "            if cp < c + n:\n",
+      "                return _cce_t2[2*b] + (cp - c)\n",
+      "            c += n\n",
+      "    return 65533\n",
+      "def _cce_uni_cp(u):\n",
+      "    if u in _cce_f:\n",
+      "        return _cce_f[u]\n",
+      "    for b in range(11):\n",
+      "        bu = _cce_t1[2*b]\n",
+      "        if bu <= u < bu + _cce_t1[2*b+1]:\n",
+      "            return _cce_t1c[b] + (u - bu)\n",
+      "    c = 2176\n",
+      "    for b in range(11):\n",
+      "        bu = _cce_t2[2*b]\n",
+      "        n = _cce_t2[2*b+1]\n",
+      "        if bu <= u < bu + n:\n",
+      "            return c + (u - bu)\n",
+      "        c += n\n",
+      "    return -1\n",
+      "def _cce_frame(c):\n",
+      "    if c < 128:\n",
+      "        return chr(c)\n",
+      "    if c < 2176:\n",
+      "        v = c - 128\n",
+      "        return chr(192 | (v >> 6)) + chr(128 | (v & 63))\n",
+      "    w = c - 2176\n",
+      "    return chr(224 | (w >> 12)) + chr(128 | ((w >> 6) & 63)) + chr(128 | (w & 63))\n",
+      "def _cce_from_uni(s):\n",
+      "    s = str(s).replace('\\t', '  ').replace('\\r', '')\n",
+      "    out = []\n",
+      "    for ch in s:\n",
+      "        c = _cce_uni_cp(ord(ch))\n",
+      "        out.append(_cce_frame(68 if c < 0 else c))\n",
+      "    return ''.join(out)\n",
+      "def _cce_to_uni(s):\n",
+      "    out = []\n",
+      "    i = 0\n",
+      "    while i < len(s):\n",
+      "        b = ord(s[i])\n",
+      "        n = 1 if b < 128 else 2 if (b & 0xE0) == 0xC0 else 3 if (b & 0xF0) == 0xE0 else 4 if (b & 0xF8) == 0xF0 else 0\n",
+      "        if n == 0 or i + n > len(s):\n",
+      "            out.append('\\ufffd')\n",
+      "            i += 1\n",
+      "            continue\n",
+      "        at = lambda k: ord(s[i + k]) & 0x3F\n",
+      "        cp = b if n == 1 else 128 + (((b & 0x1F) << 6) | at(1)) if n == 2 else 2176 + (((b & 0x0F) << 12) | (at(1) << 6) | at(2)) if n == 3 else 67712 + (((b & 0x07) << 18) | (at(1) << 12) | (at(2) << 6) | at(3))\n",
+      "        u = _cce_cp_uni(cp)\n",
+      "        if 0xD800 <= u <= 0xDFFF:\n",
+      "            u = 65533\n",
+      "        out.append(chr(u))\n",
+      "        i += n\n",
+      "    return ''.join(out)\n",
+      "def _cce_show(v):\n",
+      "    return v if isinstance(v, str) else _cce_from_uni(str(v))\n",
+      "\n"
+    ]
 
   py-mem-helpers : Text
   py-mem-helpers =
@@ -1644,7 +1772,36 @@ Section: Chapter Emission
 
   py-uses-mask : Text -> Integer
   py-uses-mask (body) =
-    (if text-contains body "_cx_lpush" then 1 else 0) + (if text-contains body "_cx_char_encode" then 2 else 0) + (if text-contains body "_cx_text_replace" then 4 else 0) + (if text-contains body "_cxr_" then 32 else 0) + (if text-contains body "_cxm_" then 64 else 0) + (if text-contains body "_cxb_" then 128 else 0) + (if text-contains body "_cx_text_split" then 8 else 0) + (if text-contains body "_cx_text_to_integer" then 16 else 0)
+    (if text-contains body "_cx_lpush" then 1 else 0) + (if text-contains body "_cx_char_encode" then 2 else 0) + (if text-contains body "_cx_text_replace" then 4 else 0) + (if text-contains body "_cxr_" then 32 else 0) + (if text-contains body "_cxm_" then 64 else 0) + (if text-contains body "_cxb_" then 128 else 0) + (if text-contains body "_cx_text_split" then 8 else 0) + (if text-contains body "_cx_text_to_integer" then 16 else 0) + (if text-contains body "_cce_" then 256 else 0) + (if text-contains body "_cx_at" then 512 else 0) + (if text-contains body "_cx_bound" then 1024 else 0) + (if text-contains body "_cxh_" then 2048 else 0)
+
+ Python indexes from the end on a negative index and clamps a slice, so every
+ index is checked here first: bare metal traps on both, and a wrapped or
+ clamped index answers a value from the wrong place.
+
+  py-index-helpers : Text
+  py-index-helpers =
+    text-concat-list [
+      "def _cx_at_trap():\n",
+      "    raise IndexError('CODEX_TRAP_index')\n\n",
+      "def _cx_at(_l, _i):\n",
+      "    if _i < 0 or _i >= len(_l):\n",
+      "        _cx_at_trap()\n",
+      "    return _l[_i]\n\n",
+      "def _cx_at_set(_l, _i, _v):\n",
+      "    if _i < 0 or _i >= len(_l):\n",
+      "        _cx_at_trap()\n",
+      "    _l[_i] = _v\n",
+      "    return _l\n\n",
+      "def _cx_at_insert(_l, _i, _v):\n",
+      "    if _i < 0 or _i > len(_l):\n",
+      "        _cx_at_trap()\n",
+      "    _l.insert(_i, _v)\n",
+      "    return _l\n\n",
+      "def _cx_at_sub(_s, _a, _n):\n",
+      "    if _a < 0 or _n < 0 or _n > len(_s) - _a:\n",
+      "        _cx_at_trap()\n",
+      "    return _s[_a:_a + _n]\n\n"
+    ]
 
   py-helper-if : Integer, Integer, Text -> Text
   py-helper-if (mask) (bit) (src) = if bit-and mask bit /= 0 then src else ""
@@ -1654,6 +1811,10 @@ Section: Chapter Emission
     "from dataclasses import dataclass\nfrom typing import Any\nimport struct\n\n_py_state = [0]\n\n"
       & py-helper-if mask 1 "def _cx_lpush(_l, _v):\n    if _l:\n        _l.append(_v)\n        return _l\n    return [_v]\n\n"
       & py-helper-if mask 2 "def _cx_char_encode(_c):\n    _c = int(_c)\n    if _c < 128:\n        return chr(_c)\n    if _c < 2176:\n        _v = _c - 128\n        return chr(192 | (_v >> 6)) + chr(128 | (_v & 63))\n    if _c < 67712:\n        _v = _c - 2176\n        return chr(224 | (_v >> 12)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n    _v = _c - 67712\n    return chr(240 | (_v >> 18)) + chr(128 | ((_v >> 12) & 63)) + chr(128 | ((_v >> 6) & 63)) + chr(128 | (_v & 63))\n\n"
+      & py-helper-if mask 256 py-cce-helpers
+      & py-helper-if mask 512 py-index-helpers
+      & py-helper-if mask 1024 "def _cx_bound(_v, _lo, _hi):\n    if _v < _lo or _v > _hi:\n        raise OverflowError('CODEX_TRAP_bound')\n    return _v\n\n"
+    & py-helper-if mask 2048 "_cxh_stack = {}\n\ndef _cxh_with(_cs, _body):\n    for _k, _f in _cs.items():\n        _cxh_stack.setdefault(_k, []).append(_f)\n    try:\n        return _body()\n    finally:\n        for _k in _cs:\n            _cxh_stack[_k].pop()\n\ndef _cxh_perform(_k, *_a):\n    _r = _cxh_stack[_k][-1](lambda _v: _v)\n    for _x in _a:\n        _r = _r(_x)\n    return _r\n\n"
       & py-helper-if mask 32 py-real-helpers
       & py-helper-if mask 64 py-mem-helpers
       & py-helper-if mask 128 "def _cxb_wrap(v):\n    return ((v + 9223372036854775808) % 18446744073709551616) - 9223372036854775808\n\ndef _cxb_shl(a, b):\n    return _cxb_wrap(a << (b & 63))\n\ndef _cxb_shr(a, b):\n    return a >> (b & 63)\n\ndef _cxb_shru(a, b):\n    return _cxb_wrap((a & 18446744073709551615) >> (b & 63))\n\ndef _cxb_ipow(a, b):\n    if b < 0:\n        return 0\n    return _cxb_wrap(pow(a, b, 18446744073709551616))\n\n"

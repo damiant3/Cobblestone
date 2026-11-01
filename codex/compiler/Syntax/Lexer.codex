@@ -122,13 +122,6 @@ Section: Lexer State
     let __seq = st.errors = lex-errors-push (st.errors) (make-error code msg span)
     in st
 
- Every lexer error goes through this push. The lexer rewinds the bivy after
- every token (`lex-state-below`), so an error cell or a diagnostic built in
- the bivy is overwritten by the next token's scan; the cell, the diagnostic
- and everything it points at are copied onto the deck instead, which is what
- `copy-sx-diag` with a zero floor does. Three sites pushed cells directly
- before 2026-09-01 and all four lexer refusal tests crashed reading them.
-
   lex-errors-push : LinkedList Diagnostic, Diagnostic -> LinkedList Diagnostic
   lex-errors-push (errs) (d) =
     deck-record (__linked-list-push errs (copy-sx-diag 0 d))
@@ -193,14 +186,6 @@ Section: Whitespace
     in st
 
 Section: Character Scanning
-
- The minus binds to whatever it abuts, and that is what decides whether a
- hyphen belongs to a name or is the subtraction operator. A hyphen touching
- the character before it continues the name, whatever follows: `a-2` and
- `a-b` are one name, and so is `a-`. A hyphen with a space before it is not
- reached here at all, because the scan has already stopped at the space, so
- `a - 2` is subtraction and `a -2` leaves the minus for the parser to read
- as a negation.
 
   scan-ident-end : Text, Integer, Integer -> Integer
   scan-ident-end (source) (offset) (len) =
@@ -550,25 +535,6 @@ Section: Single Token Scanning
     else LexToken (make-token (deck-record ErrorToken) 1 s) next
 
 Section: Char Literal
- Every close below is CONDITIONAL, and before this diagnostic existed the
- absent one was silent at every severity. The non-escape arm advances over
- whatever follows the opening quote, a newline included, so `char-code '` at
- the end of a line took the newline as its character, found no closing quote
- on the next line, and emitted a CharLiteral anyway: the chapter compiled,
- exit 0, and the character the author wrote was gone. Measured at head
- 2026-09-07 before the change. `scan-string-body` twenty lines above is the
- same shape for text and was fixed first (COMPILER-35).
-
- A quote straight after a letter or a digit is an APOSTROPHE and no
- diagnostic is raised for it. A heading is not prose to this lexer: its title
- is reassembled from ordinary tokens by `collect-title-tokens`
- (`Syntax/Parser.codex`), so `Section: The Gate's Coverage` reaches here as a
- character literal that never closes, and twenty files in the tree are written
- that way. Censused 2026-09-07 over 4,025 files: of 364 well-formed character
- literals, ZERO have an opening quote preceded by a letter or a digit, so the
- test costs nothing that is really a literal. The scan still consumes the same
- bytes and emits the same token either way; only the diagnostic is withheld.
-
   char-unterminated : LexState, SourceSpan, Boolean -> LexState
   char-unterminated (st) (open-span) (apostrophe) =
     if apostrophe then st
@@ -614,30 +580,10 @@ Section: Tokenize All
    collected-errors : LinkedList Diagnostic
   }
 
- **The overflow path discards the tokens, and it has to.** This loop
- used to hand back the accumulator it had built so far, on the reading
- that the guard band left room for the wind-down. It does not:
- `__linked-list-to-list` runs inside `deck-record`, so it writes eight
- bytes per collected token onto the same deck that just overflowed, and
- the guard band is a flat megabyte. The band is therefore sized right
- only while few tokens were collected -- `-Decks 5` fires early and
- fits, and `-Decks 20` fires late and converted a token list far larger
- than the band, straight through the ceiling and into the bivy holding
- the linked list it was reading. That is the exact fault the guard was
- written to prevent, moved one call later. Measured 2026-07-21: with
- the phase trace on, `-Decks 20` crashed in `__linked_list_to_list`
- having completed no phase at all.
- Nothing downstream wants these tokens -- `compile-lex` returns
- `tokens = []` the moment the bag has errors -- so the honest wind-down
- allocates nothing and the band only has to cover the error record.
-
  The token list is a flat list with capacity taken from the source
  length, pushed through a deck extent so that a push within capacity is
  a store and a push past it copies onto the deck rather than into the
- bivy. Until 2026-09-01 the tokens were collected into a linked list and
- flattened once at the end, which left one list cell per token in the
- bivy, 54 MB on the compiler's own unit, and that bivy sat above the LEX
- floor where nothing later in the compile reuses the pages. A token
+ bivy. A token
  consumes at least one source character except the synthesized layout
  tokens, so half the source length plus a margin covers the measured
  density with room (1.2 million tokens from 3.05 MB on the compiler's own

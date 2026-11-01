@@ -32,6 +32,31 @@ Section: Frames
   nfr-out : Integer, Integer, Integer -> Text
   nfr-out (first) (frag) (words) = (net-process-frame (nfr-session 0) (nfr-frame first frag (nfr-syn words))).output
 
+ A seeded single-byte mutation sweep over a valid SYN frame: every byte of the
+ Ethernet, IP and TCP header region is flipped in turn and the frame handed to
+ net-process-frame, which must RETURN a result for every one. A bound removed
+ from any receive parser (eth-ethertype, ip-length/header validation, the IP
+ accessors, tcp-parse-at) would read past the datagram and trap, killing the
+ guest mid-sweep; the sweep completing is the guard. The result's output is
+ summed so no call is optimised away.
+
+  nfr-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  nfr-mutate (xs) (pos) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else nfr-mutate xs pos val (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) val else list-at xs i))
+
+  nfr-base : List Integer = nfr-frame 69 0 (nfr-syn 5)
+
+  nfr-sweep : Integer, Integer, Integer -> Integer
+  nfr-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else let m = nfr-mutate nfr-base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in let r = net-process-frame (nfr-session 0) m
+    in nfr-sweep (pos + 1) n (acc + text-length (r.output))
+
+  nfr-sweep-line : Text =
+    "frame-mutation-sweep completed=" & (if nfr-sweep 0 (list-length nfr-base) 0 >= 0 then "True" else "False")
+
   opening : [Console] Nothing = act
     print-line-uni ("syn = " & nfr-out 69 0 5)
     print-line-uni ("syn with don't-fragment = " & nfr-out 69 #4000 5)
@@ -42,6 +67,7 @@ Section: Frames
     print-line-uni ("tcp data offset 4 = " & nfr-out 69 0 4)
     print-line-uni ("tcp data offset 15 = " & nfr-out 69 0 15)
     print-line-uni ("syn for another address = " & (net-process-frame (nfr-session 0) (nfr-frame-to [10, 0, 2, 16] 69 0 (tcp-with-checksum (tcp-build-segment 50000 9443 7000 0 tcp-flag-syn 8192 []) nfr-peer [10, 0, 2, 16]))).output)
+    print-line-uni nfr-sweep-line
   end
 
 Page 1

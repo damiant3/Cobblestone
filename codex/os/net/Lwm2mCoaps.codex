@@ -12,14 +12,13 @@ Chapter: Lwm2mCoaps
  ONE LWM2M MESSAGE PER RECORD, as for CoAP: the datagram boundary is the
  message boundary, and the sealing preserves it.
 
- We say:
-
 Section: Types
 
   Lwm2mCoapsEp = record {
     xl-client : Lwm2mClient,
     xl-dtls : DtlsEp,
-    xl-read : Integer
+    xl-read : Integer,
+    xl-anon : Boolean
   }
 
   Lwm2mCoapsStep = record {
@@ -30,7 +29,16 @@ Section: Types
 Section: Construction
 
   lwm2m-coaps-new : Lwm2mClient, DtlsEp -> Lwm2mCoapsEp
-  lwm2m-coaps-new (c) (d) = Lwm2mCoapsEp { xl-client = c, xl-dtls = d, xl-read = 0 }
+  lwm2m-coaps-new (c) (d) = Lwm2mCoapsEp { xl-client = c, xl-dtls = d, xl-read = 0, xl-anon = False }
+
+ SAFE BY DEFAULT (Damian, 2026-11-01): an endpoint carries nothing, either way, while its DTLS peer is
+ unauthenticated, unless it was made by the constructor that names the unauthenticated mode.
+
+  lwm2m-coaps-new-unauthenticated : Lwm2mClient, DtlsEp -> Lwm2mCoapsEp
+  lwm2m-coaps-new-unauthenticated (c) (d) = Lwm2mCoapsEp { xl-client = c, xl-dtls = d, xl-read = 0, xl-anon = True }
+
+  lwm2m-coaps-carries : Lwm2mCoapsEp -> Boolean
+  lwm2m-coaps-carries (ep) = if ep.xl-anon then True else dtls-ep-authenticated (ep.xl-dtls)
 
   lwm2m-coaps-idle : Lwm2mCoapsEp -> Lwm2mCoapsStep
   lwm2m-coaps-idle (ep) = Lwm2mCoapsStep { xls-ep = ep, xls-out = [] }
@@ -45,22 +53,26 @@ Section: Sending
 
   lwm2m-coaps-register : Lwm2mCoapsEp -> Lwm2mCoapsStep
   lwm2m-coaps-register (ep) =
-    let ls = lwm2m-client-register (ep.xl-client)
+    if lwm2m-coaps-carries ep == False then lwm2m-coaps-idle ep
+    else let ls = lwm2m-client-register (ep.xl-client)
     in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
 
   lwm2m-coaps-update : Lwm2mCoapsEp -> Lwm2mCoapsStep
   lwm2m-coaps-update (ep) =
-    let ls = lwm2m-client-update (ep.xl-client)
+    if lwm2m-coaps-carries ep == False then lwm2m-coaps-idle ep
+    else let ls = lwm2m-client-update (ep.xl-client)
     in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
 
   lwm2m-coaps-deregister : Lwm2mCoapsEp -> Lwm2mCoapsStep
   lwm2m-coaps-deregister (ep) =
-    let ls = lwm2m-client-deregister (ep.xl-client)
+    if lwm2m-coaps-carries ep == False then lwm2m-coaps-idle ep
+    else let ls = lwm2m-client-deregister (ep.xl-client)
     in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
 
   lwm2m-coaps-tick : Lwm2mCoapsEp -> Lwm2mCoapsStep
   lwm2m-coaps-tick (ep) =
-    let ls = lwm2m-client-tick (ep.xl-client)
+    if lwm2m-coaps-carries ep == False then lwm2m-coaps-idle ep
+    else let ls = lwm2m-client-tick (ep.xl-client)
     in lwm2m-coaps-seal-all (__record-set ep "xl-client" (ls.ls-client)) (ls.ls-out) 0 []
 
 Section: Receiving
@@ -76,9 +88,10 @@ Section: Receiving
     in let buf = dtls-ep-app-in (st.es-ep)
     in let n = list-length buf
     in if n <= ep.xl-read then lwm2m-coaps-idle (__record-set ep "xl-dtls" (st.es-ep))
-    else let msg = lwm2m-coaps-slice buf (ep.xl-read) n []
+    else if lwm2m-coaps-carries ep == False then lwm2m-coaps-idle (__record-set ep "xl-dtls" (st.es-ep))
+    else let msg = if ep.xl-read == 0 then buf else lwm2m-coaps-slice buf (ep.xl-read) n []
     in let ls = lwm2m-client-recv (ep.xl-client) msg
-    in let ep2 = __record-set (__record-set (__record-set ep "xl-dtls" (st.es-ep)) "xl-client" (ls.ls-client)) "xl-read" n
+    in let ep2 = __record-set (__record-set (__record-set ep "xl-dtls" (dtls-ep-app-drain (st.es-ep) n)) "xl-client" (ls.ls-client)) "xl-read" 0
     in lwm2m-coaps-seal-all ep2 (ls.ls-out) 0 []
 
   lwm2m-coaps-slice : List Integer, Integer, Integer, List Integer -> List Integer

@@ -5,8 +5,6 @@ Chapter: DriveManager
   cites Foreword chapter Fat32
   grounds Device.Block
 
- We say:
-
 Section: Drive Info Types
 
   DriveInfo = record {
@@ -91,7 +89,12 @@ Section: Drive Enumeration
     else let w = dm-read-identify-word (start + i)
     in let hi = bit-and (bit-shru w 8) 255
     in let lo = bit-and w 255
-    in dm-ident-str-loop start count (i + 1) (acc & char-to-text (code-to-char hi) & char-to-text (code-to-char lo))
+    in dm-ident-str-loop start count (i + 1) (acc & dm-byte-text hi & dm-byte-text lo)
+
+  dm-byte-text : Integer -> Text
+  dm-byte-text (b) =
+    let cce = from-unicode b
+    in if cce < 0 then "" else char-to-text (code-to-char cce)
 
   dm-read-identify-word : Integer -> Integer
   dm-read-identify-word (word-index) =
@@ -152,7 +155,7 @@ Section: Filesystem Detection
   dm-read-oem-loop (buf) (off) (remaining) (acc) =
     if remaining <= 0 then acc
     else
-      dm-read-oem-loop buf (off + 1) (remaining - 1) (acc & char-to-text (code-to-char (peek-byte buf off)))
+      dm-read-oem-loop buf (off + 1) (remaining - 1) (acc & dm-byte-text (peek-byte buf off))
 
   dm-check-codexfs : Integer -> Boolean
   dm-check-codexfs (buf) =
@@ -480,7 +483,8 @@ Section: Dual-Boot Install
                       is Just (codex-dir) ->
                         let w5 = fat32-write-file esp-vol "EFI/Codex/codex.efi" data
                         in let free-mb = free-secs / 2048
-                        in DualBootOk ("Installed to " & drive.di-model & " (" & show free-mb & " MB) - reboot and select Codex from UEFI boot menu")
+                        in if w5 == False then DualBootFail "Could not write EFI/Codex/codex.efi to the ESP"
+                        else DualBootOk ("Installed to " & drive.di-model & " (" & show free-mb & " MB) - reboot and select Codex from UEFI boot menu")
                       is None -> DualBootFail "Could not create EFI/Codex directory"
                   is None -> DualBootFail "Could not access EFI directory on ESP"
               is None -> DualBootFail "Could not read boot image from USB stick"

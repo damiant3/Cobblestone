@@ -6,10 +6,6 @@ Section: Sanitization
   ts-sanitize (name) =
     text-replace (text-replace name "-" "_") "'" ""
 
- The IR spells a record field as `name/slot`, so a field name reaches the
- emitter as `a/0` and reads as a division in every target that has one.
- riscv resolves the slot and needs it; every source plug wants the name.
-
   ts-slash-pos : Text, Integer, Integer -> Integer
   ts-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -76,16 +72,10 @@ Section: Arity Map
 
 Section: Bound Names
 
- The compiler has resolved every name before the plug sees it, so a lower-case
- name that is neither a prelude or top-level function nor bound anywhere in the
- definition being emitted can only be a builtin this plug has no emitter for.
- The set is the whole definition's binders at once rather than a scope, which
- is enough for that question. A vector pattern's names are left out because
- `emit-ts-pat-binds` emits no binding for them.
-
   TsCtx = record {
    ts-arities : List ArityEntry,
-   ts-locals : List Text
+   ts-locals : List Text,
+   ts-ops : List Text
   }
 
   ts-is-local : List Text, Text, Integer -> Boolean
@@ -137,6 +127,42 @@ Section: Bound Names
      is IrDoBind (name) (ty) (val) (sp) -> [name] & ts-bound-names val
      is IrDoExec (e) (sp) -> ts-bound-names e) & ts-stmts-names ss (i + 1)
 
+  ts-clauses-names : List IRHandleClause, Integer -> List Text
+  ts-clauses-names (cs) (i) =
+    if i >= list-length cs then []
+    else let c = list-at cs i
+    in [c.resume-name] & ts-bound-names (c.body) & ts-clauses-names cs (i + 1)
+
+  ts-is-op : TsCtx, Text -> Boolean
+  ts-is-op (ctx) (n) =
+    if lookup-arity (ctx.ts-arities) n >= 0 | ts-is-local (ctx.ts-locals) n 0 then False
+    else ts-is-local (ctx.ts-ops) n 0
+
+  ts-fun-arity : CodexType -> Integer
+  ts-fun-arity (t) =
+    when t
+     is FunTy (a) (r) (b) -> 1 + ts-fun-arity b
+     is EffectfulTy (effs) (scopes) (inner) -> ts-fun-arity inner
+     is otherwise -> 0
+
+  ts-perform : Text, Text -> Text
+  ts-perform (n) (args) =
+    "_cxh_perform(\"" & ts-sanitize n & "\"" & (if text-length args > 0 then ", " & args else "") & ")"
+
+  emit-ts-handle : List IRHandleClause, IRExpr, TsCtx, Integer -> Text
+  emit-ts-handle (clauses) (body) (ctx) (indent) =
+    if list-length clauses == 0 then emit-ts-expr body ctx indent
+    else "_cxh_with({" & emit-ts-handle-clauses clauses ctx indent 0 & "}, (() => " & emit-ts-expr body ctx indent & "))"
+
+  emit-ts-handle-clauses : List IRHandleClause, TsCtx, Integer, Integer -> Text
+  emit-ts-handle-clauses (cs) (ctx) (indent) (i) =
+    if i >= list-length cs then ""
+    else let c = list-at cs i
+    in "\"" & ts-sanitize (c.op-name) & "\": ((" & ts-sanitize (c.resume-name) & ": any) => " & emit-ts-expr (c.body) ctx indent & "), " & emit-ts-handle-clauses cs ctx indent (i + 1)
+
+  ts-handler-helpers : Text
+  ts-handler-helpers = "const _cxh_stack: Map<string, any[]> = new Map();\nfunction _cxh_with(cs: any, body: () => any): any { for (const k in cs) { if (!_cxh_stack.has(k)) _cxh_stack.set(k, []); (_cxh_stack.get(k) as any[]).push(cs[k]); } try { return body(); } finally { for (const k in cs) (_cxh_stack.get(k) as any[]).pop(); } }\nfunction _cxh_perform(k: string, ...a: any[]): any { const s = _cxh_stack.get(k) as any[]; let r = s[s.length - 1]((v: any) => v); for (const x of a) r = r(x); return r; }\n\n"
+
   ts-bound-names : IRExpr -> List Text
   ts-bound-names (e) =
     when e
@@ -149,7 +175,7 @@ Section: Bound Names
      is IrList (elems) (ty) (sp) -> ts-exprs-names elems 0
      is IrMatch (scrut) (branches) (ty) (sp) -> ts-bound-names scrut & ts-branches-names branches 0
      is IrAct (stmts) (ty) (sp) -> ts-stmts-names stmts 0
-     is IrHandle (eff) (body) (clauses) (ty) (sp) -> ts-bound-names body
+     is IrHandle (eff) (body) (clauses) (ty) (sp) -> ts-bound-names body & ts-clauses-names clauses 0
      is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> ts-bound-names body
      is IrRecord (name) (fields) (ty) (sp) -> ts-fields-names fields 0
      is IrFieldAccess (rec) (field) (ty) (sp) -> ts-bound-names rec
@@ -219,7 +245,10 @@ Section: Expression Emission
      is IrTextLit (s) (sp) -> "\"" & ts-escape s & "\""
      is IrBoolLit (b) (sp) -> if b then "true" else "false"
      is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
-     is IrName (n) (ty) (sp) -> emit-ts-name n ctx
+     is IrName (n) (ty) (sp) -> if ts-is-op ctx n then
+       (let ar = ts-fun-arity ty
+        in if ar == 0 then ts-perform n "" else emit-ts-partial-wrappers 0 ar & ts-perform n (emit-ts-partial-params 0 ar))
+     else emit-ts-name n ctx
      is IrBinary (op) (l) (r) (ty) (sp) -> emit-ts-binary op l r ty ctx indent
      is IrNegate (x) (nty) (sp) -> "(-(" & emit-ts-expr x ctx indent & "))"
      is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-ts-expr c ctx indent & " ? " & emit-ts-expr t ctx indent & " : " & emit-ts-expr el ctx indent & ")"
@@ -234,9 +263,9 @@ Section: Expression Emission
      is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-ts-record-fields fields name ctx indent 0 & " }"
      is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ts-expr rec ctx indent & "." & ts-field field
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-ts-expr rec ctx indent & "." & ts-field field & " = " & emit-ts-expr val ctx indent & ")"
-     is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-ts-expr body ctx indent & ")"
-     is IrAwait (task) (ty) (sp) -> "(await " & emit-ts-expr task ctx indent & ")"
-     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ts-expr body ctx indent
+     is IrFork (body) (ty) (sp) -> "({ v: (" & emit-ts-expr body ctx indent & ")(null) })"
+     is IrAwait (task) (ty) (sp) -> "(" & emit-ts-expr task ctx indent & ").v"
+     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ts-handle clauses body ctx indent
      is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ts-expr body ctx indent
      is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-ts-try max body fb fail ctx indent
      is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & ts-escape msg & "\"); })()"
@@ -315,7 +344,9 @@ Section: Apply and Helpers
       else if n == "fail" & list-length (chain.args) == 1 then "(() => { throw new Error(" & emit-ts-expr (list-at (chain.args) 0) ctx indent & "); })()"
       else let ar = lookup-arity (ctx.ts-arities) n
       in if ar < 0 then
-        (if ts-is-local (ctx.ts-locals) n 0 then ts-sanitize n & emit-ts-apply-rest (chain.args) ctx indent 0 else ts-refuse-name n)
+        (if ts-is-local (ctx.ts-locals) n 0 then ts-sanitize n & emit-ts-apply-rest (chain.args) ctx indent 0
+         else if ts-is-local (ctx.ts-ops) n 0 then ts-perform n (emit-ts-apply-args (chain.args) ctx indent 0)
+         else ts-refuse-name n)
       else if ar == 0 then ts-sanitize n & "()" & emit-ts-apply-rest (chain.args) ctx indent 0
       else emit-ts-apply-split (ts-sanitize n) (chain.args) ar ctx indent
      is otherwise -> "(" & func & ")" & emit-ts-apply-rest (chain.args) ctx indent 0
@@ -531,23 +562,58 @@ Section: Type Definitions
 
 Section: Definition Emission
 
-  emit-ts-def : IRDef, List ArityEntry -> Text
-  emit-ts-def (d) (arities) =
+  emit-ts-def : IRDef, List ArityEntry, List Text -> Text
+  emit-ts-def (d) (arities) (ops) =
     if text-length (d.name) == 0 then ""
     else let sname = ts-sanitize (d.name)
     in let ctx = TsCtx {
       ts-arities = arities,
-      ts-locals = ts-param-names (d.params) 0 & ts-bound-names (d.body)
+      ts-locals = ts-param-names (d.params) 0 & ts-bound-names (d.body),
+      ts-ops = ops
     }
     in if list-length (d.params) == 0
        then "function " & sname & "(): any {\n  return " & emit-ts-expr (d.body) ctx 1 & ";\n}\n\n"
     else
-      "function " & sname & "(" & emit-ts-params (d.params) 0 & "): any {\n  return " & emit-ts-expr (d.body) ctx 1 & ";\n}\n\n"
+      "function " & sname & "(" & emit-ts-params (d.params) 0 & "): any {\n" & ts-param-guards (d.params) 0 & "  return " & ts-return-guard d (emit-ts-expr (d.body) ctx 1) & ";\n}\n\n"
 
-  emit-ts-defs : List IRDef, Integer, List ArityEntry -> Text
-  emit-ts-defs (defs) (i) (arities) =
+  ts-bounded-trap : CodexType -> Boolean
+  ts-bounded-trap (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> lo > i64-min | hi < i64-max
+       is otherwise -> False
+     is otherwise -> False
+
+  ts-bound-args : CodexType -> Text
+  ts-bound-args (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) -> ", " & integer-to-text lo & "n, " & integer-to-text hi & "n"
+     is otherwise -> ""
+
+  ts-param-guards : List IRParam, Integer -> Text
+  ts-param-guards (params) (i) =
+    if i >= list-length params then ""
+    else let p = list-at params i
+    in let g = if ts-bounded-trap (p.type-val) then "  _cx_bound(" & ts-sanitize (p.name) & ts-bound-args (p.type-val) & ");\n" else ""
+    in g & ts-param-guards params (i + 1)
+
+  ts-return-bound : CodexType, Integer -> CodexType
+  ts-return-bound (ty) (n) =
+    if n <= 0 then ty
+    else when ty
+     is FunTy (p) (row) (r) -> ts-return-bound r (n - 1)
+     is ForAllTy (id) (b) -> ts-return-bound b n
+     is otherwise -> ty
+
+  ts-return-guard : IRDef, Text -> Text
+  ts-return-guard (d) (body) =
+    let rt = ts-return-bound (d.type-val) (list-length (d.params))
+    in if ts-bounded-trap rt then "_cx_bound(" & body & ts-bound-args rt & ")" else body
+  emit-ts-defs : List IRDef, Integer, List ArityEntry, List Text -> Text
+  emit-ts-defs (defs) (i) (arities) (ops) =
     if i == list-length defs then ""
-    else emit-ts-def (list-at defs i) arities & emit-ts-defs defs (i + 1) arities
+    else emit-ts-def (list-at defs i) arities ops & emit-ts-defs defs (i + 1) arities ops
 
   emit-ts-type-defs : List ATypeDef, Integer -> Text
   emit-ts-type-defs (tds) (i) =
@@ -557,11 +623,7 @@ Section: Definition Emission
 Section: TypeScript Module Assembly
 
   ts-builtins-text : Text
-  ts-builtins-text = "function __narrow(n: any): any { return n; }\nfunction print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { return xs[Number(i)]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { return s[Number(i)]; }\nfunction negate(n: bigint): bigint { return -n; }\nfunction __cf(t: string, f: string, v: any): any { const b = (__clamps as any)[t + \".\" + f]; return b === undefined ? v : (v < b[0] ? b[0] : (v > b[1] ? b[1] : v)); }\nfunction int_mod(a: bigint, b: bigint): bigint { const abs = b < 0n ? -b : b; const r = a % abs; return r < 0n ? r + abs : r; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\nfunction vec_empty(): any[] { return []; }\nfunction vec_singleton(v: any): any[] { return [v]; }\nfunction vec_cons(v: any, xs: any[]): any[] { return [...xs, v]; }\nfunction vec_head(xs: any[]): any { return xs[0]; }\nfunction vec_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n" & ts-char-builtins-text & ts-io-builtins-text
-
- Three builtins this plug emitted calls to and never defined, so every
- subject using one died on a ReferenceError. Nothing caught it because
- nothing ran this plug's output until the oracle did.
+  ts-builtins-text = "function __narrow(n: any): any { return n; }\nfunction _cx_bound(v: any, lo: bigint, hi: bigint): any { if (v < lo || v > hi) throw new RangeError('CODEX_TRAP_bound'); return v; }\nfunction print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): bigint { return BigInt(s.length); }\nfunction text_replace(s: string, a: string, b: string): string { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_compare(a: string, b: string): bigint { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction list_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction list_at(xs: any[], i: bigint): any { const k = Number(i); if (!(k >= 0 && k < xs.length)) throw new RangeError('CODEX_TRAP_index'); return xs[k]; }\nfunction integer_to_text(n: bigint): string { return String(n); }\nfunction char_code(c: any): bigint { return BigInt(typeof c === 'string' ? c.charCodeAt(0) : c); }\nfunction char_at(s: string, i: bigint): string { const k = Number(i); if (!(k >= 0 && k < s.length)) throw new RangeError('CODEX_TRAP_index'); return s[k]; }\nfunction negate(n: bigint): bigint { return -n; }\nfunction __cf(t: string, f: string, v: any): any { const b = (__clamps as any)[t + \".\" + f]; return b === undefined ? v : (v < b[0] ? b[0] : (v > b[1] ? b[1] : v)); }\nfunction int_mod(a: bigint, b: bigint): bigint { const abs = b < 0n ? -b : b; const r = a % abs; return r < 0n ? r + abs : r; }\nfunction list_snoc(xs: any[], v: any): any[] { if (xs.length > 0) { xs.push(v); return xs; } return [v]; }\nfunction list_push(xs: any[], v: any): any[] { return list_snoc(xs, v); }\nfunction vec_empty(): any[] { return []; }\nfunction vec_singleton(v: any): any[] { return [v]; }\nfunction vec_cons(v: any, xs: any[]): any[] { return [...xs, v]; }\nfunction vec_head(xs: any[]): any { return xs[0]; }\nfunction vec_length(xs: any[]): bigint { return BigInt(xs.length); }\nfunction text_starts_with(s: string, p: string): boolean { return s.startsWith(p); }\nfunction text_contains(s: string, sub: string): boolean { return s.includes(sub); }\nfunction text_split(s: string, sep: string): string[] { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s: string): bigint { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n" & ts-char-builtins-text & ts-io-builtins-text
 
  `char_encode` is CCE, not UTF-8: the tier boundaries are 128, 2176 and
  67712, and each tier subtracts its base before splitting, so the
@@ -575,16 +637,6 @@ Section: TypeScript Module Assembly
     "function char_encode(c: any): string { const n = Number(c); if (n < 128) return String.fromCharCode(n); if (n < 2176) { const v = n - 128; return String.fromCharCode(192|(v>>6), 128|(v&63)); } if (n < 67712) { const v = n - 2176; return String.fromCharCode(224|(v>>12), 128|((v>>6)&63), 128|(v&63)); } const v = n - 67712; return String.fromCharCode(240|(v>>18), 128|((v>>12)&63), 128|((v>>6)&63), 128|(v&63)); }\n"
     & "function code_to_char(c: any): any { return c; }\n"
     & "function char_code_at(s: any, i: any): bigint { return BigInt(String(s).charCodeAt(Number(i))); }\n\n"
-
- `read-line` has no emitter here, and the point of this stub is that it SAYS
- so. Without it the name reaches `emit-ts-name` with no arity entry and is
- emitted as a bare `read_line`, an identifier defined nowhere in the file, so
- the artifact is plausible and dies at run time on a ReferenceError naming
- neither the plug nor the gap. Defining it gives the arity table a 0-ary entry,
- which makes the emission the call `read_line()` and puts the refusal at the
- point of use. Do not replace this with an implementation without reading what
- the oracle expects of a reading subject; do not delete it to make a program
- run.
 
  The marker is deliberately NOT `CODEX_REFUSED_`. That one is the class-5
  integer-precision verdict `build/plug-oracle-test.ps1` reads, and its rule
@@ -604,9 +656,9 @@ Section: TypeScript Module Assembly
     in let arities = build-arity-map (m.defs) 0 (prelude-arities builtins)
     in let clamps = "const __clamps: any = {\n" & ts-clamp-table type-defs 0 & "};\n\n"
     in let types-text = clamps & emit-ts-type-defs type-defs 0
-    in let defs-text = emit-ts-defs (m.defs) 0 arities
+    in let defs-text = emit-ts-defs (m.defs) 0 arities (m.effect-op-names)
     in let entry = ts-entry-text
-    in builtins & types-text & defs-text & entry
+    in builtins & (if text-contains defs-text "_cxh_" then ts-handler-helpers else "") & types-text & defs-text & entry
 
   emit-ts-tup-binds : List IRPat, Text, Integer -> Text
   emit-ts-tup-binds (subs) (scrut) (i) =

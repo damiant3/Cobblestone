@@ -5,17 +5,7 @@ Chapter: PipelineRun
   cites Shell chapter Pipeline
   cites Workflow chapter WorkflowTypes
 
- A `Pipeline` becomes a `ProcessDef`, a `PipeStage` a `StepDef`, a run a
- `ProcessInstance`, and `pi-history` is the build log.
-
- This chapter does not cite `WorkflowEngine`: that chapter cites the whole
- data-server stack, which would put a database in every build tool's unit.
-
 Section: Naming
-
- A stage's id is its `ps-name`, because that is what a reader of the build log has
- in front of them, and the terminal step is named once here so a transition and a
- test agree on it.
 
   pipe-end-step : Text
   pipe-end-step = "END"
@@ -26,19 +16,10 @@ Section: Naming
   pipe-outcome-key : Text
   pipe-outcome-key = "outcome"
 
- The onward edge tests for the ABSENCE of an exit, not `Always`: an `Always` edge
- would take an exit code no outcome explains and walk on reporting `active`.
-
   pipe-no-exit : Text
   pipe-no-exit = "none"
 
 Section: Steps
-
- A group is one `SubProcess` step, not flattened: flattening would run its steps
- unconditionally once, dropping its repeat, guard and handler.
-
- Assignment is `Unassigned` and `sd-form`, `sd-sla` and `sd-required-docs` stay
- empty: those fields are about people.
 
   pipe-step-of : PipeStage -> StepDef
   pipe-step-of (s) = StepDef {
@@ -73,10 +54,6 @@ Section: Steps
   pipe-group-name : Integer -> Text
   pipe-group-name (i) = "group-" & show i
 
- A stage fans out when `ps-needs` asks for more than one guest: `PrGuests n` above
- one, or `PrDriven RkGuests`. `RkMemoryMb` and `RkPort` size a guest and do not
- multiply it.
-
   pipe-kind-guests : PipeResourceKind -> Integer
   pipe-kind-guests (k) =
     when k
@@ -93,9 +70,6 @@ Section: Steps
       is PrKernel (e) -> 1
       is PrDriven (k) (e) -> pipe-kind-guests k
 
- Zero means DRIVEN, not none: the expression is resolved by the run and no honest
- number can be read off the declaration (L-REQUEST).
-
   pipe-needs-fan : List PipeResource, Integer -> Boolean
   pipe-needs-fan (rs) (i) =
     if i >= list-length rs then False
@@ -104,10 +78,6 @@ Section: Steps
 
   pipe-fans-out : PipeStage -> Boolean
   pipe-fans-out (s) = pipe-needs-fan (s.ps-needs) 0
-
- What the join can be held to. A stage naming its own count has a denominator; a
- driven one does not, and saying so is what stops a landed tally reading as a
- fraction of a number nobody measured (L-DENOM).
 
   pipe-declared-branches : List PipeResource, Integer -> Maybe Integer
   pipe-declared-branches (rs) (i) =
@@ -160,9 +130,6 @@ Section: Steps
     sd-y = 0
   }
 
- A group's interior steps are real steps with their own status and events; the
- `SubProcess` step is the group's header.
-
   pipe-step-defs : List PipeStep, Integer, List StepDef -> List StepDef
   pipe-step-defs (ss) (i) (acc) =
     if i >= list-length ss then acc
@@ -179,20 +146,12 @@ Section: Steps
           is None -> withInner
     in pipe-step-defs ss (i + 1) next
 
- The name a run ENTERS for a step: a stage is itself, and a group is its HEADER.
- The header is a routing node rather than a label, and it has to be, because the
- guard is an edge OUT of it: pointing the previous stage straight at the interior
- would make the guard unreachable and every guarded group would run unconditionally.
-
   pipe-entry-name : List PipeStep, Integer, Text -> Text
   pipe-entry-name (ss) (i) (onward) =
     if i >= list-length ss then onward
     else when list-at ss i
       is PsStage (s) -> if pipe-fans-out s then pipe-split-name (s.ps-name) else s.ps-name
       is PsGroup (rep) (guard) (handler) (inner) -> pipe-group-name i
-
- The name a run LEAVES a step from: a stage is itself, and a group is its LAST
- interior step, which is where the repeat edge goes back from.
 
   pipe-last-name : List PipeStep, Integer, Text -> Text
   pipe-last-name (ss) (i) (fallback) =
@@ -203,18 +162,6 @@ Section: Steps
       is PsGroup (rep) (guard) (handler) (inner) -> pipe-last-name inner 0 fallback
 
 Section: Verdicts as transitions
-
- Every outcome a stage declares becomes one `TransitionDef` to the terminal step,
- labelled with the outcome's sentence, and the stage then gets one edge to the next
- stage for the case where it did not exit at all.
-
- ORDER IS LOAD-BEARING: the outcome edges are emitted BEFORE the `Always` edge,
- because a matcher walks the list and takes the first hit, so an `Always` placed
- first would swallow every refusal.
-
- An exit code is testable by equality. A passthrough, a computed code and a throw
- are not, so each is emitted against the `outcome` key instead: a driver names the
- kind it observed and the label still carries the meaning.
 
   pipe-outcome-edge : Text, PipeOutcome, Integer -> TransitionDef
   pipe-outcome-edge (from) (o) (i) =
@@ -240,10 +187,6 @@ Section: Verdicts as transitions
       is PsStage (s) -> s.ps-verdict
       is PsGroup (rep) (guard) (handler) (inner) -> []
 
- A guard is a `ShellExpr` and a repeat a `PipeRepeat`, neither a `ConditionOp`, so
- each group edge tests a key the driver sets from the real run. The key names the
- group, so two groups in one pipeline cannot be confused.
-
   pipe-guard-key : Text -> Text
   pipe-guard-key (g) = "guard-" & g
 
@@ -255,10 +198,6 @@ Section: Verdicts as transitions
 
   pipe-join-key : Text -> Text
   pipe-join-key (name) = "join-" & name
-
- A HANDLER IS AN EDGE FROM EVERY STEP IN THE GROUP, which is what makes
- `try`/`finally` expressible: the cleanup runs however the guarded steps end, so
- there is no single place to hang it.
 
   pipe-handler-edges : List PipeStep, Integer, Text, Text, List TransitionDef -> List TransitionDef
   pipe-handler-edges (ss) (i) (g) (target) (acc) =
@@ -306,12 +245,6 @@ Section: Verdicts as transitions
 
 Section: The definition
 
- `pd-sla-defaults` IS READ BY NOTHING HERE and the zeros say so. A build stage has
- no service-level deadline, and the field is not a `Maybe`, so zero is the only
- value that is not an invention. **A zero deadline would read as an immediate breach
- to `check-sla`**, which this chapter never calls; a pass that does call it must
- revisit this rather than inherit it.
-
   pipe-no-sla : SlaDef
   pipe-no-sla = SlaDef {
     sla-warn-secs = 0,
@@ -338,10 +271,6 @@ Section: The definition
 
 Section: Selecting the edge
 
- The two shapes this translation emits, and nothing else. A condition it does not
- recognise answers `None` rather than a default, so an unhandled shape stops the run
- instead of silently taking a path.
-
   pipe-cond-holds : ConditionOp, Text, Text -> Boolean
   pipe-cond-holds (c) (key) (value) =
     when c
@@ -358,11 +287,6 @@ Section: Selecting the edge
     else pipe-pick ts from key value (i + 1)
 
 Section: A run
-
- Entering and leaving a stage are `StepEvent`s, so `pi-history` IS the build log in
- order. The completion event's `se-details` carries the label of the edge that was
- taken, which is the outcome's own sentence: that is the join between the two
- vocabularies and the only thing the runner adds.
 
   pipe-event : Text, EventType, Integer, Text -> StepEvent
   pipe-event (step) (ty) (ts) (detail) = StepEvent {
@@ -415,16 +339,6 @@ Section: A run
     pi-tags = ["build"]
   }
 
- A stage that exits with a code no outcome explains errors the run, and
- `ProcErrored` carries the code.
-
- A refusal and a success never carry the same status: only an exit of ZERO
- completes, and every other outcome that reaches the end is `ProcErrored` carrying
- the verdict's sentence.
-
- Only an outcome can refuse. The guard, repeat and handler keys say which way the
- run went; a guard-skip is recorded as `EvStepSkipped`, not as a failure.
-
   pipe-observe : ProcessDef, ProcessInstance, Text, Text, Integer -> ProcessInstance
   pipe-observe (pd) (pi) (key) (value) (ts) =
     let here = pi.pi-current-step
@@ -471,8 +385,6 @@ Section: A run
           pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
         }
 
- The three ways a stage can end, named so a driver reads as the build reads.
-
   pipe-exited : ProcessDef, ProcessInstance, Integer, Integer -> ProcessInstance
   pipe-exited (pd) (pi) (code) (ts) = pipe-observe pd pi pipe-exit-key (show code) ts
 
@@ -483,10 +395,6 @@ Section: A run
   pipe-passed (pd) (pi) (ts) = pipe-observe pd pi pipe-exit-key pipe-no-exit ts
 
 Section: A group that did not run
-
- A skipped group's interior steps are recorded as `StepSkipped`, not left absent.
- The membership comes from the caller (`pipe-group-members`): a `ProcessDef` has no
- field that means "these steps belong to that group" (L-BEDTRUE).
 
   pipe-names-of : List PipeStep, Integer, List Text -> List Text
   pipe-names-of (ss) (i) (acc) =
@@ -521,12 +429,6 @@ Section: A group that did not run
 
 Section: Branches
 
- A branch carries its own `StepStatus`, named by the driver as it lands.
-
- A status that is not terminal is recorded as started rather than as a landing, so
- a branch still in flight is counted as neither completed nor skipped. The status
- name goes in the detail, so the log says which non-terminal state it was.
-
   pipe-branch-event : StepStatus -> EventType
   pipe-branch-event (st) =
     when st
@@ -551,9 +453,6 @@ Section: Branches
       pi-parent-id = pi.pi-parent-id, pi-tags = pi.pi-tags
     }
 
- The join counts each status apart. The tally is derived from the history, so no
- caller can report a branch that never landed.
-
   pipe-same-event : EventType, EventType -> Boolean
   pipe-same-event (a) (b) = event-type-name a == event-type-name b
 
@@ -574,9 +473,6 @@ Section: Branches
     when m
       is Just (n) -> show n
       is None -> "driver"
-
- The denominator is named rather than assumed: a landed count against "driver" is a
- statement about the run, and against a number it is a statement about the stage.
 
   pipe-fan-line : List StepEvent, PipeStage -> Text
   pipe-fan-line (es) (s) =
@@ -609,8 +505,6 @@ Section: Reading a run back
   pipe-log (es) (i) (acc) =
     if i >= list-length es then acc
     else pipe-log es (i + 1) (list-push acc (pipe-log-line (list-at es i)))
-
- The log as one Text, because `Console` exports one function and it takes one line.
 
   pipe-log-text : List StepEvent, Integer, Text -> Text
   pipe-log-text (es) (i) (acc) =

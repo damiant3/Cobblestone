@@ -205,16 +205,6 @@ through a `cites`. If it is not, the compiler refuses it with `CDX3008
 UndefinedTypeName`. Lowercase names are type variables and are never
 checked this way, so the two cases cannot be confused.
 
-Until 2026-08-17 nothing checked this. `CDX3002` covers a misspelled VALUE
-name, but it is raised while walking expressions and an annotation is type
-syntax that never enters that walk, so a misspelled TYPE name compiled
-clean and the program ran and answered correctly around it. What made the
-silence expensive is that the compiler fabricated an opaque type for the
-unknown name, and **field access on an opaque type checks against nothing**,
-so a wrong field name behind a wrong type name was invisible too. The first
-sweep with the check on found three such definitions in shipped apps, and
-one of them had exactly that second defect hiding under the first.
-
 Two traps worth knowing, both of which are legal and are NOT refused. A
 chapter name is not a type name: `cites Diagram chapter DiagramModel` makes
 the chapter's types reachable, and the type is whatever that chapter
@@ -598,10 +588,8 @@ $:
 ```
 because CCE orders letters by English frequency: `C` is 50, which is
 ASCII `'2'`; `e` is 13, which is a carriage return, hence the stray line
-break; `x` is 36, `'$'`; `B` is 58, `':'`. The browser shipped that banner
-for weeks and it was read as a display fault. The 192 bare `print-line`
-sites measured on 2026-08-11 convert correctly since 14809; the two that
-MEANT raw bytes (the fishtank page emitters) are pinned to `print-line-raw`
+break; `x` is 36, `'$'`; `B` is 58, `':'`. The two `print-line` sites that
+MEAN raw bytes (the fishtank page emitters) are pinned to `print-line-raw`
 and their serial stream is proven byte-identical.
 
 ## Operators
@@ -1417,6 +1405,27 @@ mutable half is fixed, pinned by
 `codex/test/errors/stringbuilder-alias-local`). Known un-tracked
 edge: container literals in argument or tail position.
 
+**Tasks are linear.** `fork : (Nothing -> a) -> linear Task a`, `await :
+linear Task a -> a` and `await-any : linear List (Task a) -> a`, so a
+handle bound by `let` or `<-` is awaited exactly once: a second `await`
+is CDX2061, a handle never awaited is CDX2063 (its descriptor is never
+freed), and a closure passed to `fork` or stored in a `race` list may
+not capture one (CDX2067). A handle that is never named must land in a
+linear position (a `let` or `<-` binding, a linear parameter, a list
+literal passed to one, or the tail of a function declared to return
+it); anywhere else, a plain parameter such as `list-push`'s, an operand,
+a closure result or a list literal bound by `let`, is CDX2065
+(`codex/test/errors/task-unnamed-push`, `task-literal-launder`). A list
+of tasks is a `linear List (Task a)` built by `tasks-push` and consumed
+whole by `tasks-await-all` or `await-any` (`Foreword chapter
+Concurrent`); `list-at` on one is CDX2065 and a second consuming walk is
+CDX2061 (`task-list-index`, `task-list-reuse`). Several waiters on one
+task share it through `freeze`: `let t = freeze (fork f)` gives a plain
+handle any number of closures may `await`, and a frozen handle keeps the
+run-time check, so an `await` after its task was freed raises `fail`
+"await of a stale task handle" (`codex/test/await-twice`) and
+`await-any` traps (`await-any-stale`).
+
 **Linear tuple components (2026-08-18).** A call whose return type is
 a tuple with a `linear` component, `gpio-read : linear Pin -> [Gpio,
 Device.Mmio] (linear Pin, Boolean)`, mints owners for the components:
@@ -1477,10 +1486,7 @@ are off by exactly one word.
 `vec-empty`, `vec-singleton`, `vec-cons`, `vec-head` and `vec-length` are the
 `SizedVec` family; every other `vec-` and `mask-` builtin is packed. **Applying
 one family's builtin to the other's value is CDX2001**, and the arm is
-`codex/test/errors/vec-repr-mix`. They shared one type until 2026-09-09, and
-the mixture compiled clean and answered silently wrong: `vec-length (vec-splat
-7)` read lane 0 as a count and printed 7, where the length of a two-lane vector
-is 2.
+`codex/test/errors/vec-repr-mix`.
 
 **Why the length is written in the type rather than inferred.** This language
 has no type-level naturals, so `vec-cons`'s result length cannot be expressed
@@ -1504,9 +1510,8 @@ A comparison of two N-lane vectors produces an inferred `VectorMask N T`, T the 
 constructed type, so a signature naming `VectorMask 2` is CDX3008 undefined
 type name and the mismatch that follows prints both sides with the same name
 (`Type mismatch: VectorMask 2 vs Con:VectorMask[Con:2]`). A mask can only be a
-local bound from a comparison and cannot cross a declaration boundary. This
-table said `VectorMask 4` was a writable spelling until 2026-08-21; it never
-was.
+local bound from a comparison and cannot cross a declaration boundary. `VectorMask 4` is
+not a writable spelling.
 
 ### What a vector call allocates
 
@@ -2137,7 +2142,7 @@ removed. Activate with the `prose` compile flag (`TEXT prose`, `CDX prose`).
 
 ### Banned Words
 
-These are lexical errors inside `We say:` blocks (CDX1110):
+These are lexical warnings inside `We say:` blocks (CDX1110):
 
 | Banned | Substitute |
 |--------|-----------|
@@ -2407,8 +2412,7 @@ explicit fill, and `DiskFacts` calls it before packing a superblock for
 exactly this reason.
 
 The bump semantics are load-bearing elsewhere and must not be "fixed"
-casually: `PerfMonitor` allocates **zero** bytes purely to read the heap
-position, and `VecArray`'s prose already calls it a raw bump.
+casually: `VecArray`'s prose already calls it a raw bump.
 
 **A list constant of integer literals is shared, not rebuilt.** `xs : List
 Integer = [...]` read in a loop costs 0 bytes, read directly or through a
@@ -2478,9 +2482,12 @@ remains the clearest style:
 `&`, so `"text" & show x` parses correctly as `"text" & (show x)` -- no
 parens needed. Add parens only when you want the other grouping.
 
-**No multi-line `&` chains.** A line starting with `& "more"` is a
-new expression, not continuation. Keep all `&` on one line or use
-`let` bindings to break it up.
+**A line may start with a binary operator.** `parse-binary-loop`
+(`Syntax/ParserExpressions.codex`) skips newlines before an operator, so a
+line starting with `& "more"` (or `|`, `+`) continues the expression above
+it; only an operator at or left of the loop's `min-col` ends it. Measured
+2026-10-26: `in "<" & a & ">"` followed by `& "B"` at the `in`'s column
+yields `<A>B`.
 
 **Escapes in string literals.** `\"` (double quote) and `\n` (newline)
 are supported: `"she said \"hi\""` prints `she said "hi"`. `\t` and `\r`
@@ -2559,9 +2566,8 @@ or identifier.
 **A TUPLE type mismatch has NO file and NO line.** `Desugarer` lowers a tuple
 to a `MkTupN` application carrying `synthetic-span`, so the diagnostic names
 neither the file nor the position and only the two types distinguish the site.
-Finding one across the whole compiler is tractable only because `type-desc`
-prints integer bounds now; it used to say `Integer vs Integer`, naming neither
-side. When a mismatch arrives with no location, look for a tuple first rather
+Finding one across the whole compiler is tractable because `type-desc`
+prints integer bounds. When a mismatch arrives with no location, look for a tuple first rather
 than doubting the diagnostic.
 
 **Effect rows do not propagate through the map-style helpers.** `maybe-map`,

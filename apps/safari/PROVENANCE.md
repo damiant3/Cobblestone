@@ -15,7 +15,9 @@ permission and with his name on it.
 **The repository carries no licence file.** Permission to take this code was
 given by Steve Howell directly to Damian Tedrow on 2026-09-02, in conversation.
 That permission, and not a licence header, is the basis on which these files
-are here. Anyone extending this application to new material from the same
+are here. Being donated code, the chapters are exempt from R-PROSE (root,
+2026-10-26): their prose describes `render.zig` and the port, code we do not
+own. Anyone extending this application to new material from the same
 author should ask again rather than treat this page as a standing grant.
 
 ## What was taken, measured at the commit above

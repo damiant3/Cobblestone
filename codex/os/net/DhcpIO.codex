@@ -2,9 +2,26 @@ Chapter: DhcpIO
   cites Net chapter Dhcp
   cites Net chapter UdpIO
   cites Net chapter NetworkConfig
+  cites Net chapter NetworkStack
   cites Foreword chapter Maybe
 
- We say:
+Section: The Transaction Id
+
+ RFC 2131 section 4.4.1: xid is "a random number chosen by the client". A
+ reply is matched on it, so a predictable xid lets an off-path host answer
+ first. The word comes from net-entropy-word, so with no hardware word there is no xid and no exchange.
+
+  dhcp-io-draw-xid : Integer -> Integer
+  dhcp-io-draw-xid (w) = bit-and (net-isn-mix (net-isn-mix w)) #FFFFFFFF
+
+  dhcp-io-fresh-xid : Integer -> Maybe Integer
+  dhcp-io-fresh-xid (salt) = dhcp-io-fresh-xid-from __hardware-random-word salt
+
+  dhcp-io-fresh-xid-from : Integer, Integer -> Maybe Integer
+  dhcp-io-fresh-xid-from (w) (salt) =
+    when net-entropy-word w
+      is None -> None
+      is Just (key) -> Just (dhcp-io-draw-xid (bit-xor key salt))
 
 Section: The Exchange
 
@@ -17,7 +34,7 @@ Section: The Exchange
     let sk = dhcp-io-socket mac [0, 0, 0, 0]
     in act
       sent <- udp-io-send sk (dhcp-build-discover xid mac)
-      offer <- dhcp-io-await sk fuel dhcp-msg-offer
+      offer <- dhcp-io-await sk mac xid [] fuel dhcp-msg-offer
       dhcp-io-request sk mac xid fuel offer
     end
 
@@ -26,23 +43,23 @@ Section: The Exchange
     if dhcp-is-offer offer == False then dhcp-lease-empty
     else act
       sent <- udp-io-send sk (dhcp-build-request xid mac (offer.client-ip) (offer.server-id))
-      dhcp-io-await sk fuel dhcp-msg-ack
+      dhcp-io-await sk mac xid (offer.server-id) fuel dhcp-msg-ack
     end
 
 Section: Waiting
 
-  dhcp-io-await : UdpSocket, Integer, Integer -> [Network.Read] DhcpLease
-  dhcp-io-await (sk) (fuel) (want) =
+  dhcp-io-await : UdpSocket, List Integer, Integer, List Integer, Integer, Integer -> [Network.Read] DhcpLease
+  dhcp-io-await (sk) (mac) (xid) (server) (fuel) (want) =
     if fuel <= 0 then dhcp-lease-empty
     else let hp = __heap-save
     in act
       got <- udp-io-recv sk 1
       if got.ur-got == False then let restored = __heap-restore hp
-      in dhcp-io-await sk (fuel - 1) want
-      else let lease = dhcp-parse-response (got.ur-data)
-      in if lease.valid & lease.msg-type == want then lease
+      in dhcp-io-await sk mac xid server (fuel - 1) want
+      else let lease = dhcp-io-reply-lease got mac xid want server
+      in if lease.valid then lease
       else let restored2 = __heap-restore hp
-      in dhcp-io-await sk (fuel - 1) want
+      in dhcp-io-await sk mac xid server (fuel - 1) want
     end
 
 Section: Configuration
@@ -137,6 +154,6 @@ Section: Renewal
     let sk = dhcp-io-socket (cfg.local-mac) (cfg.local-ip)
     in act
       sent <- udp-io-send sk (dhcp-build-renew xid (cfg.local-mac) (cfg.local-ip))
-      lease <- dhcp-io-await sk fuel dhcp-msg-ack
+      lease <- dhcp-io-await sk (cfg.local-mac) xid [] fuel dhcp-msg-ack
       dhcp-io-apply cfg lease now
     end

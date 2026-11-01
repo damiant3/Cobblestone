@@ -736,22 +736,6 @@ Section: Expression Lowering
        is otherwise -> arg-ir
      is otherwise -> arg-ir
 
- A unit constructor is the IDENTITY on its representation, so it is not
- emitted as a call. `Second = unit Integer` gives a constructor `Second`
- whose only content is the type it announces, and every backend that
- received `Second 42` as an application had to find a function nobody
- defines: x86-64 has an arm for it, and both plug lanes left the branch
- unpatched and reported an unresolved call. That was invisible because the
- argument is already in the answer register, so doing nothing gave the
- right answer (`plugs-backlog.md` 1.42, Damian's ruling 13 on 2026-08-18:
- the compiler stops emitting the application, rather than each plug
- learning to ignore it).
-
- The test is the RETURN type, not the name spelling: a function is the
- constructor for a unit type when its return is `UnitTy nm` and it is
- itself named `nm`. `Minute-to-Second` returns a `UnitTy` and is not named
- for it, so a real conversion is still a real call.
-
   is-unit-ctor : IRExpr, CodexType -> Boolean
   is-unit-ctor (func-ir) (ret-ty) =
     when func-ir
@@ -760,31 +744,6 @@ Section: Expression Lowering
        is UnitTy (nm) (inner) -> nm.value == n
        is otherwise -> False
      is otherwise -> False
-
- The elided value has to KEEP the unit type, and half the IR cannot hold
- one: `set-ir-expr-type` has no arm for a literal because `IrIntLit` has no
- type slot at all, and `ir-expr-type` answers `int-ty-default` for it.
- Dropping `Second 42` to a bare literal therefore types `t1` as Integer, and
- `try-unit-convert` above keys on exactly that type to insert an implicit
- conversion. Measured 2026-08-18: `codex/test/implicit-convert` answered
- `cold` for `describe-temp (Celsius 100)` because the `Celsius-to-Kelvin`
- conversion stopped firing, on x86-64, the lane that was already correct.
-
- So a value the type cannot be written onto is bound instead: `let __unit-N
- = 42 in __unit-N` carries the unit type on the binding and on the name,
- costs no call, and every backend already emits both. The name is unique per
- construction site so two of them in one function cannot share a slot.
-
- **A let is not retypeable and `set-ir-expr-type` will not tell you so.** It
- has an arm for `IrLet` that rewrites the let's own type field, but
- `ir-expr-type` of a let reads its BODY, so the rewrite changes nothing
- anyone reads. `Span = unit Metre` is the shape that catches it: the value
- of `Span (Metre 1.0)` went on reporting `Metre`, and `try-unit-convert` at
- the next position out then synthesised a call to `Metre-to-Span`, a
- conversion no annotation declares and no program defines. Measured
- 2026-08-18 on `codex/test/ops/unit-real-arith`: 4 of them, where the depot
- seed emitted 4 unresolved `Span` constructor calls instead. A let is
- retyped through its body here, which is the only place the type is read.
 
   ir-node-carries-type : IRExpr -> Boolean
   ir-node-carries-type (e) =
@@ -903,16 +862,6 @@ Section: Expression Lowering
   eq-op-for : Boolean -> BinaryOp
   eq-op-for (positive) = if positive then OpEq else OpNotEq
 
- A LIST TAKES THE INSTANTIATED HELPER WITHOUT AN EXISTENCE PROBE. There is no
- declared `List` for the desugarer to mint `__eq_List` from, so the probe below
- can never find one and every list comparison fell through to `IrBinary OpEq`,
- which for a heap value compares the two POINTERS: two structurally equal lists
- answered False, and so did a sum or record holding one, with no diagnostic.
- COMPILER-74. The element is concrete at the comparison site, so the name
- carries it and each backend mints one helper per element type; a generic sum's
- field is NOT concrete there, which is why that gap stands (`X86_64.codex`, the
- note beside `eq-helper-field-eq`).
-
   eq-ty-is-list : CodexType -> Boolean
   eq-ty-is-list (ty) =
     when ty
@@ -964,15 +913,6 @@ Section: Expression Lowering
      else
        deck-record (IrIf call (deck-record (IrBoolLit False s)) (deck-record (IrBoolLit True s)) BooleanTy s)
 
- The desugarer mints one __eq_<T> per type NAME, and type-name-of has already
- dropped the arguments, so that helper's field stays at the declaration's own
- type variable. Its EXISTENCE is what this arm reads: the desugarer mints it
- only for a type it generated equality for, so finding it proves the operand is
- such a type without resolving it here. An instantiated one is then called by
- the INSTANTIATED name, which eq-helper-defs mints per set of actuals and which
- opening attaches to the wire; sending it to the emitter alone is what left
- every plug comparing two heap pointers (COMPILER-44, measured on arm64).
-
   eq-type-has-args : CodexType -> Boolean
   eq-type-has-args (ty) =
     when ty
@@ -997,13 +937,6 @@ Section: Expression Lowering
      is ListTy (e) | LinkedListTy (e) -> "List"
      is ConstructedTy (n) (args) | RecordTy (n) (ar) (fs) | SumTy (n) (ar) (cs) -> n.value
      is otherwise -> ""
-
- `type-name-of` DISCARDS type arguments and has ten callers that all want
- the bare name, so the instance key is computed BESIDE it rather than
- folded into it. It renders identically to `instance-head-key` in
- `Ast/Desugarer.codex`, which builds the same name from the SYNTAX head:
- with no arguments it is exactly `type-name-of`, so every nullary
- instance keeps the name it had.
 
   type-key-args : CodexType -> List CodexType
   type-key-args (ty) =
@@ -1068,43 +1001,11 @@ Section: Let and Lambda
     in let body-ir = lower-expr body declared-ret lctx
     in deck-record (IrLambda lparams body-ir (lambda-recorded-ty declared-ret (ir-expr-type body-ir) expected) sp)
 
- A lambda's parameters are peeled off the type its CONTEXT expects, and
- `peel-fun-param` answers `ErrorTy` for anything that is not an arrow. When
- nothing above expects a type there is nothing to peel: `lower-let` hands its
- bound value `NoExpectTy` as the expectation, every parameter peels, and the
- arrow is recorded with a failure atom in each position. Before the split that
- expectation was spelled `ErrorTy` and reached a plug as `error`, the
- compiler's TYPE FAILURE atom, for a program the compiler reported clean.
-
- The type was never missing. The checker solved these parameters and filed
- the answer; nothing asked for it here. `expected-or-recorded-ty` asks -- the
- same `lookup-expr-type` / `deep-resolve` pair `lower-dict-placeholder`
- already uses twenty lines above, against the span the checker recorded under.
- It is named for what it does rather than for the lambda, because the apply
- family reaches for the same answer when its own fallback is the sentinel.
-
- Only the no-expectation case changes. When the context DID supply a type,
- `expected` is `ty` and every line below is what it was, which is why a
- lambda at a declared parameter was already correct and stays byte-identical.
-
   expected-or-recorded-ty : CodexType, LowerCtx, SourceSpan -> CodexType
   expected-or-recorded-ty (ty) (ctx) (sp) =
     when ty
      is ErrorTy | NoExpectTy -> deep-resolve (ctx.ust) (lookup-expr-type (ctx.ust) sp)
      is otherwise -> ty
-
- A lambda used to record the EXPECTED type it was handed, which at a
- polymorphic call is the callee's declared parameter with its type variables
- still in it. `lower-let` twenty lines above records the resolved type of
- what it bound, which is why the same expression through a `let` came out
- concrete and through a lambda did not.
-
- The consequence was not local. `subst-type-vars-from-arg` at the call site
- learns the callee's variables by matching its declared parameter against the
- argument's type, so a lambda argument matched `(fn (tvar 24) (tvar 25))`
- against itself, substituted each variable for itself, and learned nothing.
- The application's result type was then emitted uninstantiated and every
- consumer of the IR inherited a variable the compiler had already resolved.
 
   lambda-recorded-ty : CodexType, CodexType, CodexType -> CodexType
   lambda-recorded-ty (declared-ret) (body-ty) (ty) =
@@ -1177,18 +1078,8 @@ Section: Let and Lambda
 
 Section: Match Lowering
 
- A match over the builtin List with Nil or Cons arms does not become
- an IrMatch: there is no tag word to dispatch on. It desugars here to
- an IrLet binding the scrutinee once and an if-chain over the three
- list intrinsics -- length against zero selects the arm, __list-head
- and __list-tail bind the Cons fields (the tail is an O(1) view, CL
- 9827). No new IR form exists, therefore the LIR, the wire, and the
- plug parsers see only nodes they already carry. The checker has
- already refused nested Cons fields and guards on list arms, so each
- arm is exactly one test and the chain never duplicates its rest;
- the terminal IrError is unreachable because exhaustiveness checked
- against the synthesized Nil/Cons view. Alternation lowers one body
- copy per alternative arm, the price of not having join points.
+ The Cons tail is an O(1) view. Alternation lowers one body copy per
+ alternative arm, the price of not having join points.
 
   lower-match : AExpr, List AMatchArm, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-match (scrut) (arms) (ty) (ctx) (sp) =
@@ -1258,16 +1149,6 @@ Section: Match Lowering
     let cand = n & "_" & integer-to-text k
     in if binder-free ctx cand then cand else binder-fresh ctx n (k + 1)
 
- The rename is for the targets that scope a definition flat, and it is
- switched off for the TEXT round-trip: stage1 text is compared to the
- source definition by definition, and a shadowed `let __seq` re-spelled
- `__seq_1` reads as a different body to that comparison. Measured
- 2026-09-01 on the compiler's own unit: 39 definitions at head, every one
- a chain of two field assignments, went red in `sem-equiv` the first time
- the phase ran after the rename landed (the rename touched only this
- chapter, which the internal gate does not count as implicating the text
- round-trip). IR and CDX lowering keep the rename.
-
   binder-emitted : LowerCtx, Text -> Text
   binder-emitted (ctx) (n) =
     if ctx.rename == False then n
@@ -1310,13 +1191,6 @@ Section: Match Lowering
     in let sref = deck-record (IrName sname lty sp)
     in let chain = lower-list-arms arms 0 (list-length arms) sref elem lty ty ctx sp
     in deck-record (IrLet sname lty scrut-ir chain sp)
-
- The last arm lowers unconditionally: exhaustiveness has already
- checked the arm set against the Nil/Cons view, therefore whatever
- the earlier tests declined is the last arm's by construction, and
- an if with no meaningful else would otherwise need an error
- terminal that the emitter reports as a diagnostic just for
- existing.
 
   lower-list-arms : List AMatchArm, Integer, Integer, IRExpr, CodexType, CodexType, CodexType, LowerCtx, SourceSpan -> IRExpr
   lower-list-arms (arms) (i) (len) (sref) (elem) (lty) (ty) (ctx) (sp) =
@@ -1506,37 +1380,12 @@ Section: Match Lowering
       let sub = lower-pattern-at ctx (list-at subs i) elem-ty depth
       in lower-vec-sub-patterns-acc ctx subs elem-ty (i + 1) len depth (list-push acc sub)
 
- `lookup-ctor-field-type` answers ErrorTy for any scrutinee that is not
- ALREADY a resolved SumTy, and a parametric sum never is: `Box (a)`
- reaches here as a ConstructedTy. The BINDING path resolves the
- constructor and substitutes (bind-pattern-to-ctx's ACtorPat arm above),
- so the USE of a pattern variable carried its real type while the PATTERN
- NODE carried a type-error type -- one variable, two types, in one branch.
- Recorded as hole 1 of the three in IRCheck's prose, and measured on the
- wire 2026-08-04 by the rechecker, which answered UNSUPPORTED on 419
- definitions because a binding typed `error` is not decidable.
-
- This performs the same resolution the binding path performs, so the two
- now agree by construction rather than by coincidence. The direct SumTy
- answer is tried first and is unchanged, so a non-parametric sum keeps its
- exact previous spelling.
-
   ctor-field-type-in-ctx : LowerCtx, CodexType, Text, Integer -> CodexType
   ctor-field-type-in-ctx (ctx) (scrut-ty) (ctor-name) (field-idx) =
     let direct = lookup-ctor-field-type scrut-ty ctor-name field-idx
     in when direct
      is ErrorTy | NoExpectTy -> resolved-ctor-field-type ctx scrut-ty ctor-name field-idx
      is otherwise -> direct
-
- ORDER IS THE WHOLE OF IT. `apply-ctor-subst` substitutes a bare
- `ConstructedTy` carrying no arguments -- a type parameter still spelled
- as a NAME -- and has no arm for `TypeVar`, so a parameter that
- `deep-resolve` has already turned into `TypeVar 16` can never be mapped
- by a name-keyed substitution. Resolving first and substituting after
- answers `(tvar 16)` where the answer is `int-default`, which is what
- this did on its first attempt. Substitute against the RAW constructor
- type while the parameter names are still there, and resolve the one
- field type that comes out.
 
   TvarBind = record {
    tvb-id : Integer,
@@ -1550,11 +1399,6 @@ Section: Match Lowering
     in let ret-args = ctor-ret-tyargs named
     in let binds = pair-tvars ret-args (extract-scrut-args scrut-ty) 0 (list-length ret-args) []
     in deep-resolve (ctx.ust) (subst-tvars binds (nth-fun-param named field-idx) 32)
-
- A constructor's return type carries the DECLARATION's parameters in
- order, and the scrutinee carries the arguments in the same order, so
- pairing them positionally is the map the name-keyed substitution cannot
- express once those parameters are type variables.
 
   ctor-ret-tyargs : CodexType -> List CodexType
   ctor-ret-tyargs (t) =
@@ -1896,23 +1740,6 @@ Section: Collections and Act
          let exec = deck-record (IrDoExec (lower-expr e (if i == len - 1 then ty else NoExpectTy) ctx) sp)
         in lower-act-stmts-acc stmts ty ctx (i + 1) len (list-push acc exec)
 
- A `let` statement in an act block is do-notation: it scopes over the
- REST of the block, not merely over its own `in` body. Lowering it as a
- sibling IrDoExec left the following statements naming a binding from
- outside the let's body - ill-scoped IR that only ran because the
- emitter's locals table was flat per function. So the let
- becomes the LAST statement of the enclosing act, and its body becomes a
- nested IrAct of [the let's own body] ++ [the remaining statements].
- Execution order is unchanged. ir-expr-type of an IrLet is the type of
- its body, and the nested act's type is the type of the block's original
- last statement, so the enclosing block still types as it did.
-
- A trailing let CHAIN is peeled to its innermost body, so every binding
- in the chain scopes over the rest of the block. `codex/test/mask-ops`
- writes `let a = .. in let b = .. in let m1 = .. in print m1` and then
- reads m1 from three sibling statements; peeling only the outermost let
- leaves m1 bound beside them, not above them, and it fails to resolve.
-
   lower-act-let : List ALetBind, Integer, AExpr, List AActStmt, CodexType, LowerCtx, Integer, Integer, SourceSpan -> IRExpr
   lower-act-let (binds) (j) (body) (stmts) (ty) (ctx) (i) (len) (sp) =
     if j == list-length binds then
@@ -1982,25 +1809,6 @@ Section: Collections and Act
     else FunTy int-ty-default empty-row (build-lambda-type params ret (i + 1))
 
 Section: Definition Lowering
-
- THE EMITTED TYPE IS THE STRIPPED ONE, and the quantifier is dropped here
- rather than by each backend. `all-bindings` holds two entries per definition
- whose types DIFFER, the environment's carrying a `ForAllTy` and
- `check-result.types`' having it peeled; `compare-binding-names` compares the
- name alone, `sort-by` is an unstable quicksort and `bsearch-text-pos` is a
- lower bound, so which of the two `lookup-type-bsearch` returns is decided by
- where unrelated names sort. Stripping makes that choice not matter, because
- both entries strip to the same shape. Reported by Steve Howell, PR 134, who
- measured `deck-record` quantified and 103 of 104 not; at head `deck-record` is
- clean and `hamt-node-set`, `sort-by` and `copy-list-loop` are quantified
- instead, moved by ordinary landings. COMPILER-66.
-
- A backend that receives the quantifier has no use for it and mostly no arm
- for it: arm64, riscv and wasm carry no `ForAllTy` case at all, and the zig
- emitter grew its cases only after being bitten (`ZigEmitter.codex` 295-307,
- which names `sort-by` as the first to arrive quantified). In this compiler
- `is-proof-return` has no `ForAllTy` arm either, so a quantified proof
- definition answers False to `is-proof-def`.
 
   lower-def : ADef, List TypeBinding, UnificationState, List RenameEntry, List RenameEntry, Boolean -> IRDef
   lower-def (d) (types) (ust) (renames) (chapter-rn) (rename) =
@@ -2171,18 +1979,6 @@ Section: Definition Lowering
  tree per definition. LOWER is the tightest deck in the compiler (1.06x
  on the selfhost), so it is the one most likely to meet its floor in
  ordinary growth rather than under a deliberately turned knob.
-
- The predicate is deck-bound-short-of, which reads R10, and NOT
- deck-short-of, which reads the deck-pos cell. lower-chapter is called
- inside a phase-wide deck-record extent and the cell is written back
- only when the nesting counter returns to zero, so inside the extent it
- is frozen at the deck's base and deck-short-of reduces to a question
- about the floor's width that never mentions the usage. This guard was
- written with the cell and was therefore dead from the day it shipped.
- Measured 2026-07-21 against a 16 MB floor: reading the cell, MEASURE
- reported LOWER `used=-5307132` -- the phase overran far enough to
- destroy the record measuring it -- and reading R10 it stops at
- 8,487,976 bytes, exactly one guard band short of the floor.
 
   lower-defs-acc : List ADef, List TypeBinding, UnificationState, Integer, List IRDef, List RenameEntry, SkipListText,
     List ChapterAssignment, List ACitesDecl, List Text, Text, List RenameEntry, List Text, List Integer, Integer, Boolean ->
@@ -2492,16 +2288,6 @@ Section: Per-Definition Reclamation
 
 Section: Constant Folding
 
- The folder rewrites `text-length "abc"` to `3` by calling the compiler's
- own `text-length`. That is only sound while the name at the call site
- MEANS the builtin, and a chapter is allowed to define its own -- so the
- fold is handed the set of names this chapter defines, and it declines any
- name in that set.
-
- The rule this settles is the one `emit-compound` already implemented: a
- definition beats a builtin. The folder is now the only other place that
- decided, and it decides the same way.
-
   fold-constants-in-chapter : IRChapter -> IRChapter
   fold-constants-in-chapter (ch) =
     let defined = deck-record (skip-list-text-from-list (for d in (ch.defs) -> d.name))
@@ -2578,23 +2364,6 @@ Section: Constant Folding
 
 Section: Leaf Inlining
 
- Inlines saturated calls to leaf functions whose body is pure integer
- arithmetic over their own parameters -- shapes like math-mod (a) (b)
- = a - (a / b) * b. The inlined expression is the callee's own body
- with parameter names replaced by the call-site arguments, so the
- semantics (including division traps) are the callee's by
- construction; nothing is synthesized. A call site qualifies only
- when every argument is a name or an integer literal (free to
- duplicate) and the root name is not shadowed by a local binding at
- the site. deck-record is never a candidate: its definition is the identity,
- but the emitter intercepts the NAME and wraps the argument in
- __deck-enter/__deck-exit -- inlining it would delete the deck
- allocation and leave the value on reclaimable bivy (found the hard
- way: stage1 battery failures in every lambda-heavy test, CL 3716
- bisect). The candidate's definition is never removed: bare
- references and partial applications still call it. Runs on the CDX
- path only, after constant folding; the TEXT path is untouched, so
- text round-trip and semantic equivalence never see inlined bodies.
  Defs are scanned read-only first and rebuilt only when they contain
  a qualifying root name, so the LOWER deck pays copies only for the
  defs that change.
@@ -2689,14 +2458,6 @@ Section: Leaf Inlining
         il-body = inline-expr (d.body) consts pnames
       })))
     else collect-leaf-defs defs (i + 1) consts acc
-
- A function with a bounded parameter or return is enforced by
- runtime guards at its callee entry and epilogue (bounded
- signatures, stage B). Inlining would splice its body into the
- caller and bypass those guards, so a bounded-boundary function is
- never an inline
- candidate. The full-range bounds are read from int-ty-default so the
- check needs no i64 constants in this chapter.
 
   has-bounded-boundary : IRDef -> Boolean
   has-bounded-boundary (d) =
@@ -2799,10 +2560,6 @@ Section: Leaf Inlining
      is IrApply (f) (a) (ty) (sp) -> deck-record (IrApply (subst-leaf f params args) (subst-leaf a params args) ty sp)
      is otherwise -> e
 
- An argument that is not a name or a literal is bound once, ahead of the
- body, rather than copied into each use. The bound name cannot capture: a
- leaf body has no free names but its parameters, and builtins.
-
   leaf-let-name : Text -> Text
   leaf-let-name (p) = "__leaf-" & p
 
@@ -2837,29 +2594,6 @@ Section: Leaf Inlining
     else let uses = leaf-site-args args (cand.il-params) (cand.il-ptys) 0 []
     in let body = fold-rem-expr (subst-leaf (cand.il-body) (cand.il-params) uses)
     in leaf-wrap-lets body args (cand.il-params) (cand.il-ptys) (list-length args - 1)
-
- Remainder recognition over substituted bodies. The truncated-mod
- idiom X - (X / Y) * Y computes with three operations what idiv
- already left in RDX. IrRemInt emits exactly idiv's remainder --
- truncated, sign of the dividend, trapping on Y = 0 -- which is the
- idiom's semantics for every input including negative dividends.
- The rewrite fires only on expressions the inliner just produced
- (math-mod's body is the canonical source), matches the multiply in
- either operand order, and requires the X and Y occurrences to be
- the same name or the same literal; the matched subtree has no
- binders, so equal names are equal values. This REWRITE is CDX-only,
- because it fires on the inliner's output and only the CDX frontend
- runs `run-ir-pipeline`.
-
- IrRemInt itself is not CDX-only, and this prose said it was until
- `int-rem` existed. A saturated `int-rem a b` lowers straight to
- IrRemInt (`lower-int-rem-apply`, above) on every frontend, so the
- node now crosses the plug wire. That is deliberate and it is what
- makes the builtin free of the unrecognised-name hazard: 50 of the 53
- plugs already carry an IrRemInt arm, and the three that do not --
- elf, pe and img -- take CDX rather than IR and emit no expressions
- at all. There is no plug in which the name can go unrecognised,
- because the name never reaches a plug.
 
   ir-operand-same : IRExpr, IRExpr -> Boolean
   ir-operand-same (a) (b) =
@@ -3085,59 +2819,7 @@ Section: Leaf Inlining
 
 Section: Single-Caller Inlining
 
- That the removal actually happens is measured, not assumed. A one-caller
- arithmetic helper that phase 1 already inlines is absent from the
- emitted symbol map, and a four-parameter one that phase 1 declines is
- present in it at eleven bytes -- so the map can report both answers and
- the disappearance means what it says.
-
- What widens is the SHAPE of the body. What does not widen is any of the
- four properties that make substitution sound, and each is enforced
- separately:
-
- Binder-free. `once-binder-free` is an ALLOW-list: literals, names,
- arithmetic, `if`, application, lists, records and field access are
- admitted, and every other constructor -- `IrLet`, `IrLambda`, `IrMatch`,
- `IrAct`, `IrHandle`, `IrTry`, and anything added to `IRExpr` after this
- was written -- is refused by the default arm. A body that binds no names
- cannot capture an argument, which is what lets the substitution stay a
- plain walk instead of a renaming one. The default arm is deliberately
- the refusing one: a new binding constructor must be admitted on purpose,
- not inherited by silence.
-
- No free name captured by the caller. A widened body may mention globals
- the callee resolved in its own scope. If the CALL SITE has a local of
- that name in scope, splicing the body there rebinds it to the caller's
- local and the meaning changes. `once-free-escapes` refuses that, reading
- the same `bound` list the leaf pass already threads to every site. Phase
- 1 never needed this check because its bodies mention nothing but their
- own parameters.
-
- Simple arguments. A parameter can appear more than once in the body, so
- an argument is duplicated by substitution; `leaf-args-simple` keeps
- arguments to names and integer literals, which are free to duplicate and
- cannot carry an effect. This is phase 1's rule, kept.
-
- Exactly one reference. `count-refs-chapter` counts every `IrName`
- occurrence of a candidate across every definition body, including the
- candidate's own. Counting its own body is what excludes recursion for
- free: a self-recursive definition names itself and can never reach one.
- A count of one does not promise the reference is a saturated call -- a
- bare reference or a partial application also counts one -- but
- `inline-apply-site`'s arity check declines those, and the definition
- then simply stays.
-
- `deck-record` and bounded-boundary definitions are excluded here for the
- reasons the leaf pass gives above; both guards are the same call.
-
- In `default-ir-pipeline`, after one changelist opt-in while the numbers
- were taken. The worry was the LOWER deck: it is the tightest in the
- compiler, roughly 1.19x against its 320 MB floor on a 2.70 MB
- self-compile, this pass allocates every substituted body on it, and an
- under-reserved floor does not raise `CDX9002` -- it dies in a `#GP` with
- no diagnostic. So it was worth measuring before spending.
-
- It spends nothing. Same compiler, pass off then on, LOWER read
+ The single-caller pass costs the LOWER deck nothing. Same compiler, pass off then on, LOWER read
  286,227,712 both ways. The binary is where the pass shows up: the
  selfhost lost 9,957 bytes and compiled 0.3 s faster, nine other programs
  lost 709 bytes between them with none growing, and all ten produced
@@ -3214,24 +2896,6 @@ Section: Single-Caller Inlining
     else if once-free-escapes ((list-at fs i).value) params bound then True
     else once-free-escapes-fields fs params bound (i + 1)
 
- Substitution over exactly the admitted vocabulary. Every constructor
- `once-binder-free` accepts is rebuilt here; anything else is returned
- untouched, which is reachable only for the leaves that carry no
- sub-expression. Widening one of these two lists without the other is
- the way this pass would silently leave a parameter name loose in the
- caller, so they are written to be read side by side.
-
- The record arm builds a FRESH IRFieldVal rather than `__record-set`
- on the one it was handed, and the reason is the cost-based pass: the
- expression being substituted is the CANDIDATE'S BODY TEMPLATE, reused
- at every call site, and `__record-set` writes into that template --
- the first site's argument replaced the field value for every site
- after it, splicing the first caller's local name into functions that
- do not bind it (`Unresolved call to 'tokens'`, found via the selfhost).
- Single-caller substitution never saw this because a one-caller
- template is substituted exactly once; this is the `__record-set`
- single-owner condition, violated by multi-site reuse.
-
   subst-once : IRExpr, List Text, List IRExpr, List CodexType, List CodexType -> IRExpr
   subst-once (e) (params) (args) (ptys) (atys) =
     when e
@@ -3275,13 +2939,6 @@ Section: Single-Caller Inlining
        span = fv.span
      })) (once-retype ty ptys atys 0) sp)
      is otherwise -> e
-
- The reference census. This walk must reach every constructor that can
- hold a sub-expression, because a reference this misses is a reference
- that makes a two-caller definition look like a one-caller definition.
- It therefore covers the handler, timeout, fork, await and try forms that
- `has-leaf-call` above does not -- undercounting is the one direction
- that is not conservative here.
 
  `list-set-at` writes in place and answers the same list, so the counter
  is threaded rather than rebuilt and the census costs no allocation per
@@ -3492,15 +3149,6 @@ Section: Single-Caller Inlining
 
 Section: Cost-Based Inlining
 
- The first of the three inlining passes that can make a program
- bigger. The leaf pass never duplicates anything expensive and the
- single-caller pass duplicates nothing at all; this one substitutes a
- body at EVERY saturated call site, on purpose, trading size for the
- calls it removes. What bounds the trade is a cost ceiling: a
- candidate's body may hold at most `inline-cost-ceiling` operation
- nodes (`Core/BuildSettings.codex`), so each site pays a known, small
- price.
-
  It is OPT-IN (`passes=+inline-cost-based`), not in the default
  pipeline, because the trade was measured on the selfhost and lost at
  every ceiling: the binary grows (1.1 to 19 per cent across ceilings 4
@@ -3509,14 +3157,6 @@ Section: Cost-Based Inlining
  The numbers are with the ceiling constant in BuildSettings. A
  workload whose hot helpers are small and truly hot may still win;
  the compiler is not that workload.
-
- The cost function counts operation nodes over the admitted
- vocabulary, an architecture-independent proxy for emitted
- instructions: leaves are free, an operator or call or field access is
- one, a branch is two, and a record or list pays one per slot plus the
- allocation. The admitted vocabulary is closed (the allow-list refuses
- everything with a binder), so the `otherwise` arm answering zero is
- reachable only for leaves.
 
   ir-cost-expr : IRExpr -> Integer
   ir-cost-expr (e) =

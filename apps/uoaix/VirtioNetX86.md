@@ -57,7 +57,7 @@ a discovered virtio device failed admission, so no unrelated card is silently
 used. Send/receive return 0 and MAC is empty in that state. Callers must check
 bring-up's returned card id before advertising a listening service.
 For the specific admission reason, use `vnx-find` and `vnx-init` directly,
-as `VirtioNetInitProof.codex` does; the generic seam returns only the card id.
+as `codex/test/apps/virtio-net-qemu.codex` does; the generic seam returns only the card id.
 
 The existing e1000 and NE2000 paths retain their behavior. The driver inherits
 the shared PCI transport's below-4-GiB MMIO mapping and split-ring limits.
@@ -66,15 +66,11 @@ acceptance; QEMU TCG coverage does not establish those outcomes.
 
 ## Focused proof
 
-```powershell
-pwsh -NoProfile -File apps/uoaix/proofs/test-virtio-net.ps1 -Kernel seed/Codex.cdx
-```
-
-The harness runs synthetic queue guards in a serial guest, boots modern,
-transitional, legacy-only and absent NIC configurations under QEMU TCG, then
-runs the encrypted admin-port conversation through an actual virtio NIC.
-The host needs `D:/Program Files/qemu/qemu-system-x86_64.exe` by default;
-`-Qemu` chooses another executable. Each run uses a new evidence directory.
+The kernel battery grades the driver: `codex/test/apps/virtio-net-driver-guards`
+(synthetic queue guards, on codex-vm) and `codex/test/apps/virtio-net-qemu`,
+which boots modern, transitional, legacy-only and absent NIC configurations
+under QEMU TCG through `build/test-qemu-x86.ps1`. The encrypted admin-port
+conversation through an actual virtio NIC is `apps/uoaix/test-admin.ps1 -Qemu`.
 
 `apps/uoaix/test-admin.ps1 -Qemu <executable>` selects that real NIC for the
 network leg, supplies ephemeral keys over the guest UART, and retains the

@@ -59,9 +59,7 @@ behaviour comes from something other than our own reading of the spec, its row
 says so.
 
 **A row asserting an ABSENCE is a claim about source code that no gate
-observes.** One such row here was false for weeks: it said codex-vm could not
-present a Full-speed HID device, while `xhci_init` had set `portsc[1]` to
-speed 1 before the claim was written. Read `tools/codex-vm.c` before adding a
+observes.** Read `tools/codex-vm.c` before adding a
 row that says something is missing.
 
 ## The catalog
@@ -193,6 +191,91 @@ against, so the flag ADDS an arm rather than moving the floor.
   `nic-armed`.
 - **`-usb-setcfg-fault` injects a symptom, not a cause, and must never be used
   to confirm a diagnosis.** A checker fed a fault you chose will agree with you.
+- **A guest's REP string I/O is bounded by the device, never by its RCX.** The
+  batched arms (NE2000 data port both ways, IDE data port both ways) stop at the
+  card's remote byte count or the end of card memory and at the end of the IDE
+  data phase; past that the REP completes with nothing moved and stderr says
+  `REP past the device's transfer count refused`. The OUT arms and COM1's burst
+  read a guest page the guest never touched as zero (`guest_str_byte`), because
+  guest RAM is reserved and committed lazily and a host read of a reserved page
+  kills codex-vm. The repro is `codex/test/net-send-raw-length` compiled with any
+  seed before main 51747: its `net-send-raw buf -1` crashed the host before this
+  bound and now prints `negative -1`.
+- **Every device model reaches guest RAM through `gptr(gpa, len, who)`.** xHCI
+  rings, contexts and transfer buffers, HDA CORB/RIRB and BDL buffers, e1000
+  descriptors and buffers (the NAT path too), the UEFI traps' guest pointers,
+  the blit and the MMIO decode fetch. In range, it commits the range and answers
+  the host pointer; out of range or wrapping past 2^64, it refuses with
+  `<who>: guest address ... is outside guest RAM, refused` on stderr and answers
+  a zeroed sink, so the device's write goes nowhere and its read sees zeros.
+  UEFI Read/WriteBlocks also refuse an LBA and size past the disk image, and the
+  host GPU refuses when `-mem` leaves the GPU region (0xBE000000 to the end of
+  the framebuffer) outside guest RAM. The arm is `codex/test/e1000-tx-wrap`: a
+  TX descriptor at 2^64 - 16 crashed the host and now prints `survived`.
+- **A `-kernel` file's headers are bounded before anything is copied.** A file
+  larger than guest RAM is refused before it is read (sized in 64 bits), and so
+  is an entry point outside what loaded (an ELF PT_LOAD's file bytes, a PE
+  section, the raw image under a multiboot header). An ELF
+  is ELF32 with its program header table inside the file; a PE (direct, or the
+  BOOTX64.EFI a `-uefi` GPT image yields) has its header inside the file; each
+  PT_LOAD or PE section must fit guest RAM and the file in 64-bit arithmetic and
+  is committed before the copy. Otherwise codex-vm exits 1 with
+  `FATAL: ... refused` before the guest runs; a segment or section that does not
+  fit is never skipped. The GPT partition entry is read only from a file that
+  holds it, and an LBA past the file is no ESP. The arm is
+  `build/check-vm-kernel-load.ps1`.
+- **A GPU bridge path names a file, never a device.** Besides `..`, a drive
+  and `:`, an upload or save path is refused when any component is a Win32
+  reserved device name (CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0..9, LPT0..9,
+  with or without an extension), and an opened path that is not a disk file
+  is closed and refused. The arm is `codex/test/gpu-save-device`: before the
+  bound, a save to `NUL` answered 16 bytes written and a save to `COM1`
+  created a file of that name under the root.
+- **The asset load reads only under `-asset-root`.** The guest's path for
+  ports 0x40C, 0x40D and 0x417 is resolved under that root by the GPU bridge's
+  rules above; without the flag every load answers 0 bytes. The arm is
+  `codex/test/vm-asset-root`: before the bound, a path relative to codex-vm's
+  working directory was served whole.
+  These three (upload, save, asset load) are the only host paths a guest
+  names; every other open takes its path from the command line, and the UEFI
+  file-protocol traps (70 to 75) are defined and unhandled. A new guest-named
+  path goes through `gpu_rel_path` and a disk-file check.
+- **An HDA capture is data only once IOC says the buffer completed.** `hda-capture`
+  clears SD1STS.IOC, waits for RUN to clear and then requires IOC, and answers
+  0 otherwise, stopping the stream; `mic-peak` answers -1 and `listen`
+  `mic-level:none`. `-hda-capture-stall` reaches the refusal, and
+  `-hda-capture-silence` completes without the host microphone.
+- **`CODEX_VM_UEFI_DESC_SIZE=N` makes GetMemoryMap report DescriptorSize N**
+  over its own 48-byte descriptors (MapSize and layout unchanged). The
+  cdx-to-pe stub halts with `D` on COM1 below 40; the arm is
+  `build/boot/pe-descsize-arm.ps1`.
+- **A host commit that fails is a refusal, not a fault.** `guest_host_touch`
+  marks a chunk seen only once it is committed and answers whether the range
+  is; `gptr` and the string-IN arms (NE2K, the IDE data port's batched REP INSW,
+  the generic one) refuse on 0. `CODEX_VM_FAIL_TOUCH=1` makes every host commit
+  of an untouched chunk fail. The hand arms: a guest that pokes 0x60000000 and 4
+  into the blit cells (36160, 36168) and writes 3 to port 0x510 prints
+  `survived` under the variable, and with the touch answering 1 regardless it
+  crashed the host; `codex/test/apps/install-to-drive` under the variable prints
+  `target CODEX.CDX: MISSING` with `IDE INS` refused on stderr, and with the IDE
+  arm's touch removed it printed nothing at all, with or without the variable.
+  The GPU texture upload (0x408 to 0x40B), the asset load (0x40C, 0x40D, 0x417)
+  and the CUDA buffer copy (COM3) commit through `guest_host_touch` too and
+  refuse on 0; `guest_commit_range`, which ignores a refused commit, is left
+  only to the UEFI allocators, whose pages the host later reaches through
+  `gptr`. The hand arm for the first two is `codex/test/vm-touch-refusal`
+  (compile it, run `tools/codex-vm.exe -kernel <cdx>` from the repository
+  root): it prints `asset bytes 1356` plainly and `asset bytes 0` under the
+  variable, with both refusals on stderr, and `survived` both times. The CUDA
+  copy has no arm on a box without a CUDA device behind COM3.
+- **The crash reporter and debugger read guest RAM only where it is
+  committed.** The memory dump, the stack dump, the backtrace, the disassembly,
+  the breakpoint patch, the `x` command, the bytes at RIP, the hardware watch
+  value, the WCET return address, the page-table walk, the trace cells and
+  `-dumpmem` ask `guest_page_committed` or `guest_range_committed` first and
+  say so when a range is not. The arm: `-dumpmem 0x70000000 64` over
+  `codex/test/vm-touch-refusal` prints `host page not committed`; a reader
+  without the check prints the header and dies on the first byte.
 
 ## Running the USB storage arms by hand
 
@@ -214,9 +297,8 @@ driver hardcoding 1 passes at `1` and FAILS at `2`. If the model accepted every
 value the first three rows would look identical to a model that refuses
 correctly; the fourth arm is what separates "the driver is right" from "the
 device cannot say no". **`p4 edit` before splicing a sabotage, and check the
-sabotage landed before believing the arm**: the first attempt wrote to a
-read-only depot file, the write threw, and the "old driver" arm silently ran the
-fixed driver and passed.
+sabotage landed before believing the arm**: a write to a read-only depot file throws, and the
+"old driver" arm then runs the fixed driver and passes.
 
 ## Queue
 
@@ -246,8 +328,7 @@ Option A images, and those do not boot under codex-vm's own `-uefi` path:
 both the current and the previous binary triple-fault at RIP `0x7032`, which the
 VM itself names the fixed-address boot bug. So the flag's reach today is the
 mode info and the framebuffer geometry, not a painted screen, and the
-end-to-end proof is still OVMF. The row-stepping defect turned out not to need
-the bed at all: `codex/test/gop-stride.codex` passes a stride unequal to the
+end-to-end proof is still OVMF. The row-stepping defect needs no bed: `codex/test/gop-stride.codex` passes a stride unequal to the
 width as an ordinary argument and needs no emulator feature.
 
 **Not in scope for the ship:** modelling a GTX 970, NVMe, or anything else no

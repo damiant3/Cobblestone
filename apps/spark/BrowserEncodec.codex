@@ -3,8 +3,6 @@ Chapter: BrowserEncodec
   cites AI chapter SafeTensors
   cites Foreword chapter StringUtils
 
- We say:
-
   BeWeights = record {
     be-names : List Text,
     be-handles : List Integer,
@@ -53,7 +51,8 @@ Chapter: BrowserEncodec
     let y = gpu-buf-alloc (cout * frames * 4)
     in let weight = be-get w (prefix & ".weight")
     in let bias = be-get w (prefix & ".bias")
-    in be-result y (if x == 0 | y == 0 | weight == 0 | bias == 0 then 0 - 1 else gpu-launch code "ec_conv1d_main" (be-grid (cout * frames)) [gpu-arg-buf x 0, gpu-arg-buf weight 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 cin, gpu-arg-u32 cout, gpu-arg-u32 frames, gpu-arg-u32 kernel, gpu-arg-u32 (kernel / 2)])
+    in be-result y (if x == 0 | y == 0 | weight == 0 | bias == 0 then 0 - 1 else gpu-launch code "ec_conv1d_main" (be-grid (cout * frames)) [gpu-arg-buf x 0,
+      gpu-arg-buf weight 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 cin, gpu-arg-u32 cout, gpu-arg-u32 frames, gpu-arg-u32 kernel, gpu-arg-u32 (kernel / 2)])
 
   be-transpose : Text, BeWeights, Integer, Text, Integer, Integer, Integer -> Integer
   be-transpose (code) (w) (x) (prefix) (channels) (frames) (ratio) =
@@ -61,14 +60,18 @@ Chapter: BrowserEncodec
     in let y = gpu-buf-alloc (n * 4)
     in let weight = be-get w (prefix & ".weight")
     in let bias = be-get w (prefix & ".bias")
-    in be-result y (if x == 0 | y == 0 | weight == 0 | bias == 0 then 0 - 1 else gpu-launch code "ec_conv_transpose_main" (be-grid n) [gpu-arg-buf x 0, gpu-arg-buf weight 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 channels, gpu-arg-u32 (channels / 2), gpu-arg-u32 frames, gpu-arg-u32 (ratio * 2), gpu-arg-u32 ratio, gpu-arg-u32 ((ratio + 1) / 2)])
+    in be-result y (if x == 0 | y == 0 | weight == 0 | bias == 0 then 0 - 1 else gpu-launch code "ec_conv_transpose_main" (be-grid n) [gpu-arg-buf x 0, gpu-arg-buf weight 0, gpu-arg-buf bias 0, gpu-arg-buf y 0,
+      gpu-arg-u32 channels, gpu-arg-u32 (channels / 2), gpu-arg-u32 frames, gpu-arg-u32 (ratio * 2), gpu-arg-u32 ratio, gpu-arg-u32 ((ratio + 1) / 2)])
 
   be-lstm-step : Text, BeWeights, Text, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   be-lstm-step (code) (w) (suffix) (x) (h) (c) (next-h) (next-c) (gates) (y) (frames) (time) =
     if time >= frames then 0
     else let p = "decoder.model.1.lstm."
-    in let r1 = gpu-launch code "ec_lstm_gates_main" (be-grid 4096) [gpu-arg-buf x 0, gpu-arg-buf h 0, gpu-arg-buf (be-get w (p & "weight_ih_" & suffix)) 0, gpu-arg-buf (be-get w (p & "weight_hh_" & suffix)) 0, gpu-arg-buf (be-get w (p & "bias_ih_" & suffix)) 0, gpu-arg-buf (be-get w (p & "bias_hh_" & suffix)) 0, gpu-arg-buf gates 0, gpu-arg-u32 frames, gpu-arg-u32 time, gpu-arg-u32 1024]
-    in let r2 = if r1 < 0 then r1 else gpu-launch code "ec_lstm_state_main" (be-grid 1024) [gpu-arg-buf gates 0, gpu-arg-buf c 0, gpu-arg-buf next-h 0, gpu-arg-buf next-c 0, gpu-arg-buf y 0, gpu-arg-u32 frames, gpu-arg-u32 time, gpu-arg-u32 1024]
+    in let r1 = gpu-launch code "ec_lstm_gates_main" (be-grid 4096) [gpu-arg-buf x 0, gpu-arg-buf h 0,
+      gpu-arg-buf (be-get w (p & "weight_ih_" & suffix)) 0, gpu-arg-buf (be-get w (p & "weight_hh_" & suffix)) 0,
+      gpu-arg-buf (be-get w (p & "bias_ih_" & suffix)) 0, gpu-arg-buf (be-get w (p & "bias_hh_" & suffix)) 0, gpu-arg-buf gates 0, gpu-arg-u32 frames, gpu-arg-u32 time, gpu-arg-u32 1024]
+    in let r2 = if r1 < 0 then r1 else gpu-launch code "ec_lstm_state_main" (be-grid 1024) [gpu-arg-buf gates 0, gpu-arg-buf c 0,
+      gpu-arg-buf next-h 0, gpu-arg-buf next-c 0, gpu-arg-buf y 0, gpu-arg-u32 frames, gpu-arg-u32 time, gpu-arg-u32 1024]
     in if r2 < 0 then r2 else be-lstm-step code w suffix x next-h next-c h c gates y frames (time + 1)
 
   be-lstm-layer : Text, BeWeights, Integer, Integer, Integer -> Integer
@@ -127,7 +130,8 @@ Chapter: BrowserEncodec
     else let tb = gpu-buf-alloc (frames * 16)
     in let z = gpu-buf-alloc (frames * 128 * 4)
     in let written = gpu-buf-write-words tb 0 tokens
-    in let r = if tb == 0 | z == 0 | written == False then 0 - 1 else gpu-launch code "ec_rvq_main" (be-grid (frames * 128)) [gpu-arg-buf tb 0, gpu-arg-buf (w.be-books) 0, gpu-arg-buf z 0, gpu-arg-u32 frames, gpu-arg-u32 128, gpu-arg-u32 2048]
+    in let r = if tb == 0 | z == 0 | written == False then 0 - 1 else gpu-launch code "ec_rvq_main" (be-grid (frames * 128)) [gpu-arg-buf tb 0,
+      gpu-arg-buf (w.be-books) 0, gpu-arg-buf z 0, gpu-arg-u32 frames, gpu-arg-u32 128, gpu-arg-u32 2048]
     in let latent = be-result z r
     in let a = be-conv code w latent "decoder.model.0.conv.conv" 128 1024 frames 7
     in let f = be-drop tb & be-drop latent

@@ -5,27 +5,6 @@ Chapter: ImportGate
   cites Foreword chapter Maybe
   cites Foreword chapter Hamt
 
- This chapter is in the foreword, and it is in the foreword on purpose.
- The compiler sits to the left of codex.os and of every app quire, so it
- cannot reach the trust lattice or the repository protocol. If the
- compiler is to refuse untrusted code -- and that is the whole claim --
- the refusal has to live somewhere the compiler can see.
-
- So the work is split. Computing trust is a rich, expensive thing: a
- vouch graph, transitive scores, decay. That stays in codex.os.trust
- where it already lives. Enforcing trust is a small, cheap thing: does
- this content hash to the hash I asked for, is it signed by a key I
- hold, does that key score high enough. That is all this chapter does,
- and it needs nothing but hashes, signatures, and a table.
-
- The table is a TrustManifest: fingerprint to public key and score,
- materialised by whoever did the expensive part. The repository protocol
- builds one from its lattice. The compiler will read one from disk. The
- gate does not care which, and cannot tell the difference -- which is the
- point.
-
- We say:
-
 Section: Signed Facts
 
  A Fact is content-addressed but anonymous: its hash binds its content
@@ -97,14 +76,6 @@ Section: The Fact Bundle
       signed = hamt-set (b.signed) (f.hash) sf
     }
 
- A fact filed with no signature beside it. The gate already knows what to
- do with one -- it answers ImportUnsigned -- but until there was a way to
- offer a work unsigned, that answer could not be reached, and a
- diagnostic that cannot fire is a promise the compiler does not keep. An
- unsigned work is not a work signed badly: bundle-publish would file a
- signature that fails to verify and the gate would call it forged, which
- is a true sentence about the bytes and the wrong answer to the question.
-
   bundle-offer : FactBundle, Fact -> FactBundle
   bundle-offer (b) (f) =
     FactBundle {
@@ -113,19 +84,6 @@ Section: The Fact Bundle
     }
 
 Section: The Gate
-
- Four guards, in order, and any guard that fails refuses the import
- outright:
-
-   first, the fact must be present.
-   then, its content must hash to the hash that was asked for.
-   then, it must carry a signature that verifies against a key we hold.
-   finally, the signer's score must reach the threshold.
-
- The order matters. Integrity is checked before the signature is
- consulted, because a signature over a lie is still a lie; and the
- signature is checked before the score, because an unverifiable signer
- has no score worth reading.
 
   ImportOutcome =
     | ImportOk (Fact)
@@ -154,14 +112,20 @@ Section: The Gate
   gate-check-integrity : FactBundle, TrustManifest, Integer, Fact, Text, Text -> ImportResult
   gate-check-integrity (bundle) (manifest) (threshold) (f) (hash) (local-name) =
     if fact-content-hash (f.content) == hash
-    then gate-check-signed bundle manifest threshold hash local-name
+    then gate-check-signed bundle manifest threshold f hash local-name
     else import-result local-name ImportCorrupt
 
-  gate-check-signed : FactBundle, TrustManifest, Integer, Text, Text -> ImportResult
-  gate-check-signed (bundle) (manifest) (threshold) (hash) (local-name) =
+  gate-check-signed : FactBundle, TrustManifest, Integer, Fact, Text, Text -> ImportResult
+  gate-check-signed (bundle) (manifest) (threshold) (f) (hash) (local-name) =
     when hamt-get (bundle.signed) hash
       is None -> import-result local-name ImportUnsigned
-      is Just (sf) -> gate-check-signer manifest threshold sf local-name
+      is Just (sf) -> gate-check-bound manifest threshold f sf hash local-name
+
+  gate-check-bound : TrustManifest, Integer, Fact, SignedFact, Text, Text -> ImportResult
+  gate-check-bound (manifest) (threshold) (f) (sf) (hash) (local-name) =
+    if (sf.fact).hash /= hash then import-result local-name ImportCorrupt
+    else if (sf.fact).content /= f.content then import-result local-name ImportCorrupt
+    else gate-check-signer manifest threshold sf local-name
 
   gate-check-signer : TrustManifest, Integer, SignedFact, Text -> ImportResult
   gate-check-signer (manifest) (threshold) (sf) (local-name) =

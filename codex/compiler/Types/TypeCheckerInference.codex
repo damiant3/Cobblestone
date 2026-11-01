@@ -5,17 +5,6 @@ Chapter: Type Checker
 
 Section: Check Result
 
- The judgment is Γ ⊢ e : τ | ε (ruled
- 2026-07-02): effect-row is the expression's AMBIENT row -- what
- evaluating it performs. The effects of a function VALUE the
- expression produces live on that value's arrow, never in the
- ambient; a lambda's ambient is empty and its body's ambient becomes
- the synthesized arrow's row. Compound expressions row-union their
- parts; applications add the row captured from the callee's arrow.
- Until stage 3b migrates concrete effects onto arrows, every ambient
- row computes to the interned empty row, which is what keeps this
- plumbing inert and the fixed point byte-identical.
-
   CheckResult = record {
    inferred-type : CodexType,
    effect-row : EffectRow,
@@ -279,15 +268,6 @@ Section: Infer Binary
     state = amb-st
    }
 
- Ordering is refused on both of these and for one reason stated two ways.
- On Text the operands reach a machine cmp as ADDRESSES, so the answer
- followed allocation order: two separately built copies of "a" compared
- unequal, one of them less than the other. On a character the comparison is
- well defined and misleads instead, because CCE numbers characters by
- English letter frequency -- 'd' is 22 and 'b' is 32, so `'d' < 'b'` is
- True. Neither has a single meaning to lower to, which is the same argument
- that made `==` on Real a refusal rather than a silent choice.
-
   is-text-or-char-type : CodexType -> Boolean
   is-text-or-char-type (ty) =
    when strip-unit-ty ty
@@ -406,14 +386,6 @@ Section: Infer Binary
     is OpCons -> infer-cons st lt rt span
     is OpDefEq -> infer-comparison st lt rt span
 
- An arithmetic result used to be the LEFT operand's type verbatim, which
- made the judgment depend on the order the author wrote the operands in.
- `b.val + 1` over a 0..255 byte kept 0..255 and compiled; `1 + b.val` --
- the same sum -- took the literal's type and was rejected, because an
- integer literal is typed int-ty-default, the FULL i64 range. A literal
- is not "some integer" to the reader, and reporting that a byte plus one
- might be nine quintillion is not a judgment anyone can act on.
-
   arith-result-ty : CodexType, CodexType -> CodexType
   arith-result-ty (lt) (rt) =
    when lt
@@ -480,19 +452,6 @@ Section: Infer Binary
     effect-row = empty-row,
     state = u-st2
    }
-
- BOTH ARMS RECORD, and the boolean one did not until 2026-08-19. `&` is one
- token doing two jobs and the recorded type is the only thing that separates
- them afterwards, so an unrecorded boolean `&` is indistinguishable from an
- expression nothing knows the type of. Every reader of the table treats the
- absence as the worst case, which is correct of them and wrong here: measured,
- `bounded none andy (a) (b) = a & b` over two Booleans was refused CDX6101,
- and `punctual` refuses the same shape through `check-rt-no-alloc`. Both
- checks were charging a boolean AND for a heap allocation it never makes.
-
- The key is file, start offset AND length (`expr-type-key`), so a binary's
- entry cannot collide with its own left operand's; the name lookups in
- `Lowering.codex` ask about name spans and never see these.
 
   infer-and : UnificationState, CodexType, CodexType, SourceSpan -> CheckResult
   infer-and (st) (lt) (rt) (span) =
@@ -604,6 +563,35 @@ Section: Infer Let
     is AApplyExpr (f) (a) (s) -> apply-spine-head-name f
     is otherwise -> ""
 
+  lint-shift-count : UnificationState, AExpr, AExpr, SourceSpan -> UnificationState
+  lint-shift-count (st) (func) (arg) (span) =
+   let head = partial-apply-head-name func
+   in if head /= "bit-shl" & head /= "bit-shr" & head /= "bit-shru" then st
+   else if shift-count-negative-literal arg == False then st
+   else __record-set st "bag" (bag-add (st.bag) (make-error cdx-negative-shift-count ("The " & head & " count is a negative constant; a negative shift count is refused") span))
+
+  shift-count-negative-literal : AExpr -> Boolean
+  shift-count-negative-literal (e) =
+   when e
+    is ABinaryExpr (l) (op) (r) (s) ->
+     (when op
+      is OpSub -> int-lit-is-text l "0" & int-lit-nonzero r
+      is otherwise -> False)
+    is AUnaryExpr (x) (s) -> int-lit-nonzero x
+    is otherwise -> False
+
+  int-lit-is-text : AExpr, Text -> Boolean
+  int-lit-is-text (e) (t) =
+   when e
+    is ALitExpr (val) (kind) (s) -> (when kind is IntLit -> val == t is otherwise -> False)
+    is otherwise -> False
+
+  int-lit-nonzero : AExpr -> Boolean
+  int-lit-nonzero (e) =
+   when e
+    is ALitExpr (val) (kind) (s) -> (when kind is IntLit -> val /= "0" is otherwise -> False)
+    is otherwise -> False
+
   apply-spine-head-name : AExpr -> Text
   apply-spine-head-name (e) =
    when e
@@ -682,12 +670,6 @@ Section: Infer Lambda
     effect-row = empty-row,
     state = record-expr-type lam-st sp fun-ty
    }
-
- The recorded type is what lowering asks for when nothing above the lambda
- expects one. It carries the parameters' type VARIABLES at this point --
- unification has not finished -- so the reader resolves it; `lookup-expr-type`
- hands back what was stored and `deep-resolve` turns it into the answer. The
- span is threaded in for this and is used for nothing else.
 
   LambdaBindResult = record {
    state : UnificationState,
@@ -779,7 +761,7 @@ Section: Infer Application
    in let st-arg = lint-arg-narrowing st-cls env func (fr.inferred-type) arg (ar.inferred-type) span
    in let st-rs = lint-record-set st-arg env func arg (ar.inferred-type) ret-ty span
    in let st-lint = lint-effect-scope st-rs env func arg span
-   in let st-final = lint-vec-lane st-lint func arg span
+   in let st-final = lint-shift-count (lint-vec-lane st-lint func arg span) func arg span
    in let refined-ty = refine-vec-result st-final func (ar.inferred-type) ret-ty
    in let (amb1, amb1-st) = row-union st-final (fr.effect-row) (ar.effect-row)
    in let (amb, amb-st) = row-union amb1-st amb1 (deck-record (row-var call-row-id))
@@ -893,14 +875,6 @@ Section: Infer Application
    else if ((list-at cs i).name.value) == name then True
    else sum-ctors-have cs name (i + 1) len
 
- A lane index is checked against a lane count the compiler already knows.
- `vec-extract`'s own type takes a `Vector 2` and `vec4-extract`'s a
- `Vector 4`, so the count is fixed by the builtin rather than inferred, and
- a literal lane outside it is decidable HERE. Damian's ruling, 2026-07-28:
- a compile error, not a runtime trap. It is the stronger answer for the
- same reason CDX2089 is -- the program never ships, where a trap only fires
- on the run that reaches the line.
-
   vec-lane-count : Text -> Integer
   vec-lane-count (name) =
    if name == "vec-extract" then 2
@@ -994,18 +968,8 @@ Section: Lint __record-set narrowing
        in let field-ty = lookup-field-ty-for-lint env resolved-record-ty text-val
        in let st1 = bind-record-set-value st field-ty value-ty span
        in lint-narrowing-check st1 env value-arg value-ty field-ty span ("field '" & text-val & "'")
-      is otherwise -> st
-    is otherwise -> st
-
- The value argument of `__record-set` names its field with a TEXT LITERAL,
- so ordinary application inference has nothing to unify an undetermined
- value against: the field's declared type never reaches it and an empty
- list literal arrived in the IR as `(list-expr (elems) error)`. The field
- type is already derived here for the narrowing lint, so it is bound to
- the value type as well -- but ONLY when the value is still undetermined.
- A value carrying no type variables is left alone deliberately: a
- bounded-integer field assigned a wider integer is the case the narrowing
- lint decides, and unification would refuse it instead.
+      is otherwise -> add-unify-error st cdx-record-set-field-not-literal "__record-set needs a text literal field name" span
+    is otherwise -> add-unify-error st cdx-record-set-field-not-literal "__record-set needs a text literal field name" span
 
   bind-record-set-value : UnificationState, CodexType, CodexType, SourceSpan -> UnificationState
   bind-record-set-value (st) (field-ty) (value-ty) (span) =
@@ -1120,15 +1084,6 @@ Section: Lint value-expression range analysis
     is OpMul -> interval-range (iv-mul l-iv r-iv)
     is OpDiv -> interval-range (iv-div l-iv r-iv)
     is otherwise -> (i64-min, i64-max)
-
- `int-mod` cannot be a `builtin-return-range` row, and that is why the
- checker used to refuse a bounded return the EMITTER proves. That table
- holds one constant interval per builtin name; `int-mod x n` is bounded by
- `[0, n - 1]`, which depends on an argument and so has no constant row to
- sit in. The emit-side prover reads the divisor (`proven-mod-shallow`,
- X86_64Compound), the checker did not, and the two disagreed about the
- same expression -- `ret (n) = int-mod n 200` declared `0..255` was
- rejected with CDX2051 quoting the full i64 interval.
 
   apply-proven-range : TypeEnv, AExpr, AExpr -> (Integer, Integer)
   apply-proven-range (env) (func) (arg) =
@@ -1796,17 +1751,6 @@ Section: Infer Act
 
 Section: Infer Expression (dispatch)
 
- That rule is load-bearing, and it was broken from the day the budget was
- added until 2026-07-16. The dispatch arms handed their work to helpers
- that called infer-expr, which reset the count at every match, let, act
- and application. Depth accumulated only across chained unary operators
- and field accesses, which no real program writes, and CDX9001 could
- therefore never fire for the constructs that actually recurse. A runaway
- inference walked the stack a gigabyte down into the demand-paged range
- and double-faulted, where the CPU cannot deliver a page fault onto the
- faulting stack: the compiler died silently instead of reporting
- exhaustion.
-
   infer-expr : UnificationState, TypeEnv, AExpr -> CheckResult
   infer-expr (st) (env) (expr) = infer-expr-at st env expr 0
 
@@ -1926,7 +1870,7 @@ Section: Infer Expression (dispatch)
           in CheckResult {
              inferred-type = fr-ty,
              effect-row = r.effect-row,
-             state = record-field-access-type fr-st s fr-ty
+             state = record-field-site (record-field-access-type fr-st s fr-ty) s (r.inferred-type) (field.value)
             }
 
          is ARecordExpr (name) (fields) (s) ->
@@ -1954,10 +1898,10 @@ Section: Infer Expression (dispatch)
              then let (tp, tp-st) = fresh-row-id (body-r.state)
                   in let ext = make-row [deck-record (EffectLabel { name = Name { value = eff.value }, scope = "" })] "" tp
                   in let (_, u-st) = unify-row tp-st (body-r.effect-row) ext s
-                  in (deck-record (row-var tp), u-st)
-             else let hu-msg = "handler for '" & eff.value & "' encloses a body whose type performs no " & eff.value
-             in let hu-bag = bag-add ((body-r.state).bag) (make-warning cdx-handler-unused hu-msg s)
-             in (body-r.effect-row, __record-set (body-r.state) "bag" hu-bag)
+                  in let w-st = if handled-body-may-perform env (eff.value) body then u-st
+                       else handler-unused-warn u-st (eff.value) s
+                  in (deck-record (row-var tp), w-st)
+             else (body-r.effect-row, handler-unused-warn (body-r.state) (eff.value) s)
           in let (handle-row, cl-st) = infer-handle-clauses after-st env clauses 0 (list-length clauses) after-row depth
           in CheckResult {
            inferred-type = body-r.inferred-type,
@@ -2051,21 +1995,12 @@ Section: Infer Expression (dispatch)
        else st
      in check-mutation-in-ctor-fields st2 fields (i + 1) len
 
- The hazard is a sibling that READS the mutated record and is evaluated
- AFTER the write; a sibling reading it earlier has already taken its value.
- When the mutated record's base name cannot be determined the answer is
- True, so an unrecognised shape warns exactly as it did before.
-
   ctor-field-mutation-hazard : List AFieldExpr, Integer, Integer, AExpr -> Boolean
   ctor-field-mutation-hazard (fields) (i) (len) (value) =
    if record-set-count value /= 1 then True
    else let target = record-set-target value
    in if text-length target == 0 then True
    else later-field-reads-name fields (i + 1) len target
-
- More than one `__record-set` in one field value means more than one
- mutated record, and picking the first would be a false NEGATIVE, which is
- the direction that ships a defect. Those warn.
 
   record-set-count : AExpr -> Integer
   record-set-count (e) =
@@ -2095,11 +2030,6 @@ Section: Infer Expression (dispatch)
    if i >= len then False
    else if aexpr-uses-name ((list-at fields i).value) target then True
    else later-field-reads-name fields (i + 1) len target
-
- The `__record-set` is often NESTED in an argument rather than sitting at
- the head of the field's own apply spine -- `fc-evict-reg (__record-set st
- ...) reg` and `Just (deck-record (__record-set td ...))` are both in the
- compiler -- so this searches the whole expression, not the spine.
 
   record-set-target : AExpr -> Text
   record-set-target (e) =
@@ -2168,12 +2098,88 @@ Section: Infer Expression (dispatch)
    in if effect-covered-by [Name { value = name }] ((l.name).value) then row-keep-uncovered ls name (i + 1) len acc
       else row-keep-uncovered ls name (i + 1) len (list-push acc l)
 
+  handler-unused-warn : UnificationState, Text, SourceSpan -> UnificationState
+  handler-unused-warn (st) (eff) (s) =
+   let hu-msg = "handler for '" & eff & "' encloses a body whose type performs no " & eff
+   in __record-set st "bag" (bag-add (st.bag) (make-warning cdx-handler-unused hu-msg s))
+
+  handled-body-may-perform : TypeEnv, Text, AExpr -> Boolean
+  handled-body-may-perform (env) (eff) (e) =
+   when e
+    is ALitExpr (v) (k) (s) -> False
+    is ANameExpr (n) (s) -> hb-name-may-perform env eff (n.value) 0
+    is AApplyExpr (f) (a) (s) ->
+     if hb-apply-may-perform env eff f 1 then True
+     else handled-body-may-perform env eff a
+    is ABinaryExpr (l) (op) (r) (s) ->
+     if handled-body-may-perform env eff l then True
+     else handled-body-may-perform env eff r
+    is AIfExpr (c) (t) (f) (s) ->
+     if handled-body-may-perform env eff c then True
+     else if handled-body-may-perform env eff t then True
+     else handled-body-may-perform env eff f
+    is otherwise -> True
+
+  hb-apply-may-perform : TypeEnv, Text, AExpr, Integer -> Boolean
+  hb-apply-may-perform (env) (eff) (f) (nargs) =
+   when f
+    is AApplyExpr (g) (a) (s) ->
+     if hb-apply-may-perform env eff g (nargs + 1) then True
+     else handled-body-may-perform env eff a
+    is ANameExpr (n) (s) -> hb-name-may-perform env eff (n.value) nargs
+    is otherwise -> True
+
+  hb-name-may-perform : TypeEnv, Text, Text, Integer -> Boolean
+  hb-name-may-perform (env) (eff) (name) (nargs) =
+   let resolved = rename-lookup (env.chapter-renames) name
+   in if env-has env resolved then hb-type-may-perform eff (strip-forall-ty (env-lookup env resolved)) nargs
+   else True
+
+  hb-type-may-perform : Text, CodexType, Integer -> Boolean
+  hb-type-may-perform (eff) (ty) (nargs) =
+   when ty
+    is EffectfulTy (effs) (sc) (inner) ->
+     if hb-names-may-perform effs eff 0 (list-length effs) then True
+     else hb-type-may-perform eff inner nargs
+    is FunTy (p) (row) (r) ->
+     if nargs == 0 then False
+     else if hb-row-may-perform row eff then True
+     else hb-type-may-perform eff r (nargs - 1)
+    is LinearTy (inner) -> hb-type-may-perform eff inner nargs
+    is TypeVar (id) -> True
+    is otherwise -> nargs > 0
+
+  hb-row-may-perform : EffectRow, Text -> Boolean
+  hb-row-may-perform (row) (eff) =
+   if row.tail-id >= 0 then True
+   else if text-length (row.tail-name) > 0 then True
+   else hb-labels-may-perform (row.labels) eff 0 (list-length (row.labels))
+
+  hb-labels-may-perform : List EffectLabel, Text, Integer, Integer -> Boolean
+  hb-labels-may-perform (ls) (eff) (i) (len) =
+   if i == len then False
+   else let l = ((list-at ls i).name).value
+   in if effect-covered-by [Name { value = eff }] l then True
+   else if effect-covered-by [Name { value = l }] eff then True
+   else hb-labels-may-perform ls eff (i + 1) len
+
+  hb-names-may-perform : List Name, Text, Integer, Integer -> Boolean
+  hb-names-may-perform (ns) (eff) (i) (len) =
+   if i == len then False
+   else let l = (list-at ns i).value
+   in if effect-covered-by [Name { value = eff }] l then True
+   else if effect-covered-by [Name { value = l }] eff then True
+   else hb-names-may-perform ns eff (i + 1) len
+
   infer-handle-clauses : UnificationState, TypeEnv, List AHandleClause, Integer, Integer, EffectRow, Integer ->
     (EffectRow, UnificationState)
   infer-handle-clauses (st) (env) (clauses) (i) (len) (acc-row) (depth) =
    if i == len then (acc-row, st)
    else let c = list-at clauses i
-   in let pr = bind-lambda-params st env (c.params) 0 (list-length (c.params)) []
+   in let bs = builtins
+   in let st-b = if builtin-emits-by-name bs ((c.op-name).value) 0 (list-length bs) == False then st
+     else add-unify-error st cdx-handler-shadows-builtin ("The handler clause for '" & (c.op-name).value & "' can never run: every call of '" & (c.op-name).value & "' compiles to the builtin of that name, not to a handler. Handle an operation of an effect of your own.") (c.span)
+   in let pr = bind-lambda-params st-b env (c.params) 0 (list-length (c.params)) []
    in let (rs-ty, rs-st) = fresh-and-advance (pr.state)
    in let env3 = env-bind-local (pr.env) ((c.resume-name).value) rs-ty
    in let br = infer-expr-at rs-st env3 (c.body) (depth + 1)
@@ -2240,15 +2246,6 @@ Section: Infer Expression (dispatch)
    else let f = list-at fields i
    in let r = infer-expr-at st env (f.value) (depth + 1)
    in infer-record-fields (r.state) env fields (i + 1) len depth
-
- A field left OUT came back as zero. That is a plausible value for an
- integer, an empty list and a null pointer alike, so it does not look
- like a mistake anywhere downstream. It cost a real memory-corruption
- bug: net-io-send-chunk (NetIO.codex) rebuilt a TcpTransportState
- naming four of its seven fields, so every send zeroed recv-base -- a
- raw heap address -- and the next inbound frame wrote the bytes off the
- wire to physical address 0, over the IDT and the kernel metadata
- cells. Nothing complained, at any severity, for months.
 
   record-field-unknown : UnificationState, CodexType, Text, SourceSpan -> UnificationState
   record-field-unknown (st) (record-ty) (fname) (s) =

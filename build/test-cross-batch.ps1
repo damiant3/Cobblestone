@@ -57,6 +57,11 @@ Set-Location $Repo
 $plugName = if ($Arch -eq 'arm64') { 'arm64' } else { 'riscv' }
 $testDir = Join-Path $Repo 'codex\test'
 $compileScript = Join-Path $Repo "codex\plugs\$plugName\compile-$plugName.ps1"
+# Every subject compiles through the plug CDX in build-output, so a CDX built before a source it bundles grades the
+# old plug (2026-10-31: an arm64 baseline ran a stale plug and other lanes' fixes read as this run's). Rebuilt once
+# here, before the parallel compile; the -WithLir compiler chapters and cited forewords are why both trees count.
+. (Join-Path $Repo 'codex\plugs\common\plug-fresh.ps1')
+Update-StalePlug -PlugDir (Join-Path $Repo "codex\plugs\$plugName") -PlugCdx (Join-Path $Repo "codex\plugs\$plugName\build-output\$plugName-plug.cdx") -ExtraDirs @('codex\compiler', 'codex\foreword')
 . (Join-Path $PSScriptRoot 'renode-config.ps1')
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 $renodeExe = Get-RenodeExe -Repo $Repo
@@ -86,6 +91,9 @@ foreach ($tf in $allTests) {
     # an EMPTY one routes the test with nothing attached, which is how the
     # absent arm is expressed from the same mechanism.
     if (Test-Path "$dir\$name.qemudev") { $skipReason = "QEMU device (build/test-cross-disk.ps1)" }
+    # A .qemuboard test boots another QEMU machine (its first line, e.g.
+    # raspi4b) with a board-specific __start, so it is ROUTED the same way.
+    elseif (Test-Path "$dir\$name.qemuboard") { $skipReason = "QEMU board (build/test-cross-disk.ps1)" }
     elseif (Test-Path "$dir\$name.skip")    { $skipReason = (Get-Content -TotalCount 1 "$dir\$name.skip") }
     elseif (Test-Path "$dir\$name.slow")    { $skipReason = "slow" }
     elseif ((Test-Path "$dir\$name.fatal") -and -not (Test-Path "$dir\$name.cross-fatal")) { $skipReason = "fatal" }
@@ -174,7 +182,10 @@ $compileBlock = {
     $compileLog = Join-Path $testOutDir 'compile.log'
 
     $cs = Get-Date
-    $proc = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',$compileScript,'-Src',($t.File).FullName,'-Out',$elfOut,'-WorkDir',$testOutDir) -NoNewWindow -PassThru -RedirectStandardOutput $compileLog -RedirectStandardError (Join-Path $testOutDir 'compile.err')
+    $compileArgs = @('-NoProfile','-File',$compileScript,'-Src',($t.File).FullName,'-Out',$elfOut,'-WorkDir',$testOutDir)
+    $flagsFile = Join-Path ($t.Dir) "$name.flags"
+    if (Test-Path -PathType Leaf $flagsFile) { $compileArgs += @('-RawFlags', ('"' + (Get-Content -TotalCount 1 $flagsFile).Trim() + '"')) }
+    $proc = Start-Process -FilePath 'pwsh' -ArgumentList $compileArgs -NoNewWindow -PassThru -RedirectStandardOutput $compileLog -RedirectStandardError (Join-Path $testOutDir 'compile.err')
     # A `compile N` line in the test's .cross-budget raises THIS test's
     # compile ceiling, the same pricing the sidecar's first line gives its
     # run ceiling: the global budget stays tight and the one known-heavy
@@ -885,3 +896,9 @@ Write-Host "  SKIPPED:           $skipCount"
 Write-Host "  Total time:        ${totalMin} min"
 Write-Host "  Results:           $outFile"
 if ($archivedTo) { Write-Host "  Previous run kept: $archivedTo" }
+$notPassed = @($compiled.Values | Where-Object { $_.Status -notin @('PASS_EXPECTED', 'PASS_COMPILE_ONLY', 'PASS_REFUSED') }).Count
+if ($notPassed -gt 0) {
+    Write-Host "  NOT PASSED:        $notPassed subject(s), exit 1"
+    exit 1
+}
+exit 0

@@ -68,12 +68,6 @@ Section: State
 
 Section: Initialization
 
- The state is built around the UNLOADED tab and the page is loaded into it
- afterwards, because the page has to be built for a height only a layout can
- answer and a layout needs a state to lay out. `__record-set`
- stores in place and hands back the same record, which is what makes the
- second step a store rather than a second state.
-
   browser-init : Integer, Integer, Theme, DisplayState -> BrowserState
   browser-init (w) (h) (theme) (ds) =
     let comp = compositor-new w h browser-bg
@@ -108,11 +102,6 @@ Section: Initialization
       __record-set blank "bs-tabs" [loaded]
     end
 
- The last argument is the viewport's MEASURED height, not the window's.
- `browser-viewport-h` lays the chrome out with an empty viewport and reads
- what the layout gives it; `chrome-height` subtracted from the window is 26
- short at 1024x768.
-
   load-new-tab-content : Tab, SandboxConfig, TrustStore, ContentCacheState, Integer, Integer -> Tab
   load-new-tab-content (t) (sandbox) (trust) (cache) (vw) (vp-h) =
     act
@@ -146,9 +135,6 @@ Section: Chrome Layout
 
   chrome-height : Integer
   chrome-height = chrome-tab-bar-height + chrome-address-bar-height
-
- This is the box the layout actually gives the page, not `chrome-height`
- subtracted from the window. The media player is sized by it.
 
   page-viewport-rect : BrowserState -> LayoutRect
   page-viewport-rect (state) = browser-viewport-box state
@@ -190,15 +176,6 @@ Section: Rendering
       then let overlay = browser-render-trust-prompt state
       in widget-panel "root" DirColumn 0 [chrome, overlay]
     else chrome
-
- `vh - chrome-height` is not the page's height: the root panel's inset and
- the margins between the bars also stand above the viewport (684 against 658
- at 1024x768), and nothing clips a widget panel to its box.
-
- So the height is MEASURED, from a layout of this same chrome with an EMPTY
- viewport. A panel is at least as tall as what it holds, so a chrome measured
- with the real page would report the height the page DEMANDS rather than the
- height it is given.
 
   browser-viewport-probe : Text = "viewport-probe"
 
@@ -519,16 +496,6 @@ Section: Mouse Hit Testing
   browser-band-tab-bar : Integer = 1
   browser-band-address-bar : Integer = 2
 
- The band is read off the tree the browser painted, not derived from the
- chrome's heights. Those are heights and the question is POSITION: the root
- panel is inset by its own margin, border and padding before anything is
- placed, so the tab bar starts at y 9, and no pair of constants accounts for
- that: the inset is the theme's and the widths are the caller's
- (`codex/test/apps/browser-chrome-click`).
-
- The heights are still the answer before the first paint, when there is no
- tree to ask and no pixels on the glass either.
-
   browser-click-band : BrowserState, Integer, Integer -> Integer
   browser-click-band (state) (mx) (my) =
     when state.bs-laid
@@ -567,13 +534,6 @@ Section: Mouse Hit Testing
     else if state.bs-show-trust-prompt
     then browser-handle-trust-click state mx my
     else browser-apply-page-code state code
-
- Tabs start at x 9, for the root panel's inset, and `render-tab-button` sizes
- each one to its own TITLE, so dividing x by a tab width cannot find a tab.
-
- The tree is asked instead, by the id each button already carries. The width
- arithmetic is kept for the `bs-laid = None` case, which is before the first
- paint and so before there is a tab on the glass to aim at.
 
   browser-handle-tab-bar-click : BrowserState, Integer, Integer -> BrowserState
   browser-handle-tab-bar-click (state) (mx) (my) =
@@ -859,10 +819,6 @@ Section: Media Tick
 
 Section: Page Scroll Handling
 
- The viewport is the chrome's third child and is found by position rather than
- by id, because the id is the PAGE's -- `tab-render-content` hands back whatever
- the page builder named its root, so there is no fixed name to look for.
-
   browser-laid-viewport : WidgetNode -> Maybe WidgetNode
   browser-laid-viewport (laid) =
     when widget-find laid "chrome"
@@ -897,15 +853,6 @@ Section: Page Scroll Handling
     when browser-laid-viewport laid
       is None -> 0
       is Just (vp) -> browser-subtree-bottom vp
-
- A tab is built by `tab-new` with a viewport of 0 by 0 and a content of 800 by
- 600, which are placeholders: the tab exists before any layout has said how big
- either is, and `scroll-by` must not clamp against them.
-
- The height that matters is the VISIBLE one, `lh - vy`, not the viewport node's
- own `lr-h`: a flex child is not shrunk below the minimum its content declares, so the node
- laid into the pane is taller than the pane and its own bounds cannot say how
- much of it a reader can see.
 
   browser-laid-clip : WidgetNode -> Maybe WidgetNode
   browser-laid-clip (laid) =

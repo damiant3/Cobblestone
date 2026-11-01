@@ -17,22 +17,46 @@ Section: Tests
     in p3
 
   test-trusted-console : Text =
-    let ctx = PolicyContext { capability = "Console", direction = 2, trust-score = 8000, current-time = 0, agent-id = "agent-1" }
+    let ctx = PolicyContext { capability = "Console", direction = 2, trust-score = 8000, current-time = 0, agent-id = "agent-1", scope = "" }
     in let decision = eval-policy test-policy ctx
     in decision.matched-rule & "\n" & show-bool (decision.allowed)
 
   test-config-read : Text =
-    let ctx = PolicyContext { capability = "FileSystem", direction = 0, trust-score = 1000, current-time = 0, agent-id = "agent-2" }
+    let ctx = PolicyContext { capability = "FileSystem", direction = 0, trust-score = 1000, current-time = 0, agent-id = "agent-2", scope = "/config/app.ini" }
     in let decision = eval-policy test-policy ctx
     in decision.matched-rule & "\n" & decision.reason
 
   test-default-deny : Text =
-    let ctx = PolicyContext { capability = "Network", direction = 1, trust-score = 100, current-time = 0, agent-id = "agent-3" }
+    let ctx = PolicyContext { capability = "Network", direction = 1, trust-score = 100, current-time = 0, agent-id = "agent-3", scope = "" }
     in let decision = eval-policy test-policy ctx
     in decision.matched-rule & "\n" & show-bool (decision.allowed)
+
+  scoped-policy : Policy
+  scoped-policy =
+    let p0 = policy-empty "scoped"
+    in let p1 = policy-add-rule p0 (rule-allow-scoped "home" (CapabilityMatch "FileSystem" 2) "/home/")
+    in let p2 = policy-add-rule p1 (rule-allow-scoped "api" (CapabilityMatch "Network" 2) "api.example.com:443")
+    in let p3 = policy-add-rule p2 (rule-allow-scoped "out" (CapabilityMatch "Console" 2) "stdout")
+    in policy-add-rule p3 (rule-allow "anything" AlwaysTrue)
+
+  scoped : Text, Text -> Text
+  scoped (cap) (sc) =
+    let d = eval-policy scoped-policy (PolicyContext { capability = cap, direction = 0, trust-score = 0, current-time = 0, agent-id = "a", scope = sc })
+    in cap & " " & sc & " -> " & show-bool (d.allowed) & " (" & d.matched-rule & ": " & d.reason & ")"
 
   opening : [Console] Nothing = act
     print-line-uni test-trusted-console
     print-line-uni test-config-read
     print-line-uni test-default-deny
+    print-line-uni (scoped "FileSystem" "/home/jake/notes")
+    print-line-uni (scoped "FileSystem" "/home/")
+    print-line-uni (scoped "FileSystem" "/homeless/x")
+    print-line-uni (scoped "FileSystem" "/")
+    print-line-uni (scoped "FileSystem" "")
+    print-line-uni (scoped "Network" "api.example.com:443")
+    print-line-uni (scoped "Network" "api.example.com")
+    print-line-uni (scoped "Network" "api.example.com:4433")
+    print-line-uni (scoped "Network" "evil.example.com:443")
+    print-line-uni (scoped "Console" "stdout")
+    print-line-uni (scoped "Console" "stderr")
   end

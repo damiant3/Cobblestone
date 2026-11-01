@@ -24,8 +24,8 @@ Section: Entry
     in let resp-bytes = [4, 210, 129, 128, 0, 1, 0, 1, 0, 0, 0, 0, 4, 116, 101, 115, 116, 5, 108, 111, 99, 97, 108, 0, 0, 1, 0, 1, 192, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 10, 0, 0, 1]
     in let resp = dns-parse-response resp-bytes
     in let l4 = "valid=" & show (resp.valid) & " id=" & show (resp.tx-id) & " answers=" & show (resp.answer-count)
-    in let a-rec = dns-first-a-record resp
-    in let a-ttl = dns-first-a-ttl resp
+    in let a-rec = dns-first-a-record resp "test.local"
+    in let a-ttl = dns-first-a-ttl resp "test.local"
     in let l5 = (when a-rec is Just (ip) -> format-ip ip is None -> "none") & " ttl=" & show a-ttl
     in let bad-resp = dns-parse-response [1, 2, 3]
     in let l6 = "valid=" & show (bad-resp.valid)
@@ -41,6 +41,7 @@ Section: Entry
     in let missing-ip = resolve r3 "unknown" 1100
     in let fmt-maybe-ip = maybe-format-ip
     in let l8 = "local=" & fmt-maybe-ip local-ip & " cached=" & fmt-maybe-ip cached-ip & " expired=" & fmt-maybe-ip expired-ip & " missing=" & fmt-maybe-ip missing-ip
+    in let l9 = "dns-sweep completed=" & (if dw-sweep resp-bytes 0 (list-length resp-bytes) 0 >= 0 then "True" else "False")
     in act
       print-line-uni l1
       print-line-uni l2
@@ -50,9 +51,29 @@ Section: Entry
       print-line-uni l6
       print-line-uni l7
       print-line-uni l8
+      print-line-uni l9
     end
 
   maybe-format-ip : Maybe (List Integer) -> Text
   maybe-format-ip (m) = when m is Just (ip) -> format-ip ip is None -> "none"
+
+ A seeded single-byte mutation sweep over a valid DNS response: every byte is
+ flipped and run through dns-parse-response and dns-first-a-record, which must
+ return and never walk the answer section off the end.
+
+  dw-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dw-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else dw-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  dw-touch : List Integer -> Integer
+  dw-touch (m) =
+    let r = dns-parse-response m
+    in (if r.valid then r.answer-count else 0) + (when dns-first-a-record r "test.local" is None -> 0 is Just (ip) -> list-length ip)
+
+  dw-sweep : List Integer, Integer, Integer, Integer -> Integer
+  dw-sweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else dw-sweep base (pos + 1) n (acc + dw-touch (dw-mutate base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []))
 
 Page 1

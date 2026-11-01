@@ -6,16 +6,6 @@ Chapter: GopUsbKbd
   cites Works chapter GopKey
   cites Foreword chapter Maybe
 
- USB HID boot keyboard over GopXhci: the transport half of H2b. On a
- machine with no PS/2 controller the firmware's keyboard emulation
- dies at ExitBootServices; the keys keep arriving as 8-byte boot
- reports on an interrupt endpoint of a USB keyboard. This chapter
- fetches those reports and feeds them through GopHid's decoder into
- the same one-byte mailbox the PS/2 interrupt handler fills, so
- gk-take and every consumer above it are untouched.
-
- We say:
-
 Section: Keyboard State
 
   uk-ph-idle : Integer = 0
@@ -126,7 +116,7 @@ Section: Configuration Descriptor Walk
   kbd-find-interface (cfg) (off) (total) =
     if off >= total then -1
     else let len = peek-byte cfg off
-    in if len == 0 then -1
+    in if usb-desc-ok cfg off total == False then -1
     else if peek-byte cfg (off + 1) /= 4 then kbd-find-interface cfg (off + len) total
     else if peek-byte cfg (off + 5) /= 3 then kbd-find-interface cfg (off + len) total
     else if peek-byte cfg (off + 6) /= 1 then kbd-find-interface cfg (off + len) total
@@ -137,7 +127,7 @@ Section: Configuration Descriptor Walk
   kbd-find-int-in (cfg) (off) (total) =
     if off >= total then -1
     else let len = peek-byte cfg off
-    in if len == 0 then -1
+    in if usb-desc-ok cfg off total == False then -1
     else if peek-byte cfg (off + 1) == 4 then -1
     else if peek-byte cfg (off + 1) /= 5 then kbd-find-int-in cfg (off + len) total
     else if bit-and (peek-byte cfg (off + 3)) 3 /= 3 then kbd-find-int-in cfg (off + len) total
@@ -338,18 +328,6 @@ Section: The Pump
     in kbd-pump-one k
 
 Section: The Fallback
-
- A keyboard that enumerates and stays silent is the failure this arc
- was built around, and the only honest proof that a keyboard works is
- a keystroke. So the boot offers one: if nothing at all arrives while
- a screen is waiting for a key, the machine hands the controller back
- to its firmware (GopXhci) and the firmware's legacy emulation -- the
- SMM handler that was presenting this very keyboard as a PS/2 one
- until the ownership handoff silenced it -- returns. Scancodes then
- land in the kernel key cell by IRQ, and gk-take reads them through
- the same mailbox the USB pump was filling, so every consumer above
- here is unchanged and none of them need to know which keyboard they
- got.
 
   kbd-released : Integer -> Integer
   kbd-released (d) = xhci-released 0

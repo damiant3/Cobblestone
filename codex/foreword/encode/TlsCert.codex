@@ -36,27 +36,15 @@ Chapter: TlsCert
  message still verifies against itself while losing the property it exists
  for.
 
- The context string is ASCII. It goes through tls13-ascii and NOT through
- char-code, because Codex Text is CCE: char-code "TLS" gives the CCE code
- points, not 54 4c 53. This exact bug encoded every label in the TLS key
- schedule and shipped an SNI hostname no server could match.
- It is invisible to a round-trip test, because both sides make the same
- mistake and agree.
-
- We say:
+ The context string is ASCII.
 
 Section: Signature Schemes
-
- tls-cv-encode produces two schemes: ecdsa_secp256r1_sha256 for a 65-byte
- SEC1 P-256 public key, ed25519 for anything else.
 
   tls-cv-scheme-for : List Integer -> Integer
   tls-cv-scheme-for (pub) =
     if list-length pub == 65 then tls-sig-ecdsa-p256-sha256 else tls-sig-ed25519
 
- THE SET WE ACCEPT AND THE SET WE OFFER MUST BE THE SAME SET, and the
- numbers therefore live once, in Tls, beside the extension that advertises
- them. Accepting a scheme we never offered is accepting a signature we
+ THE SET WE ACCEPT AND THE SET WE OFFER MUST BE THE SAME SET. Accepting a scheme we never offered is accepting a signature we
  never agreed to; offering one we will not accept is a handshake that dies
  at its last message.
 
@@ -93,8 +81,6 @@ Section: CertificateVerify
     in if tls-cv-scheme-for pub == tls-sig-ecdsa-p256-sha256 then
       tls-cv-wrap-ecdsa (ecdsa-p256-sign priv content)
     else tls-cv-wrap tls-sig-ed25519 (ed25519-sign priv pub content)
-
- An empty body when the signer refused, so the caller can refuse too.
 
   tls-cv-wrap-ecdsa : List Integer -> List Integer
   tls-cv-wrap-ecdsa (rs) =
@@ -166,8 +152,7 @@ Section: CertificateVerify
       tls-cv-pss key sig (tls-cv-content expect-server transcript-hash)
     else False
 
- THE SCHEME AND THE KEY MUST AGREE, and each arm below says so about its
- own key type rather than trusting the dispatch above. The scheme is the
+ THE SCHEME AND THE KEY MUST AGREE. The scheme is the
  PEER's claim about what it did; the key type is what the certificate --
  which a chain walk has already decided to trust -- says the peer holds.
  Only one of those two is evidence, so a scheme that names an algorithm
@@ -189,9 +174,7 @@ Section: CertificateVerify
 
  ecdsa_secp256r1_sha256 carries the same DER the certificate does, not the
  fixed sixty-four bytes -- RFC 8446 section 4.4.3 says so, and it is the
- one place TLS does not use the flat form. So the decoder is the X509
- chapter's, unchanged and shared, rather than a second one written here to
- the same spec.
+ one place TLS does not use the flat form.
 
   tls-cv-ecdsa : X509Key, List Integer, List Integer -> Boolean
   tls-cv-ecdsa (key) (sig) (content) =
@@ -225,8 +208,7 @@ Section: CertificateVerify
 
  rsa_pss_rsae_sha256, and PSS is not a preference here: RFC 8446 section
  4.4.3 forbids PKCS#1 v1.5 in a CertificateVerify no matter how the
- certificate chain itself was signed. rsa-verify-pss-sha256 checks the
- width against the modulus, so there is no length test to repeat.
+ certificate chain itself was signed.
 
   tls-cv-pss : X509Key, List Integer, List Integer -> Boolean
   tls-cv-pss (key) (sig) (content) =
@@ -243,6 +225,10 @@ Section: Certificate
 
  The request context is empty for a server's certificate. Three-byte
  lengths throughout, which is the part everyone gets wrong once.
+
+ RFC 8446 4.4.2 and 4.2: a context is echoed only from a CertificateRequest, and an entry extension answers only a
+ ClientHello extension (status_request, signed_certificate_timestamp). Neither endpoint sends either, so a received
+ Certificate with a non-empty context or a non-empty entry extensions vector is refused.
 
   tls-cert-encode : List (List Integer) -> List Integer
   tls-cert-encode (certs) = tls-cert-wrap (tls-cert-entries certs 0 [])
@@ -278,7 +264,8 @@ Section: Certificate
 
   tls-cert-ctx : List Integer, Integer -> Maybe (List (List Integer))
   tls-cert-ctx (body) (ctx-len) =
-    if 1 + ctx-len + 3 > list-length body then None
+    if ctx-len /= 0 then None
+    else if 1 + ctx-len + 3 > list-length body then None
     else tls-cert-list body (1 + ctx-len)
 
   tls-cert-list : List Integer, Integer -> Maybe (List (List Integer))
@@ -309,7 +296,9 @@ Section: Certificate
   tls-cert-ext : List Integer, Integer, Integer, List (List Integer) -> Maybe (List (List Integer))
   tls-cert-ext (body) (off) (stop) (acc) =
     if off + 2 > stop then None
-    else tls-cert-walk body (off + 2 + (list-at body off * 256 + list-at body (off + 1))) stop acc
+    else if list-at body off /= 0 then None
+    else if list-at body (off + 1) /= 0 then None
+    else tls-cert-walk body (off + 2) stop acc
 
 Section: Slice
 

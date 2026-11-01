@@ -15,62 +15,15 @@ Section: Pass Result
 
 Section: Pass Registry
 
- An unknown name is the identity transform. A diagnostic for a
- misspelled pass name belongs to the configuration surface and
- arrives with it; until then the pipeline must never turn a bad
- name into a changed program.
-
- It shipped opt-in for exactly one changelist while the measurements were
- taken, and they came back with nothing to weigh against it. Same
- compiler, pass off then on: the selfhost binary went 2,514,844 to
+ Same compiler, pass off then on: the selfhost binary went 2,514,844 to
  2,504,887 bytes and its compile 10.1 s to 9.8 s; across nine other real
  programs six shrank, three were unchanged and none grew; every one of the
  ten produced byte-identical output; and the LOWER deck -- the tightest in
  the compiler, and the reason for the caution -- read 286,227,712 both
  ways, so the substituted bodies cost it nothing measurable.
 
- Unlike the other passes, `lir-dump` does NOT execute inside this
- pipeline: the constructor-pattern increment needs its scrutinee's
- resolved `SumTy`, and this pipeline runs before the RESOLVE phase. So the
- registry entry is inert (it returns nothing) and `opening.codex` produces
- the LIR report from `lir-report-if` after RESOLVE and LIFT, over the same
- `cdx-chapter` the emitter consumes. The pipeline name is still the
- trigger; only the execution site moved.
-
   default-ir-pipeline : List Text
   default-ir-pipeline = ["fold-constants", "inline-leaf-calls", "inline-single-caller"]
-
- A plug that emits SOURCE resolves a call by its name, so a pass that
- substitutes a body and deletes the call deletes the plug's only handle on
- it. The inline passes are therefore absent here and must stay absent. This
- is not a statement about IR: the machine-code plugs read the same IR-CCE
- and keep the full pipeline.
-
- WHICH PLUGS TAKE THIS, ruled 2026-08-16: by-name resolution decides, not
- target shape. Ask whether the plug's OUTPUT names the callee; if it does,
- it takes this pipeline however low-level the target looks. `ptx`, `wasm`
- and `wgsl` are ISA-shaped and all three take it, measured by emitting one
- probe both ways and seeing a call site appear. `arm64` and `riscv` do not,
- and they are settled by taking no IR-CCE at all rather than by being
- assembly. Decide it by measuring a probe, not by reading the target's name:
- 35 of 50 plugs shipped on the wrong pipeline until 2026-08-16 because
- nobody had.
-
- A plug that cannot express the probe cannot be classified by it. `t3isa`
- is ternary and refuses IEEE 754 by construction, so a probe using `Real`
- never reaches its call emission and answers nothing about it either way.
- Measured with an integer-only probe 2026-08-16, it needs no entry here at
- all: a def with a bounded boundary is never an inline candidate
- (`Lowering.codex:1675`, so the band's entry and epilogue guards are not
- spliced past), and `t3isa` refuses an unbanded integer, so no inline pass
- can reach any program it accepts.
-
- Two probe shapes answer nothing here, and both looked like answers. A
- callee reached only with LITERAL arguments from inside an `act` is left
- alone by the passes, so its arms match while measuring nothing. And a
- chapter with no `opening` emits the foreword too, so its arms differ on
- foreword definitions that are not the probe's. Give the probe an
- `opening` and compare, or the reachable set is not the thing under test.
 
   text-plug-ir-pipeline : List Text
   text-plug-ir-pipeline = ["fold-constants"]
@@ -97,27 +50,10 @@ Section: Pass Registry
       }
     else if name == "cover-arms" then
       IRPassResult { chapter = cover-arms-in-chapter ch, violations = [], infos = [] }
-    else if name == "lir-dump" then IRPassResult { chapter = ch, violations = [], infos = [] }
-    else IRPassResult { chapter = ch, violations = [], infos = [] }
+    else if name == "lir-dump" | name == "lir-dump-a64" then IRPassResult { chapter = ch, violations = [], infos = [] }
+    else IRPassResult { chapter = ch, violations = ["unknown pass '" & name & "'; the passes are fold-constants, inline-leaf-calls, inline-single-caller, inline-cost-based, ir-check, occ-report, simplify, cover-arms, lir-dump and lir-dump-a64"], infos = [] }
 
 Section: Pipeline
-
- The chapter folds through the named passes in list order. The loop
- carries an index, the current chapter, and the violations reported so
- far; every allocation is the pass's own, on whatever deck the caller
- placed the run.
-
- The run reports the pipeline it actually ran, as its first info, so the
- compile log names its own passes. This is not decoration: `passes=` on the
- mode line REPLACES the default rather than adding to it, and a caller that
- wanted a reporter and wrote `passes=lir-dump` silently loses
- `fold-constants` and `inline-leaf-calls`. That is not a hypothetical --
- `build/lir-dump-test.ps1` did it for its whole existence and pinned IR
- nobody compiles, and the only symptom was a dump that disagreed with the
- emitted binary in a way nobody could explain from the artifact.
-
- An empty pipeline says so in words rather than printing nothing, because
- "no passes ran" and "the report did not run" look identical otherwise.
 
   pipeline-names-text : List Text, Integer, Integer, Text -> Text
   pipeline-names-text (names) (i) (n) (acc) =
@@ -127,11 +63,7 @@ Section: Pipeline
 
  Measured 2026-08-04 on the compiler's own source (2,999,659 bytes, CDX path):
  `fold-constants` +10,052,336, `inline-leaf-calls` +685,944,
- `inline-single-caller` +2,028,848 -- **12.2 MB for the whole pipeline.** So the
- passes are not where a gigabyte goes, and the C1 gap is not here. That is the
- third refuted hypothesis in this area after the deck floors and the IR text
- emitter, and like both of those it was refuted by measuring rather than by
- reasoning about the code's shape.
+ `inline-single-caller` +2,028,848 -- **12.2 MB for the whole pipeline.**
 
   run-ir-pipeline : List Text, IRChapter, Boolean -> IRPassResult
   run-ir-pipeline (names) (ch) (trace) =

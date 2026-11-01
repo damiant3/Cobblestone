@@ -2,8 +2,6 @@ Chapter: BrowserMusicT5
   cites WebApp chapter WebGpu
   cites Spark chapter BrowserEncodec
 
- We say:
-
   MusicT5Model = record {
     t5m-names : List Text,
     t5m-handles : List Integer,
@@ -47,7 +45,8 @@ Chapter: BrowserMusicT5
     in let bias = if bias-name == "" then w.t5m-zero else bt5-get w bias-name
     in let y = bt5-buffer (rows * out * 4)
     in let grid = bt5-groups (((rows + 63) / 64) * ((out + 63) / 64))
-    in be-result y (if x == 0 | weight == 0 | bias == 0 | y == 0 then 0 - 1 else gpu-launch base "bk_linear_main" grid [gpu-arg-buf x 0, gpu-arg-buf weight 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 rows, gpu-arg-u32 out, gpu-arg-u32 input])
+    in be-result y (if x == 0 | weight == 0 | bias == 0 | y == 0 then 0 - 1 else gpu-launch base "bk_linear_main" grid [gpu-arg-buf x 0,
+      gpu-arg-buf weight 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 rows, gpu-arg-u32 out, gpu-arg-u32 input])
 
   bt5-norm : Text, MusicT5Model, Integer, Text, Integer -> Integer
   bt5-norm (code) (w) (x) (name) (rows) =
@@ -80,12 +79,15 @@ Chapter: BrowserMusicT5
     in let values = bt5-buffer (rows * 768 * 4)
     in let bias = bt5-get w "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight"
     in let r0 = if q == 0 | k == 0 | v == 0 | raw == 0 | scores == 0 | probs == 0 | stats == 0 | values == 0 | bias == 0 then 0 - 1
-       else gpu-launch base "bk_attn_scores_main" (bt5-groups (12 * ((rows + 63) / 64) * ((rows + 63) / 64))) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf raw 0, gpu-arg-u32 12, gpu-arg-u32 rows, gpu-arg-u32 rows, gpu-arg-u32 64, gpu-arg-f32 1.0, gpu-arg-u32 n]
-    in let r1 = if r0 < 0 then r0 else gpu-launch code "m5_position_bias_main" (be-grid n) [gpu-arg-buf raw 0, gpu-arg-buf bias 0, gpu-arg-buf mask 0, gpu-arg-buf scores 0, gpu-arg-u32 12, gpu-arg-u32 rows, gpu-arg-u32 n, gpu-arg-f32 (bits-to-real #C7EFFFFFE0000000)]
+       else gpu-launch base "bk_attn_scores_main" (bt5-groups (12 * ((rows + 63) / 64) * ((rows + 63) / 64))) [gpu-arg-buf q 0,
+         gpu-arg-buf k 0, gpu-arg-buf raw 0, gpu-arg-u32 12, gpu-arg-u32 rows, gpu-arg-u32 rows, gpu-arg-u32 64, gpu-arg-f32 1.0, gpu-arg-u32 n]
+    in let r1 = if r0 < 0 then r0 else gpu-launch code "m5_position_bias_main" (be-grid n) [gpu-arg-buf raw 0, gpu-arg-buf bias 0,
+      gpu-arg-buf mask 0, gpu-arg-buf scores 0, gpu-arg-u32 12, gpu-arg-u32 rows, gpu-arg-u32 n, gpu-arg-f32 (bits-to-real #C7EFFFFFE0000000)]
     in let r2 = if r1 < 0 then r1 else gpu-launch base "bk_row_max_main" (bt5-groups (12 * rows)) [gpu-arg-buf scores 0, gpu-arg-buf stats 0, gpu-arg-u32 rows, gpu-arg-u32 (12 * rows)]
     in let r3 = if r2 < 0 then r2 else gpu-launch base "bk_row_expsum_main" (bt5-groups (12 * rows)) [gpu-arg-buf scores 0, gpu-arg-buf stats 0, gpu-arg-u32 rows, gpu-arg-u32 (12 * rows)]
     in let r4 = if r3 < 0 then r3 else gpu-launch base "bk_softmax_apply_main" (be-grid n) [gpu-arg-buf scores 0, gpu-arg-buf stats 0, gpu-arg-buf probs 0, gpu-arg-u32 rows, gpu-arg-u32 n]
-    in let r5 = if r4 < 0 then r4 else gpu-launch base "bk_attn_values_main" (bt5-groups (12 * ((rows + 63) / 64))) [gpu-arg-buf probs 0, gpu-arg-buf v 0, gpu-arg-buf values 0, gpu-arg-u32 12, gpu-arg-u32 rows, gpu-arg-u32 rows, gpu-arg-u32 64, gpu-arg-u32 (rows * 768)]
+    in let r5 = if r4 < 0 then r4 else gpu-launch base "bk_attn_values_main" (bt5-groups (12 * ((rows + 63) / 64))) [gpu-arg-buf probs 0,
+      gpu-arg-buf v 0, gpu-arg-buf values 0, gpu-arg-u32 12, gpu-arg-u32 rows, gpu-arg-u32 rows, gpu-arg-u32 64, gpu-arg-u32 (rows * 768)]
     in let y = if r5 < 0 then 0 else bt5-linear base w values (p & "o.weight") "" rows 768 768
     in let f2 = be-free-list [q, k, v, raw, scores, probs, stats, values] 0
     in y
@@ -118,7 +120,8 @@ Chapter: BrowserMusicT5
        in let f = if inspect then True else be-drop x
        in let projected = bt5-linear base w hidden "musicgen.weight" "musicgen.bias" rows (w.t5m-width) 768
        in let y = bt5-buffer (rows * w.t5m-width * 4)
-       in let r = if y == 0 | projected == 0 then 0 - 1 else gpu-launch code "m5_mask_main" (be-grid (rows * w.t5m-width)) [gpu-arg-buf projected 0, gpu-arg-buf mask 0, gpu-arg-buf y 0, gpu-arg-u32 (w.t5m-width), gpu-arg-u32 (rows * w.t5m-width)]
+       in let r = if y == 0 | projected == 0 then 0 - 1 else gpu-launch code "m5_mask_main" (be-grid (rows * w.t5m-width)) [
+         gpu-arg-buf projected 0, gpu-arg-buf mask 0, gpu-arg-buf y 0, gpu-arg-u32 (w.t5m-width), gpu-arg-u32 (rows * w.t5m-width)]
        in let f2 = be-drop projected
        in let f3 = if inspect then True else be-drop hidden
        in MusicT5Output { t5o-condition = be-result y r, t5o-hidden = if inspect then hidden else 0, t5o-blocks = kept })
@@ -133,7 +136,8 @@ Chapter: BrowserMusicT5
     in let mb = bt5-buffer (rows * 4)
     in let x = bt5-buffer (rows * 768 * 4)
     in let written = gpu-buf-write-words idb 0 ids & gpu-buf-write-words mb 0 mask
-    in let r = if x == 0 | idb == 0 | mb == 0 | written == False then 0 - 1 else gpu-launch code "m5_embed_main" (be-grid (rows * 768)) [gpu-arg-buf idb 0, gpu-arg-buf (bt5-get w "shared.weight") 0, gpu-arg-buf x 0, gpu-arg-u32 768, gpu-arg-u32 (rows * 768)]
+    in let r = if x == 0 | idb == 0 | mb == 0 | written == False then 0 - 1 else gpu-launch code "m5_embed_main" (be-grid (rows * 768)) [
+      gpu-arg-buf idb 0, gpu-arg-buf (bt5-get w "shared.weight") 0, gpu-arg-buf x 0, gpu-arg-u32 768, gpu-arg-u32 (rows * 768)]
     in let result = bt5-blocks base code w (be-result x r) mb rows 0 inspect []
     in let f = be-drop idb & be-drop mb
     in result

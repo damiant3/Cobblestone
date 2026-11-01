@@ -10,12 +10,6 @@ Chapter: E1000CtrlRo
  time. MDIC writes work on that same part, so this is CTRL and not the CSR
  write path. -e1000-ctrl-ro is the arm that reproduces it.
 
- The row that pays is settled-lies-about-reset. With CTRL discarded,
- e1000-reset never sets RST, so e1000-await-reset sees it clear on its
- first read and answers 1 -- a reset that never happened, reporting as one
- that completed. That is what read as "the reset works on a warm part" on
- 2026-08-13, and no aggregate can tell the two apart.
-
 Section: Fixtures
 
   yn : Boolean -> Text
@@ -25,16 +19,12 @@ Section: Fixtures
 
 Section: Judges
 
- A write that is refused leaves the bit it tried to clear still set.
-
   slu-write-refused : PciDevice -> Boolean
   slu-write-refused (dev) =
    let mmio = na-mmio-of dev
    in let c0 = e1000-read mmio e1000-reg-ctrl
    in let w = e1000-write mmio e1000-reg-ctrl (bit-and c0 clear-slu)
    in bit-and (e1000-read mmio e1000-reg-ctrl) e1000-ctrl-slu /= 0
-
- Firmware left SLU set, and the refusal is what preserves it.
 
   ctrl-is-firmware-value : PciDevice -> Boolean
   ctrl-is-firmware-value (dev) =
@@ -47,9 +37,6 @@ Section: Judges
    in let arm = na-bring-up-after mmio (dev.pci-device-id) True
    in bit-and (e1000-read mmio e1000-reg-ctrl) e1000-ctrl-asde == 0
 
- The link comes up anyway, because na-phy-kick reaches the PHY over MDIO
- and the CTRL write was never load-bearing.
-
   link-up-without-ctrl : PciDevice -> Boolean
   link-up-without-ctrl (dev) =
    let mmio = na-mmio-of dev
@@ -59,12 +46,6 @@ Section: Judges
   mdic-still-writable (dev) =
    let mmio = na-mmio-of dev
    in na-phy-kick mmio (dev.pci-device-id) == 1
-
- settled=1 from a reset that never ran. This row reads the SAME with the
- arm and without it, deliberately, and that identity IS the finding: no
- aggregate distinguishes a reset that completed from one that was
- discarded, so a green here is not evidence a reset happened. Do not
- "fix" it into a discriminating row; the point is that it cannot be one.
 
   reset-answers-one-either-way : PciDevice -> Boolean
   reset-answers-one-either-way (dev) =

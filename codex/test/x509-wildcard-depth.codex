@@ -1,0 +1,50 @@
+Chapter: X509WildcardDepthTest
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Encode chapter X509Write
+  cites Encode chapter Asn1Write
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  priv : List Integer =
+    [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15,
+     91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  t0 : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+  t1 : List Integer = [50, 48, 51, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+
+Section: Helpers
+
+  ascii : Text -> List Integer
+  ascii (s) = ascii-loop s 0 []
+
+  ascii-loop : Text, Integer, List Integer -> List Integer
+  ascii-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else ascii-loop s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
+
+  pub : List Integer = ed25519-public-key priv
+
+  mint : List Integer -> List Integer
+  mint (dns) =
+    let name = x509w-name [99, 110]
+    in let exts = der-ctx3 (der-sequence (x509w-leaf-exts [dns] []))
+    in x509w-sign priv pub (x509w-tbs-of pub (x509w-serial-content [1]) name name (x509w-validity t0 t1) exts)
+
+  matches : Text, Text -> Text
+  matches (cert-name) (host) =
+    when x509-parse (mint (ascii cert-name))
+      is None -> "unparsed"
+      is Just (c) -> show (x509-identity-matches c (ascii host))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("*.example.com a.example.com " & matches "*.example.com" "a.example.com")
+    print-line-uni ("*.example.com example.com " & matches "*.example.com" "example.com")
+    print-line-uni ("*.example.com a.b.example.com " & matches "*.example.com" "a.b.example.com")
+    print-line-uni ("*.com evil.com " & matches "*.com" "evil.com")
+    print-line-uni ("*.com. evil.com. " & matches "*.com." "evil.com.")
+  end

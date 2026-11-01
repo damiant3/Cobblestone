@@ -20,10 +20,7 @@ Chapter: Deflate
  144..255, so high-byte or random input comes out LARGER than it went in.
  deflate-compress-best runs all three encoders and keeps the shortest, so the
  worst case is the stored block -- the input plus a five-byte header -- and
- never the fixed code's growth. A caller that means "make this smaller, and
- never larger" wants deflate-compress-best.
-
- We say:
+ never the fixed code's growth.
 
 Section: Constants
 
@@ -127,9 +124,7 @@ Section: The Fixed Code
 Section: Length And Distance Codes
 
  Section 3.2.5. A match length of 3..258 becomes a symbol 257..285 plus extra
- bits; a distance of 1..32768 becomes a symbol 0..29 plus extra bits. The
- encoder and the decoder share these base and extra functions, so the two
- directions cannot disagree about the table.
+ bits; a distance of 1..32768 becomes a symbol 0..29 plus extra bits.
 
   len-extra : Integer -> Integer
   len-extra (c) =
@@ -377,7 +372,8 @@ Section: Dynamic Huffman -- Canonical Codes
     in let r2 = br-advance r 1
     in let count = list-at bl len
     in if code2 - count < first then
-      DhSymRead { dr-sym = list-at syms (index + (code2 - first)), dr-reader = r2 }
+      (let si = index + (code2 - first)
+       in DhSymRead { dr-sym = if si >= 0 then (if si < list-length syms then list-at syms si else 0) else 0, dr-reader = r2 })
     else
       dh-decode-loop r2 bl syms maxlen (len + 1) (bit-shl code2 1) (bit-shl (first + count) 1) (index + count)
 
@@ -398,10 +394,8 @@ Section: Dynamic Huffman -- Compression
   dh-tokenize (input) (pos) (len) (acc) =
     dh-tokenize-go input pos len acc (lz77-new-table lz77-hash-size) (lz77-new-table lz77-window-size) 8 0 lz77-max-match
 
- The caller states its own longest match, because the two formats that read this
- tokenizer do not share one. Deflate passes RFC 1951's 258; Brotli passes its own,
- which is larger by five orders of magnitude and is most of why its copies were
- short.
+ The caller states its own longest match: Deflate passes RFC 1951's 258, Brotli
+ its own 16779333.
 
   dh-tokenize-from : List Integer, Integer, Integer, Integer, List DhTok, Integer -> List DhTok
   dh-tokenize-from (input) (start) (pos) (len) (acc) (cap) =
@@ -807,22 +801,31 @@ Section: Decoding A Fixed Symbol
 Section: Decompression
 
   deflate-decompress : List Integer -> List Integer
-  deflate-decompress (input) =
-    deflate-blocks (BitReader { br-bytes = input, br-pos = 0 }) []
+  deflate-decompress (input) = deflate-decompress-capped input 1000000000
 
-  deflate-blocks : BitReader, List Integer -> List Integer
-  deflate-blocks (r) (acc) =
-    if (r.br-pos) / 8 >= list-length (r.br-bytes) then acc
+ A caller feeding the decoder bytes it did not write passes its own output
+ ceiling. The plain entry keeps a ceiling above any stream this project produces,
+ so every round trip is byte-identical; the cap exists to bound a hostile stream
+ (a decompression bomb, or a degenerate empty tree that would otherwise loop).
+
+  deflate-decompress-capped : List Integer, Integer -> List Integer
+  deflate-decompress-capped (input) (cap) =
+    deflate-blocks (BitReader { br-bytes = input, br-pos = 0 }) [] cap
+
+  deflate-blocks : BitReader, List Integer, Integer -> List Integer
+  deflate-blocks (r) (acc) (cap) =
+    if list-length acc >= cap then acc
+    else if (r.br-pos) / 8 >= list-length (r.br-bytes) then acc
     else let bfinal = br-bit r
     in let btype = br-bits (br-advance r 1) 2
     in let r2 = br-advance r 3
-    in if btype == 0 then deflate-after-stored (br-align r2) bfinal acc
-    else if btype == 1 then deflate-after-fixed (deflate-fixed-block r2 acc) bfinal
-    else if btype == 2 then deflate-after-fixed (deflate-dynamic-block r2 acc) bfinal
+    in if btype == 0 then deflate-after-stored (br-align r2) bfinal acc cap
+    else if btype == 1 then deflate-after-fixed (deflate-fixed-block r2 acc cap) bfinal cap
+    else if btype == 2 then deflate-after-fixed (deflate-dynamic-block r2 acc cap) bfinal cap
     else acc
 
-  deflate-after-stored : BitReader, Integer, List Integer -> List Integer
-  deflate-after-stored (r) (bfinal) (acc) =
+  deflate-after-stored : BitReader, Integer, List Integer, Integer -> List Integer
+  deflate-after-stored (r) (bfinal) (acc) (cap) =
     let off = (r.br-pos) / 8
     in if off > list-length (r.br-bytes) - 4 then acc
     else let len = bit-or (list-at (r.br-bytes) off) (bit-shl (list-at (r.br-bytes) (off + 1)) 8)
@@ -831,30 +834,32 @@ Section: Decompression
     else let data = deflate-slice (r.br-bytes) (off + 4) len 0 []
     in let acc2 = acc & data
     in if bfinal == 1 then acc2
-    else deflate-blocks (BitReader { br-bytes = r.br-bytes, br-pos = (off + 4 + len) * 8 }) acc2
+    else deflate-blocks (BitReader { br-bytes = r.br-bytes, br-pos = (off + 4 + len) * 8 }) acc2 cap
 
   DeflateState = record {
     ds-reader : BitReader,
     ds-out : List Integer
   }
 
-  deflate-fixed-block : BitReader, List Integer -> DeflateState
-  deflate-fixed-block (r) (acc) =
-    let sym = fixed-sym r
+  deflate-fixed-block : BitReader, List Integer, Integer -> DeflateState
+  deflate-fixed-block (r) (acc) (cap) =
+    if list-length acc >= cap then DeflateState { ds-reader = r, ds-out = acc }
+    else if br-exhausted r then DeflateState { ds-reader = r, ds-out = acc }
+    else let sym = fixed-sym r
     in let r2 = br-advance r (fixed-sym-width r)
     in if sym == deflate-end-of-block then DeflateState { ds-reader = r2, ds-out = acc }
-    else if sym < 256 then deflate-fixed-block r2 (list-push acc sym)
-    else deflate-fixed-match r2 acc sym
+    else if sym < 256 then deflate-fixed-block r2 (list-push acc sym) cap
+    else deflate-fixed-match r2 acc sym cap
 
-  deflate-fixed-match : BitReader, List Integer, Integer -> DeflateState
-  deflate-fixed-match (r) (acc) (sym) =
+  deflate-fixed-match : BitReader, List Integer, Integer, Integer -> DeflateState
+  deflate-fixed-match (r) (acc) (sym) (cap) =
     let mlen = len-base sym + br-bits r (len-extra sym)
     in let r2 = br-advance r (len-extra sym)
     in let dc = br-code r2 5
     in let r3 = br-advance r2 5
     in let dist = dist-base dc + br-bits r3 (dist-extra dc)
     in let r4 = br-advance r3 (dist-extra dc)
-    in deflate-fixed-block r4 (deflate-copy acc (list-length acc - dist) mlen)
+    in deflate-fixed-block r4 (deflate-copy acc (list-length acc - dist) mlen) cap
 
   deflate-copy : List Integer, Integer, Integer -> List Integer
   deflate-copy (out) (src) (remaining) =
@@ -862,10 +867,10 @@ Section: Decompression
     else if src < 0 then out
     else deflate-copy (list-push out (list-at out src)) (src + 1) (remaining - 1)
 
-  deflate-after-fixed : DeflateState, Integer -> List Integer
-  deflate-after-fixed (st) (bfinal) =
+  deflate-after-fixed : DeflateState, Integer, Integer -> List Integer
+  deflate-after-fixed (st) (bfinal) (cap) =
     if bfinal == 1 then st.ds-out
-    else deflate-blocks (st.ds-reader) (st.ds-out)
+    else deflate-blocks (st.ds-reader) (st.ds-out) cap
 
 Section: Decoding A Dynamic Block
 
@@ -901,10 +906,11 @@ Section: Decoding A Dynamic Block
   dh-fill : List Integer, Integer, Integer, List Integer, Integer -> List Integer
   dh-fill (src) (srcoff) (count) (dst) (i) =
     if i >= count then dst
+    else if i >= list-length dst then dst
     else dh-fill src srcoff count (list-set-at dst i (list-at src (srcoff + i))) (i + 1)
 
-  deflate-dynamic-block : BitReader, List Integer -> DeflateState
-  deflate-dynamic-block (r) (acc) =
+  deflate-dynamic-block : BitReader, List Integer, Integer -> DeflateState
+  deflate-dynamic-block (r) (acc) (cap) =
     let numLit = 257 + br-bits r 5
     in let numDist = 1 + br-bits (br-advance r 5) 5
     in let numCl = 4 + br-bits (br-advance r 10) 4
@@ -914,19 +920,21 @@ Section: Decoding A Dynamic Block
     in let alllen = allread.dl-list
     in let lllen = dh-fill alllen 0 numLit (dh-zeros 286 0 []) 0
     in let dlen = dh-fill alllen numLit numDist (dh-zeros 30 0 []) 0
-    in deflate-dyn-loop (allread.dl-reader) acc (dh-table-of lllen 286) (dh-table-of dlen 30)
+    in deflate-dyn-loop (allread.dl-reader) acc (dh-table-of lllen 286) (dh-table-of dlen 30) cap
 
   br-exhausted : BitReader -> Boolean
   br-exhausted (r) = (r.br-pos) / 8 >= list-length (r.br-bytes)
 
-  deflate-dyn-loop : BitReader, List Integer, DhTable, DhTable -> DeflateState
-  deflate-dyn-loop (r) (acc) (ll) (dt) =
-    if br-exhausted r then DeflateState { ds-reader = r, ds-out = acc }
+  deflate-dyn-loop : BitReader, List Integer, DhTable, DhTable, Integer -> DeflateState
+  deflate-dyn-loop (r) (acc) (ll) (dt) (cap) =
+    if list-length acc >= cap then DeflateState { ds-reader = r, ds-out = acc }
+    else if br-exhausted r then DeflateState { ds-reader = r, ds-out = acc }
     else let d = dh-decode-sym r ll
     in let sym = d.dr-sym
     in let r2 = d.dr-reader
-    in if sym == deflate-end-of-block then DeflateState { ds-reader = r2, ds-out = acc }
-    else if sym < 256 then deflate-dyn-loop r2 (list-push acc sym) ll dt
+    in if (r2.br-pos) == (r.br-pos) then DeflateState { ds-reader = r2, ds-out = acc }
+    else if sym == deflate-end-of-block then DeflateState { ds-reader = r2, ds-out = acc }
+    else if sym < 256 then deflate-dyn-loop r2 (list-push acc sym) ll dt cap
     else let mlen = len-base sym + br-bits r2 (len-extra sym)
     in let r3 = br-advance r2 (len-extra sym)
     in let dd = dh-decode-sym r3 dt
@@ -934,7 +942,7 @@ Section: Decoding A Dynamic Block
     in let r4 = dd.dr-reader
     in let dist = dist-base dsym + br-bits r4 (dist-extra dsym)
     in let r5 = br-advance r4 (dist-extra dsym)
-    in deflate-dyn-loop r5 (deflate-copy acc (list-length acc - dist) mlen) ll dt
+    in deflate-dyn-loop r5 (deflate-copy acc (list-length acc - dist) mlen) ll dt cap
 
 Section: Helpers
 

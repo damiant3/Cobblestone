@@ -42,7 +42,7 @@ Chapter: AdminLoginPage
     else let typed = text-trim (dom-get-value (dom-get "key"))
     in let parts = text-split typed ":"
     in let gm = list-length parts == 3 & list-at parts 0 == "UOAIXGM1"
-    in let role = if gm then text-to-int (list-at parts 1) else 4
+    in let role = if gm then (text-to-int-or (list-at parts 1) 0) else 4
     in let key = if gm then list-at parts 2 else typed
     in if role < 4 | role > 132 | not (al-hex-ok key 0 64) then al-note "Invalid administrator credential"
     else if crypto-ready 0 /= 1 then al-note "A secure browser connection is required. The local development address is supported."
@@ -79,14 +79,14 @@ Chapter: AdminLoginPage
     in let label = "UOAIX1/sequence/" & show (state-get "role") & "/" & state-get-text "challenge"
     in crypto-hmac-verify-then (state-get-text "out") (list-at p 1) (label & "/" & floor) (\ok -> if ok /= "1" then al-fail "Handshake authentication failed" else al-reserve-floor floor next)
   al-reserve-floor : Text, (Integer -> Integer) -> Integer
-  al-reserve-floor (floor) (next) = if text-to-int floor > 999998975 then al-fail "Sequence exhausted"
+  al-reserve-floor (floor) (next) = if (text-to-int-or floor 999999999) > 999998975 then al-fail "Sequence exhausted"
     else let label = "UOAIX1/reserve/" & show (state-get "role") & "/" & state-get-text "challenge" & "/" & floor
     in crypto-hmac-then (state-get-text "in") label (\tag -> fetch-with-then "/handshake" "POST" "{}" (show (state-get "role") & "\n" & state-get-text "challenge" & "\n" & floor & "\n" & tag) (\t -> al-reserved t floor label next))
   al-reserved : Text, Text, Text, (Integer -> Integer) -> Integer
   al-reserved (text) (floor) (label) (next) = let p = al-lines text
     in if list-length p /= 2 | list-at p 0 /= floor then al-fail "Sequence reservation refused"
     else crypto-hmac-verify-then (state-get-text "out") (list-at p 1) label (\ok -> if ok /= "1" then al-fail "Sequence reservation refused"
-      else let s = state-set "seq" (text-to-int floor) in let l = state-set "lease" (text-to-int floor + 1024) in next 0)
+      else let s = state-set "seq" ((text-to-int-or floor 0)) in let l = state-set "lease" ((text-to-int-or floor 0) + 1024) in next 0)
 
  One sealed request; the session joins the command's JSON object.
   al-with-session : Text -> Text
@@ -117,7 +117,7 @@ Chapter: AdminLoginPage
   al-opened (answer) = let o = json-parse-obj answer
     in let error = json-obj-field o "error"
     in if text-length error > 0 then al-fail error
-    else let s = state-set "session" (text-to-int (json-obj-field o "session"))
+    else let s = state-set "session" ((text-to-int-or (json-obj-field o "session") 0))
     in let page = json-obj-field o "page"
     in if text-length page == 0 then al-fail "This shard serves no Codex panel page yet."
     else let hidden = dom-set-style (dom-get "login") "display" "none"

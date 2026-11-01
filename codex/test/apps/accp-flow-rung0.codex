@@ -1,0 +1,45 @@
+Chapter: AccpFlowRung0
+  cites Foreword chapter Console
+  cites Accp chapter AccpFlow
+
+Section: Verdicts
+
+  verdict : Text, List Text, List Text, List Text -> Text
+  verdict (label) (rules) (row) (scopes) =
+    let v = afl-check rules row scopes
+    in let head = if v.ok then "admit" else "refuse"
+    in label & ": " & head & (if v.reason == "" then "" else " (" & v.reason & ")") & (if list-length v.pairs == 0 then "" else " " & afl-pairs-json v.pairs)
+
+  patient : Text
+  patient = "FileSystem.Read \"/patient/\" -> Network.Write \"api.example\""
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (verdict "both ends" [patient] ["FileSystem.Read", "Network.Write"] ["/patient/", "api.example"])
+    print-line-uni (verdict "no sink" [patient] ["FileSystem.Read"] ["/patient/"])
+    print-line-uni (verdict "no source" [patient] ["Network.Write"] ["api.example"])
+    print-line-uni (verdict "no rules" [] ["FileSystem.Read", "Network.Write"] ["/patient/", "api.example"])
+    print-line-uni (verdict "wider read" [patient] ["FileSystem.Read", "Network.Write"] ["/", "api.example"])
+    print-line-uni (verdict "narrower read" [patient] ["FileSystem.Read", "Network.Write"] ["/patient/2026/", "api.example"])
+    print-line-uni (verdict "sibling path" [patient] ["FileSystem.Read", "Network.Write"] ["/patientx/", "api.example"])
+    print-line-uni (verdict "other host" [patient] ["FileSystem.Read", "Network.Write"] ["/patient/", "other.example"])
+    print-line-uni (verdict "ported sink" [patient] ["FileSystem.Read", "Network.Write"] ["/patient/", "api.example:443"])
+    print-line-uni (verdict "port apart" ["FileSystem.Read \"/patient/\" -> Network.Write \"api.example:443\""] ["FileSystem.Read", "Network.Write"] ["/patient/", "api.example:80"])
+    print-line-uni (verdict "undirected sink" [patient] ["FileSystem.Read", "Network"] ["/patient/", "api.example"])
+    print-line-uni (verdict "undirected source" [patient] ["FileSystem", "Network.Write"] ["/patient/", "api.example"])
+    print-line-uni (verdict "read is no sink" ["FileSystem.Read \"/patient/\" -> Network"] ["FileSystem.Read", "Network.Read"] ["/patient/", "api.example"])
+    print-line-uni (verdict "write is no source" ["FileSystem -> Network.Write"] ["FileSystem.Write", "Network.Write"] ["/patient/", "api.example"])
+    print-line-uni (verdict "one label both ends" ["Network -> Network \"api.example\""] ["Network"] ["api.example"])
+    print-line-uni (verdict "parent names" ["FileSystem -> Network"] ["FileSystem.Read", "Network.Write"] ["/patient/", "api.example"])
+    print-line-uni (verdict "unscoped pattern" ["FileSystem.Read -> Network.Write"] ["FileSystem.Read", "Network.Write"] ["/x/", "y.example"])
+    print-line-uni (verdict "unscoped row" [patient] ["FileSystem.Read", "Network.Write"] ["", "api.example"])
+    print-line-uni (verdict "stdin source" ["Console.Read -> Network.Write"] ["Console.Read", "Network.Write"] ["stdin", "api.example"])
+    print-line-uni (verdict "stdout sink" ["FileSystem.Read \"/patient/\" -> Console.Write"] ["FileSystem.Read", "Console.Write"] ["/patient/", "stdout"])
+    print-line-uni (verdict "two rules" [patient, "Console.Read -> Network.Write"] ["Console.Read", "FileSystem.Read", "Network.Write"] ["stdin", "/patient/", "api.example"])
+    print-line-uni (verdict "console both" ["Console.Read -> Console.Write"] ["Console.Read"] ["stdin"])
+    print-line-uni (verdict "no arrow" ["FileSystem.Read Network.Write"] ["FileSystem.Read"] ["/"])
+    print-line-uni (verdict "no sink end" ["FileSystem.Read ->"] ["FileSystem.Read"] ["/"])
+    print-line-uni (verdict "open quote" ["FileSystem.Read \"/patient/ -> Network.Write"] ["FileSystem.Read"] ["/"])
+    print-line-uni (verdict "trailing text" [patient & " x"] ["FileSystem.Read"] ["/"])
+  end

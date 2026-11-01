@@ -1,0 +1,37 @@
+Chapter: LambdaLiftShape
+  cites Codex chapter Opening
+  cites Codex chapter LambdaLifting (lift-lambdas)
+
+  probe-source : Text = "Chapter: LiftProbe\n  twice : (Integer -> Integer), Integer -> Integer\n  twice (f) (x) = f (f x)\n\n  opening : Integer\n  opening =\n    let k = 5\n    in twice (\\x -> x + k) 1 + twice (\\y -> y * 2) 3\n"
+
+  param-names : List IRParam, Integer -> Text
+  param-names (ps) (i) =
+    if i >= list-length ps then ""
+    else (if i > 0 then " " else "") & (list-at ps i).name & param-names ps (i + 1)
+
+  print-defs : List IRDef, Integer -> [Console] Nothing
+  print-defs (ds) (i) =
+    if i >= list-length ds then act
+      print-uni ""
+    end
+    else act
+      print-line-uni ("  " & (list-at ds i).name & " (" & param-names ((list-at ds i).params) 0 & ")")
+      print-defs ds (i + 1)
+    end
+
+  shape : Text, CompileFlags -> [Console] Nothing
+  shape (label) (flags) =
+    let fe = compile-frontend-ir probe-source "LiftProbe" flags
+    in if bag-has-errors (fe.bag) then print-line-uni (label & " FAIL diagnostics")
+    else let prepared = prepare-method-ir fe flags
+    in act
+      print-line-uni (label & " defs=" & integer-to-text (list-length (prepared.raw-defs)))
+      print-defs (prepared.raw-defs) 0
+    end
+
+  opening : [Console] Nothing =
+    let init = init-phase-allocator
+    in act
+      shape "lifted" compile-flags-default
+      shape "no-lift" (__record-set compile-flags-default "no-lift" True)
+    end

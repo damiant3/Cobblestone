@@ -1,0 +1,77 @@
+Chapter: NetSendHeapTest
+
+  cites Foreword chapter Console
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+
+Section: Fixtures
+
+ The reference is the frame the stack built before the single-pass builder: the segment checksummed, wrapped in IPv4,
+ wrapped in Ethernet, each layer a concatenation. Every builder gets its own segment, because tcp-with-checksum writes
+ into its argument.
+
+  ramp : Integer, Integer, List Integer -> List Integer
+  ramp (i) (len) (acc) = if i >= len then acc else ramp (i + 1) len (list-push acc (bit-and (i * 7 + 3) 255))
+
+  sess : Integer -> NetSession
+  sess (d) = net-session-new [1, 2, 3, 4, 5, 6] [10, 0, 0, 2] [10, 0, 0, 1] 4000 7 [10, 0, 0, 1] 1000
+
+  dst-mac : List Integer = [17, 34, 51, 68, 85, 102]
+
+  seg : Integer, Integer -> List Integer
+  seg (n) (flags) = tcp-build-segment 4000 7 123456789 987654321 flags 8192 (ramp 0 n [])
+
+  reference : Integer, Integer -> List Integer
+  reference (n) (flags) =
+    let s = sess 0
+    in let ck = tcp-with-checksum (seg n flags) (s.local-ip) (s.conn.remote-ip)
+    in eth-build-frame dst-mac (s.local-mac) eth-type-ipv4 (ip-build-packet (s.local-ip) (s.conn.remote-ip) ip-proto-tcp ck)
+
+  built : Integer, Integer -> List Integer
+  built (n) (flags) = wrap-tcp-in-ip-eth (sess 0) (seg n flags) dst-mac
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+  flipped : List Integer, Integer -> List Integer
+  flipped (f) (at) = list-set-at f at (bit-xor (list-at f at) 1)
+
+  identical : Integer -> Boolean
+  identical (n) = same (reference n tcp-flag-ack) (built n tcp-flag-ack) 0 & same (reference n tcp-flag-syn) (built n tcp-flag-syn) 0
+
+  build-cost : Integer -> Integer
+  build-cost (n) =
+    let s = sess 0
+    in let g = seg n tcp-flag-ack
+    in let a = __heap-save
+    in let f = wrap-tcp-in-ip-eth s g dst-mac
+    in let b = __heap-save
+    in (b - a) + list-length f - list-length f
+
+  reference-cost : Integer -> Integer
+  reference-cost (n) =
+    let s = sess 0
+    in let g = seg n tcp-flag-ack
+    in let a = __heap-save
+    in let f = eth-build-frame dst-mac (s.local-mac) eth-type-ipv4 (ip-build-packet (s.local-ip) (s.conn.remote-ip) ip-proto-tcp (tcp-with-checksum g (s.local-ip) (s.conn.remote-ip)))
+    in let b = __heap-save
+    in (b - a) + list-length f - list-length f
+
+  frame-copy : Integer -> Integer
+  frame-copy (n) = (54 + n) * 8
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("the single-pass frame equals the layered one byte for byte at 0, 1, 100, 1459, 1460 and 1461 payload bytes, ACK and SYN: " & show (identical 0 & identical 1 & identical 100 & identical 1459 & identical 1460 & identical 1461))
+    print-line-uni ("and the comparison refuses a frame one bit off, in the IP checksum and in the TCP checksum: " & show (same (reference 1460 tcp-flag-ack) (flipped (built 1460 tcp-flag-ack) 25) 0 == False & same (reference 1460 tcp-flag-ack) (flipped (built 1460 tcp-flag-ack) 51) 0 == False))
+    print-line-uni ("the layered frame copied the segment twice, once per layer: " & show (reference-cost 1460 > 2 * frame-copy 1460))
+    print-line-uni ("the single-pass frame copies it once: " & show (build-cost 1460 < 2 * frame-copy 1460 & build-cost 1460 >= frame-copy 1460))
+  end
+
+Page 1

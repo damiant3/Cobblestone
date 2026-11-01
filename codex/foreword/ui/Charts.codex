@@ -1,12 +1,11 @@
 Chapter: Charts
   cites Foreword chapter ListUtils
+  cites Math chapter Cordic
 
  Data visualization -- bar charts, line charts, scatter plots, and
  pie charts as renderable data structures. Charts are built from
  data series, then can be converted to a list of draw commands
  for rendering on any surface. Uses fixed-point scale-1000.
-
- We say:
 
 Section: Types
 
@@ -147,55 +146,95 @@ Section: Rendering
     let series = list-at (c.ch-series) 0
     in let n = series.ds-count
     in if n == 0 then [DrawText 10 10 (c.ch-title) 0]
-    else let max-y = chart-max-y (series.ds-points) 0 n 0
+    else let lo = chart-min-y (series.ds-points) 0 n 0
+    in let span = chart-max-y (series.ds-points) 0 n 0 - lo
     in let bar-width = (c.ch-width - 40) / n
+    in let base-y = c.ch-height - 30
+    in let zero-y = base-y - (if span == 0 then 0 else (0 - lo) * (base-y - 30) / span)
     in let title-cmd = DrawText 10 10 (c.ch-title) 0
-    in title-cmd :: chart-bar-loop (series.ds-points) n max-y bar-width (c.ch-height - 30) (series.ds-color) 0 []
+    in title-cmd :: chart-bar-loop (series.ds-points) n span bar-width (base-y - 30) zero-y (series.ds-color) 0 []
 
-  chart-bar-loop : List DataPoint, Integer, Integer, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
-  chart-bar-loop (points) (n) (max-y) (bar-w) (base-y) (color) (i) (acc) =
+  chart-bar-loop : List DataPoint, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
+  chart-bar-loop (points) (n) (span) (bar-w) (plot-h) (zero-y) (color) (i) (acc) =
     if i >= n then acc
     else let pt = list-at points i
-    in let bar-h = if max-y == 0 then 0 else pt.dp-y * (base-y - 30) / max-y
+    in let bar-h = if span == 0 then 0 else chart-abs (pt.dp-y) * plot-h / span
     in let x = 30 + i * bar-w
-    in let cmd = DrawRect x (base-y - bar-h) (bar-w - 4) bar-h color True
-    in chart-bar-loop points n max-y bar-w base-y color (i + 1) (list-push acc cmd)
+    in let top = if pt.dp-y >= 0 then zero-y - bar-h else zero-y
+    in let cmd = DrawRect x top (bar-w - 4) bar-h color True
+    in chart-bar-loop points n span bar-w plot-h zero-y color (i + 1) (list-push acc cmd)
 
   chart-render-line : Chart -> List DrawCmd
   chart-render-line (c) =
     let series = list-at (c.ch-series) 0
     in let n = series.ds-count
     in if n < 2 then [DrawText 10 10 (c.ch-title) 0]
-    else let max-y = chart-max-y (series.ds-points) 0 n 0
-    in let max-x = chart-max-x (series.ds-points) 0 n 0
-    in DrawText 10 10 (c.ch-title) 0 :: chart-line-loop (series.ds-points) n max-x max-y (c.ch-width) (c.ch-height) (series.ds-color) 0 []
+    else let r = chart-range (series.ds-points) n
+    in DrawText 10 10 (c.ch-title) 0 :: chart-line-loop (series.ds-points) n r (c.ch-width) (c.ch-height) (series.ds-color) 0 []
 
-  chart-line-loop : List DataPoint, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
-  chart-line-loop (points) (n) (max-x) (max-y) (w) (h) (color) (i) (acc) =
+ The plotted range always includes 0 and the series minimum, so a negative value
+ lands below the zero line instead of off the chart.
+
+  ChartRange = record { cr-lo-x : Integer, cr-span-x : Integer, cr-lo-y : Integer, cr-span-y : Integer }
+
+  chart-range : List DataPoint, Integer -> ChartRange
+  chart-range (pts) (n) =
+    let lx = chart-min-x pts 0 n 0
+    in let ly = chart-min-y pts 0 n 0
+    in ChartRange { cr-lo-x = lx, cr-span-x = chart-max-x pts 0 n 0 - lx, cr-lo-y = ly, cr-span-y = chart-max-y pts 0 n 0 - ly }
+
+  chart-px : ChartRange, Integer, Integer -> Integer
+  chart-px (r) (v) (w) = 30 + (if r.cr-span-x == 0 then 0 else (v - r.cr-lo-x) * (w - 40) / r.cr-span-x)
+
+  chart-py : ChartRange, Integer, Integer -> Integer
+  chart-py (r) (v) (h) = h - 30 - (if r.cr-span-y == 0 then 0 else (v - r.cr-lo-y) * (h - 60) / r.cr-span-y)
+
+  chart-line-loop : List DataPoint, Integer, ChartRange, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
+  chart-line-loop (points) (n) (r) (w) (h) (color) (i) (acc) =
     if i + 1 >= n then acc
     else let p1 = list-at points i
     in let p2 = list-at points (i + 1)
-    in let x1 = 30 + (if max-x == 0 then 0 else p1.dp-x * (w - 40) / max-x)
-    in let y1 = h - 30 - (if max-y == 0 then 0 else p1.dp-y * (h - 60) / max-y)
-    in let x2 = 30 + (if max-x == 0 then 0 else p2.dp-x * (w - 40) / max-x)
-    in let y2 = h - 30 - (if max-y == 0 then 0 else p2.dp-y * (h - 60) / max-y)
-    in chart-line-loop points n max-x max-y w h color (i + 1) (list-push acc (DrawLine x1 y1 x2 y2 color))
+    in let cmd = DrawLine (chart-px r (p1.dp-x) w) (chart-py r (p1.dp-y) h) (chart-px r (p2.dp-x) w) (chart-py r (p2.dp-y) h) color
+    in chart-line-loop points n r w h color (i + 1) (list-push acc cmd)
 
   chart-render-scatter : Chart -> List DrawCmd
   chart-render-scatter (c) =
     let series = list-at (c.ch-series) 0
     in let n = series.ds-count
-    in let max-y = chart-max-y (series.ds-points) 0 n 0
-    in let max-x = chart-max-x (series.ds-points) 0 n 0
-    in DrawText 10 10 (c.ch-title) 0 :: (for pt in (series.ds-points) -> let x = 30 + (if max-x == 0 then 0 else pt.dp-x * ((c.ch-width) - 40) / max-x) in let y = (c.ch-height) - 30 - (if max-y == 0 then 0 else pt.dp-y * ((c.ch-height) - 60) / max-y) in DrawCircle x y 3 (series.ds-color))
+    in let r = chart-range (series.ds-points) n
+    in DrawText 10 10 (c.ch-title) 0 :: (for pt in (series.ds-points) -> DrawCircle (chart-px r (pt.dp-x) (c.ch-width)) (chart-py r (pt.dp-y) (c.ch-height)) 3 (series.ds-color))
+
+ A slice's share is its positive dp-y over the positive total; each slice gets the
+ radial line where it starts and its label at its middle angle, both from the top
+ clockwise. 6283 is 2 pi in milliradians.
 
   chart-render-pie : Chart -> List DrawCmd
   chart-render-pie (c) =
     let series = list-at (c.ch-series) 0
-    in [
-      DrawText 10 10 (c.ch-title) 0,
-      DrawCircle (c.ch-width / 2) (c.ch-height / 2) (c.ch-height / 3) 7
-    ]
+    in let cx = c.ch-width / 2
+    in let cy = c.ch-height / 2
+    in let rad = c.ch-height / 3
+    in let total = chart-pie-total (series.ds-points) 0 (series.ds-count) 0
+    in let base = [DrawText 10 10 (c.ch-title) 0, DrawCircle cx cy rad 7]
+    in if total == 0 then base
+    else base & chart-pie-loop (series.ds-points) (series.ds-count) total cx cy rad 0 0 []
+
+  chart-pie-total : List DataPoint, Integer, Integer, Integer -> Integer
+  chart-pie-total (pts) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = (list-at pts i).dp-y
+    in chart-pie-total pts (i + 1) n (acc + (if v > 0 then v else 0))
+
+  chart-pie-loop : List DataPoint, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List DrawCmd -> List DrawCmd
+  chart-pie-loop (pts) (n) (total) (cx) (cy) (rad) (i) (before) (acc) =
+    if i >= n then acc
+    else let pt = list-at pts i
+    in let v = if pt.dp-y > 0 then pt.dp-y else 0
+    in let start = before * 6283 / total
+    in let mid = (2 * before + v) * 6283 / (2 * total)
+    in let edge = DrawLine cx cy (cx + rad * cordic-sin start / 1000) (cy - rad * cordic-cos start / 1000) 7
+    in let label = DrawText (cx + rad * 2 / 3 * cordic-sin mid / 1000) (cy - rad * 2 / 3 * cordic-cos mid / 1000) (pt.dp-label) 0
+    in chart-pie-loop pts n total cx cy rad (i + 1) (before + v) (list-push (list-push acc edge) label)
 
 Section: Helpers
 
@@ -204,6 +243,21 @@ Section: Helpers
     if i >= len then best
     else let v = (list-at pts i).dp-y
     in chart-max-y pts (i + 1) len (if v > best then v else best)
+
+  chart-min-y : List DataPoint, Integer, Integer, Integer -> Integer
+  chart-min-y (pts) (i) (len) (best) =
+    if i >= len then best
+    else let v = (list-at pts i).dp-y
+    in chart-min-y pts (i + 1) len (if v < best then v else best)
+
+  chart-min-x : List DataPoint, Integer, Integer, Integer -> Integer
+  chart-min-x (pts) (i) (len) (best) =
+    if i >= len then best
+    else let v = (list-at pts i).dp-x
+    in chart-min-x pts (i + 1) len (if v < best then v else best)
+
+  chart-abs : Integer -> Integer
+  chart-abs (v) = if v < 0 then 0 - v else v
 
   chart-max-x : List DataPoint, Integer, Integer, Integer -> Integer
   chart-max-x (pts) (i) (len) (best) =

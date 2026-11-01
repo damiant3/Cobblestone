@@ -1,5 +1,6 @@
 Chapter: ClothSim
   cites Engine chapter SoftBody
+  cites Foreword chapter MathLib
   cites Math chapter Quaternion
 
  Grid-based cloth simulation built on the SoftBody PBD solver.
@@ -7,8 +8,6 @@ Chapter: ClothSim
  constraints. Supports wind force, collision with spheres, and
  tearing when constraints stretch beyond a break threshold.
  Fixed-point (scale 1000).
-
- We say:
 
 Section: Cloth Config
 
@@ -51,8 +50,9 @@ Section: Construction
     in let sb2 = cloth-add-particles sb cfg origin-x origin-y origin-z 0 0
     in let sb3 = cloth-add-structural sb2 (cfg.cc-width) (cfg.cc-height) (cfg.cc-stiffness) 0 0
     in let sb4 = cloth-add-shear sb3 (cfg.cc-width) (cfg.cc-height) (cfg.cc-stiffness * 700 / 1000) 0 0
-    in let broken = cloth-init-broken (cfg.cc-width * cfg.cc-height * 4) 0 []
-    in ClothState { cl-body = sb4, cl-width = cfg.cc-width, cl-height = cfg.cc-height, cl-spacing = cfg.cc-spacing, cl-break-threshold = cfg.cc-break-threshold, cl-broken = broken }
+    in let sb5 = cloth-add-bend sb4 (cfg.cc-width) (cfg.cc-height) (cfg.cc-stiffness * 300 / 1000) 0 0
+    in let broken = cloth-init-broken (sb5.sb-con-count) 0 []
+    in ClothState { cl-body = sb5, cl-width = cfg.cc-width, cl-height = cfg.cc-height, cl-spacing = cfg.cc-spacing, cl-break-threshold = cfg.cc-break-threshold, cl-broken = broken }
 
   cloth-add-particles : SoftBodyState, ClothConfig, Integer, Integer, Integer, Integer, Integer -> SoftBodyState
   cloth-add-particles (sb) (cfg) (ox) (oy) (oz) (x) (y) =
@@ -82,6 +82,15 @@ Section: Construction
     in let sb3 = sb-add-constraint sb2 (idx + 1) (idx + w) stiff
     in cloth-add-shear sb3 w h stiff (x + 1) y
 
+  cloth-add-bend : SoftBodyState, Integer, Integer, Integer, Integer, Integer -> SoftBodyState
+  cloth-add-bend (sb) (w) (h) (stiff) (x) (y) =
+    if y >= h then sb
+    else if x >= w then cloth-add-bend sb w h stiff 0 (y + 1)
+    else let idx = y * w + x
+    in let sb2 = if x + 2 < w then sb-add-constraint sb idx (idx + 2) stiff else sb
+    in let sb3 = if y + 2 < h then sb-add-constraint sb2 idx (idx + w + w) stiff else sb2
+    in cloth-add-bend sb3 w h stiff (x + 1) y
+
   cloth-init-broken : Integer, Integer, List Integer -> List Integer
   cloth-init-broken (n) (i) (acc) =
     if i >= n then acc
@@ -90,9 +99,59 @@ Section: Construction
 Section: Simulation
 
   cloth-step : ClothState, Integer -> ClothState
-  cloth-step (cl) (dt) =
-    let stepped = sb-step (cl.cl-body) dt
-    in __record-set cl "cl-body" stepped
+  cloth-step (cl) (dt) = cloth-tear (__record-set cl "cl-body" (sb-step (cl.cl-body) dt))
+
+  cloth-tear : ClothState -> ClothState
+  cloth-tear (cl) =
+    let body = cl.cl-body
+    in let cons = cloth-tear-loop (body.sb-particles) (body.sb-constraints) (cl.cl-break-threshold) 0 (body.sb-con-count) []
+    in let broken = cloth-broken-loop cons 0 (body.sb-con-count) []
+    in __record-set (__record-set cl "cl-body" (__record-set body "sb-constraints" cons)) "cl-broken" broken
+
+  cloth-tear-loop : List SoftParticle, List SoftConstraint, Integer, Integer, Integer, List SoftConstraint -> List SoftConstraint
+  cloth-tear-loop (parts) (cons) (threshold) (i) (n) (acc) =
+    if i >= n then acc
+    else let con = list-at cons i
+    in let pa = list-at parts (con.sc-a)
+    in let pb = list-at parts (con.sc-b)
+    in let dx = pb.sft-x - pa.sft-x
+    in let dy = pb.sft-y - pa.sft-y
+    in let dz = pb.sft-z - pa.sft-z
+    in let dist = math-isqrt (dx * dx + dy * dy + dz * dz)
+    in let torn = if con.sc-stiffness == 0 then con
+      else if dist * 1000 > con.sc-rest-dist * threshold then SoftConstraint { sc-a = con.sc-a, sc-b = con.sc-b, sc-rest-dist = con.sc-rest-dist, sc-stiffness = 0 }
+      else con
+    in cloth-tear-loop parts cons threshold (i + 1) n (list-push acc torn)
+
+  cloth-broken-loop : List SoftConstraint, Integer, Integer, List Integer -> List Integer
+  cloth-broken-loop (cons) (i) (n) (acc) =
+    if i >= n then acc
+    else cloth-broken-loop cons (i + 1) n (list-push acc (if (list-at cons i).sc-stiffness == 0 then 1 else 0))
+
+  cloth-broken-count : ClothState -> Integer
+  cloth-broken-count (cl) = cloth-sum (cl.cl-broken) 0 0
+
+  cloth-sum : List Integer, Integer, Integer -> Integer
+  cloth-sum (xs) (i) (acc) = if i >= list-length xs then acc else cloth-sum xs (i + 1) (acc + list-at xs i)
+
+Section: Collision
+
+  cloth-collide-sphere : ClothState, Integer, Integer, Integer, Integer -> ClothState
+  cloth-collide-sphere (cl) (cx) (cy) (cz) (radius) =
+    let parts = cloth-sphere-loop (cl.cl-body.sb-particles) cx cy cz radius 0 (cl.cl-body.sb-part-count) []
+    in __record-set cl "cl-body" (__record-set (cl.cl-body) "sb-particles" parts)
+
+  cloth-sphere-loop : List SoftParticle, Integer, Integer, Integer, Integer, Integer, Integer, List SoftParticle -> List SoftParticle
+  cloth-sphere-loop (parts) (cx) (cy) (cz) (radius) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in let dx = p.sft-x - cx
+    in let dy = p.sft-y - cy
+    in let dz = p.sft-z - cz
+    in let dist = math-isqrt (dx * dx + dy * dy + dz * dz)
+    in if p.sft-pinned | dist >= radius | dist == 0 then cloth-sphere-loop parts cx cy cz radius (i + 1) n (list-push acc p)
+    else let pushed = SoftParticle { sft-x = cx + dx * radius / dist, sft-y = cy + dy * radius / dist, sft-z = cz + dz * radius / dist, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in cloth-sphere-loop parts cx cy cz radius (i + 1) n (list-push acc pushed)
 
   cloth-apply-wind : ClothState, Integer, Integer, Integer -> ClothState
   cloth-apply-wind (cl) (wx) (wy) (wz) =

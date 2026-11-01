@@ -1,8 +1,66 @@
 Chapter: FwdFractalPlantTest
   cites Engine chapter FractalPlant
-  cites Engine chapter Mesh
+
+Section: Fixtures
+
+  fpt-first : List Integer, Integer, Integer, Text -> Text
+  fpt-first (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else fpt-first xs (i + 1) n (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
+  fpt-phase : Integer -> Text
+  fpt-phase (g) = format-plant (plant-grow (plant-new ls-bush 0 0 0 True) g)
+
+  fpt-b : Boolean -> Text
+  fpt-b (b) = if b then "T" else "F"
+
+  fpt-count : List Integer, Integer, Integer, Integer -> Integer
+  fpt-count (xs) (want) (i) (acc) =
+    if i >= list-length xs then acc
+    else fpt-count xs want (i + 1) (if list-at xs i == want then acc + 1 else acc)
+
+  fpt-colored : List Vertex, Integer, Integer, Integer -> Integer
+  fpt-colored (vs) (color) (i) (acc) =
+    if i >= list-length vs then acc
+    else fpt-colored vs color (i + 1) (if (list-at vs i).v-color == color then acc + 1 else acc)
+
+  fpt-plant : LSystem, Integer, Season, Boolean -> Mesh
+  fpt-plant (sys) (growth) (season) (deciduous) = plant-mesh (plant-set-season (plant-grow (plant-new sys 0 0 0 deciduous) growth) season)
+
+  fpt-coin : LSystem
+  fpt-coin = LSystem { ls-axiom = [sym-branch-a], ls-rules = [LRule { lr-symbol = sym-branch-a, lr-replacement = [sym-forward], lr-probability = 500 }, LRule { lr-symbol = sym-branch-a, lr-replacement = [sym-forward, sym-forward], lr-probability = 500 }], ls-rule-count = 2, ls-angle = 400, ls-length = 200, ls-length-decay = 850, ls-thickness = 50, ls-thickness-decay = 700 }
+
+  fpt-quarter : LSystem
+  fpt-quarter = LSystem { ls-axiom = [sym-forward, sym-turn-left, sym-forward], ls-rules = [], ls-rule-count = 0, ls-angle = 1571, ls-length = 200, ls-length-decay = 1000, ls-thickness = 50, ls-thickness-decay = 1000 }
+
+  fpt-twos : Integer, Integer -> Integer
+  fpt-twos (seed) (acc) =
+    if seed >= 100 then acc
+    else fpt-twos (seed + 1) (if list-length (ls-expand-seeded fpt-coin 1 seed) == 2 then acc + 1 else acc)
+
+  fpt-same : List Integer, List Integer -> Boolean
+  fpt-same (a) (b) = list-length a == list-length b & fpt-same-at a b 0
+
+  fpt-same-at : List Integer, List Integer, Integer -> Boolean
+  fpt-same-at (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else fpt-same-at a b (i + 1)
 
 Section: Entry
+
   opening : [Console] Nothing = act
-    print-line-uni "Engine/FractalPlant OK"
+    print-line-uni ("binary tree lengths 1 2 3: " & show (list-length (ls-expand ls-binary-tree 1)) & " " & show (list-length (ls-expand ls-binary-tree 2)) & " " & show (list-length (ls-expand ls-binary-tree 3)) & "; first 6 of 1: " & fpt-first (ls-expand ls-binary-tree 1) 0 6 "")
+    print-line-uni ("fern 1 2: " & show (list-length (ls-expand ls-fern 1)) & " " & show (list-length (ls-expand ls-fern 2)) & "; bush 1 2: " & show (list-length (ls-expand ls-bush 1)) & " " & show (list-length (ls-expand ls-bush 2)) & "; 0 iterations: " & show (list-length (ls-expand ls-fern 0)))
+    print-line-uni ("phases at 0 400 1200 3200 4800: " & fpt-phase 0 & " " & fpt-phase 400 & " " & fpt-phase 1200 & " " & fpt-phase 3200 & " " & fpt-phase 4800)
+    print-line-uni ("leaves in winter: deciduous " & fpt-b (season-has-leaves SeaWinter True) & ", evergreen " & fpt-b (season-has-leaves SeaWinter False) & "; autumn deciduous " & fpt-b (season-has-leaves SeaAutumn True))
+    print-line-uni ("autumn blend 0 500 1000: " & show (season-autumn-blend 0) & " " & show (season-autumn-blend 500) & " " & show (season-autumn-blend 1000) & "; iterations mature " & show (gp-iterations PhMature) & ", dead density " & show (gp-leaf-density PhDead))
+    print-line-uni (format-lsystem ls-binary-tree)
+    let seedling = fpt-plant ls-binary-tree 0 SeaSummer False
+    in print-line-uni ("binary tree seedling: " & show (seedling.mesh-vert-count) & " verts, " & show (seedling.mesh-index-count) & " indices, " & format-bounds (mesh-bounds seedling))
+    let mature = fpt-plant ls-binary-tree 1200 SeaSummer False
+    in print-line-uni ("binary tree mature: " & show (mature.mesh-vert-count) & " verts for " & show (fpt-count (ls-expand-seeded ls-binary-tree 4 0) sym-forward 0 0) & " forward symbols")
+    print-line-uni ("bush mature leaf verts: summer " & show (fpt-colored ((fpt-plant ls-bush 1200 SeaSummer True).mesh-verts) #337722 0 0) & ", deciduous winter " & show (fpt-colored ((fpt-plant ls-bush 1200 SeaWinter True).mesh-verts) #554433 0 0) & ", evergreen winter " & show (fpt-colored ((fpt-plant ls-bush 1200 SeaWinter False).mesh-verts) #554433 0 0) & ", old summer " & show (fpt-colored ((fpt-plant ls-bush 3200 SeaSummer True).mesh-verts) #337722 0 0) & ", dead summer " & show (fpt-colored ((fpt-plant ls-bush 4800 SeaSummer True).mesh-verts) #337722 0 0))
+    print-line-uni ("quarter turn left: " & format-bounds (mesh-bounds (plant-mesh (plant-new fpt-quarter 0 0 0 False))))
+    print-line-uni ("coin rule over 100 seeds: " & show (fpt-twos 0 0) & " doubled; seed 7 repeats " & fpt-b (fpt-same (ls-expand-seeded fpt-coin 3 7) (ls-expand-seeded fpt-coin 3 7)))
   end

@@ -45,10 +45,6 @@ Section: Keywords and Sanitization
   ada-cap-sanitize : Text -> Text
   ada-cap-sanitize (name) = ada-capitalize (ada-sanitize name)
 
- The IR spells a record field as `name/slot`, so a field name reaches the
- emitter as `a/0` and reads as a division. riscv resolves the slot and
- needs it; every source plug wants the name.
-
   ada-slash-pos : Text, Integer, Integer -> Integer
   ada-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -121,12 +117,6 @@ Section: Apply Chain
 
 Section: Type Emission
 
- ErrorTy names a type the checker did not resolve, so any concrete answer
- here is a guess that compiles. An undeclared type name is the loudest
- refusal Ada offers in a type position, the same shape
- cx_UNSUPPORTED_builtin already uses for expressions: gnat reports the name
- as undefined and points at the declaration. Do not map it to a real type.
-
   ada-type : CodexType -> Text
   ada-type (ty) =
     when ty
@@ -158,16 +148,6 @@ Section: Type Emission
      is LinkedListTy (elem) -> ada-list-type-name elem
      is RealTy (w) (m) -> "Long_Float"
      is UnitTy (n) (inner) -> "Boolean"
-
- A list is an Ada unconstrained array, and the element kind picks which of the
- two the prelude declares. `Cx_Text_List` was already there for `Cx_Text_Split`;
- nothing named the integer one, so `ListTy` answered `Long_Long_Integer` and a
- list value was DECLARED a scalar while literals were emitted as aggregates.
-
- There are two list types and the element decides which, so an element the
- checker did not resolve cannot pick one. Falling to Cx_Int_List is the same
- guess one level in, and it is why a List of an unresolved element showed no
- refusal while the bare element did.
 
   ada-list-type-name : CodexType -> Text
   ada-list-type-name (elem) =
@@ -1064,8 +1044,8 @@ Section: Chapter Emission
     & "   type Cx_Int_List is array (Natural range <>) of Long_Long_Integer;\n\n"
     & "   function Cx_Int_Len (L : Cx_Int_List) return Long_Long_Integer is\n   begin\n      return Long_Long_Integer (L'Length);\n   end Cx_Int_Len;\n\n"
     & "   function Cx_Text_Len (L : Cx_Text_List) return Long_Long_Integer is\n   begin\n      return Long_Long_Integer (L'Length);\n   end Cx_Text_Len;\n\n"
-    & "   function Cx_Int_At (L : Cx_Int_List; I : Long_Long_Integer) return Long_Long_Integer is\n      K : constant Integer := Integer (I) + L'First;\n   begin\n      if K < L'First or K > L'Last then\n         return 0;\n      end if;\n      return L (K);\n   end Cx_Int_At;\n\n"
-    & "   function Cx_Text_At (L : Cx_Text_List; I : Long_Long_Integer) return Unbounded_String is\n      K : constant Integer := Integer (I) + L'First;\n   begin\n      if K < L'First or K > L'Last then\n         return To_Unbounded_String (\"\");\n      end if;\n      return L (K);\n   end Cx_Text_At;\n\n"
+    & "   function Cx_Int_At (L : Cx_Int_List; I : Long_Long_Integer) return Long_Long_Integer is\n      K : constant Integer := Integer (I) + L'First;\n   begin\n      if K < L'First or K > L'Last then\n         raise Constraint_Error with \"CODEX_TRAP_index\";\n      end if;\n      return L (K);\n   end Cx_Int_At;\n\n"
+    & "   function Cx_Text_At (L : Cx_Text_List; I : Long_Long_Integer) return Unbounded_String is\n      K : constant Integer := Integer (I) + L'First;\n   begin\n      if K < L'First or K > L'Last then\n         raise Constraint_Error with \"CODEX_TRAP_index\";\n      end if;\n      return L (K);\n   end Cx_Text_At;\n\n"
     & "   function Cx_Int_Snoc (L : Cx_Int_List; V : Long_Long_Integer) return Cx_Int_List is\n   begin\n      return L & Cx_Int_List'(0 => V);\n   end Cx_Int_Snoc;\n\n"
     & "   function Cx_Text_Snoc (L : Cx_Text_List; V : Unbounded_String) return Cx_Text_List is\n   begin\n      return L & Cx_Text_List'(0 => V);\n   end Cx_Text_Snoc;\n\n"
     & "   function Cx_Text_Split (S : Unbounded_String; Sep : Unbounded_String) return Cx_Text_List is\n      Src : constant String := To_String (S);\n      Sp  : constant String := To_String (Sep);\n      Count : Natural := 1;\n      I : Integer;\n   begin\n      if Sp'Length = 0 then\n         return (0 => S);\n      end if;\n      I := Src'First;\n      while I + Sp'Length - 1 <= Src'Last loop\n         if Src (I .. I + Sp'Length - 1) = Sp then\n            Count := Count + 1;\n            I := I + Sp'Length;\n         else\n            I := I + 1;\n         end if;\n      end loop;\n      declare\n         Res : Cx_Text_List (0 .. Count - 1);\n         Idx : Natural := 0;\n         Start : Integer := Src'First;\n      begin\n         I := Src'First;\n         while I + Sp'Length - 1 <= Src'Last loop\n            if Src (I .. I + Sp'Length - 1) = Sp then\n               Res (Idx) := To_Unbounded_String (Src (Start .. I - 1));\n               Idx := Idx + 1;\n               I := I + Sp'Length;\n               Start := I;\n            else\n               I := I + 1;\n            end if;\n         end loop;\n         Res (Idx) := To_Unbounded_String (Src (Start .. Src'Last));\n         return Res;\n      end;\n   end Cx_Text_Split;\n\n"

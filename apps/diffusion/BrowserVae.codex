@@ -5,8 +5,6 @@ Chapter: BrowserVae
  Weights are device buffers by LDM name, packed f16 where bt-half says so;
  GroupNorm is 32 groups at eps 1e-6.
 
- We say:
-
 Section: Types
 
   BvWeights = record {
@@ -47,7 +45,9 @@ Section: Operations
     in let y = gpu-buf-alloc (cout * npix * 4)
     in let g = GpuGrid { gx = ((cout + 63) / 64) * ((npix + 63) / 64), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
     in let r = if y == 0 | x.ah == 0 then 0 - 1
-       else gpu-launch code "bk_conv2d_h_main" g [gpu-arg-buf (x.ah) 0, gpu-arg-buf (bv-get w (p & ".weight")) 0, gpu-arg-buf (bv-get w (p & ".bias")) 0, gpu-arg-buf y 0, gpu-arg-u32 (x.ac), gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww), gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 1, gpu-arg-u32 pad, gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww)]
+       else gpu-launch code "bk_conv2d_h_main" g [gpu-arg-buf (x.ah) 0, gpu-arg-buf (bv-get w (p & ".weight")) 0, gpu-arg-buf (bv-get w (p & ".bias")) 0,
+         gpu-arg-buf y 0, gpu-arg-u32 (x.ac), gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww), gpu-arg-u32 cout, gpu-arg-u32 k, gpu-arg-u32 k, gpu-arg-u32 1,
+         gpu-arg-u32 pad, gpu-arg-u32 (x.ahh), gpu-arg-u32 (x.aww)]
     in bv-act y cout (x.ahh) (x.aww) r
 
   bv-norm : Text, BvWeights, BvAct, Text, Boolean -> BvAct
@@ -58,7 +58,9 @@ Section: Operations
     in let y = gpu-buf-alloc (n * 4)
     in let r1 = if s == 0 | y == 0 | x.ah == 0 then 0 - 1 else gpu-launch code "bk_row_mean_main" (bv-rows 32) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-u32 len, gpu-arg-u32 32]
     in let r2 = if r1 < 0 then r1 else gpu-launch code "bk_row_rstd_main" (bv-rows 32) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-u32 len, gpu-arg-f32 0.000001, gpu-arg-u32 32]
-    in let r3 = if r2 < 0 then r2 else gpu-launch code "bk_group_affine_main" (bv-grid n) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-buf (bv-get w (p & ".weight")) 0, gpu-arg-buf (bv-get w (p & ".bias")) 0, gpu-arg-buf y 0, gpu-arg-u32 (x.ac), gpu-arg-u32 (x.ahh * x.aww), gpu-arg-u32 32, gpu-arg-u32 n]
+    in let r3 = if r2 < 0 then r2
+    else gpu-launch code "bk_group_affine_main" (bv-grid n) [gpu-arg-buf (x.ah) 0, gpu-arg-buf s 0, gpu-arg-buf (bv-get w (p & ".weight")) 0,
+      gpu-arg-buf (bv-get w (p & ".bias")) 0, gpu-arg-buf y 0, gpu-arg-u32 (x.ac), gpu-arg-u32 (x.ahh * x.aww), gpu-arg-u32 32, gpu-arg-u32 n]
     in let z = if silu then gpu-buf-alloc (n * 4) else y
     in let r4 = if r3 < 0 | silu == False then r3 else if z == 0 then 0 - 1 else gpu-launch code "bk_silu_main" (bv-grid n) [gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-u32 n]
     in let f = (if s == 0 then True else gpu-buf-free s) & (if silu & y /= 0 then gpu-buf-free y else True)
@@ -101,12 +103,15 @@ Section: Operations
     in let pr = gpu-buf-alloc (n * n * 4)
     in let ot = gpu-buf-alloc (n * c * 4)
     in let r1 = if qt == 0 | kt == 0 | vt == 0 | s == 0 | pr == 0 | ot == 0 then 0 - 1
-       else gpu-launch code "bk_attn_scores_main" (bv-rows (((n + 63) / 64) * ((n + 63) / 64))) [gpu-arg-buf qt 0, gpu-arg-buf kt 0, gpu-arg-buf s 0, gpu-arg-u32 1, gpu-arg-u32 n, gpu-arg-u32 n, gpu-arg-u32 c, gpu-arg-f32 0.044194173824159216, gpu-arg-u32 (n * n)]
+       else gpu-launch code "bk_attn_scores_main" (bv-rows (((n + 63) / 64) * ((n + 63) / 64))) [gpu-arg-buf qt 0, gpu-arg-buf kt 0, gpu-arg-buf s 0,
+         gpu-arg-u32 1, gpu-arg-u32 n, gpu-arg-u32 n, gpu-arg-u32 c, gpu-arg-f32 0.044194173824159216, gpu-arg-u32 (n * n)]
     in let sm = gpu-buf-alloc (n * 2 * 4)
     in let r2a = if r1 < 0 | sm == 0 then 0 - 1 else gpu-launch code "bk_row_max_main" (bv-rows n) [gpu-arg-buf s 0, gpu-arg-buf sm 0, gpu-arg-u32 n, gpu-arg-u32 n]
     in let r2b = if r2a < 0 then r2a else gpu-launch code "bk_row_expsum_main" (bv-rows n) [gpu-arg-buf s 0, gpu-arg-buf sm 0, gpu-arg-u32 n, gpu-arg-u32 n]
     in let r2 = if r2b < 0 then r2b else gpu-launch code "bk_softmax_apply_main" (bv-grid (n * n)) [gpu-arg-buf s 0, gpu-arg-buf sm 0, gpu-arg-buf pr 0, gpu-arg-u32 n, gpu-arg-u32 (n * n)]
-    in let r3 = if r2 < 0 then r2 else gpu-launch code "bk_attn_values_main" (bv-rows (((n + 63) / 64) * ((c + 63) / 64))) [gpu-arg-buf pr 0, gpu-arg-buf vt 0, gpu-arg-buf ot 0, gpu-arg-u32 1, gpu-arg-u32 n, gpu-arg-u32 n, gpu-arg-u32 c, gpu-arg-u32 (n * c)]
+    in let r3 = if r2 < 0 then r2
+    else gpu-launch code "bk_attn_values_main" (bv-rows (((n + 63) / 64) * ((c + 63) / 64))) [gpu-arg-buf pr 0, gpu-arg-buf vt 0, gpu-arg-buf ot 0,
+      gpu-arg-u32 1, gpu-arg-u32 n, gpu-arg-u32 n, gpu-arg-u32 c, gpu-arg-u32 (n * c)]
     in let o = if r3 < 0 then 0 else bv-transpose code ot n c
     in let proj = bv-conv code w (bv-act o c (x.ahh) (x.aww) (if o == 0 then 0 - 1 else 0)) (p & "proj_out") c 1 0
     in let out = bv-add code proj x
@@ -126,4 +131,13 @@ Section: Operations
   bv-channels (x) = x.ac
 
   browser-vae-ops : Text -> VaeOps BvWeights BvAct
-  browser-vae-ops (code) = VaeOps { conv = \w x p cout k pad -> bv-conv code w x p cout k pad, norm = \w x p s -> bv-norm code w x p s, add = \a b -> bv-add code a b, upsample = \x -> bv-upsample code x, attention = \w x p -> bv-attention code w x p, free = bv-free, has = bv-has, channels = bv-channels }
+  browser-vae-ops (code) = VaeOps {
+    conv = \w x p cout k pad -> bv-conv code w x p cout k pad,
+    norm = \w x p s -> bv-norm code w x p s,
+    add = \a b -> bv-add code a b,
+    upsample = \x -> bv-upsample code x,
+    attention = \w x p -> bv-attention code w x p,
+    free = bv-free,
+    has = bv-has,
+    channels = bv-channels
+  }

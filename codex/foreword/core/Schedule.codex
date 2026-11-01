@@ -2,8 +2,6 @@ Chapter: Schedule
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
- We say:
-
 Section: Types
   Sched =
     | EveryN (Integer) (Integer)
@@ -68,20 +66,25 @@ Section: Evaluation
     else (epoch - offset) - (epoch - offset) / interval * interval == 0
 
 Section: Next Occurrence
-  sched-next : Sched, Integer, Integer, Integer, Integer, Integer -> Integer
-  sched-next (sched) (epoch) (dow) (dom) (hour) (minute) =
-    sched-search sched epoch dow dom hour minute 0 1440
+ The minutes until the schedule next matches, searching one day from the given local weekday (0 Sunday), day of month, the month's length, hour and minute; past midnight the weekday and the day of month move on with it. -1 when nothing matches within the day.
 
-  sched-search : Sched, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  sched-search (sched) (epoch) (dow) (dom) (hour) (minute) (offset) (max-minutes) =
+  sched-next : Sched, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sched-next (sched) (epoch) (dow) (dom) (month-days) (hour) (minute) =
+    sched-search sched epoch dow dom month-days hour minute 0 1440
+
+  sched-search : Sched, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sched-search (sched) (epoch) (dow) (dom) (month-days) (hour) (minute) (offset) (max-minutes) =
     if offset >= max-minutes then 0 - 1
     else let new-minute = minute + offset
     in let new-hour = hour + new-minute / 60
     in let adj-minute = new-minute - new-minute / 60 * 60
-    in let adj-hour = new-hour - new-hour / 24 * 24
+    in let carry = new-hour / 24
+    in let adj-hour = new-hour - carry * 24
+    in let adj-dow = (dow + carry) - (dow + carry) / 7 * 7
+    in let adj-dom = if dom + carry > month-days then dom + carry - month-days else dom + carry
     in let new-epoch = epoch + offset * 60
-    in if sched-matches sched new-epoch dow dom adj-hour adj-minute then offset
-    else sched-search sched epoch dow dom hour minute (offset + 1) max-minutes
+    in if sched-matches sched new-epoch adj-dow adj-dom adj-hour adj-minute then offset
+    else sched-search sched epoch dow dom month-days hour minute (offset + 1) max-minutes
 
 Section: Formatting
   format-sched : Sched -> Text
@@ -253,7 +256,7 @@ Section: Parse Helpers
   sched-atoi (s) (i) (len) (acc) =
     if i >= len then acc
     else let c = char-at s i
-    in if is-digit c then sched-atoi s (i + 1) len (acc * 10 + digit-value c)
+    in if is-digit c then (if acc > (9223372036854775807 - digit-value c) / 10 then 0 else sched-atoi s (i + 1) len (acc * 10 + digit-value c))
     else acc
 
   sched-parse-hour-ampm : Text, Text -> Integer

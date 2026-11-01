@@ -27,10 +27,6 @@ Section: Keywords and Sanitization
     in if pl-is-keyword s 0 then s & "_v"
     else s
 
- The IR spells a record field as `name/slot`. In a map-keyed target the
- slot lands INSIDE the key string, so the lookup misses silently rather
- than dividing; the key has to be the bare name.
-
   pl-slash-pos : Text, Integer, Integer -> Integer
   pl-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -49,26 +45,17 @@ Section: Keywords and Sanitization
     in let s2 = text-replace s1 "\"" "\\\""
     in text-replace s2 "\n" "\\n"
 
- A literal's characters are CCE inside the plug, and CCE's multi-byte units
- share UTF-8's framing with different numbering, so raw bytes print 0x80 low
- from tier-1 slice 1 on. Each non-ASCII character is decoded here and written
- as its UTF-8 bytes, which keeps perl's strings byte strings.
+ A Text is CCE at run time: each byte of the perl string is one byte of CCE's
+ UTF-8-shaped framing, so a literal is written byte by byte as `\x` escapes
+ and converts to Unicode only at the program's edges.
 
   pl-hex-byte : Integer -> Text
   pl-hex-byte (b) = "\\x" & substring "0123456789ABCDEF" (b / 16) 1 & substring "0123456789ABCDEF" (b - b / 16 * 16) 1
 
-  pl-utf8-escape : Integer -> Text
-  pl-utf8-escape (u) =
-    if u < 2048 then pl-hex-byte (192 + u / 64) & pl-hex-byte (128 + u - u / 64 * 64)
-    else if u < 65536 then pl-hex-byte (224 + u / 4096) & pl-hex-byte (128 + u / 64 - u / 4096 * 64) & pl-hex-byte (128 + u - u / 64 * 64)
-    else pl-hex-byte (240 + u / 262144) & pl-hex-byte (128 + u / 4096 - u / 262144 * 64) & pl-hex-byte (128 + u / 64 - u / 4096 * 64) & pl-hex-byte (128 + u - u / 64 * 64)
-
   pl-escape-text-loop : Text, Integer, Integer, List Text -> List Text
   pl-escape-text-loop (s) (i) (len) (acc) =
     if i >= len then acc
-    else let n = cce-decode-length (char-code (char-at s i))
-    in let u = to-unicode (cce-decode-at s i)
-    in pl-escape-text-loop s (i + n) len (list-snoc acc (if u < 128 then pl-escape (substring s i n) else pl-utf8-escape u))
+    else pl-escape-text-loop s (i + 1) len (list-snoc acc (pl-hex-byte (char-code-at s i)))
 
   pl-escape-text : Text -> Text
   pl-escape-text (s) = text-concat-list (pl-escape-text-loop s 0 (text-length s) [])
@@ -144,6 +131,40 @@ Section: Arity Map
   pl-copy-arities (xs) (i) (acc) =
     if i >= list-length xs then acc
     else pl-copy-arities xs (i + 1) (list-push acc (list-at xs i))
+
+  pl-with-ops : List Text, List ArityEntry -> List ArityEntry
+  pl-with-ops (ops) (arities) = pl-insert-ops ops 0 (pl-copy-arities arities 0 [])
+
+  pl-insert-ops : List Text, Integer, List ArityEntry -> List ArityEntry
+  pl-insert-ops (ops) (i) (acc) =
+    if i >= list-length ops then acc
+    else let n = list-at ops i
+    in if lookup-arity acc n >= 0 | is-pl-builtin-name n then pl-insert-ops ops (i + 1) acc
+    else pl-insert-ops ops (i + 1) (sorted-insert-arity acc (ArityEntry { name = "__op:" & n, arity = 0, generic-count = 0 }))
+
+  pl-is-op : List ArityEntry, Text -> Boolean
+  pl-is-op (arities) (n) =
+    if pl-is-local arities n | lookup-arity arities n >= 0 then False
+    else lookup-arity arities ("__op:" & n) >= 0
+
+  pl-perform : Text, Text -> Text
+  pl-perform (n) (args) =
+    "_cxh_perform('" & pl-sanitize n & "'" & (if text-length args > 0 then ", " & args else "") & ")"
+
+  pl-handler-helpers : Text
+  pl-handler-helpers = "my %_cxh_stack;\nsub _cxh_with { my ($cs, $body) = @_; for my $k (keys %$cs) { push @{$_cxh_stack{$k}}, $cs->{$k}; } my $r = eval { $body->() }; my $err = $@; for my $k (keys %$cs) { pop @{$_cxh_stack{$k}}; } die $err if $err; return $r; }\nsub _cxh_perform { my ($k, @a) = @_; my $r = $_cxh_stack{$k}[-1]->(sub { $_[0] }); for my $x (@a) { $r = $r->($x); } return $r; }\n\n"
+
+  emit-pl-handle : IRExpr, List IRHandleClause, List ArityEntry, Integer -> Text
+  emit-pl-handle (body) (clauses) (arities) (depth) =
+    if list-length clauses == 0 then emit-pl-expr-at body arities (depth + 1)
+    else "_cxh_with({ " & emit-pl-handle-clauses clauses arities depth 0 & "}, sub { " & emit-pl-expr-at body arities (depth + 1) & " })"
+
+  emit-pl-handle-clauses : List IRHandleClause, List ArityEntry, Integer, Integer -> Text
+  emit-pl-handle-clauses (cs) (arities) (depth) (i) =
+    if i >= list-length cs then ""
+    else let c = list-at cs i
+    in let carities = pl-with-local (c.resume-name) (FunTy int-ty-default empty-row int-ty-default) arities
+    in "'" & pl-sanitize (c.op-name) & "' => sub { my ($" & pl-sanitize (c.resume-name) & ") = @_; " & emit-pl-expr-at (c.body) carities (depth + 1) & " }, " & emit-pl-handle-clauses cs arities depth (i + 1)
 
   pl-with-locals : List IRParam, Integer, List ArityEntry -> List ArityEntry
   pl-with-locals (params) (i) (arities) =
@@ -269,7 +290,7 @@ Section: Expression Emission
      is IrList (elems) (ty) (sp) -> "[" & emit-pl-list-elems elems 0 arities & "]"
      is IrMatch (scrut) (branches) (ty) (sp) -> emit-pl-match scrut branches arities depth
      is IrAct (stmts) (ty) (sp) -> emit-pl-act stmts arities
-     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-pl-expr-at body arities (depth + 1)
+     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-pl-handle body clauses arities depth
      is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-pl-expr-at body arities (depth + 1)
      is IrRecord (name) (fields) (ty) (sp) -> "new_" & pl-sanitize name & "(" & emit-pl-field-vals fields 0 arities & ")"
      is IrFieldAccess (rec) (field) (ty) (sp) -> emit-pl-expr-at rec arities (depth + 1) & "->{'" & pl-field field & "'}"
@@ -286,6 +307,7 @@ Section: Expression Emission
     else if n == "Nothing" then "undef"
     else if n == "vec-empty" then "[]"
     else if n == "__heap-save" | n == "__heap-restore" | n == "__heap-advance" then "0"
+    else if pl-is-op arities n then pl-perform n ""
     else if pl-is-local arities n then "$" & pl-sanitize n
     else let ar = lookup-arity arities n
     in if ar < 0 then "$" & pl-sanitize n
@@ -415,11 +437,6 @@ Section: Expression Emission
     else let b = list-at branches i
     in emit-pl-match-arm (b.pattern) (b.guard) (b.body) branches i arities depth
 
- The rest of the match lives in each ternary's else, so a guard goes in the
- CONDITION, evaluated in the same `sub` that binds the payload, behind the
- tag test's short circuit so a hashref deref is never reached for the wrong
- constructor.
-
   pl-guard-trivial : IRExpr -> Boolean
   pl-guard-trivial (g) =
     when g
@@ -512,6 +529,7 @@ Section: Apply Emission
     in when root
      is IrName (n) (ty) (sp) ->
       if pl-is-local arities n then emit-pl-curried ("$" & pl-sanitize n) args arities 0
+      else if pl-is-op arities n then pl-perform n (emit-pl-apply-args args arities 0)
       else if n == "vec-load-at" & lookup-arity arities n < 0 then pl-vec-load args (ir-expr-type e) arities
       else let bi = if lookup-arity arities n >= 0 then "" else pl-try-builtin n args arities
       in if text-length bi > 0 then bi
@@ -523,12 +541,6 @@ Section: Apply Emission
       else
         emit-pl-curried (pl-sanitize n & "(" & emit-pl-apply-args-upto args arities 0 ar & ")") args arities ar
      is otherwise -> emit-pl-curried ("(" & emit-pl-expr root arities & ")") args arities 0
-
- Every function VALUE takes one argument a call: a definition named as a
- value, a partial application and a lambda are all nested one-argument subs,
- so a call of a local or of an expression applies its arguments one at a
- time, and an application past a definition's arity calls at the arity and
- applies the surplus the same way.
 
   pl-vec-load : List IRExpr, CodexType, List ArityEntry -> Text
   pl-vec-load (args) (ty) (arities) =
@@ -629,7 +641,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "char-at",
-     emit = \args arities -> "ord(substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", 1))"
+     emit = \args arities -> "_cx_at_chr(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "char-code",
@@ -637,7 +649,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "char-code-at",
-     emit = \args arities -> "ord(substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", 1))"
+     emit = \args arities -> "_cx_at_chr(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "char-encode",
@@ -652,8 +664,12 @@ Section: Apply Emission
      emit = \args arities -> "chr(" & emit-pl-expr (list-at args 0) arities & ")"
    },
    PlBuiltinEmitter {
+     name = "raw-bytes-to-text",
+     emit = \args arities -> "join('', map { chr } @{" & emit-pl-expr (list-at args 0) arities & "})"
+   },
+   PlBuiltinEmitter {
      name = "fail",
-     emit = \args arities -> "die(" & emit-pl-expr (list-at args 0) arities & " . \"\\n\")"
+     emit = \args arities -> "die(" & pl-u (list-at args 0) arities & " . \"\\n\")"
    },
    PlBuiltinEmitter {
      name = "int-mod",
@@ -661,7 +677,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "integer-to-text",
-     emit = \args arities -> "\"\" . " & emit-pl-expr (list-at args 0) arities
+     emit = \args arities -> "_cce_from_uni(\"\" . " & emit-pl-expr (list-at args 0) arities & ")"
    },
    PlBuiltinEmitter {
      name = "is-digit",
@@ -677,15 +693,15 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "list-at",
-     emit = \args arities -> emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]"
+     emit = \args arities -> "_cx_at(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "list-insert-at",
-     emit = \args arities -> "(sub { my ($l, $i, $v) = @_; splice(@$l, $i, 0, $v); $l })->(" & emit-pl-apply-args args arities 0 & ")"
+     emit = \args arities -> "_cx_at_insert(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "list-set-at",
-     emit = \args arities -> "(sub { my ($l, $i, $v) = @_; $l->[$i] = $v; $l })->(" & emit-pl-apply-args args arities 0 & ")"
+     emit = \args arities -> "_cx_at_set(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "list-snoc",
@@ -721,15 +737,15 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "print-line",
-     emit = \args arities -> "say " & emit-pl-expr (list-at args 0) arities
+     emit = \args arities -> "say " & pl-u (list-at args 0) arities
    },
    PlBuiltinEmitter {
      name = "print-line-uni",
-     emit = \args arities -> "say " & emit-pl-expr (list-at args 0) arities
+     emit = \args arities -> "say " & pl-u (list-at args 0) arities
    },
    PlBuiltinEmitter {
      name = "print-uni",
-     emit = \args arities -> "print " & emit-pl-expr (list-at args 0) arities
+     emit = \args arities -> "print " & pl-u (list-at args 0) arities
    },
    PlBuiltinEmitter {
      name = "process-exit",
@@ -737,7 +753,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "read-text",
-     emit = \args arities -> "(sub { local $/; open my $fh, '<', " & emit-pl-expr (list-at args 0) arities & "; <$fh> })->()"
+     emit = \args arities -> "_cce_from_uni((sub { local $/; open my $fh, '<', " & pl-u (list-at args 0) arities & "; <$fh> })->())"
    },
    PlBuiltinEmitter {
      name = "show",
@@ -745,7 +761,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "substring",
-     emit = \args arities -> "substr(" & emit-pl-expr (list-at args 0) arities & ", " & emit-pl-expr (list-at args 1) arities & ", " & emit-pl-expr (list-at args 2) arities & ")"
+     emit = \args arities -> "_cx_at_sub(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "text-compare",
@@ -765,7 +781,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "text-to-integer",
-     emit = \args arities -> "int(" & emit-pl-expr (list-at args 0) arities & ")"
+     emit = \args arities -> "int(" & pl-u (list-at args 0) arities & ")"
    },
    PlBuiltinEmitter {
      name = "vec-cons",
@@ -857,7 +873,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "text-to-double-bits",
-     emit = \args arities -> "text_to_double_bits(" & emit-pl-apply-args args arities 0 & ")"
+     emit = \args arities -> "text_to_double_bits(" & pl-u (list-at args 0) arities & ")"
    },
    PlBuiltinEmitter {
      name = "alloc-bytes",
@@ -909,7 +925,7 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "vec-extract",
-     emit = \args arities -> emit-pl-expr (list-at args 0) arities & "->[" & emit-pl-expr (list-at args 1) arities & "]"
+     emit = \args arities -> "_cx_at(" & emit-pl-apply-args args arities 0 & ")"
    },
    PlBuiltinEmitter {
      name = "vec-reduce-add",
@@ -917,16 +933,20 @@ Section: Apply Emission
    },
    PlBuiltinEmitter {
      name = "write-file",
-     emit = \args arities -> "(sub { open my $fh, '>', " & emit-pl-expr (list-at args 0) arities & "; print $fh " & emit-pl-expr (list-at args 1) arities & " })->()"
+     emit = \args arities -> "(sub { open my $fh, '>', " & pl-u (list-at args 0) arities & "; print $fh " & pl-u (list-at args 1) arities & " })->()"
    }
   ]
+
+  pl-u : IRExpr, List ArityEntry -> Text
+  pl-u (a) (arities) = "_cce_to_uni(" & emit-pl-expr a arities & ")"
 
   pl-show : IRExpr, List ArityEntry -> Text
   pl-show (e) (arities) =
     when pl-base-ty (ir-expr-type e)
-     is BooleanTy -> "(" & emit-pl-expr e arities & " ? \"True\" : \"False\")"
-     is RealTy (w) (m) -> "_cx_real_show(" & emit-pl-expr e arities & ")"
-     is otherwise -> "\"\" . " & emit-pl-expr e arities
+     is BooleanTy -> "_cce_from_uni(" & emit-pl-expr e arities & " ? \"True\" : \"False\")"
+     is RealTy (w) (m) -> "_cce_from_uni(_cx_real_show(" & emit-pl-expr e arities & "))"
+     is TextTy -> "\"\" . " & emit-pl-expr e arities
+     is otherwise -> "_cce_from_uni(\"\" . " & emit-pl-expr e arities & ")"
 
   is-pl-builtin-name : Text -> Boolean
   is-pl-builtin-name (n) =
@@ -949,8 +969,42 @@ Section: Definition Emission
   emit-pl-def : IRDef, List ArityEntry -> Text
   emit-pl-def (d) (arities) =
     let name = pl-sanitize (d.name)
-    in "sub " & name & " {\n    my (" & emit-pl-lambda-params (d.params) 0 & ") = @_;\n    " & emit-pl-expr (d.body) (pl-with-locals (d.params) 0 arities) & "\n}\n\n"
+    in "sub " & name & " {\n    my (" & emit-pl-lambda-params (d.params) 0 & ") = @_;\n" & pl-param-guards (d.params) 0 & "    " & pl-return-guard d (emit-pl-expr (d.body) (pl-with-locals (d.params) 0 arities)) & "\n}\n\n"
 
+  pl-bounded-trap : CodexType -> Boolean
+  pl-bounded-trap (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> lo > i64-min | hi < i64-max
+       is otherwise -> False
+     is otherwise -> False
+
+  pl-bound-args : CodexType -> Text
+  pl-bound-args (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) -> ", " & integer-to-text lo & ", " & integer-to-text hi
+     is otherwise -> ""
+
+  pl-param-guards : List IRParam, Integer -> Text
+  pl-param-guards (params) (i) =
+    if i >= list-length params then ""
+    else let p = list-at params i
+    in let g = if pl-bounded-trap (p.type-val) then "    _cx_bound($" & pl-sanitize (p.name) & pl-bound-args (p.type-val) & ");\n" else ""
+    in g & pl-param-guards params (i + 1)
+
+  pl-return-bound : CodexType, Integer -> CodexType
+  pl-return-bound (ty) (n) =
+    if n <= 0 then ty
+    else when ty
+     is FunTy (p) (row) (r) -> pl-return-bound r (n - 1)
+     is ForAllTy (id) (b) -> pl-return-bound b n
+     is otherwise -> ty
+
+  pl-return-guard : IRDef, Text -> Text
+  pl-return-guard (d) (body) =
+    let rt = pl-return-bound (d.type-val) (list-length (d.params))
+    in if pl-bounded-trap rt then "_cx_bound(" & body & pl-bound-args rt & ")" else body
   emit-pl-defs : List IRDef, Integer, List ArityEntry -> Text
   emit-pl-defs (defs) (i) (arities) =
     if i == list-length defs then ""
@@ -969,10 +1023,27 @@ Section: Chapter Emission
   pl-int-helpers : Text
   pl-int-helpers =
     text-concat-list [
+      "my @_cce_u = (0,10,32,48,49,50,51,52,53,54,55,56,57,101,116,97,111,105,110,115,104,114,100,108,99,117,109,119,102,103,121,112,98,118,107,106,120,113,122,69,84,65,79,73,78,83,72,82,68,76,67,85,77,87,70,71,89,80,66,86,75,74,88,81,90,46,44,33,63,58,59,39,34,45,40,41,43,61,42,60,62,47,64,35,38,95,92,124,91,93,123,125,126,96,94,36,37,233,232,234,235,225,224,226,228,243,244,246,250,252,241,231,237,1072,1086,1077,1080,1085,1090,1089,1088,1074,1083,1082,1084,1076,1087,1091);\n",
+      "my %_cce_f; @_cce_f{@_cce_u} = (0 .. 127);\n",
+      "my @_cce_t1 = (128,256,1024,128,880,128,1536,128,1424,128,2304,128,3584,128,4352,128,19968,512,12352,256,8704,128);\n",
+      "my @_cce_t1c = (128,384,512,640,768,896,1024,1152,1280,1792,2048);\n",
+      "my @_cce_t2 = (12288,64,12352,96,12448,96,19968,20992,13312,6592,44032,11172,3584,256,8192,512,127744,1024,9728,256,9984,192);\n",
+      "sub _cce_cp_uni { my $cp = $_[0]; return 65533 if $cp < 0; return $_cce_u[$cp] if $cp < 128; if ($cp < 2176) { for (my $b = 10; $b >= 0; $b--) { return $_cce_t1[2*$b] + ($cp - $_cce_t1c[$b]) if $cp >= $_cce_t1c[$b]; } return 65533; } if ($cp < 67712) { my $c = 2176; for my $b (0 .. 10) { my $n = $_cce_t2[2*$b+1]; return $_cce_t2[2*$b] + ($cp - $c) if $cp < $c + $n; $c += $n; } } return 65533; }\n",
+      "sub _cce_uni_cp { my $u = $_[0]; return $_cce_f{$u} if exists $_cce_f{$u}; for my $b (0 .. 10) { my $bu = $_cce_t1[2*$b]; return $_cce_t1c[$b] + ($u - $bu) if $u >= $bu && $u < $bu + $_cce_t1[2*$b+1]; } my $c = 2176; for my $b (0 .. 10) { my ($bu, $n) = ($_cce_t2[2*$b], $_cce_t2[2*$b+1]); return $c + ($u - $bu) if $u >= $bu && $u < $bu + $n; $c += $n; } return -1; }\n",
+      "sub _cce_frame { my $c = $_[0]; return chr($c) if $c < 128; if ($c < 2176) { my $v = $c - 128; return chr(192 | ($v >> 6)) . chr(128 | ($v & 63)); } my $w = $c - 2176; return chr(224 | ($w >> 12)) . chr(128 | (($w >> 6) & 63)) . chr(128 | ($w & 63)); }\n",
+      "sub _cce_from_uni { my $s = \"\" . $_[0]; utf8::decode($s); $s =~ s/\\t/  /g; $s =~ s/\\r//g; my $r = ''; for my $ch (split //, $s) { my $c = _cce_uni_cp(ord($ch)); $r .= _cce_frame($c < 0 ? 68 : $c); } return $r; }\n",
+      "sub _cce_to_uni { my $s = $_[0]; my $r = ''; my $len = length($s); for (my $i = 0; $i < $len; $i++) { my $b = ord(substr($s, $i, 1)); my $n = $b < 128 ? 1 : ($b & 0xE0) == 0xC0 ? 2 : ($b & 0xF0) == 0xE0 ? 3 : ($b & 0xF8) == 0xF0 ? 4 : 0; if ($n == 0 || $i + $n > $len) { $r .= chr(65533); next; } my @k = map { ord(substr($s, $i + $_, 1)) & 0x3F } (1 .. $n - 1); my $cp = $n == 1 ? $b : $n == 2 ? 128 + ((($b & 0x1F) << 6) | $k[0]) : $n == 3 ? 2176 + ((($b & 0x0F) << 12) | ($k[0] << 6) | $k[1]) : 67712 + ((($b & 0x07) << 18) | ($k[0] << 12) | ($k[1] << 6) | $k[2]); my $u = _cce_cp_uni($cp); $u = 65533 if $u >= 0xD800 && $u <= 0xDFFF; $r .= chr($u); $i += $n - 1; } utf8::encode($r); return $r; }\n",
       "sub _cx_add_wrap { use integer; return $_[0] + $_[1]; }\n",
       "sub _cx_sub_wrap { use integer; return $_[0] - $_[1]; }\n",
       "sub _cx_mul_wrap { use integer; return $_[0] * $_[1]; }\n",
       "sub _cx_trap { print STDERR \"CODEX_TRAP_integer_overflow\\n\"; exit 255; }\n",
+      "sub _cx_bound { my ($v, $lo, $hi) = @_; if ($v < $lo || $v > $hi) { print STDERR \"CODEX_TRAP_bound\\n\"; exit 255; } return $v; }\n",
+      "sub _cx_ix { my ($i, $n) = @_; if ($i < 0 || $i >= $n) { print STDERR \"CODEX_TRAP_index\\n\"; exit 255; } return $i; }\n",
+      "sub _cx_at { my ($l, $i) = @_; return $l->[_cx_ix($i, scalar(@$l))]; }\n",
+      "sub _cx_at_set { my ($l, $i, $v) = @_; $l->[_cx_ix($i, scalar(@$l))] = $v; return $l; }\n",
+      "sub _cx_at_insert { my ($l, $i, $v) = @_; _cx_ix($i, scalar(@$l) + 1); splice(@$l, $i, 0, $v); return $l; }\n",
+      "sub _cx_at_chr { my ($s, $i) = @_; return ord(substr($s, _cx_ix($i, length($s)), 1)); }\n",
+      "sub _cx_at_sub { my ($s, $a, $n) = @_; if ($a < 0 || $n < 0 || $n > length($s) - $a) { print STDERR \"CODEX_TRAP_index\\n\"; exit 255; } return substr($s, $a, $n); }\n",
       "sub _cx_add_trap { my ($x, $y) = @_; my $w; { use integer; $w = $x + $y; }\n",
       "  _cx_trap() if ($x >= 0) == ($y >= 0) && ($w >= 0) != ($x >= 0); return $w; }\n",
       "sub _cx_sub_trap { my ($x, $y) = @_; my $w; { use integer; $w = $x - $y; }\n",
@@ -1019,7 +1090,7 @@ Section: Chapter Emission
       "sub _cx_buf_read_bytes { my ($b, $o, $n) = @_; _cx_want($b + $o + $n); return [map { ord(substr($_cx_mem, $b + $o + $_, 1)) } 0 .. $n - 1]; }\n",
       "sub _cx_buf_write_bytes { my ($b, $o, $xs) = @_; my $n = scalar(@$xs); _cx_want($b + $o + $n); for my $i (0 .. $n - 1) { substr($_cx_mem, $b + $o + $i, 1) = chr($xs->[$i] & 255); } return $o + $n; }\n",
       "sub _cx_vec_load { my ($b, $f) = @_; _cx_want($b + 16); return [unpack($f, substr($_cx_mem, $b, 8)), unpack($f, substr($_cx_mem, $b + 8, 8))]; }\n",
-      "sub _cx_record_set { my ($r, $f, $v) = @_; $f =~ s{/.*}{}; $f =~ tr/-/_/; $r->{$f} = $v; return $r; }\n"
+      "sub _cx_record_set { my ($r, $f, $v) = @_; $f = _cce_to_uni($f); $f =~ s{/.*}{}; $f =~ tr/-/_/; $r->{$f} = $v; return $r; }\n"
     ]
 
  A Real is a perl NV, an f64; a Real approximate is the NV rounded to f32
@@ -1075,24 +1146,24 @@ Section: Chapter Emission
 
   emit-perl-chapter : IRChapter, List ATypeDef -> Text
   emit-perl-chapter (m) (type-defs) =
-    let arities = build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 [])
+    let arities = pl-with-ops (m.effect-op-names) (build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 []))
     in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
     in let types-text = emit-pl-type-defs type-defs 0
     in let defs-text = emit-pl-defs (m.defs) 0 arities
     in let entry = pl-emit-entry (m.defs)
-    in header & pl-int-helpers & types-text & defs-text & entry
+    in header & pl-int-helpers & pl-handler-helpers & types-text & defs-text & entry
 
   emit-perl-chapter-stream-head : IRChapter, List ATypeDef -> Text
   emit-perl-chapter-stream-head (m) (type-defs) =
-    let arities = build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 [])
+    let arities = pl-with-ops (m.effect-op-names) (build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 []))
     in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
     in let types-text = emit-pl-type-defs type-defs 0
     in let entry = pl-emit-entry (m.defs)
-    in header & pl-int-helpers & types-text
+    in header & pl-int-helpers & pl-handler-helpers & types-text
 
   emit-perl-chapter-stream-tail : IRChapter, List ATypeDef -> Text
   emit-perl-chapter-stream-tail (m) (type-defs) =
-    let arities = build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 [])
+    let arities = pl-with-ops (m.effect-op-names) (build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 []))
     in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
     in let types-text = emit-pl-type-defs type-defs 0
     in let entry = pl-emit-entry (m.defs)
@@ -1100,7 +1171,7 @@ Section: Chapter Emission
 
   emit-perl-chapter-stream-env : IRChapter, List ATypeDef -> List ArityEntry
   emit-perl-chapter-stream-env (m) (type-defs) =
-    let arities = build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 [])
+    let arities = pl-with-ops (m.effect-op-names) (build-ctor-arities type-defs 0 (build-arity-map (m.defs) 0 []))
     in let header = "use strict;\nuse warnings;\nuse feature 'say';\n\nsub list_snoc { my ($xs, $v) = @_; if (@$xs) { push @$xs, $v; return $xs; } return [$v]; }\nsub list_push { my ($xs, $v) = @_; return list_snoc($xs, $v); }\nsub text_starts_with { my ($s, $p) = @_; return substr($s, 0, length($p)) eq $p; }\nsub text_split { my ($s, $sep) = @_; return [$s] if length($sep) == 0; my @p = split(/\\Q$sep\\E/, $s, -1); return \\@p; }\nsub _cx_text_replace { my ($s, $a, $b) = @_; return $s if length($a) == 0; my $r = ''; my $i = 0; while ($i < length($s)) { if (substr($s, $i, length($a)) eq $a) { $r .= $b; $i += length($a); } else { $r .= substr($s, $i, 1); $i += 1; } } return $r; }\n\n"
     in let types-text = emit-pl-type-defs type-defs 0
     in let entry = pl-emit-entry (m.defs)

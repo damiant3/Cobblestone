@@ -1,0 +1,71 @@
+Chapter: IrCheckViolations
+  cites Codex chapter IRCheck
+  cites Codex chapter IR Chapter
+  cites Codex chapter Codex Types
+  cites Codex chapter Name
+  cites Codex chapter Source Text
+  cites Codex chapter Diagnostic Bag
+  cites Foreword chapter Console
+
+Section: Builders
+  sp : SourceSpan = synthetic-span
+
+  int : CodexType = int-ty-default
+
+  nm : Text -> IRExpr
+  nm (n) = IrName n int sp
+
+  lit : Integer -> IRExpr
+  lit (v) = IrIntLit v sp
+
+  add : IRExpr, IRExpr -> IRExpr
+  add (a) (b) = IrBinary IrAddInt a b int sp
+
+  param : Text, CodexType -> IRParam
+  param (n) (t) = IRParam { name = n, type-val = t, span = sp }
+
+  def : Text, List IRParam, CodexType, IRExpr -> IRDef
+  def (n) (ps) (t) (b) = IRDef { name = n, params = ps, type-val = t, body = b, chapter-slug = "t", is-punctual = False, wcet-budget = 0, unique-params = [], span = sp }
+
+Section: Cases
+  defs : List IRDef
+  defs = [
+    def "clean" [param "x" int] int (add (nm "x") (lit 1)),
+    def "unbound" [] int (nm "y"),
+    def "let-leak" [] int (add (IrLet "x" int (lit 1) (nm "x") sp) (nm "x")),
+    def "global" [] int (nm "clean"),
+    def "builtin" [] int (nm "list-length"),
+    def "effect-op" [] int (nm "ask"),
+    def "error-name" [param "x" int] int (IrName "x" ErrorTy sp),
+    def "error-param" [param "p" ErrorTy] int (lit 0),
+    def "error-def" [] ErrorTy (lit 0),
+    def "literal-apply" [] int (IrApply (lit 3) (lit 4) int sp),
+    def "empty-let" [] int (IrLet "" int (lit 1) (lit 2) sp),
+    def "no-branches" [] int (IrMatch (lit 1) [] int sp),
+    def "lambda-in" [] int (IrLambda [param "z" int] (nm "z") int sp),
+    def "lambda-out" [] int (add (IrLambda [param "z" int] (nm "z") int sp) (nm "z"))
+  ]
+
+  ch : IRChapter = IRChapter { name = make-name "T", defs = defs, effect-op-names = ["ask"], span = sp }
+
+  bag-error-count : DiagnosticBag -> Integer
+  bag-error-count (b) = b.error-count
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (vs) (i) =
+    if i >= list-length vs then act
+      print-uni ""
+    end
+    else act
+      print-line-uni ("  " & list-at vs i)
+      print-all vs (i + 1)
+    end
+
+  opening : [Console] Nothing = act
+    let vs = ir-check ch
+    in act
+      print-line-uni ("defs " & show (list-length defs) & ", violations " & show (list-length vs))
+      print-all vs 0
+      print-line-uni ("bag errors " & show (bag-error-count (ir-check-violation-bag vs)))
+    end
+  end

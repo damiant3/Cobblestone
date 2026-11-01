@@ -1,8 +1,10 @@
 Chapter: QmkProtocol
   cites Kernel chapter UsbHid
 
- VIA/QMK raw HID: 32-byte command packets on usage page 0xFF60, for VIA v9+
- and VIAL firmware.
+ VIA/QMK raw HID: 32-byte command packets on usage page 0xFF60. The ids are
+ QMK's `quantum/via.h`. Lighting is a custom value: [command, channel,
+ value id, data...], and the reply echoes the first three bytes. The channel
+ scheme is VIA protocol 0x000B onward; 0x0009 used 0x80-based lighting ids.
 
 Section: Command IDs
 
@@ -11,10 +13,13 @@ Section: Command IDs
   via-cmd-set-keyboard-value : Integer = 3
   via-cmd-get-keymap : Integer = 4
   via-cmd-set-keymap : Integer = 5
-  via-cmd-get-encoder : Integer = 6
-  via-cmd-set-encoder : Integer = 7
-  via-cmd-lighting-get : Integer = 8
-  via-cmd-lighting-set : Integer = 9
+  via-cmd-keymap-reset : Integer = 6
+  via-cmd-custom-set : Integer = 7
+  via-cmd-custom-get : Integer = 8
+  via-cmd-custom-save : Integer = 9
+  via-cmd-get-encoder : Integer = 20
+  via-cmd-set-encoder : Integer = 21
+  via-cmd-unhandled : Integer = 255
 
 Section: Keyboard Value Sub-commands
 
@@ -22,91 +27,54 @@ Section: Keyboard Value Sub-commands
   via-kb-layout : Integer = 2
   via-kb-switch-matrix : Integer = 3
 
-Section: Lighting Sub-commands (VIA v9 QMK RGB)
+Section: Lighting Channel and Values
 
-  via-rgb-get-info : Integer = 64
-  via-rgb-get-mode : Integer = 65
-  via-rgb-get-hsv : Integer = 66
-  via-rgb-get-speed : Integer = 67
-  via-rgb-set-mode : Integer = 68
-  via-rgb-set-hsv : Integer = 69
-  via-rgb-set-speed : Integer = 70
-  via-rgb-set-brightness : Integer = 71
-  via-rgb-save : Integer = 72
+ A board's VIA definition names its lighting: `qmk_rgblight` is channel 2,
+ `qmk_rgb_matrix` channel 3, and both take the same value ids.
 
-Section: RGB Modes (QMK standard)
+  via-channel-rgblight : Integer = 2
+  via-channel-rgb-matrix : Integer = 3
+  via-channel-none : Integer = -1
 
-  RgbMode =
-    | RgbOff
-    | RgbSolid
-    | RgbBreathing
-    | RgbCycleAll
-    | RgbCycleLeftRight
-    | RgbCycleUpDown
-    | RgbRainbowChevron
-    | RgbRainbowPinwheel
-    | RgbJellybean
-    | RgbTypingHeatmap
-    | RgbDigitalRain
-    | RgbSolidReactive
-    | RgbSplash
-    | RgbCustom (Integer)
+  via-channel-from-lighting : Text -> Integer
+  via-channel-from-lighting (name) =
+    if name == "qmk_rgblight" then via-channel-rgblight
+    else if name == "qmk_rgb_matrix" then via-channel-rgb-matrix
+    else via-channel-none
 
-  rgb-mode-to-id : RgbMode -> Integer
-  rgb-mode-to-id (mode) = when mode
-    is RgbOff -> 0
-    is RgbSolid -> 1
-    is RgbBreathing -> 2
-    is RgbCycleAll -> 3
-    is RgbCycleLeftRight -> 4
-    is RgbCycleUpDown -> 5
-    is RgbRainbowChevron -> 6
-    is RgbRainbowPinwheel -> 7
-    is RgbJellybean -> 8
-    is RgbTypingHeatmap -> 9
-    is RgbDigitalRain -> 10
-    is RgbSolidReactive -> 11
-    is RgbSplash -> 12
-    is RgbCustom (n) -> n
+  via-value-brightness : Integer = 1
+  via-value-effect : Integer = 2
+  via-value-effect-speed : Integer = 3
+  via-value-color : Integer = 4
 
-  rgb-mode-from-id : Integer -> RgbMode
-  rgb-mode-from-id (id) =
-    if id == 0 then RgbOff
-    else if id == 1 then RgbSolid
-    else if id == 2 then RgbBreathing
-    else if id == 3 then RgbCycleAll
-    else if id == 4 then RgbCycleLeftRight
-    else if id == 5 then RgbCycleUpDown
-    else if id == 6 then RgbRainbowChevron
-    else if id == 7 then RgbRainbowPinwheel
-    else if id == 8 then RgbJellybean
-    else if id == 9 then RgbTypingHeatmap
-    else if id == 10 then RgbDigitalRain
-    else if id == 11 then RgbSolidReactive
-    else if id == 12 then RgbSplash
-    else RgbCustom id
+ QMK hue is one byte for the full circle (256 steps); the state keeps degrees.
 
-  rgb-mode-label : RgbMode -> Text
-  rgb-mode-label (mode) = when mode
-    is RgbOff -> "Off"
-    is RgbSolid -> "Solid Color"
-    is RgbBreathing -> "Breathing"
-    is RgbCycleAll -> "Cycle All"
-    is RgbCycleLeftRight -> "Cycle Left/Right"
-    is RgbCycleUpDown -> "Cycle Up/Down"
-    is RgbRainbowChevron -> "Rainbow Chevron"
-    is RgbRainbowPinwheel -> "Rainbow Pinwheel"
-    is RgbJellybean -> "Jellybean Raindrops"
-    is RgbTypingHeatmap -> "Typing Heatmap"
-    is RgbDigitalRain -> "Digital Rain"
-    is RgbSolidReactive -> "Solid Reactive"
-    is RgbSplash -> "Splash"
-    is RgbCustom (n) -> "Custom " & show n
+  qmk-hue-byte : Integer -> Integer
+  qmk-hue-byte (degrees) = bit-and (degrees * 256 / 360) 255
+
+  qmk-hue-degrees : Integer -> Integer
+  qmk-hue-degrees (b) = (bit-and b 255) * 360 / 256
+
+Section: RGB Effects
+
+ rgb_matrix effect ids follow the include order of
+ `quantum/rgb_matrix/animations/rgb_matrix_effects.inc` in the board's own
+ build, so every id but two comes from the board's VIA definition. NONE (0)
+ and SOLID_COLOR (1, listed first and unconditionally) are fixed.
+
+  rgb-effect-off : Integer = 0
+  rgb-effect-solid : Integer = 1
+
+  rgb-effect-label : Integer -> Text
+  rgb-effect-label (id) =
+    if id == rgb-effect-off then "Off"
+    else if id == rgb-effect-solid then "Solid Color"
+    else "Effect " & show id
 
 Section: RGB State
 
   QmkRgbState = record {
-    qr-mode : RgbMode,
+    qr-mode : Integer,
     qr-hue : Integer between 0 and 360,
     qr-saturation : Integer between 0 and 255,
     qr-brightness : Integer between 0 and 255,
@@ -116,7 +84,7 @@ Section: RGB State
 
   qmk-rgb-default : QmkRgbState
   qmk-rgb-default = QmkRgbState {
-    qr-mode = RgbCycleAll,
+    qr-mode = rgb-effect-solid,
     qr-hue = 0,
     qr-saturation = 255,
     qr-brightness = 200,
@@ -133,62 +101,93 @@ Section: Command Building
   via-cmd-protocol-version : List Integer
   via-cmd-protocol-version = via-build-cmd via-cmd-get-protocol []
 
-  via-cmd-rgb-get-mode : List Integer
-  via-cmd-rgb-get-mode = via-build-cmd via-cmd-lighting-get [via-rgb-get-mode]
+  via-light-get : Integer, Integer -> List Integer
+  via-light-get (channel) (value-id) = via-build-cmd via-cmd-custom-get [channel, value-id]
 
-  via-cmd-rgb-get-hsv : List Integer
-  via-cmd-rgb-get-hsv = via-build-cmd via-cmd-lighting-get [via-rgb-get-hsv]
+  via-light-set : Integer, Integer, List Integer -> List Integer
+  via-light-set (channel) (value-id) (data) =
+    via-build-cmd via-cmd-custom-set ([channel, value-id] & data)
+
+  via-light-set-mode : Integer, Integer -> List Integer
+  via-light-set-mode (channel) (effect-id) = via-light-set channel via-value-effect [bit-and effect-id 255]
+
+  via-light-set-color : Integer, Integer, Integer -> List Integer
+  via-light-set-color (channel) (h) (s) = via-light-set channel via-value-color [qmk-hue-byte h, s]
+
+  via-light-set-speed : Integer, Integer -> List Integer
+  via-light-set-speed (channel) (speed) = via-light-set channel via-value-effect-speed [speed]
+
+  via-light-set-brightness : Integer, Integer -> List Integer
+  via-light-set-brightness (channel) (brightness) = via-light-set channel via-value-brightness [brightness]
+
+  via-light-save : Integer -> List Integer
+  via-light-save (channel) = via-build-cmd via-cmd-custom-save [channel]
+
+  via-rgb-get : Integer -> List Integer
+  via-rgb-get (value-id) = via-light-get via-channel-rgb-matrix value-id
+
+  via-rgb-set : Integer, List Integer -> List Integer
+  via-rgb-set (value-id) (data) = via-light-set via-channel-rgb-matrix value-id data
+
+  via-cmd-rgb-get-mode : List Integer
+  via-cmd-rgb-get-mode = via-rgb-get via-value-effect
+
+  via-cmd-rgb-get-color : List Integer
+  via-cmd-rgb-get-color = via-rgb-get via-value-color
 
   via-cmd-rgb-get-speed : List Integer
-  via-cmd-rgb-get-speed = via-build-cmd via-cmd-lighting-get [via-rgb-get-speed]
+  via-cmd-rgb-get-speed = via-rgb-get via-value-effect-speed
 
-  via-cmd-rgb-set-mode : RgbMode -> List Integer
-  via-cmd-rgb-set-mode (mode) =
-    via-build-cmd via-cmd-lighting-set [via-rgb-set-mode, rgb-mode-to-id mode]
+  via-cmd-rgb-get-brightness : List Integer
+  via-cmd-rgb-get-brightness = via-rgb-get via-value-brightness
 
-  via-cmd-rgb-set-hsv : Integer, Integer, Integer -> List Integer
-  via-cmd-rgb-set-hsv (h) (s) (v) =
-    via-build-cmd via-cmd-lighting-set [via-rgb-set-hsv, bit-and h 255, bit-shru h 8, s, v]
+  via-cmd-rgb-set-mode : Integer -> List Integer
+  via-cmd-rgb-set-mode (effect-id) = via-light-set-mode via-channel-rgb-matrix effect-id
+
+  via-cmd-rgb-set-color : Integer, Integer -> List Integer
+  via-cmd-rgb-set-color (h) (s) = via-light-set-color via-channel-rgb-matrix h s
 
   via-cmd-rgb-set-speed : Integer -> List Integer
-  via-cmd-rgb-set-speed (speed) =
-    via-build-cmd via-cmd-lighting-set [via-rgb-set-speed, speed]
+  via-cmd-rgb-set-speed (speed) = via-light-set-speed via-channel-rgb-matrix speed
 
   via-cmd-rgb-set-brightness : Integer -> List Integer
-  via-cmd-rgb-set-brightness (brightness) =
-    via-build-cmd via-cmd-lighting-set [via-rgb-set-brightness, brightness]
+  via-cmd-rgb-set-brightness (brightness) = via-light-set-brightness via-channel-rgb-matrix brightness
 
   via-cmd-rgb-save : List Integer
-  via-cmd-rgb-save = via-build-cmd via-cmd-lighting-set [via-rgb-save]
+  via-cmd-rgb-save = via-light-save via-channel-rgb-matrix
 
 Section: Response Parsing
 
+  via-reply-ok : List Integer, Integer -> Boolean
+  via-reply-ok (resp) (min-len) =
+    if list-length resp < min-len then False
+    else list-at resp 0 /= via-cmd-unhandled
+
   via-parse-protocol-version : List Integer -> Integer
   via-parse-protocol-version (resp) =
-    if list-length resp < 3 then 0
-    else usb-le16 resp 1
+    if via-reply-ok resp 3 then bit-or (bit-shl (list-at resp 1) 8) (list-at resp 2)
+    else 0
 
-  via-parse-rgb-mode : List Integer -> RgbMode
+  via-parse-rgb-mode : List Integer -> Integer
   via-parse-rgb-mode (resp) =
-    if list-length resp < 3 then RgbOff
-    else rgb-mode-from-id (list-at resp 2)
+    if via-reply-ok resp 4 then list-at resp 3
+    else rgb-effect-off
 
-  via-parse-rgb-hsv : List Integer -> QmkRgbState
-  via-parse-rgb-hsv (resp) =
-    if list-length resp < 6 then qmk-rgb-default
-    else let h = bit-or (list-at resp 2) (bit-shl (list-at resp 3) 8)
-    in let s = list-at resp 4
-    in let v = list-at resp 5
-    in QmkRgbState {
-      qr-mode = RgbSolid,
-      qr-hue = __narrow h, qr-saturation = __narrow s, qr-brightness = __narrow v,
-      qr-speed = 128, qr-enabled = True
-    }
+  via-parse-rgb-color : QmkRgbState, List Integer -> QmkRgbState
+  via-parse-rgb-color (st) (resp) =
+    if via-reply-ok resp 5
+    then __record-set (__record-set st "qr-hue" (__narrow (qmk-hue-degrees (list-at resp 3)))) "qr-saturation" (__narrow (list-at resp 4))
+    else st
 
   via-parse-rgb-speed : List Integer -> Integer
   via-parse-rgb-speed (resp) =
-    if list-length resp < 3 then 128
-    else list-at resp 2
+    if via-reply-ok resp 4 then list-at resp 3
+    else 128
+
+  via-parse-rgb-brightness : List Integer -> Integer
+  via-parse-rgb-brightness (resp) =
+    if via-reply-ok resp 4 then list-at resp 3
+    else 200
 
 Section: Firmware Info
 
@@ -196,22 +195,27 @@ Section: Firmware Info
     qf-protocol-version : Integer,
     qf-vendor : Integer,
     qf-product : Integer,
+    qf-lighting-channel : Integer,
     qf-rgb-supported : Boolean
   }
 
   qmk-firmware-info : Integer, Integer, Integer -> QmkFirmwareInfo
-  qmk-firmware-info (version) (vendor) (product) = QmkFirmwareInfo {
+  qmk-firmware-info (version) (vendor) (product) = qmk-firmware-info-on version vendor product via-channel-rgb-matrix
+
+  qmk-firmware-info-on : Integer, Integer, Integer, Integer -> QmkFirmwareInfo
+  qmk-firmware-info-on (version) (vendor) (product) (channel) = QmkFirmwareInfo {
     qf-protocol-version = version,
     qf-vendor = vendor,
     qf-product = product,
-    qf-rgb-supported = version >= 9
+    qf-lighting-channel = channel,
+    qf-rgb-supported = version >= 11 & (channel == via-channel-rgblight | channel == via-channel-rgb-matrix)
   }
 
 Section: Formatting
 
   format-rgb-state : QmkRgbState -> Text
   format-rgb-state (st) =
-    rgb-mode-label (st.qr-mode) & " H=" & show (st.qr-hue) & " S=" & show (st.qr-saturation) & " V=" & show (st.qr-brightness) & " speed=" & show (st.qr-speed)
+    rgb-effect-label (st.qr-mode) & " H=" & show (st.qr-hue) & " S=" & show (st.qr-saturation) & " V=" & show (st.qr-brightness) & " speed=" & show (st.qr-speed)
 
   format-firmware-info : QmkFirmwareInfo -> Text
   format-firmware-info (info) =

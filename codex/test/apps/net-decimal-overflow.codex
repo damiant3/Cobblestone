@@ -1,0 +1,37 @@
+Chapter: NetDecimalOverflow
+  cites Net chapter Lwm2mClient
+  cites Net chapter ImapClient
+  cites Net chapter HttpFetch
+
+ Decimal fields taken off the network, each fed a 25-digit run that overflows
+ a signed Integer when accumulated digit by digit, beside an ordinary value.
+
+Section: Helpers
+
+  ndo-ascii : Text, Integer, List Integer -> List Integer
+  ndo-ascii (s) (i) (acc) =
+    if i >= text-length s then acc
+    else ndo-ascii s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
+
+  ndo-ints : List Integer, Integer, Text -> Text
+  ndo-ints (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else ndo-ints xs (i + 1) (acc & (if i == 0 then "" else ".") & show (list-at xs i))
+
+  ndo-long : Text = "9999999999999999999999999"
+
+Section: Body
+
+  opening : [Console] Nothing = act
+    print-line-uni ("lwm2m segment 3303: " & show (lwm2m-digits (ndo-ascii "3303" 0 []) 0 0))
+    print-line-uni ("lwm2m segment of 25 digits: " & show (lwm2m-digits (ndo-ascii ndo-long 0 []) 0 0))
+    print-line-uni ("imap * 4 RECENT: " & show (imap-extract-number "* 4 RECENT"))
+    print-line-uni ("imap 25 digits RECENT: " & show (imap-extract-number ("* " & ndo-long & " RECENT")))
+    print-line-uni ("port 8080: " & show (url-port "http://a:8080/x"))
+    print-line-uni ("port of 25 digits: " & show (url-port ("http://a:" & ndo-long & "/x")))
+    print-line-uni ("quad 10.0.2.2: " & ndo-ints (http-parse-quad "10.0.2.2") 0 "")
+    print-line-uni ("quad with a 25-digit octet: " & ndo-ints (http-parse-quad ("10." & ndo-long & ".2.2")) 0 "")
+    print-line-uni ("checked 10.0.2.2: " & show (list-length (http-quad-checked (http-parse-quad "10.0.2.2") 0)) & " octets")
+    print-line-uni ("checked 10.300.2.2: " & show (list-length (http-quad-checked (http-parse-quad "10.300.2.2") 0)) & " octets")
+    print-line-uni ("checked 25-digit octet: " & show (list-length (http-quad-checked (http-parse-quad ("10." & ndo-long & ".2.2")) 0)) & " octets")
+  end

@@ -1,0 +1,53 @@
+Chapter: TcpRfc5961
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+ RFC 5961 against the state machine. The connection has sent up to 1000 and
+ expects 5000, with a receive window of 8192: 5100 is inside that window and
+ 5000 + 9000 outside it. RFC 9293 3.10.7.3 for the SYN_SENT reset.
+
+Section: Fixtures
+
+  tr-base : TcpState -> TcpConnection
+  tr-base (s) = tcp-set-state (set-recv-next (set-send-next (tcp-new-connection 80 [10, 0, 2, 15] 50000 [10, 0, 2, 100] 1000) 1000) 5000) s
+
+  tr-seg : Integer, Integer, Integer, List Integer -> TcpSegment
+  tr-seg (seq) (ack) (flags) (payload) = tcp-segment-of 50000 80 seq ack flags 8192 payload
+
+  tr-act : TcpAction -> Text
+  tr-act (a) = when a
+    is ActSend (b) -> "send ack " & show (read-be32 b 8)
+    is ActDataAck (pb) (po) (ps) (ack) -> "data " & show (ps - po)
+    is ActClosed -> "closed"
+    is ActError (m) -> "error " & m
+    is ActNone -> "none"
+    is ActEstablished -> "established"
+    is ActData (pb) (po) (ps) -> "data"
+
+  tr-line : Text, TcpState, TcpSegment -> Text
+  tr-line (label) (s) (seg) =
+    let st = tcp-step (tr-base s) (EvSegment seg)
+    in label & ": " & tr-act (st.action) & ", " & tcp-state-name ((st.conn).state) & " at " & show ((st.conn).recv-next)
+
+  ra : Integer = bit-or tcp-flag-rst tcp-flag-ack
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (tr-line "rst exact" TcpEstablished (tr-seg 5000 1000 tcp-flag-rst []))
+    print-line-uni (tr-line "rst in window" TcpEstablished (tr-seg 5100 1000 tcp-flag-rst []))
+    print-line-uni (tr-line "rst outside" TcpEstablished (tr-seg 14000 1000 tcp-flag-rst []))
+    print-line-uni (tr-line "syn in window" TcpEstablished (tr-seg 5000 0 tcp-flag-syn []))
+    print-line-uni (tr-line "syn with data" TcpEstablished (tr-seg 5000 1000 (bit-or tcp-flag-syn tcp-flag-ack) [1, 2]))
+    print-line-uni (tr-line "ack of unsent" TcpEstablished (tr-seg 5000 1500 tcp-flag-ack [1, 2]))
+    print-line-uni (tr-line "ack in order" TcpEstablished (tr-seg 5000 1000 tcp-flag-ack [1, 2]))
+    print-line-uni (tr-line "close-wait rst in window" TcpCloseWait (tr-seg 5100 1000 tcp-flag-rst []))
+    print-line-uni (tr-line "close-wait syn" TcpCloseWait (tr-seg 5000 0 tcp-flag-syn []))
+    print-line-uni (tr-line "fin-wait-1 rst in window" TcpFinWait1 (tr-seg 5100 1000 tcp-flag-rst []))
+    print-line-uni (tr-line "fin-wait-2 rst exact" TcpFinWait2 (tr-seg 5000 1000 tcp-flag-rst []))
+    print-line-uni (tr-line "syn-sent rst no ack" TcpSynSent (tr-seg 0 0 tcp-flag-rst []))
+    print-line-uni (tr-line "syn-sent rst wrong ack" TcpSynSent (tr-seg 0 999 ra []))
+    print-line-uni (tr-line "syn-sent rst acks syn" TcpSynSent (tr-seg 0 1000 ra []))
+    print-line-uni (tr-line "syn-sent synack wrong ack" TcpSynSent (tr-seg 7000 999 (bit-or tcp-flag-syn tcp-flag-ack) []))
+    print-line-uni (tr-line "syn-sent synack acks syn" TcpSynSent (tr-seg 7000 1000 (bit-or tcp-flag-syn tcp-flag-ack) []))
+  end

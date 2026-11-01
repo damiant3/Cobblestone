@@ -353,6 +353,12 @@ answers of five different ages.
 
 ## Rules
 
+0. **Claim a backlog row on main before working it.** Append `(taken: <lane>)` to the row's heading, submit,
+   and copy up before the first code edit; check main's heading first and take a different row if another lane's
+   mark is there. A claim held only in `status.json` or in an unsubmitted edit is invisible to a lane reading the
+   register, and on 2026-10-31 that cost two duplicated fixes in one afternoon. Delete the row, mark and all, when it
+   closes.
+
 1. **Take the token for seed-affecting work, and only for that.** Gate
    and land compiler source, foreword or `seed/` under the token, because
    that is the class of change a gate result depends on. Going around it
@@ -423,12 +429,8 @@ answers of five different ages.
 
 10. **Warm the caches BEFORE you request.** The hold is a mutex on the
    whole fleet, so a one-time cost paid inside it is paid by everyone
-   in the queue. A workspace that has not gated recently has no cached
-   plug binaries (`build-output/` is p4-ignored), and a plug-smoke phase
-   then BUILDS plugs from source inside your hold. Before writing
-   `build-request` on a cold workspace (above all a copy-up client),
-   pre-build the plug CDXs (`pwsh codex\plugs\<p>\build.ps1`) and sync the
-   workspace. The test extends rule 8's: work that would run identically
+   in the queue. Before writing `build-request` on a cold workspace (above
+   all a copy-up client), sync the workspace. The test extends rule 8's: work that would run identically
    WITHOUT the token belongs before the request, not inside the hold
    (Damian, 2026-08-06: "the problem isn't the time it took, it was the
    mutex it held.")
@@ -467,7 +469,8 @@ p4 diff -du //Codex/blu/... # PATHS, not -c <CL>, which is not a diff option (P-
 # NO GATE RUNS UNDER THE TOKEN (CLAUDE.md R-GATE), and `-Internal` is BANNED.
 # The proof happened BEFORE the request, each run granted by the commander:
 #   build/compile.ps1 -Src <each touched test> -Out <o> -Log <l> -Kernel seed\Codex.cdx
-#   the scratch fixed point: stage 2 == stage 3, built from the DEPOT seed
+#   the scratch fixed point: stage 2 == stage 3, built from the DEPOT seed,
+#     every compile of the concatenated compiler with -Repl (P-REPL)
 #   build/bvt.ps1 -CodexCdx <candidate> -Jobs 16
 #   the signer compiled and run over the candidate, then test-self-verify
 #     printing that the seed verifies itself; a seed lands signed and

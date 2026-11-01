@@ -1,0 +1,100 @@
+Chapter: AccpRequestAuthTest
+  cites Accp chapter AccpRequestAuth
+  cites Accp chapter AccpGrant
+  cites Trust chapter GrantSeal
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter CCE
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+ The requester secret is RFC 8032 section 7.1 TEST 2 and the grantor TEST 1.
+
+  holder-secret : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  grantor-secret : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  identity-key : List Integer = [212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212]
+
+  nonce-bytes : List Integer = [17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17]
+
+  holder-pub : List Integer
+  holder-pub = ed25519-public-key holder-secret
+
+  grantor-pub : List Integer
+  grantor-pub = ed25519-public-key grantor-secret
+
+  binding : AccpBinding
+  binding = AccpBinding {
+    bound = True,
+    requester = "",
+    identity = ag-hex identity-key,
+    grantors = ag-hex grantor-pub,
+    max-seconds = 900,
+    policy-sha256 = ""
+  }
+
+  unsigned-for : Text, Text -> Text
+  unsigned-for (key) (issued) =
+    "{\"op\":\"check\",\"source\":\"s\",\"requester\":\"" & key & "\",\"nonce\":\"" & ag-hex nonce-bytes & "\",\"issued_at\":" & issued & "}"
+
+  with-signature : Text, Text -> Text
+  with-signature (line) (sig) = substring line 0 (text-length line - 1) & ",\"signature\":\"" & sig & "\"}"
+
+  signed-by : List Integer, List Integer, Text -> Text
+  signed-by (secret) (public) (issued) =
+    let line = unsigned-for (ag-hex public) issued
+    in with-signature line (ar-sign line secret public)
+
+  good : Text
+  good = signed-by holder-secret holder-pub "1000"
+
+  verdict : Text, Text, AccpBinding, Integer -> Text
+  verdict (label) (line) (b) (now) =
+    let a = ar-authenticate line b now
+    in label & ": " & (if a.why == "" then "admitted as " & substring a.requester 0 8 else a.why)
+
+  signature-of : Text -> Text
+  signature-of (line) = aj-text (aj-object line) "signature"
+
+  reordered : Text
+  reordered = "{ \"issued_at\": 1000, \"signature\": \"" & signature-of good & "\", \"nonce\": \"" & ag-hex nonce-bytes & "\",\n \"requester\": \"" & ag-hex holder-pub & "\", \"source\": \"s\", \"op\": \"check\" }"
+
+  tampered : Text
+  tampered = with-signature ("{\"op\":\"run\",\"source\":\"s\",\"requester\":\"" & ag-hex holder-pub & "\",\"nonce\":\"" & ag-hex nonce-bytes & "\",\"issued_at\":1000}") (signature-of good)
+
+  under-grant-tag : Text
+  under-grant-tag =
+    let line = unsigned-for (ag-hex holder-pub) "1000"
+    in with-signature line (ag-hex (ed25519-sign holder-secret holder-pub (sha256-bytes (grant-seal-tag & text-to-unicode-bytes (ar-canonical line)))))
+
+  untagged : Text
+  untagged =
+    let line = unsigned-for (ag-hex holder-pub) "1000"
+    in with-signature line (ag-hex (ed25519-sign holder-secret holder-pub (sha256-bytes (text-to-unicode-bytes (ar-canonical line)))))
+
+  opening : [Console] Nothing = act
+    print-line-uni ("canonical: " & ar-canonical "{ \"op\" : \"run\", \"limits\": {\"stdout_bytes\": 10, \"ms\": 5}, \"id\":\"x\", \"signature\":\"ab\" }")
+    print-line-uni (verdict "signed" good binding 1000)
+    print-line-uni (verdict "reordered and spaced" reordered binding 1000)
+    print-line-uni (verdict "issued 60 s ahead of the clock" good binding 940)
+    print-line-uni (verdict "issued 61 s ahead of the clock" good binding 939)
+    print-line-uni (verdict "issued 60 s behind the clock" good binding 1060)
+    print-line-uni (verdict "issued 61 s behind the clock" good binding 1061)
+    print-line-uni (verdict "no host clock" good binding (0 - 1))
+    print-line-uni (verdict "a signed field changed" tampered binding 1000)
+    print-line-uni (verdict "signed under the grant tag" under-grant-tag binding 1000)
+    print-line-uni (verdict "signed with no tag" untagged binding 1000)
+    print-line-uni (verdict "signed by a grantor of this instance" (signed-by grantor-secret grantor-pub "1000") binding 1000)
+    print-line-uni (verdict "requester is the identity" (with-signature (unsigned-for (ag-hex identity-key) "1000") (signature-of good)) binding 1000)
+    print-line-uni (verdict "uppercase requester" (with-signature (unsigned-for "D75A980182B10AB7D54BFED3C964073A0EE172F3DAA62325AF021A68F707511A" "1000") (signature-of good)) binding 1000)
+    print-line-uni (verdict "no signature" (unsigned-for (ag-hex holder-pub) "1000") binding 1000)
+    print-line-uni (verdict "issued_at as a string" (signed-by holder-secret holder-pub "\"1000\"") binding 1000)
+    print-line-uni (verdict "short nonce" (with-signature ("{\"op\":\"check\",\"requester\":\"" & ag-hex holder-pub & "\",\"nonce\":\"1111\",\"issued_at\":1000}") (signature-of good)) binding 1000)
+    print-line-uni ("request-bound request: " & (if ar-request-bound "{\"binding\":{\"transport\":\"request\"}}" then "yes" else "no"))
+    print-line-uni ("request-bound stdio: " & (if ar-request-bound "{\"binding\":{\"transport\":\"stdio\"}}" then "yes" else "no"))
+    print-line-uni ("request-bound unbound: " & (if ar-request-bound "{\"binding\":null}" then "yes" else "no"))
+  end
+
+Page 1

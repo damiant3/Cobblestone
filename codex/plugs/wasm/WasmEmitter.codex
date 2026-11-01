@@ -937,7 +937,7 @@ Section: Expression Emission
      is IrIf (c) (t) (el) (ty) (sp) -> emit-wat-if-chain ctx e depth
      is IrLet (name) (ty) (val) (body) (sp) -> "(local.set $" & wat-sanitize name & " " & emit-wat-expr-at ctx val (depth + 1) & ") " & emit-wat-expr-at ctx body (depth + 1)
      is IrApply (f) (a) (ty) (sp) -> emit-wat-apply ctx e
-     is IrLambda (params) (body) (ty) (sp) -> emit-wat-expr-at ctx body (depth + 1)
+     is IrLambda (params) (body) (ty) (sp) -> wat-refuse-name "lambda-value"
      is IrList (elems) (ty) (sp) -> emit-wat-list ctx elems depth
      is IrMatch (scrut) (branches) (ty) (sp) -> emit-wat-match ctx scrut branches depth
      is IrAct (stmts) (ty) (sp) -> emit-wat-act ctx stmts
@@ -946,8 +946,8 @@ Section: Expression Emission
      is IrRecord (name) (fields) (ty) (sp) -> emit-wat-record ctx fields ty depth
      is IrFieldAccess (rec) (field) (ty) (sp) -> emit-wat-field-access ctx rec field ty depth
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-wat-field-store ctx rec field val ty depth
-     is IrFork (body) (ty) (sp) -> wat-checked-call ctx ("(call $clo_apply1 " & emit-wat-expr-at ctx body (depth + 1) & " (i64.const 0))")
-     is IrAwait (task) (ty) (sp) -> emit-wat-expr-at ctx task (depth + 1)
+     is IrFork (body) (ty) (sp) -> "(block (result i64) (global.set $fork_depth (i32.add (global.get $fork_depth) (i32.const 1))) (call $cx_task_new " & wat-checked-call ctx ("(call $clo_apply1 " & emit-wat-expr-at ctx body (depth + 1) & " (i64.const 0))") & "))"
+     is IrAwait (task) (ty) (sp) -> wat-checked-call ctx ("(call $cx_task_await " & emit-wat-expr-at ctx task (depth + 1) & ")")
      is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-wat-try ctx max body fb fail-stmts
      is IrError (msg) (ty) (sp) -> "(unreachable)"
 
@@ -1143,12 +1143,6 @@ Section: Expression Emission
     else if is-ctor-name (ctx.type-defs) n 0 then emit-wat-ctor ctx n []
     else wat-emit-def-ref ctx n
 
- A definition outranks a builtin of the same name, except an intrinsic's
- portable fallback: `deck-record (x) = x` beside the phase allocator stands
- in for the deck arm on a target without one, and x86-64 keeps the intrinsic
- there (`deck-record-intrinsic`). The IR text carries no chapter slug, so the
- allocator being defined in the unit stands for x86-64's same-chapter test.
-
   wat-def-outranks-builtin : WasmCtx, Text -> Boolean
   wat-def-outranks-builtin (ctx) (n) =
     if lookup-arity (ctx.arities) n < 0 then False
@@ -1210,6 +1204,8 @@ Section: Expression Emission
      is IrPowInt -> "(call $cx_ipow " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
      is IrApproxEq -> wat-emit-approx-eq ctx l r depth 4
      is IrApproxEqExact -> wat-emit-approx-eq ctx l r depth 0
+     is IrAnd -> "(if (result i64) (i32.wrap_i64 " & emit-wat-expr-at ctx l (depth + 1) & ") (then " & emit-wat-expr-at ctx r (depth + 1) & ") (else (i64.const 0)))"
+     is IrOr -> "(if (result i64) (i32.wrap_i64 " & emit-wat-expr-at ctx l (depth + 1) & ") (then (i64.const 1)) (else " & emit-wat-expr-at ctx r (depth + 1) & "))"
      is otherwise -> "(" & wat-bin-instr op & " " & emit-wat-expr-at ctx l (depth + 1) & " " & emit-wat-expr-at ctx r (depth + 1) & ")"
 
   wat-int-trap-fn : IRBinaryOp -> Text
@@ -1665,6 +1661,14 @@ Section: Apply Emission
      is EffectfulTy (effs) (scopes) (ret) -> wat-vec-is-wide ret
      is otherwise -> False
 
+  wat-vec-lane-count : CodexType, Integer -> Integer
+  wat-vec-lane-count (ty) (storage) =
+    when ty
+     is VectorTy (n) (elem) -> n
+     is UnitTy (n) (inner) -> wat-vec-lane-count inner storage
+     is EffectfulTy (effs) (scopes) (ret) -> wat-vec-lane-count ret storage
+     is otherwise -> storage
+
   wat-elem-is-f32 : CodexType -> Boolean
   wat-elem-is-f32 (ty) =
     when ty
@@ -1686,7 +1690,8 @@ Section: Apply Emission
   wat-emit-vec-extract (ctx) (vec) (idx) =
     let shape = wat-vec-of-type (ir-expr-type vec)
     in if text-length shape == 0 then wat-vec-refuse "no vector shape for an extract"
-    else let at = "(i32.add (i32.wrap_i64 " & emit-wat-expr ctx vec & ") (i32.mul (i32.wrap_i64 " & emit-wat-expr ctx idx & ") (i32.const " & integer-to-text (wat-vec-lane-bytes shape) & ")))"
+    else let lanes = wat-vec-lane-count (ir-expr-type vec) (16 / wat-vec-lane-bytes shape)
+    in let at = "(i32.add (i32.wrap_i64 " & emit-wat-expr ctx vec & ") (i32.mul (call $cx_lane_guard " & emit-wat-expr ctx idx & " (i64.const " & integer-to-text lanes & ")) (i32.const " & integer-to-text (wat-vec-lane-bytes shape) & ")))"
     in if shape == "f64x2" | shape == "i64x2" then "(i64.load " & at & ")"
     else if shape == "f32x4" then "(i64.reinterpret_f64 (f64.promote_f32 (f32.load " & at & ")))"
     else "(i64.extend_i32_s (i32.load " & at & "))"
@@ -1745,10 +1750,6 @@ Section: Apply Emission
      is IrMulVec -> ".mul"
      is otherwise -> ".div"
 
- A lane comparison answers all-ones or all-zeros in every lane, which is the
- same 16-byte box a vector is, so a mask needs no representation of its own.
- The integer shapes spell their comparisons `_s`; the float ones do not.
-
   wat-emit-vec-cmp : WasmCtx, IRBinaryOp, IRExpr, IRExpr, Integer -> Text
   wat-emit-vec-cmp (ctx) (op) (l) (r) (depth) =
     let shape = wat-vec-of-type (ir-expr-type l)
@@ -1764,10 +1765,6 @@ Section: Apply Emission
      is IrGtVec -> ".gt"
      is IrLtEqVec -> ".le"
      is otherwise -> ".ge"
-
- Every mask builtin is declared over `VectorMask 2` and there is no other width
- in the language, so the query is `i64x2.bitmask` with no type consulted: two
- lanes, one bit each, all-set being 3.
 
   wat-emit-mask-query : WasmCtx, Text, IRExpr -> Text
   wat-emit-mask-query (ctx) (n) (m) =
@@ -1939,6 +1936,7 @@ Section: Apply Emission
   wat-try-builtin (ctx) (n) (args) =
     if n == "gpu-ring" then wat-refuse-host n
     else if wat-def-outranks-builtin ctx n then ""
+    else if n == "race" | n == "await-any" then wat-refuse-host n
     else if n == "fail" then
       "(block (result i64) (drop " & emit-wat-expr ctx (list-at args 0) & ") (global.set $try_fail (i32.const 1)) " & wat-fail-exit ctx & ")"
     else if n == "__heap-restore" then
@@ -1983,7 +1981,7 @@ Section: Apply Emission
     else if n == "write-binary-buf" then
       "(call $write_binary_buf " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & " " & emit-wat-expr ctx (list-at args 2) & ") (i64.const 0)"
     else if n == "char-code-at" then
-      "(i64.load8_u (i32.add (i32.add (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 0) & ") (i32.const 4)) (i32.wrap_i64 " & emit-wat-expr ctx (list-at args 1) & ")))"
+      "(call $char_at " & emit-wat-expr ctx (list-at args 0) & " " & emit-wat-expr ctx (list-at args 1) & ")"
     else if n == "block-read-sector" then
       "(call $block_read_sector " & emit-wat-expr ctx (list-at args 0) & ")"
     else if n == "block-write-sector" then
@@ -2359,12 +2357,6 @@ Section: Effect Handlers
 
 Section: In-place Text Accumulators
 
- The port of x86-64's `inplace-accumulators` (`Emit/X86_64.codex`). A Text
- parameter qualifies when every self tail call passes it back as itself, a
- literal, or `acc & r` with `r` not mentioning it, and nothing else reads it,
- so the loop holds the only reference and extending it in place cannot change
- a value anyone else can see. `$text_own` keeps the caller's copy out of reach.
-
   wip-is-append : IRBinaryOp -> Boolean
   wip-is-append (op) =
     when op
@@ -2461,10 +2453,45 @@ Section: Definition Emission
       in let local-text = emit-local-decls locals 0
       in let ip = wip-accumulators d 0 []
       in let body-text = emit-wat-expr-tco (ctx-with-inplace dctx ip) (d.name) (d.params) (d.body) 0
-      in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & tco-temps & wat-try-local-decls ctx body-text & "\n    " & emit-wip-guards ip 0 & "(loop $tco_loop (result i64) " & body-text & "))\n"
+      in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & tco-temps & wat-try-local-decls ctx body-text & "\n    " & wat-param-guards (d.params) 0 & emit-wip-guards ip 0 & wat-return-guard d ("(loop $tco_loop (result i64) " & body-text & ")") & ")\n"
     else let local-text = emit-local-decls locals 0
     in let body-text = emit-wat-expr-tco dctx "" (d.params) (d.body) 0
-    in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & wat-try-local-decls ctx body-text & "\n    " & body-text & ")\n"
+    in "  (func $" & name & " " & emit-wat-def-params (d.params) 0 & "(result i64) " & local-text & wat-try-local-decls ctx body-text & "\n    " & wat-param-guards (d.params) 0 & wat-return-guard d body-text & ")\n"
+
+  wat-bounded-trap : CodexType -> Boolean
+  wat-bounded-trap (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> lo > i64-min | hi < i64-max
+       is otherwise -> False
+     is otherwise -> False
+
+  wat-bound-args : CodexType -> Text
+  wat-bound-args (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) -> " (i64.const " & integer-to-text lo & ") (i64.const " & integer-to-text hi & ")"
+     is otherwise -> ""
+
+  wat-param-guards : List IRParam, Integer -> Text
+  wat-param-guards (params) (i) =
+    if i >= list-length params then ""
+    else let p = list-at params i
+    in let g = if wat-bounded-trap (p.type-val) then "(call $cx_bound_guard (local.get $" & wat-sanitize (p.name) & ")" & wat-bound-args (p.type-val) & ") " else ""
+    in g & wat-param-guards params (i + 1)
+
+  wat-return-bound : CodexType, Integer -> CodexType
+  wat-return-bound (ty) (n) =
+    if n <= 0 then ty
+    else when ty
+     is FunTy (p) (row) (r) -> wat-return-bound r (n - 1)
+     is ForAllTy (id) (b) -> wat-return-bound b n
+     is otherwise -> ty
+
+  wat-return-guard : IRDef, Text -> Text
+  wat-return-guard (d) (body) =
+    let rt = wat-return-bound (d.type-val) (list-length (d.params))
+    in if wat-bounded-trap rt then "(call $cx_bound_ret " & body & wat-bound-args rt & ")" else body
 
   emit-wat-def-params : List IRParam, Integer -> Text
   emit-wat-def-params (params) (i) =
@@ -3044,7 +3071,21 @@ Section: WASI Runtime Helpers
   wat-rt-list-ops : Text =
     "  (func $list_length (param $lst i64) (result i64)\n" &
     "    (i64.extend_i32_u (i32.load (i32.wrap_i64 (local.get $lst)))))\n\n" &
+    "  (func $cx_index_guard (param $obj i64) (param $idx i64)\n" &
+    "    (if (i64.lt_s (local.get $idx) (i64.const 0)) (then (unreachable)))\n" &
+    "    (if (i64.ge_s (local.get $idx) (i64.extend_i32_u (i32.load (i32.wrap_i64 (local.get $obj))))) (then (unreachable))))\n\n" &
+    "  (func $cx_bound_guard (param $v i64) (param $lo i64) (param $hi i64)\n" &
+    "    (if (i64.lt_s (local.get $v) (local.get $lo)) (then (unreachable)))\n" &
+    "    (if (i64.gt_s (local.get $v) (local.get $hi)) (then (unreachable))))\n\n" &
+    "  (func $cx_bound_ret (param $v i64) (param $lo i64) (param $hi i64) (result i64)\n" &
+    "    (call $cx_bound_guard (local.get $v) (local.get $lo) (local.get $hi))\n" &
+    "    (local.get $v))\n\n" &
+    "  (func $cx_lane_guard (param $idx i64) (param $n i64) (result i32)\n" &
+    "    (if (i64.lt_s (local.get $idx) (i64.const 0)) (then (unreachable)))\n" &
+    "    (if (i64.ge_s (local.get $idx) (local.get $n)) (then (unreachable)))\n" &
+    "    (i32.wrap_i64 (local.get $idx)))\n\n" &
     "  (func $list_at (param $lst i64) (param $idx i64) (result i64)\n" &
+    "    (call $cx_index_guard (local.get $lst) (local.get $idx))\n" &
     "    (i64.load (i32.add (call $cx_list_base (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8))))))\n\n" &
     "  (func $list_append (param $a i64) (param $b i64) (result i64)\n" &
     "    (local $pa i32) (local $pb i32) (local $na i32) (local $nb i32) (local $n i32) (local $dst i32) (local $i i32)\n" &
@@ -3269,6 +3310,9 @@ Section: WASI Runtime Helpers
     "    (i64.extend_i32_u (local.get $ptr)))\n\n" &
     "  (func $substring (param $s i64) (param $start i64) (param $len i64) (result i64)\n" &
     "    (local $sp i32) (local $st i32) (local $ln i32) (local $dst i32) (local $idx i32)\n" &
+    "    (if (i64.lt_s (local.get $start) (i64.const 0)) (then (unreachable)))\n" &
+    "    (if (i64.lt_s (local.get $len) (i64.const 0)) (then (unreachable)))\n" &
+    "    (if (i64.gt_s (local.get $len) (i64.sub (i64.extend_i32_u (i32.load (i32.wrap_i64 (local.get $s)))) (local.get $start))) (then (unreachable)))\n" &
     "    (local.set $sp (i32.wrap_i64 (local.get $s)))\n" &
     "    (local.set $st (i32.wrap_i64 (local.get $start)))\n" &
     "    (local.set $ln (i32.wrap_i64 (local.get $len)))\n" &
@@ -3283,6 +3327,7 @@ Section: WASI Runtime Helpers
     "      (br $c)))\n" &
     "    (i64.extend_i32_u (local.get $dst)))\n\n" &
     "  (func $char_at (param $s i64) (param $idx i64) (result i64)\n" &
+    "    (call $cx_index_guard (local.get $s) (local.get $idx))\n" &
     "    (i64.extend_i32_u (i32.load8_u (i32.add (i32.add (i32.wrap_i64 (local.get $s)) (i32.const 4)) (i32.wrap_i64 (local.get $idx))))))\n\n" &
     "  (func $__text_compare (param $a i64) (param $b i64) (result i64)\n" &
     "    (local $pa i32) (local $pb i32) (local $la i32) (local $lb i32) (local $n i32) (local $i i32) (local $ca i32) (local $cb i32)\n" &
@@ -3353,6 +3398,7 @@ Section: WASI Runtime Helpers
 
   wat-rt-list-mutate : Text =
     "  (func $list_set_at (param $lst i64) (param $idx i64) (param $val i64) (result i64)\n" &
+    "    (call $cx_index_guard (local.get $lst) (local.get $idx))\n" &
     "    (i64.store (i32.add (call $cx_list_base (local.get $lst)) (i32.add (i32.const 8) (i32.mul (i32.wrap_i64 (local.get $idx)) (i32.const 8)))) (local.get $val))\n" &
     "    (local.get $lst))\n\n"
 
@@ -3440,9 +3486,9 @@ Section: WASI Runtime Helpers
     "    (local.set $n (i32.load (local.get $p)))\n" &
     "    (local.set $cap (i32.load (i32.add (local.get $p) (i32.const 4))))\n" &
     "    (local.set $p (call $cx_list_base (local.get $lst)))\n" &
+    "    (if (i64.lt_s (local.get $idx) (i64.const 0)) (then (unreachable)))\n" &
+    "    (if (i64.gt_s (local.get $idx) (i64.extend_i32_u (local.get $n))) (then (unreachable)))\n" &
     "    (local.set $i (i32.wrap_i64 (local.get $idx)))\n" &
-    "    (if (i32.lt_s (local.get $i) (i32.const 0)) (then (unreachable)))\n" &
-    "    (if (i32.gt_s (local.get $i) (local.get $n)) (then (unreachable)))\n" &
     "    (if (i32.lt_s (local.get $n) (local.get $cap))\n" &
     "      (then\n" &
     "        (local.set $k (i32.sub (local.get $n) (i32.const 1)))\n" &
@@ -4198,8 +4244,8 @@ Section: Chapter Emission
      is IrRecord (name) (fields) (ty) (sp) -> wat-fields-call-name fields n 0
      is IrFieldAccess (rec) (field) (ty) (sp) -> wat-expr-calls-name rec n
      is IrFieldStore (rec) (field) (val) (ty) (sp) -> wat-expr-calls-name rec n | wat-expr-calls-name val n
-     is IrFork (body) (ty) (sp) -> wat-expr-calls-name body n
-     is IrAwait (task) (ty) (sp) -> wat-expr-calls-name task n
+     is IrFork (body) (ty) (sp) -> n == wat-await-mark | wat-expr-calls-name body n
+     is IrAwait (task) (ty) (sp) -> n == wat-await-mark | wat-expr-calls-name task n
      is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> wat-stmts-call-name body n 0 | wat-stmts-call-name fb n 0 | wat-stmts-call-name fail-stmts n 0
      is IrError (msg) (ty) (sp) -> False
 
@@ -4255,6 +4301,29 @@ Section: Chapter Emission
     else wat-fields-call-name fs n (i + 1)
 
   wasm-no-builtin : Text = ""
+
+  wat-await-mark : Text = " task"
+
+  wat-task-runtime : Text
+  wat-task-runtime =
+    text-concat-list [
+      "  (global $fork_depth (mut i32) (i32.const 0))\n",
+      "  (func $cx_task_new (param $v i64) (result i64)\n",
+      "    (local $t i32)\n",
+      "    (global.set $fork_depth (i32.sub (global.get $fork_depth) (i32.const 1)))\n",
+      "    (local.set $t (call $bump_alloc (i32.const 16)))\n",
+      "    (i64.store (local.get $t) (local.get $v))\n",
+      "    (i64.store offset=8 (local.get $t) (i64.const 0))\n",
+      "    (i64.extend_i32_u (local.get $t)))\n",
+      "  (func $cx_task_await (param $h i64) (result i64)\n",
+      "    (local $t i32)\n",
+      "    (local.set $t (i32.wrap_i64 (local.get $h)))\n",
+      "    (if (global.get $fork_depth) (then (return (i64.load (local.get $t)))))\n",
+      "    (if (i64.ne (i64.load offset=8 (local.get $t)) (i64.const 0))\n",
+      "      (then (if (i32.eqz (global.get $try_depth)) (then (unreachable))) (global.set $try_fail (i32.const 1)) (return (i64.const 0))))\n",
+      "    (i64.store offset=8 (local.get $t) (i64.const 1))\n",
+      "    (i64.load (local.get $t)))\n\n"
+    ]
 
   wat-defs-call-name : List IRDef, Text, Integer -> Boolean
   wat-defs-call-name (defs) (n) (i) =
@@ -4373,7 +4442,7 @@ Section: Chapter Emission
     in let runtime = wat-runtime-funcs cce-tab-base cce-t2-base cce-out-base fnarity-base max-arity cce-rev-base cce-in-base
     in let types-text = emit-wat-type-defs type-defs 0 & wat-eq-funcs type-defs 0
     in let wh-text = wh-runtime (lifted.ops)
-    in let taken = wat-func-ids (wat-runtime-header 0 0 True True & wh-text & runtime & types-text)
+    in let taken = wat-func-ids (wat-runtime-header 0 0 True True & wh-text & runtime & types-text & wat-task-runtime)
     in let ctx = WasmCtx {
       arities = wat-assign-ids arities taken 0 [],
       strings = strings,
@@ -4383,7 +4452,7 @@ Section: Chapter Emission
       inplace = [],
       eff-ops = lifted.ops,
       try-level = 0,
-      has-fail = wat-defs-call-name (m.defs) "fail" 0,
+      has-fail = wat-defs-call-name (m.defs) "fail" 0 | wat-defs-call-name (m.defs) wat-await-mark 0,
       fail-label = ""
     }
     in let data-text = emit-data-sections strings 0
@@ -4395,6 +4464,7 @@ Section: Chapter Emission
     in act
      print-uni header
      print-uni (if ctx.has-fail then "  (global $try_fail (mut i32) (i32.const 0))\n  (global $try_depth (mut i32) (i32.const 0))\n" else "")
+     print-uni (if wat-defs-call-name (m.defs) wat-await-mark 0 then wat-task-runtime else "")
      print-uni wh-text
      print-uni (wat-emit-table (ctx.arities))
      print-uni data-text

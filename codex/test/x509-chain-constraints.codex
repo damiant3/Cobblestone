@@ -1,0 +1,136 @@
+Chapter: X509ChainConstraintsTest
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Encode chapter X509Write
+  cites Encode chapter Asn1Write
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+Section: Keys And Times
+
+  root-priv : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+  int-priv : List Integer =
+    [32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17,
+     16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+  int2-priv : List Integer =
+    [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+     9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]
+  leaf-priv : List Integer =
+    [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15,
+     91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  t-now : List Integer = ascii "20260101000000"
+  valid : List Integer = x509w-validity (ascii "20250101000000") (ascii "20350101000000")
+  lapsed : List Integer = x509w-validity (ascii "20200101000000") (ascii "20250601000000")
+  early : List Integer = x509w-validity (ascii "20270101000000") (ascii "20350101000000")
+
+  root-name : List Integer = x509w-name (ascii "root")
+  int-name : List Integer = x509w-name (ascii "int")
+  int2-name : List Integer = x509w-name (ascii "int2")
+  leaf-name : List Integer = x509w-name (ascii "leaf")
+
+Section: Helpers
+
+  ascii : Text -> List Integer
+  ascii (s) = ascii-loop s 0 []
+
+  ascii-loop : Text, Integer, List Integer -> List Integer
+  ascii-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else ascii-loop s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
+
+  issue : List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
+  issue (subj-priv) (subject) (issuer) (issuer-priv) (validity) (exts) =
+    let tbs = x509w-tbs-with x509w-alg-id (x509w-spki (ed25519-public-key subj-priv)) (x509w-serial-content [7]) issuer subject validity exts
+    in x509w-sign issuer-priv (ed25519-public-key issuer-priv) tbs
+
+  ca-exts : List Integer -> List Integer
+  ca-exts (extra) =
+    let bc = x509w-ext x509w-oid-basic-constraints True (der-sequence (der-bool True))
+    in let ku = x509w-ext x509w-oid-key-usage True (der-tlv asn1-bit-string-tag x509w-ku-cert-sign)
+    in der-ctx3 (der-sequence (bc & ku & extra))
+
+  leaf-exts : Text, List (List Integer) -> List Integer
+  leaf-exts (dns) (ips) = der-ctx3 (der-sequence (x509w-leaf-exts [ascii dns] ips))
+
+  dns-tree : Text -> List Integer
+  dns-tree (d) = der-sequence (der-tlv #82 (ascii d))
+
+  ip-tree : List Integer -> List Integer
+  ip-tree (addr-mask) = der-sequence (der-tlv #87 addr-mask)
+
+  dir-tree : List Integer = der-sequence (der-tlv #A4 (x509w-name (ascii "evil")))
+
+  nc : Boolean, List Integer, List Integer -> List Integer
+  nc (critical) (permitted) (excluded) =
+    let p = if list-length permitted == 0 then [] else der-tlv #A0 permitted
+    in let x = if list-length excluded == 0 then [] else der-tlv #A1 excluded
+    in x509w-ext [85, 29, 30] critical (der-sequence (p & x))
+
+  int-cert : List Integer -> List Integer
+  int-cert (extra) = issue int-priv int-name root-name root-priv valid (ca-exts extra)
+
+  leaf-cert : Text, List (List Integer) -> List Integer
+  leaf-cert (dns) (ips) = issue leaf-priv leaf-name int-name int-priv valid (leaf-exts dns ips)
+
+  anchors : List X509Anchor = [X509Anchor { xa-subject = root-name, xa-key = x509-key-ed root-priv }]
+
+  x509-key-ed : List Integer -> X509Key
+  x509-key-ed (priv) = X509Key { xk-alg = KeyEd25519, xk-bytes = ed25519-public-key priv, xk-mod = [], xk-exp = [] }
+
+  parse-all : List (List Integer), Integer, List X509Cert -> Maybe (List X509Cert)
+  parse-all (ders) (i) (acc) =
+    if i >= list-length ders then Just acc
+    else when x509-parse (list-at ders i)
+      is None -> None
+      is Just (c) -> parse-all ders (i + 1) (list-push acc c)
+
+  chain : List (List Integer), Text -> Text
+  chain (ders) (host) =
+    when parse-all ders 0 []
+      is None -> "unparsed"
+      is Just (cs) -> vtext (x509-verify-peer cs anchors t-now (ascii host))
+
+  vtext : X509Verdict -> Text
+  vtext (v) =
+    when v
+      is ChainOk -> "ok"
+      is ChainExpired -> "expired"
+      is ChainNotYetValid -> "not-yet-valid"
+      is otherwise -> "refused"
+
+  with-nc : List Integer, Text, List (List Integer) -> Text
+  with-nc (ext) (dns) (ips) = chain [leaf-cert dns ips, int-cert ext] dns
+
+Section: Results
+
+  ok-test : List Integer = dns-tree "ok.test"
+  net-10-0-2 : List Integer = ip-tree [10, 0, 2, 0, 255, 255, 255, 0]
+
+  int2-cert : List Integer = issue int2-priv int2-name int-name int-priv valid (ca-exts [])
+  leaf-under-int2 : Text -> List Integer
+  leaf-under-int2 (dns) = issue leaf-priv leaf-name int2-name int2-priv valid (leaf-exts dns [])
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("validity control " & chain [leaf-cert "a.ok.test" [], int-cert []] "a.ok.test")
+    print-line-uni ("intermediate expired " & chain [leaf-cert "a.ok.test" [], issue int-priv int-name root-name root-priv lapsed (ca-exts [])] "a.ok.test")
+    print-line-uni ("intermediate not-yet-valid " & chain [leaf-cert "a.ok.test" [], issue int-priv int-name root-name root-priv early (ca-exts [])] "a.ok.test")
+    print-line-uni ("critical permitted ok.test, a.ok.test " & with-nc (nc True ok-test []) "a.ok.test" [])
+    print-line-uni ("critical permitted ok.test, ok.test " & with-nc (nc True ok-test []) "ok.test" [])
+    print-line-uni ("critical permitted ok.test, evil.test " & with-nc (nc True ok-test []) "evil.test" [])
+    print-line-uni ("non-critical permitted ok.test, evil.test " & with-nc (nc False ok-test []) "evil.test" [])
+    print-line-uni ("critical permitted ok.test, notok.test " & with-nc (nc True ok-test []) "notok.test" [])
+    print-line-uni ("critical excluded bad.ok.test, x.bad.ok.test " & with-nc (nc True ok-test (dns-tree "bad.ok.test")) "x.bad.ok.test" [])
+    print-line-uni ("critical excluded bad.ok.test, good.ok.test " & with-nc (nc True ok-test (dns-tree "bad.ok.test")) "good.ok.test" [])
+    print-line-uni ("critical excluded bad.ok.test, *.ok.test " & with-nc (nc True ok-test (dns-tree "bad.ok.test")) "*.ok.test" [])
+    print-line-uni ("critical permitted ok.test, *.ok.test " & with-nc (nc True ok-test []) "*.ok.test" [])
+    print-line-uni ("critical permitted 10.0.2.0/24, ip 10.0.2.2 " & with-nc (nc True net-10-0-2 []) "ok.test" [[10, 0, 2, 2]])
+    print-line-uni ("critical permitted 10.0.2.0/24, ip 10.0.3.2 " & with-nc (nc True net-10-0-2 []) "ok.test" [[10, 0, 3, 2]])
+    print-line-uni ("non-critical directoryName subtree " & with-nc (nc False dir-tree []) "a.ok.test" [])
+    print-line-uni ("permitted ok.test two levels up, evil.test " & chain [leaf-under-int2 "evil.test", int2-cert, int-cert (nc True ok-test [])] "evil.test")
+    print-line-uni ("permitted ok.test two levels up, a.ok.test " & chain [leaf-under-int2 "a.ok.test", int2-cert, int-cert (nc True ok-test [])] "a.ok.test")
+  end

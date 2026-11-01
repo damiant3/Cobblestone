@@ -1,0 +1,46 @@
+Chapter: CdxInspectorTest
+  cites Works chapter CdxInspector
+  cites Verify chapter CdxBinary
+
+ A signed CDX inspected whole, then at every truncated length. The signature
+ covers only the stored hash, so it verifies on any cut that keeps the first
+ 136 bytes; the content hash verifies only on the whole binary.
+
+Section: Helpers
+
+  cit-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  cit-bin : List Integer
+  cit-bin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195, 144, 195],
+      rodata-bytes = [1, 2, 3],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) cit-sk []
+
+  cit-take : List Integer, Integer, Integer, List Integer -> List Integer
+  cit-take (xs) (i) (n) (acc) = if i >= n then acc else cit-take xs (i + 1) n (list-push acc (list-at xs i))
+
+  cit-yes : Boolean -> Integer
+  cit-yes (b) = if b then 1 else 0
+
+  cit-cuts : List Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  cit-cuts (base) (n) (magic) (sig) (hash) (done) =
+    if n >= list-length base then "cuts " & show done & ": magic " & show magic & ", signature " & show sig & ", content hash " & show hash
+    else let h = inspect-cdx-header (cit-take base 0 n [])
+    in cit-cuts base (n + 1) (magic + cit-yes (h.magic-ok)) (sig + cit-yes (h.signature-valid)) (hash + cit-yes (h.content-hash-valid)) (done + 1)
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let h = inspect-cdx-header cit-bin
+    in act
+      print-line-uni ("whole: " & format-cdx-summary h & ", magic " & check-mark (h.magic-ok) & ", hash " & check-mark (h.content-hash-valid) & ", author " & check-mark (h.author-key-present))
+      print-line-uni (cit-cuts cit-bin 0 0 0 0 0)
+      print-line-uni ("four bytes: " & format-cdx-summary (inspect-cdx-header [67, 68, 88, 49]))
+    end

@@ -5,6 +5,8 @@ Chapter: GopInput
   cites Works chapter GopKey
   cites Works chapter GopXhci
   cites Kernel chapter Hpet
+  cites Kernel chapter Mouse
+  cites Dev chapter TouchpadSettings
 
 Section: Collection
 
@@ -48,6 +50,7 @@ Section: Collection
   di-mouse-one : Integer, UsbMouse, Integer, Integer -> Integer
   di-mouse-one (q) (m) (w) (h) =
     if m.um-ok == False then 0
+    else if m.um-dci == 0 then 0
     else if peek-qword q di-no-rearm /= 0 & mouse-events m > 0 & peek-32 (m.um-state) 0 == um-ph-idle then 0
     else let before = mouse-events m
     in let p = di-mouse-poll q m w h
@@ -72,6 +75,73 @@ Section: Collection
   di-rearm-note (q) (now) =
     let a = poke-qword q di-rearms (peek-qword q di-rearms + 1)
     in di-trace q 3 (peek-qword q di-sequence) now 0
+
+  di-pointer : UsbMouse, Integer, Integer -> [Device.Port] UsbMouse
+  di-pointer (m) (w) (h) = act
+    let keep = m.um-ok
+    in if keep then m else di-pointer-ps2 w h
+  end
+
+  di-pointer-ps2 : Integer, Integer -> [Device.Port] UsbMouse
+  di-pointer-ps2 (w) (h) = act
+    m0 <- mouse-init (mouse-new w h)
+    ms <- tp-apply touchpad-new m0
+    mouse-ps2-source (ms.m-ready) w h
+  end
+
+  di-ps2-pump : Integer, UsbMouse, Integer, Integer -> [Device.Port] Integer
+  di-ps2-pump (q) (m) (w) (h) = act
+    if mouse-is-ps2 m == False then 0
+    else let mark = __heap-save
+    in act
+      st <- mouse-poll (di-ps2-state m w h)
+      let r = di-ps2-apply q m st
+      in let back = __heap-restore mark
+      in r
+    end
+  end
+
+  di-ps2-state : UsbMouse, Integer, Integer -> MouseState
+  di-ps2-state (m) (w) (h) =
+    if mouse-is-ps2 m == False then mouse-new w h
+    else let b = peek-32 (m.um-pos) 12
+    in MouseState {
+      mx = peek-32 (m.um-pos) 4, my = peek-32 (m.um-pos) 8, mdx = 0, mdy = 0,
+      m-left = bit-and b 1 /= 0, m-right = bit-and b 2 /= 0, m-middle = bit-and b 4 /= 0,
+      m-max-x = w, m-max-y = h, m-ready = True,
+      m-pkt-n = peek-32 (m.um-state) 32, m-pkt0 = peek-32 (m.um-state) 36, m-pkt1 = peek-32 (m.um-state) 40,
+      m-packets = peek-32 (m.um-state) 20
+    }
+
+  di-ps2-apply : Integer, UsbMouse, MouseState -> Integer
+  di-ps2-apply (q) (m) (st) =
+    if mouse-is-ps2 m == False then 0
+    else let s0 = poke-32 (m.um-state) 32 (st.m-pkt-n)
+    in let s1 = poke-32 (m.um-state) 36 (st.m-pkt0)
+    in let s2 = poke-32 (m.um-state) 40 (st.m-pkt1)
+    in if st.m-packets == peek-32 (m.um-state) 20 then 0
+    else let buttons = (if st.m-left then 1 else 0) + (if st.m-right then 2 else 0) + (if st.m-middle then 4 else 0)
+    in let prev = peek-32 (m.um-pos) 12
+    in let x0 = peek-32 (m.um-pos) 4
+    in let y0 = peek-32 (m.um-pos) 8
+    in let w1 = poke-32 (m.um-pos) 4 (st.mx)
+    in let w2 = poke-32 (m.um-pos) 8 (st.my)
+    in let w3 = poke-32 (m.um-pos) 12 buttons
+    in let w4 = poke-32 (m.um-pos) 16 (bit-or (peek-32 (m.um-pos) 16) (mouse-click-edge prev buttons))
+    in let w5 = poke-32 (m.um-state) 20 (st.m-packets)
+    in let w6 = poke-32 (m.um-state) 44 1
+    in let pub = um-publish (st.mx) (st.my) buttons
+    in if q == 0 then 1 else di-ps2-queue q (st.mx - x0) (st.my - y0) prev buttons (st.mx) (st.my)
+
+  di-ps2-queue : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  di-ps2-queue (q) (dx) (dy) (prev) (buttons) (x) (y) =
+    let now = hpet-ticks
+    in let motion = if dx /= 0 | dy /= 0 then di-push q di-motion dx dy prev x y now else 0
+    in let edge = if prev == buttons then 0 else if peek-qword q di-drop-edge /= 0 then 0 else di-push q di-button 0 0 buttons x y now
+    in let b = poke-qword q di-col-buttons buttons
+    in let cx = poke-qword q di-col-x x
+    in let cy = poke-qword q di-col-y y
+    in 1
 
   di-mouse-peers : Integer, UsbMouse, Integer, Integer, Integer -> Integer
   di-mouse-peers (q) (m) (w) (h) (i) =

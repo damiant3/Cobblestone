@@ -1,0 +1,95 @@
+Chapter: GpuHistogram
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter ReduceKernelsPtx
+  cites Foreword chapter Console
+
+ ReduceKernels' byte histogram against a count made here. 65536 items of 3
+ bytes, item i kept unless i mod 3 is 0 (43690 kept). The spread arm's byte
+ is (37 i + 101 c + i / 7) mod 256; the hot arm puts every byte in bin 9, so
+ 43690 threads add to one word at once.
+
+Section: Buffers
+
+  scratch : Integer = #BD700000
+  gh-n : Integer = 65536
+  gh-bins : Integer = #BD800000
+
+  gh-clear : Integer, Integer -> Integer
+  gh-clear (b) (j) = if j >= 1024 then b else let w = poke-byte b j 0 in gh-clear b (j + 1)
+
+  gh-byte : Integer, Integer -> Integer
+  gh-byte (i) (c) = int-mod (37 * i + 101 * c + i / 7) 256
+
+  gh-keep : Integer -> Integer
+  gh-keep (i) = if int-mod i 3 == 0 then 0 else 1
+
+  gh-fill-bytes : Boolean, Integer -> Integer
+  gh-fill-bytes (hot) (j) =
+    if j >= gh-n * 3 then 0
+    else let w = poke-byte scratch j (if hot then 9 else gh-byte (j / 3) (int-mod j 3))
+    in gh-fill-bytes hot (j + 1)
+
+  gh-fill-keep : Integer -> Integer
+  gh-fill-keep (i) = if i >= gh-n then 0 else let w = poke-byte scratch i (gh-keep i) in gh-fill-keep (i + 1)
+
+  gh-fill-zero : Integer -> Integer
+  gh-fill-zero (j) = if j >= 256 * 8 then 0 else let w = poke-byte scratch j 0 in gh-fill-zero (j + 1)
+
+  gh-put : Integer, Integer -> Integer
+  gh-put (bytes) (filled) =
+    let h = gpu-buf-alloc bytes
+    in if h == 0 then 0 else if gpu-buf-write h 0 bytes scratch then h else 0
+
+Section: Counts
+
+  gh-host : Boolean, Integer, Integer, Integer -> Integer
+  gh-host (hot) (c) (i) (bins) =
+    if i >= gh-n then bins
+    else let k = if hot then 9 else gh-byte i c
+    in let w = if gh-keep i == 1 then poke-32 bins (k * 4) (peek-32 bins (k * 4) + 1) else 0
+    in gh-host hot c (i + 1) bins
+
+  gh-word : Integer -> Integer
+  gh-word (i) = bit-or (bit-and (peek-32 scratch (i * 8)) #FFFFFFFF) (bit-shl (bit-and (peek-32 scratch (i * 8 + 4)) #FFFFFFFF) 32)
+
+  gh-agree : Integer, Integer, Integer -> Integer
+  gh-agree (bins) (i) (n) = if i >= 256 then n else gh-agree bins (i + 1) (if gh-word i == peek-32 bins (i * 4) then n + 1 else n)
+
+  gh-total : Integer, Integer -> Integer
+  gh-total (i) (s) = if i >= 256 then s else gh-total (i + 1) (s + gh-word i)
+
+  gh-sum : Integer, Integer, Integer -> Integer
+  gh-sum (bins) (i) (s) = if i >= 256 then s else gh-sum bins (i + 1) (s + peek-32 bins (i * 4))
+
+Section: Launch
+
+  gh-run : Boolean, Integer -> Text
+  gh-run (hot) (c) =
+    let fb = gh-fill-bytes hot 0
+    in let hb = gh-put (gh-n * 3) fb
+    in let fk = gh-fill-keep 0
+    in let hk = gh-put gh-n fk
+    in let fz = gh-fill-zero 0
+    in let hc = gh-put (256 * 8) fz
+    in let code = gpu-launch reduce-kernels-ptx "kernel_histogram_bytes" (GpuGrid { gx = gh-n / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) [gpu-arg-buf hb 0, gpu-arg-buf hk 0, gpu-arg-buf hc 0, gpu-arg-u64 3, gpu-arg-u64 c, gpu-arg-u64 gh-n]
+    in if code < 0 then "launch refused " & show code
+    else if gpu-buf-read hc 0 (256 * 8) scratch == False then "read refused"
+    else let host = gh-host hot c 0 (gh-clear gh-bins 0)
+    in "bins agree " & show (gh-agree host 0 0) & " of 256, total " & show (gh-total 0 0) & " (host " & show (gh-sum host 0 0) & "), bin 9 " & show (gh-word 9)
+
+  gh-forms : Integer -> Text
+  gh-forms (z) =
+    let fz = gh-fill-zero 0
+    in let hc = gh-put 64 fz
+    in let code = gpu-launch reduce-kernels-ptx "kernel_atomic_forms" (GpuGrid { gx = 1, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) [gpu-arg-buf hc 0, gpu-arg-u64 128]
+    in if code < 0 then "launch refused " & show code
+    else if gpu-buf-read hc 0 64 scratch == False then "read refused"
+    else "block add " & show (gh-word 0) & ", cas word " & show (gh-word 2) & " won by " & show (gh-word 3) & ", exchange word 4 + taken " & show (gh-word 4 + gh-word 5)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("spread, channel 1: " & gh-run False 1)
+    print-line-uni ("hot, channel 0: " & gh-run True 0)
+    print-line-uni ("forms, 128 threads: " & gh-forms 0)
+  end

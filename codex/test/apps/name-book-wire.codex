@@ -1,0 +1,58 @@
+Chapter: NameBookWireTest
+  cites Trust chapter NameBook
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+ The secrets are RFC 8032 section 7.1 TEST 1 (the grantor) and TEST 2.
+
+  grantor-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+  other-sk : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  read-back : List Integer, List Integer -> Text
+  read-back (bs) (grantor) = when name-book-decode-checked bs
+    is None -> "none"
+    is Just (b) -> "just, " & show (list-length b.entries) & " entries, valid " & yn (name-book-valid b grantor) & ", Jake " & jake-of b
+
+  jake-of : NameBook -> Text
+  jake-of (b) = when name-book-key b "Jake"
+    is None -> "absent"
+    is Just (k) -> substring (name-book-key-hex k) 0 8
+
+  set-at : List Integer, Integer, Integer -> List Integer
+  set-at (bs) (i) (v) = set-loop bs i v 0 []
+
+  set-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  set-loop (bs) (i) (v) (j) (acc) = if j >= list-length bs then acc else set-loop bs i v (j + 1) (acc & [if j == i then v else list-at bs j])
+
+  without-last : List Integer -> List Integer
+  without-last (bs) = without-loop bs 0 []
+
+  without-loop : List Integer, Integer, List Integer -> List Integer
+  without-loop (bs) (j) (acc) = if j >= list-length bs - 1 then acc else without-loop bs (j + 1) (acc & [list-at bs j])
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let gp = ed25519-public-key grantor-sk
+    in let op = ed25519-public-key other-sk
+    in let book = name-book-sign grantor-sk gp [NameEntry { name = "Jake", key = op }, NameEntry { name = "Damian", key = gp }]
+    in let bs = name-book-encode book
+    in act
+      print-line-uni ("encoded bytes " & show (list-length bs))
+      print-line-uni ("whole: " & read-back bs gp)
+      print-line-uni ("against another grantor: " & read-back bs op)
+      print-line-uni ("empty book: " & read-back (name-book-encode (name-book-sign grantor-sk gp [])) gp)
+      print-line-uni ("short: " & read-back (without-last bs) gp)
+      print-line-uni ("trailing: " & read-back (bs & [0]) gp)
+      print-line-uni ("tag byte changed: " & read-back (set-at bs 68 0) gp)
+      print-line-uni ("signature byte changed: " & read-back (set-at bs 4 (bit-xor (list-at bs 4) 1)) gp)
+      print-line-uni ("key byte changed: " & read-back (set-at bs (list-length bs - 1) (bit-xor (list-at bs (list-length bs - 1)) 1)) gp)
+      print-line-uni ("nothing: " & read-back [] gp)
+  end
+
+Page 1

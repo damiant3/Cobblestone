@@ -5,8 +5,6 @@ Chapter: Pitch
  frequency of a periodic signal. Uses fixed-point scale-1000
  arithmetic. Operates on windowed sample buffers.
 
- We say:
-
 Section: Detection
 
   PitchResult = record {
@@ -68,7 +66,10 @@ Section: Frequency Conversion
   pitch-midi-note : Integer -> Integer
   pitch-midi-note (freq-fp) =
     if freq-fp <= 0 then 0
-    else pitch-midi-search freq-fp 0 127
+    else let upper = pitch-midi-search freq-fp 0 127
+    in if upper <= 0 then 0
+    else if freq-fp * freq-fp <= pitch-note-freq (upper - 1) * pitch-note-freq upper then upper - 1
+    else upper
 
   pitch-midi-search : Integer, Integer, Integer -> Integer
   pitch-midi-search (freq) (lo) (hi) =
@@ -86,9 +87,17 @@ Section: Frequency Conversion
 
   pitch-freq-shift : Integer, Integer -> Integer
   pitch-freq-shift (base) (semitones) =
-    if semitones == 0 then base
-    else if semitones > 0 then pitch-freq-shift (base * 1059 / 1000) (semitones - 1)
-    else pitch-freq-shift (base * 1000 / 1059) (semitones + 1)
+    let octave = if semitones >= 0 then semitones / 12 else 0 - ((11 - semitones) / 12)
+    in let scaled = base * list-at pitch-semitone-ratios (semitones - octave * 12)
+    in if octave >= 0 then (scaled * pitch-pow2 octave + 500000) / 1000000
+    else let d = 1000000 * pitch-pow2 (0 - octave) in (scaled + d / 2) / d
+
+ 2^(r/12) for r = 0..11 at scale 1000000.
+
+  pitch-semitone-ratios : List Integer = [1000000, 1059463, 1122462, 1189207, 1259921, 1334840, 1414214, 1498307, 1587401, 1681793, 1781797, 1887749]
+
+  pitch-pow2 : Integer -> Integer
+  pitch-pow2 (k) = if k <= 0 then 1 else 2 * pitch-pow2 (k - 1)
 
   pitch-note-name : Integer -> Text
   pitch-note-name (note) =

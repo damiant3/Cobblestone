@@ -1,8 +1,6 @@
 Chapter: Http
   cites Foreword chapter CCE
 
- We say:
-
 Section: Status Codes
   http-200 : Text = "200 OK"
   http-404 : Text = "404 Not Found"
@@ -54,13 +52,22 @@ Section: Binary Response
 Section: Serialize Response
   http-encode : HttpResponse -> List Integer
   http-encode (resp) =
-    let body-bytes = http-text-to-utf8 (resp.body)
+    let n = http-utf8-count (resp.body) 0 (text-length (resp.body)) 0
     in let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
     in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
-    in let h2 = http-text-to-ascii ("Content-Length: " & show (list-length body-bytes)) & [13, 10]
+    in let h2 = http-text-to-ascii ("Content-Length: " & show n) & [13, 10]
     in let h3 = http-text-to-ascii "Connection: close" & [13, 10]
-    in let blank = [13, 10]
-    in status-line & h1 & h2 & h3 & blank & body-bytes
+    in let head = status-line & h1 & h2 & h3 & [13, 10]
+    in http-utf8-loop (resp.body) 0 (text-length (resp.body)) (http-push-all (__list-with-capacity (list-length head + n)) head 0)
+
+  http-push-all : List Integer, List Integer, Integer -> List Integer
+  http-push-all (dst) (src) (i) = if i >= list-length src then dst else http-push-all (list-push dst (list-at src i)) src (i + 1)
+
+  http-utf8-count : Text, Integer, Integer, Integer -> Integer
+  http-utf8-count (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let u = to-unicode-with cce-to-unicode-table (cce-decode-at t i)
+    in http-utf8-count t (i + cce-decode-length (char-code-at t i)) len (acc + (if u < 128 then 1 else if u < 2048 then 2 else if u < 65536 then 3 else 4))
 
   http-text-to-ascii : Text -> List Integer
   http-text-to-ascii (s) = text-to-unicode-bytes s

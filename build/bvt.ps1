@@ -189,7 +189,7 @@ if ($SubjectsFile) {
 $bvtSkipped = [System.Collections.Generic.List[string]]::new()
 $BvtTests = @($BvtTests | Where-Object {
     $b = [System.IO.Path]::GetFileNameWithoutExtension($_)
-    foreach ($m in @('skip', 'slow', 'fatal')) {
+    foreach ($m in @('skip', 'slow', 'fatal', 'qemu-x86')) {
         if (Test-Path -PathType Leaf ($_ -replace '\.codex$', ".$m")) {
             $why = (Get-Content -TotalCount 1 ($_ -replace '\.codex$', ".$m") -ErrorAction SilentlyContinue)
             $bvtSkipped.Add("$b ($m) $why")
@@ -310,8 +310,25 @@ $BvtTests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         }
     } else {
         if ($ok) {
-            ($using:compilePass).Add($base)
-            Write-Host "  PASS  $base" -ForegroundColor Green
+            # A .diag subject compiles and must emit each listed code: test.ps1's adjudication,
+            # kept identical to it, which until 2026-10-31 nothing but the battery applied (L-SIDECAR).
+            $diagFile = $t -replace '\.codex$', '.diag'
+            $missing = ''
+            if (Test-Path -PathType Leaf $diagFile) {
+                $logText = if (Test-Path $logOut) { Get-Content -Raw -Path $logOut } else { '' }
+                foreach ($code in (Get-Content $diagFile)) {
+                    $code = ($code.Trim() -replace '^CDX','')
+                    if (-not $code) { continue }
+                    if ($logText -notmatch "(error|warning|info|hint|deprecated) (CDX)?0*$code\b") { $missing = $code; break }
+                }
+            }
+            if ($missing) {
+                ($using:compileFails).Add("$base (CDX$missing not emitted)")
+                Write-Host "  FAIL  $base (CDX$missing not emitted)" -ForegroundColor Red
+            } else {
+                ($using:compilePass).Add($base)
+                Write-Host "  PASS  $base" -ForegroundColor Green
+            }
         } else {
             ($using:compileFails).Add("$base (compile failed)")
             Write-Host "  FAIL  $base (compile)" -ForegroundColor Red
@@ -347,6 +364,8 @@ $tempDisks = [System.Collections.Generic.List[string]]::new()
 $rawOf = @{}
 $diskSourceBytes = @{}
 $lineKey = @{}
+$vmGuests = [System.Collections.Generic.List[string]]::new()
+$guestExit = @{}
 # A .disk-mint or .disk2-mint recipe names how build/mint-test-disk.ps1 builds
 # the image into build-output; the depot carries no image for such a test.
 function Resolve-MintedDisk {
@@ -372,6 +391,11 @@ for ($i = 0; $i -lt $runList.Count; $i++) {
     $raw = Join-Path $outDir "$base.raw"
     if (Test-Path $raw) { Remove-Item -Force $raw }
     $rawOf[$base] = $raw
+    $guestsFile = $t -replace '\.codex$', '.vm-guests'
+    if (Test-Path -PathType Leaf $guestsFile) {
+        $vmGuests.Add($t)
+        continue
+    }
     $tokens = @('-kernel', $cdxOut, '-output', $raw, '-mem', '3072', '-headless')
     # Every machine sidecar test-run.ps1 passes, mapped to the same codex-vm
     # flags in the same order. A subject whose SUBJECT IS THE MACHINE (a bus
@@ -497,6 +521,11 @@ foreach ($s in $supervisors.Keys) {
     if (Test-Path -PathType Leaf $slotErrs[$s]) { Move-Item -Force $slotErrs[$s] (Join-Path $runDir "run-$s.err") }
 }
 foreach ($f in $tempDisks) { Remove-Item -Force $f -ErrorAction SilentlyContinue }
+foreach ($t in $vmGuests) {
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($t)
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-vm-guests.ps1') -Kernel (Join-Path (Join-Path $OutRoot $base) "$base.cdx") -OutFile $rawOf[$base] -GuestsFile ($t -replace '\.codex$', '.vm-guests') *> $null
+    $guestExit[$base] = $LASTEXITCODE
+}
 
 foreach ($t in $runList) {
     $base = [System.IO.Path]::GetFileNameWithoutExtension($t)
@@ -509,7 +538,8 @@ foreach ($t in $runList) {
         continue
     }
     $why = ''
-    if (-not $endOf.ContainsKey($lineKey[$base])) { $why = 'no END line from the -run-list supervisor' }
+    if ($guestExit.ContainsKey($base)) { if ($guestExit[$base] -ne 0) { $why = "a guest did not finish (build/test-vm-guests.ps1 exit $($guestExit[$base]))" } }
+    elseif (-not $endOf.ContainsKey($lineKey[$base])) { $why = 'no END line from the -run-list supervisor' }
     else {
         $e = $endOf[$lineKey[$base]]
         if ($e.Exit -eq 'TIMEOUT') { $why = 'wall budget exceeded' }

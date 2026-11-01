@@ -114,6 +114,11 @@ Chapter: BrotliDict
  build/brotli-dict-extract.ps1 and this chapter is generated from them by
  build/brotli-dict-chapter.ps1. Regenerate rather than edit.
 
+ RFC 7932 carries the corpus in Appendix A and the transforms in Appendix B, each
+ with a CRC-32. The RFC is in the tree, and `build/brotli-tables-verify.ps1` checks
+ every table against it in seconds, with no VM and no network. Run it after any
+ regeneration.
+
  THE CORPUS IS CARRIED AS BASE64 TEXT, AND THAT IS A SIZE DECISION WORTH KNOWING
  ABOUT. A list literal is emitted as code that builds the list one element at a
  time: measured, these bytes as four list literals cost 4.3 MB of binary, 35
@@ -134,9 +139,8 @@ Chapter: BrotliDict
 
 Section: Shape
 
- Word lengths run four to twenty-four. The counts were DISCOVERED by the
- extractor's walk rather than remembered, and they multiply back to 122784,
- which is the check that the walk neither stopped early nor ran long.
+ Word lengths run four to twenty-four. The counts multiply back to 122784, which
+ is the check that the extractor's walk neither stopped early nor ran long.
 
   brdict-min-len : Integer = 4
   brdict-max-len : Integer = 24
@@ -294,8 +298,7 @@ Section: Transforms
 
  That is survivable where a table is touched once per dictionary reference and
  fatal where it is touched inside a search loop: the transform matcher reads
- these tables 121 times per candidate word, per chain slot, per input byte, and
- the first version of it ran the heap into the stack and double-faulted.
+ these tables 121 times per candidate word, per chain slot, per input byte.
 
  So they are loaded ONCE into a record and threaded from there. Every constant
  below is mentioned exactly once in this chapter, here.

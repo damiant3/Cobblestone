@@ -2,8 +2,6 @@ Chapter: BrowserLora
   cites Diffusion chapter BrowserLoad
   cites Spark chapter SparkModelFile
 
- We say:
-
   blo-finite : Real -> Boolean
   blo-finite (v) = bit-and (bit-shru (real-to-bits v) 52) 2047 /= 2047
 
@@ -131,6 +129,81 @@ Chapter: BrowserLora
   blo-finish : List Integer, (Text -> Integer), Text -> Integer
   blo-finish (hs) (next) (why) = let f = blo-drop hs 0 in next why
 
+  blo-ran : Integer, Text -> Text
+  blo-ran (status) (why) = if status >= 0 then "" else why
+
+  blo-axpy : Text, Integer, Integer, Real, Integer -> Text
+  blo-axpy (code) (w) (x) (k) (n) =
+    blo-ran (gpu-launch code "blw_axpy_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf x 0, gpu-arg-f32 k, gpu-arg-u32 n]) "LyCORIS diff kernel failed"
+
+  blo-hada : Text, Integer, List Integer, Real, Integer, Integer, Integer, Integer -> Text
+  blo-hada (code) (w) (hs) (scale) (rows) (cols) (r1) (r2) =
+    let args = [
+      gpu-arg-buf w 0,
+      gpu-arg-buf (list-at hs 0) 0,
+      gpu-arg-buf (list-at hs 1) 0,
+      gpu-arg-buf (list-at hs 2) 0,
+      gpu-arg-buf (list-at hs 3) 0,
+      gpu-arg-f32 scale,
+      gpu-arg-u32 rows,
+      gpu-arg-u32 cols,
+      gpu-arg-u32 r1,
+      gpu-arg-u32 r2
+    ]
+    in blo-ran (gpu-launch code "blw_hada_main" (bs-grid (rows * cols)) args) "LyCORIS LoHa kernel failed"
+
+  blo-prod : Text, Integer, Integer, Integer, Real, Integer -> Text
+  blo-prod (code) (w) (y) (z) (scale) (n) =
+    let args = [gpu-arg-buf w 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-f32 scale, gpu-arg-u32 n]
+    in blo-ran (gpu-launch code "blw_prod_main" (bs-grid n) args) "LyCORIS LoHa product failed"
+
+  blo-sum2 : Text, Integer, List Integer, Integer, Real, Integer, Integer, Integer, Integer -> Text
+  blo-sum2 (code) (w) (hs) (wa) (scale) (rows) (cols) (rb) (r) =
+    let args = [
+      gpu-arg-buf w 0,
+      gpu-arg-buf (list-at hs 3) 0,
+      gpu-arg-buf (list-at hs 2) 0,
+      gpu-arg-buf wa 0,
+      gpu-arg-buf (list-at hs 0) 0,
+      gpu-arg-f32 scale,
+      gpu-arg-u32 rows,
+      gpu-arg-u32 cols,
+      gpu-arg-u32 rb,
+      gpu-arg-u32 r
+    ]
+    in blo-ran (gpu-launch code "blw_sum2_main" (bs-grid (rows * cols)) args) "LyCORIS GLoRA sum failed"
+
+  blo-kron : Text, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer, Integer, Text -> Text
+  blo-kron (code) (w) (y) (z) (scale) (rows) (cols) (c) (d) (k) (why) =
+    let args = [
+      gpu-arg-buf w 0,
+      gpu-arg-buf y 0,
+      gpu-arg-buf z 0,
+      gpu-arg-f32 scale,
+      gpu-arg-u32 rows,
+      gpu-arg-u32 cols,
+      gpu-arg-u32 c,
+      gpu-arg-u32 d,
+      gpu-arg-u32 k
+    ]
+    in blo-ran (gpu-launch code "blw_kron_main" (bs-grid (rows * cols)) args) why
+
+  blo-dora-apply : Text, Integer, Integer, Integer, Integer, Real, Integer, Integer, Integer, Integer -> Text
+  blo-dora-apply (code) (w) (hd) (hn) (ms) (k) (n) (rows) (cols) (chans) =
+    let exact = if real-to-bits k == real-to-bits 1.0 then 1 else 0
+    in let args = [
+      gpu-arg-buf w 0,
+      gpu-arg-buf hd 0,
+      gpu-arg-buf hn 0,
+      gpu-arg-buf ms 0,
+      gpu-arg-f32 k,
+      gpu-arg-u32 exact,
+      gpu-arg-u32 rows,
+      gpu-arg-u32 cols,
+      gpu-arg-u32 (cols / chans)
+    ]
+    in blo-ran (gpu-launch code "blw_dora_apply_main" (bs-grid n) args) "DoRA apply kernel failed"
+
   blo-upload : Text, LoraFile, StTensorMeta, Integer, (Text -> Integer) -> Integer
   blo-upload (code) (l) (m) (h) (next) =
     let kind = blo-dtype (m.stm-dtype)
@@ -152,8 +225,13 @@ Chapter: BrowserLora
     in let cols = n / rows
     in let owned = if raw then [up, down] else [w, up, down]
     in let widened = if raw then True else if bt-half t then gpu-launch code "blw_widen_main" (bs-grid n) [gpu-arg-buf h 0, gpu-arg-buf w 0, gpu-arg-u32 n] >= 0 else gpu-buf-copy-range h 0 w 0 (n * 4)
-    in let merged = if widened then gpu-launch code "blw_delta_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf up 0, gpu-arg-buf down 0, gpu-arg-f32 scale, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 rank] >= 0 else False
-    in let packed = if merged == False then False else if raw then True else if bt-half t then gpu-launch code "blw_pack_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf h 0, gpu-arg-u32 n] >= 0 else gpu-buf-copy-range w 0 h 0 (n * 4)
+    in let merged = if widened then
+      gpu-launch code "blw_delta_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf up 0, gpu-arg-buf down 0, gpu-arg-f32 scale, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 rank] >= 0
+    else False
+    in let packed = if merged == False then False
+    else if raw then True
+    else if bt-half t then gpu-launch code "blw_pack_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf h 0, gpu-arg-u32 n] >= 0
+    else gpu-buf-copy-range w 0 h 0 (n * 4)
     in if packed == False then blo-finish owned next "LoRA merge kernel failed"
     else gpu-done-then (\r -> blo-finish owned next (if r == "" & gpu-error 0 == "" then "" else "LoRA merge completion failed: " & r & gpu-error 0))
 
@@ -166,7 +244,9 @@ Chapter: BrowserLora
     in if hd == 0 | hu == 0 | w == 0 then blo-finish owned next "LoRA scratch allocation failed"
     else blo-upload code l down hd (\why -> if why /= "" then blo-finish owned next why
       else blo-upload code l up hu (\why2 -> if why2 /= "" then blo-finish owned next why2
-        else blo-mid-then code l down hd (t.bt-bytes / st-dtype-width (t.bt-dtype) / list-at (t.bt-shape) 0) (\effective -> blo-merged code t h w hu effective (list-at (t.bt-shape) 0) (list-at (down.stm-shape) 0) scale raw next) (\why3 -> blo-finish owned next why3)))
+        else blo-mid-then code l down hd (t.bt-bytes / st-dtype-width (t.bt-dtype) / list-at (t.bt-shape) 0)
+          (\effective -> blo-merged code t h w hu effective (list-at (t.bt-shape) 0) (list-at (down.stm-shape) 0) scale raw next)
+          (\why3 -> blo-finish owned next why3)))
 
   blo-mid-valid : LoraFile, Text, Integer, Integer, Integer -> Boolean
   blo-mid-valid (l) (module) (rank) (cols) (count) =
@@ -191,7 +271,8 @@ Chapter: BrowserLora
         in if hm == 0 | output == 0 then blo-finish [hm, output] refuse "LoCon scratch allocation failed"
         else blo-upload code l m hm (\why ->
           if why /= "" then blo-finish [hm, output] refuse why
-          else if gpu-launch code "blw_mid_main" (bs-grid (rank * cols)) [gpu-arg-buf output 0, gpu-arg-buf hm 0, gpu-arg-buf hd 0, gpu-arg-u32 rank, gpu-arg-u32 (cols / kk), gpu-arg-u32 kk] < 0 then blo-finish [hm, output] refuse "LoCon fold kernel failed"
+          else if gpu-launch code "blw_mid_main" (bs-grid (rank * cols)) [gpu-arg-buf output 0, gpu-arg-buf hm 0, gpu-arg-buf hd 0, gpu-arg-u32 rank, gpu-arg-u32 (cols / kk), gpu-arg-u32 kk] < 0 then
+            blo-finish [hm, output] refuse "LoCon fold kernel failed"
           else gpu-done-then (\result ->
             if result /= "" | gpu-error 0 /= "" then blo-finish [hm, output] refuse ("LoCon fold completion failed: " & result & gpu-error 0)
             else let freed = blo-drop [hm, hd] 0 in ready output))
@@ -260,7 +341,7 @@ Chapter: BrowserLora
     let m = blo-need l (module & suffix)
     in let n = t.bt-bytes / st-dtype-width (t.bt-dtype)
     in if st-element-count m /= n then next "LyCORIS diff shape mismatch"
-    else blo-work code t h raw (\w finish -> blo-inputs code l [m] 0 [] (\hs -> finish hs (if gpu-launch code "blw_axpy_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-f32 (l.lf-strength), gpu-arg-u32 n] >= 0 then "" else "LyCORIS diff kernel failed")) (\why -> finish [] why)) next
+    else blo-work code t h raw (\w finish -> blo-inputs code l [m] 0 [] (\hs -> finish hs (blo-axpy code w (list-at hs 0) (l.lf-strength) n)) (\why -> finish [] why)) next
 
   blo-loha : Text, LoraFile, Text, BoundTensor, Integer, Boolean, (Text -> Integer) -> Integer
   blo-loha (code) (l) (module) (t) (h) (raw) (next) =
@@ -273,7 +354,8 @@ Chapter: BrowserLora
     in let r1 = blo-dim b 0
     in let r2 = blo-dim d 0
     in if r1 <= 0 | r2 <= 0 | st-element-count a /= rows * r1 | st-element-count b /= r1 * cols | st-element-count c /= rows * r2 | st-element-count d /= r2 * cols then next "LyCORIS LoHa shape mismatch"
-    else blo-scaled l module r1 (\scale -> blo-work code t h raw (\w finish -> blo-inputs code l [a, b, c, d] 0 [] (\hs -> finish hs (if gpu-launch code "blw_hada_main" (bs-grid (rows * cols)) [gpu-arg-buf w 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-buf (list-at hs 1) 0, gpu-arg-buf (list-at hs 2) 0, gpu-arg-buf (list-at hs 3) 0, gpu-arg-f32 scale, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 r1, gpu-arg-u32 r2] >= 0 then "" else "LyCORIS LoHa kernel failed")) (\why -> finish [] why)) next) next
+    else blo-scaled l module r1 (\scale -> blo-work code t h raw (\w finish ->
+      blo-inputs code l [a, b, c, d] 0 [] (\hs -> finish hs (blo-hada code w hs scale rows cols r1 r2)) (\why -> finish [] why)) next) next
 
   blo-tucker-valid : StTensorMeta, StTensorMeta, StTensorMeta, Integer, Integer, Integer -> Boolean
   blo-tucker-valid (m) (a) (b) (rank) (rows) (cols) =
@@ -288,7 +370,9 @@ Chapter: BrowserLora
       in let all = list-push hs output
       in let kk = blo-dim m 2 * blo-dim m 3
       in if output == 0 then blo-finish hs refuse "LyCORIS Tucker allocation failed"
-      else if gpu-launch code "blw_tucker_main" (bs-grid (rows * cols)) [gpu-arg-buf output 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-buf (list-at hs 1) 0, gpu-arg-buf (list-at hs 2) 0, gpu-arg-u32 rank, gpu-arg-u32 rows, gpu-arg-u32 (cols / kk), gpu-arg-u32 kk] < 0 then blo-finish all refuse "LyCORIS Tucker kernel failed"
+      else if gpu-launch code "blw_tucker_main" (bs-grid (rows * cols)) [gpu-arg-buf output 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-buf (list-at hs 1) 0,
+        gpu-arg-buf (list-at hs 2) 0, gpu-arg-u32 rank, gpu-arg-u32 rows, gpu-arg-u32 (cols / kk), gpu-arg-u32 kk] < 0 then
+        blo-finish all refuse "LyCORIS Tucker kernel failed"
       else ready output all) refuse
 
   blo-loha-t : Text, LoraFile, Text, BoundTensor, Integer, Boolean, (Text -> Integer) -> Integer
@@ -303,7 +387,11 @@ Chapter: BrowserLora
     in let rows = list-at (t.bt-shape) 0
     in let cols = t.bt-bytes / st-dtype-width (t.bt-dtype) / rows
     in if blo-tucker-valid m1 a1 b1 rank rows cols == False | blo-tucker-valid m2 a2 b2 rank rows cols == False then next "LyCORIS LoHa Tucker shape mismatch"
-    else blo-scaled l module rank (\scale -> blo-work code t h raw (\w finish -> blo-tucker-then code l m1 a1 b1 rank rows cols (\y hs1 -> blo-tucker-then code l m2 a2 b2 rank rows cols (\z hs2 -> finish (hs1 & hs2) (if gpu-launch code "blw_prod_main" (bs-grid (rows * cols)) [gpu-arg-buf w 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-f32 scale, gpu-arg-u32 (rows * cols)] >= 0 then "" else "LyCORIS LoHa product failed")) (\why -> finish hs1 why)) (\why -> finish [] why)) next) next
+    else blo-scaled l module rank (\scale -> blo-work code t h raw (\w finish ->
+      blo-tucker-then code l m1 a1 b1 rank rows cols (\y hs1 ->
+        blo-tucker-then code l m2 a2 b2 rank rows cols (\z hs2 -> finish (hs1 & hs2) (blo-prod code w y z scale (rows * cols)))
+          (\why -> finish hs1 why))
+        (\why -> finish [] why)) next) next
 
   blo-glora : Text, LoraFile, Text, BoundTensor, Integer, Boolean, (Text -> Integer) -> Integer
   blo-glora (code) (l) (module) (t) (h) (raw) (next) =
@@ -321,7 +409,7 @@ Chapter: BrowserLora
       in let all = list-push hs wa
       in if wa == 0 then finish hs "LyCORIS GLoRA allocation failed"
       else if gpu-launch code "blw_matmul_main" (bs-grid (rows * r)) [gpu-arg-buf wa 0, gpu-arg-buf w 0, gpu-arg-buf (list-at hs 1) 0, gpu-arg-u32 rows, gpu-arg-u32 r, gpu-arg-u32 cols] < 0 then finish all "LyCORIS GLoRA matrix failed"
-      else finish all (if gpu-launch code "blw_sum2_main" (bs-grid (rows * cols)) [gpu-arg-buf w 0, gpu-arg-buf (list-at hs 3) 0, gpu-arg-buf (list-at hs 2) 0, gpu-arg-buf wa 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-f32 scale, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 rb, gpu-arg-u32 r] >= 0 then "" else "LyCORIS GLoRA sum failed")) (\why -> finish [] why)) next) next
+      else finish all (blo-sum2 code w hs wa scale rows cols rb r)) (\why -> finish [] why)) next) next
 
   browser-lora-patch : Text, LoraFile, BoundTensor, Integer, (Text -> Integer) -> Integer
   browser-lora-patch (code) (l) (t) (h) (next) =
@@ -374,7 +462,8 @@ Chapter: BrowserLora
       let output = gpu-buf-alloc (a * b * 4)
       in let all = list-push hs output
       in if output == 0 then blo-finish hs refuse "LyCORIS LoKr allocation failed"
-      else if gpu-launch code "blw_matmul_main" (bs-grid (a * b)) [gpu-arg-buf output 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-buf (list-at hs 1) 0, gpu-arg-u32 a, gpu-arg-u32 b, gpu-arg-u32 r] < 0 then blo-finish all refuse "LyCORIS LoKr factor failed"
+      else if gpu-launch code "blw_matmul_main" (bs-grid (a * b)) [gpu-arg-buf output 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-buf (list-at hs 1) 0, gpu-arg-u32 a, gpu-arg-u32 b, gpu-arg-u32 r] < 0 then
+        blo-finish all refuse "LyCORIS LoKr factor failed"
       else ready output all) refuse
 
   blo-lokr : Text, LoraFile, Text, BoundTensor, Integer, Boolean, (Text -> Integer) -> Integer
@@ -388,7 +477,11 @@ Chapter: BrowserLora
     in let r2 = blo-kr-rank l module "w2"
     in let rank = if r2 > 0 then r2 else blo-kr-rank l module "w1"
     in if blo-kr-valid l module "w1" == False | blo-kr-valid l module "w2" == False | a * c /= rows | b * d /= cols then next "LyCORIS LoKr shape mismatch"
-    else blo-scaled l module rank (\scale -> blo-work code t h raw (\w finish -> blo-kr-then code l module "w1" (\y hs1 -> blo-kr-then code l module "w2" (\z hs2 -> finish (hs1 & hs2) (if gpu-launch code "blw_kron_main" (bs-grid (rows * cols)) [gpu-arg-buf w 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-f32 scale, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 c, gpu-arg-u32 d, gpu-arg-u32 1] >= 0 then "" else "LyCORIS LoKr kernel failed")) (\why -> finish hs1 why)) (\why -> finish [] why)) next) next
+    else blo-scaled l module rank (\scale -> blo-work code t h raw (\w finish ->
+      blo-kr-then code l module "w1" (\y hs1 ->
+        blo-kr-then code l module "w2" (\z hs2 -> finish (hs1 & hs2) (blo-kron code w y z scale rows cols c d 1 "LyCORIS LoKr kernel failed"))
+          (\why -> finish hs1 why))
+        (\why -> finish [] why)) next) next
 
   blo-lokr-t : Text, LoraFile, Text, BoundTensor, Integer, Boolean, (Text -> Integer) -> Integer
   blo-lokr-t (code) (l) (module) (t) (h) (raw) (next) =
@@ -405,7 +498,12 @@ Chapter: BrowserLora
     in let cols = t.bt-bytes / st-dtype-width (t.bt-dtype) / rows
     in if c <= 0 | d <= 0 | kk <= 0 | a * c /= rows | b * d * kk /= cols | blo-kr-valid l module "w1" == False then next "LyCORIS LoKr Tucker shape mismatch"
     else if blo-tucker-valid m ma mb rank c (d * kk) == False then next "LyCORIS LoKr Tucker factor shape mismatch"
-    else blo-scaled l module rank (\scale -> blo-work code t h raw (\w finish -> blo-kr-then code l module "w1" (\y hs1 -> blo-tucker-then code l m ma mb rank c (d * kk) (\z hs2 -> finish (hs1 & hs2) (if gpu-launch code "blw_kron_main" (bs-grid (rows * cols)) [gpu-arg-buf w 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-f32 scale, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 c, gpu-arg-u32 d, gpu-arg-u32 kk] >= 0 then "" else "LyCORIS LoKr convolution failed")) (\why -> finish hs1 why)) (\why -> finish [] why)) next) next
+    else blo-scaled l module rank (\scale -> blo-work code t h raw (\w finish ->
+      blo-kr-then code l module "w1" (\y hs1 ->
+        blo-tucker-then code l m ma mb rank c (d * kk) (\z hs2 ->
+          finish (hs1 & hs2) (blo-kron code w y z scale rows cols c d kk "LyCORIS LoKr convolution failed"))
+          (\why -> finish hs1 why))
+        (\why -> finish [] why)) next) next
 
   blo-other : Text, LoraFile, Text, BoundTensor, Integer, Boolean, (Text -> Integer) -> Integer
   blo-other (code) (l) (module) (t) (h) (raw) (next) =
@@ -436,7 +534,7 @@ Chapter: BrowserLora
         else blo-kind code one module t hd True (\why ->
           if why /= "" then finish owned why
           else if gpu-launch code "blw_dora_norm_main" (bs-grid chans) [gpu-arg-buf w 0, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 (cols / chans)] < 0 then finish owned "DoRA norm kernel failed"
-          else finish owned (if gpu-launch code "blw_dora_apply_main" (bs-grid n) [gpu-arg-buf w 0, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-buf (list-at hs 0) 0, gpu-arg-f32 (l.lf-strength), gpu-arg-u32 (if real-to-bits (l.lf-strength) == real-to-bits 1.0 then 1 else 0), gpu-arg-u32 rows, gpu-arg-u32 cols, gpu-arg-u32 (cols / chans)] >= 0 then "" else "DoRA apply kernel failed"))) (\why -> finish [hd, hn] why)) next
+          else finish owned (blo-dora-apply code w hd hn (list-at hs 0) (l.lf-strength) n rows cols chans))) (\why -> finish [hd, hn] why)) next
 
   browser-sd15-lora-load-then : Text, Text, Integer, Real, Text, (Integer, Integer -> Integer), (Text -> Integer), (BrowserModel -> Integer) -> Integer
   browser-sd15-lora-load-then (checkpoint) (file) (size) (weight) (code) (progress) (refuse) (ready) =

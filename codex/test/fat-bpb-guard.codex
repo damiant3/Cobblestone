@@ -1,0 +1,40 @@
+Chapter: FatBpbGuard
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+  cites Foreword chapter Console
+
+ A corrupt boot sector can set bytes per sector (offset 11) or sectors per
+ cluster (offset 13) to zero, and both readers divide by them. The control
+ is a valid FAT32 BPB: 512 bytes per sector, 8 per cluster, 32 reserved,
+ 2 FATs of 1024 sectors, 131072 sectors, root cluster 2, so (131072 - 2080)
+ / 8 = 16124 clusters. Each zero case is that buffer with one field cleared.
+
+  bg-bpb : Integer, Integer -> Integer
+  bg-bpb (bps) (spc) =
+    let b = alloc-bytes 512
+    in let z = bg-zero b 0
+    in let w = poke-byte b 11 (bit-and bps 255) + poke-byte b 12 (bit-shru bps 8) + poke-byte b 13 spc + poke-byte b 14 32 + poke-byte b 16 2 + poke-byte b 22 0 + poke-byte b 34 2 + poke-byte b 37 4 + poke-byte b 44 2
+    in b
+
+  bg-zero : Integer, Integer -> Integer
+  bg-zero (b) (i) = if i >= 512 then 0 else let p = poke-byte b i 0 in bg-zero b (i + 1)
+
+  bg-32 : Integer -> Text
+  bg-32 (buf) =
+    let v = fat32-parse-bpb32 0 buf 0
+    in "bps " & show (v.f32-bytes-per-sector) & ", clusters " & show (v.f32-total-clusters) & ", root " & show (v.f32-root-cluster) & ", cluster 2 usable " & (if fat32-cluster-ok v 2 then "yes" else "no")
+
+  bg-16 : Integer -> Text
+  bg-16 (buf) =
+    let v = fat16-parse-bpb 0 buf
+    in "bps " & show (v.vol-bytes-per-sector) & ", clusters " & show (v.vol-cluster-count)
+
+  opening : [Console] Nothing = act
+    print-line-uni ("fat32 valid: " & bg-32 (bg-bpb 512 8))
+    print-line-uni ("fat32 zero bytes per sector: " & bg-32 (bg-bpb 0 8))
+    print-line-uni ("fat32 zero sectors per cluster: " & bg-32 (bg-bpb 512 0))
+    print-line-uni ("fat16 zero bytes per sector: " & bg-16 (bg-bpb 0 8))
+    print-line-uni ("fat16 zero sectors per cluster: " & bg-16 (bg-bpb 512 0))
+  end
+
+Page 1

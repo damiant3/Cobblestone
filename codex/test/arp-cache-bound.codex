@@ -4,8 +4,6 @@ Chapter: ArpCacheBound
   cites Net chapter Ethernet
   cites Foreword chapter Console
 
- We say:
-
 Section: Fixtures
   srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
   srv-ip : List Integer = [10, 0, 2, 15]
@@ -15,26 +13,20 @@ Section: Fixtures
 
   srv0 : NetSession = net-session-new srv-mac srv-ip gw-ip 80 0 [10, 0, 2, 100] 5000
 
- A distinct sender IP and MAC per frame, which is what an ordinary busy segment
- looks like rather than an attack shape. 300 is past the 0..255 band that used
- to kill the guest and past arp-cache-max.
-
- THE FLOOD IS REPLIES ADDRESSED TO US, because since 2026-08-20 that is the
- only frame that can enter the cache at all (Damian's ruling, CurrentPlan
- Decisions 2). It used to be requests, which is the shape the narrowing exists
- to refuse, and the capacity question this file is really about would have
- stopped being reachable if the flood had not moved with it. `arp-build-reply`
- puts the sender in the reply-mac and src-ip slots and us in the target slots.
+  flood-ip : Integer -> List Integer
+  flood-ip (i) = [10, 1, bit-and (bit-shru i 8) 255, bit-and i 255]
 
   arp-frame : Integer -> List Integer
   arp-frame (i) =
     let smac = [2, 0, 0, 0, bit-and (bit-shru i 8) 255, bit-and i 255]
-    in let sip = [10, 1, bit-and (bit-shru i 8) 255, bit-and i 255]
-    in arp-build-reply smac sip srv-mac srv-ip smac
+    in arp-build-reply smac (flood-ip i) srv-mac srv-ip smac
 
- The old shape, kept as the arm that proves the narrowing rather than deleted:
- a request aimed at a THIRD party, which is a frame we are neither asked to
- answer nor entitled to learn from.
+  evil-mac : List Integer = [2, 6, 6, 6, 6, 6]
+
+  expect-all : NetSession, Integer, Integer -> NetSession
+  expect-all (s) (i) (n) =
+    if i >= n then s
+    else expect-all (set-arp s (arp-cache-expect (s.arp) (flood-ip i))) (i + 1) n
 
   poison-frame : Integer -> List Integer
   poison-frame (i) =
@@ -45,7 +37,8 @@ Section: Fixtures
   flood : NetSession, Integer, Integer -> NetSession
   flood (s) (i) (n) =
     if i >= n then s
-    else flood ((net-process-frame s (arp-frame i)).session) (i + 1) n
+    else let asked = set-arp s (arp-cache-expect (s.arp) (flood-ip i))
+    in flood ((net-process-frame asked (arp-frame i)).session) (i + 1) n
 
   poison-flood : NetSession, Integer, Integer -> NetSession
   poison-flood (s) (i) (n) =
@@ -54,38 +47,31 @@ Section: Fixtures
 
 Section: The Arms
 
- The gateway is learned FIRST and then the flood arrives. It must still be
- there afterwards: that is the whole reason this refuses at capacity instead of
- evicting, and an eviction policy would fail exactly this line.
-
   gw-learned : NetSession =
     set-arp srv0 (arp-cache-add (srv0.arp) gw-ip gw-mac)
 
   after-flood : NetSession = flood gw-learned 0 300
 
- Ten senders sent twice. Before the duplicate check this read 20.
-
   dup-twice : NetSession = flood (flood srv0 0 10) 0 10
 
- THE NARROWING, measured rather than asserted. Three hundred requests aimed at
- a third party used to fill this cache to its cap; now they enter nothing and
- queue nothing. The gateway entry learned before the flood is the control: if
- the cache were simply broken rather than narrowed, it would be gone too.
-
   after-poison : NetSession = poison-flood gw-learned 0 300
-
- A request aimed at US is answered and STILL teaches us nothing. Both halves
- matter: the reply proves we did not narrow our way out of being a peer, and
- the count proves a forged request cannot put an entry in.
 
   asked-us : NetResult =
     net-process-frame srv0 (arp-build-request [2, 0, 0, 0, 0, 7] [10, 1, 0, 7] srv-ip)
 
- arp-cache-search bounds its walk by cache.count and NOT by the length of
- entries, so the two have to move together. A count that runs ahead reads past
- the live entries; one that lags stops short of them and a learned mapping goes
- missing. Neither is visible from a lookup that happens to succeed, so it is
- asserted directly.
+  gw-claim : NetResult =
+    net-process-frame gw-learned (arp-build-reply evil-mac gw-ip srv-mac srv-ip evil-mac)
+
+  stranger-claim : NetResult =
+    net-process-frame srv0 (arp-frame 7)
+
+  solicited : NetSession = net-arp-solicit srv0 (flood-ip 7)
+
+  answered : NetResult = net-process-frame solicited (arp-frame 7)
+
+  answered-again : NetResult = net-process-frame (answered.session) (arp-frame 7)
+
+  many-asked : NetSession = expect-all srv0 0 70
 
 Section: Entry
   opening : [Console] Nothing = act
@@ -104,5 +90,12 @@ Section: Entry
     print-line-uni ("asked-us-output=" & (asked-us.output))
     print-line-uni ("asked-us-queued=" & show (list-length ((asked-us.session).outbox)))
     print-line-uni ("asked-us-taught-nothing=" & show (((asked-us.session).arp).count == 0))
+    print-line-uni ("gw-claim-output=" & (gw-claim.output))
+    print-line-uni ("gw-claim-gw-intact=" & show (mac-equal (arp-cache-lookup ((gw-claim.session).arp) gw-ip) gw-mac))
+    print-line-uni ("stranger-claim-output=" & (stranger-claim.output) & " count=" & show (((stranger-claim.session).arp).count))
+    print-line-uni ("solicited-pending=" & show (list-length ((solicited.arp).pending)) & " queued=" & show (list-length (solicited.outbox)))
+    print-line-uni ("answered-output=" & (answered.output) & " count=" & show (((answered.session).arp).count) & " pending=" & show (list-length (((answered.session).arp).pending)))
+    print-line-uni ("answered-again-output=" & (answered-again.output))
+    print-line-uni ("many-asked-pending=" & show (list-length ((many-asked.arp).pending)) & " oldest-dropped=" & show (arp-cache-expected (many-asked.arp) (flood-ip 0) == False) & " newest-kept=" & show (arp-cache-expected (many-asked.arp) (flood-ip 69)))
     print-line-uni ("survived")
   end

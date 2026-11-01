@@ -1326,9 +1326,8 @@ D.1 through D.4 are landed. What a reader still needs from them:
   sharing a 5.08 s minimum, medians 5.23 against 5.20, against a within-arm
   spread of 5.08 to 5.88. **A difference smaller than the spread of repeats of
   the same point is not a reading.** A scripted ablation here fails unless the
-  pattern hit count is 1: the first attempt wrote the flag to a depot
-  read-only file, the write was silently denied, and both arms compiled
-  identical bytes.
+  pattern hit count is 1: a write to a read-only depot file is denied
+  silently, and both arms then compile identical bytes.
 - **The guard's fire is a FAULT (`!EXC=06`), not a branch a caller can
   take.** A battery arm cannot express it, its pass condition being a fault,
   and it needs no new firing arm because `PhaseAllocator.codex` already names
@@ -1447,7 +1446,7 @@ reopen after it:
 | Edit, unwired | `0x2787415` | `0x30dc3e9` | **+9,785,300** | depth 3, dead `0@0x1e17081` STRANDED under a fresh `14@0x276d315` |
 | Edit, wired | `0x277d135` | `0x277f775` | **+9,792** | depth 2, `14@0x1e17081`, the dead entry REUSED |
 
-Both reopens push no mark, and the residual is attributed. Above the root, R6 is byte for byte the never-closed state: with Edit and Files alive and no close in the history, the frontier stands 141,600 bytes above the root, as it does after the close and reopen, so that part is the live pane's window and pill. Under the root, a close that restores nothing used to strand its `DeskApps` record, 120 bytes a close-and-reopen cycle; the next close now reclaims it (`desk-apps-reclaim`), and the root stays at one address over one, two and three cycles. The root of the never-closed control sits 137,072 bytes higher than the reopened one, which is the reuse.
+Both reopens push no mark, and the residual is attributed. Above the root, R6 is byte for byte the never-closed state: with Edit and Files alive and no close in the history, the frontier stands 141,600 bytes above the root, as it does after the close and reopen, so that part is the live pane's window and pill. Under the root, the next close reclaims the `DeskApps` record a close that restores nothing leaves behind (`desk-apps-reclaim`, 120 bytes a close-and-reopen cycle), and the root stays at one address over one, two and three cycles. The root of the never-closed control sits 137,072 bytes higher than the reopened one, which is the reuse.
 
 **R5 moved 27,416 bytes between the two builds**, which is the row this design
 predicted would stay put, and it did. **The mark stack is the part to read

@@ -2,12 +2,7 @@ Chapter: UpscaleKernels
   cites Gpu chapter DeviceEffect
   cites Gpu chapter DeviceMath
 
- We say:
-
 Section: Leaky ReLU
-
- dst[off + i] = src[i] when it is not negative, else slope times it, over n
- f32 elements, one thread per element in blocks of 128; slope 1 copies.
 
   kernel-lrelu-into : Integer, Integer, Integer, Real, Integer -> [Device] Integer
   kernel-lrelu-into (src) (dst) (off) (slope) (n) = act
@@ -41,7 +36,8 @@ Section: Window Attention
  per thread, q and then the output, and the probabilities in rows of wh wn +
  1 f32.
 
-  kernel-window-attention : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-window-attention : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-window-attention (qkv) (out) (bias) (hh) (ww) (wh) (wn) (shy) (shx) (heads) (hd) (scale) (ld) (qoff) (koff) (voff) (ldo) (ooff) (qn) = act
    bx <- block-idx-x
    head <- block-idx-y
@@ -97,11 +93,13 @@ Section: Window Attention
   uk-wa-mask (hh) (ww) (wh) (wn) (shy) (shx) (w) (i) (j) =
     if (shy > 0 | shx > 0) & uk-wa-region hh ww wh wn shy shx w i /= uk-wa-region hh ww wh wn shy shx w j then real-approx-from-int (0 - 100) else real-approx-from-int 0
 
-  uk-wa-scores : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
+  uk-wa-scores : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer,
+    Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real approximate -> [Device] Real approximate
   uk-wa-scores (qkv) (bias) (hh) (ww) (wh) (wn) (shy) (shx) (heads) (head) (hd) (ld) (kcol) (w) (i) (qa) (row) (j) (m) =
     if j >= wh * wn then m
     else act
-     s <- uk-wa-dot qkv qa (uk-wa-pos hh ww wh wn shy shx w j * ld + kcol) hd 0 (real-approx-from-int 0) + device-load-approx bias (uk-wa-rel wh wn i j * heads + head) + uk-wa-mask hh ww wh wn shy shx w i j
+     s <- (uk-wa-dot qkv qa (uk-wa-pos hh ww wh wn shy shx w j * ld + kcol) hd 0 (real-approx-from-int 0) +
+       device-load-approx bias (uk-wa-rel wh wn i j * heads + head) + uk-wa-mask hh ww wh wn shy shx w i j)
      x <- shared-store-approx (row + j * 4) s
      uk-wa-scores qkv bias hh ww wh wn shy shx heads head hd ld kcol w i qa row (j + 1) (if s > m then s else m)
     end
@@ -192,8 +190,6 @@ Section: Channel Attention
      uk-cg-sum x ld a b l (r + 1) (acc + u * v)
     end
 
- Rows of cols f32 softmaxed in place, a thread per row.
-
   kernel-row-softmax : Integer, Integer, Integer -> [Device] Integer
   kernel-row-softmax (x) (cols) (rows) = act
    bx <- block-idx-x
@@ -234,9 +230,6 @@ Section: Channel Attention
      uk-rs-scale x at cols (j + 1) z
     end
 
- out[p dim + h hd + c] = sum over c2 of g[(h hd + c) hd + c2] v[p ld + voff +
- h hd + c2], n = L dim.
-
   kernel-chan-apply : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-chan-apply (qkv) (g) (out) (ld) (voff) (dim) (hd) (n) = act
    bx <- block-idx-x
@@ -252,8 +245,6 @@ Section: Channel Attention
 
 Section: Maps and Gates
 
- Channels [off, off + c) of rows of ld as a c x l map, n = c l.
-
   kernel-cols-to-map : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-cols-to-map (x) (out) (ld) (off) (l) (n) = act
    bx <- block-idx-x
@@ -262,9 +253,6 @@ Section: Maps and Gates
    i <- bx * bd + tx
    if i < n then device-store-approx out i (device-load-approx x ((i - i / l * l) * ld + off + i / l)) else 0
   end
-
- A 3x3 depthwise convolution (groups = c, padding 1) with its bias over a c
- x hh x ww map, f32 weights, in f32.
 
   kernel-dwconv3 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-dwconv3 (x) (w) (b) (y) (hh) (ww) (n) = act
@@ -305,9 +293,6 @@ Section: Maps and Gates
    device-store-f32 x i ((v - m) / real-sqrt (s + 0.00001) * g + b)
   end
 
- A 1x1 convolution with its bias at every pixel: out[p cout + o] = b[o] +
- sum over i of w[o cin + i] x[i sc + p sp], in f64; n = l cout.
-
   kernel-pix-mix : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-pix-mix (x) (sc) (sp) (cin) (w) (b) (out) (cout) (n) = act
    bx <- block-idx-x
@@ -331,8 +316,6 @@ Section: Maps and Gates
      v <- device-load-f32 x (k * sc + xa)
      uk-pm-dot x sc xa w wa cin (k + 1) (acc + u * v)
     end
-
- The mean of each of c channels over l positions, x[ch sc + p sp], in f64.
 
   kernel-channel-mean : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-channel-mean (x) (out) (sc) (sp) (l) (c) = act
@@ -389,8 +372,6 @@ Section: Maps and Gates
    i <- bx * bd + tx
    if i < n then device-store-approx out i (device-load-approx x ((i / half) * 2 * half + i - i / half * half) * device-load-approx m ((i - i / half * half) * l + i / half)) else 0
   end
-
- Columns [off, off + width) of rows of ld as rows of width, n = rows width.
 
   kernel-take-cols : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
   kernel-take-cols (x) (out) (ld) (off) (width) (n) = act

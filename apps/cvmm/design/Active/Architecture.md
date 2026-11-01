@@ -8,8 +8,9 @@ The modules are all there -- CvmmTypes, CvmmState, CvmmShell, CvmmTheme,
 CvmmDashboard, FileExplorer, DriveManager, UsbManager, ProcessManager,
 ServiceManager, PortMonitor, NetworkManager, DisplayManager,
 ServerManager, FleetManager, DeployManager, CvmmServer, CvmmRoutes,
-CvmmDisplay -- plus a productivity suite and 14 tests under
-`apps/cvmm/tests/`.
+CvmmDisplay -- plus a productivity suite. Its 13 passing test suites are
+`codex/test/apps/cvmm-*-suite`, in the battery; `apps/cvmm/tests/TestFileExplorer`,
+which does not pass, is in `cvmm-backlog.md`.
 
 But the app's own README says it plainly: **"real OS data collection
 (all state is mock)"**. The process manager lists no real processes. The
@@ -148,13 +149,13 @@ Same Codex code. Different render target.
 ### Tests
 | File | Purpose |
 |------|---------|
-| `tests/TestTypes.codex` | Resource status transitions, endpoint formatting |
-| `tests/TestFileExplorer.codex` | Path operations, breadcrumb, sort, filter |
-| `tests/TestDriveManager.codex` | Volume model, capacity math, mount state |
-| `tests/TestProcessManager.codex` | Process list operations, sorting, filtering |
-| `tests/TestNetworkManager.codex` | IP formatting, subnet math, route selection |
-| `tests/TestFleetManager.codex` | Device discovery, grouping, health rollup |
-| `tests/TestShell.codex` | Navigation state, panel layout, notification queue |
+| `codex/test/apps/cvmm-types-suite.codex` | Resource status transitions, endpoint formatting |
+| `apps/cvmm/tests/TestFileExplorer.codex` | Path operations, breadcrumb, sort, filter |
+| `codex/test/apps/cvmm-drive-manager-suite.codex` | Volume model, capacity math, mount state |
+| `codex/test/apps/cvmm-process-manager-suite.codex` | Process list operations, sorting, filtering |
+| `codex/test/apps/cvmm-network-manager-suite.codex` | IP formatting, subnet math, route selection |
+| `codex/test/apps/cvmm-fleet-manager-suite.codex` | Device discovery, grouping, health rollup |
+| `codex/test/apps/cvmm-shell-suite.codex` | Navigation state, panel layout, notification queue |
 
 ## Display Protocol
 

@@ -12,23 +12,6 @@ Chapter: CellCsv
  set, so no character outside ASCII can be mistaken for a comma, a quote or a
  line ending, and such a character's bytes pass into the field untouched.
 
- What a field becomes, and the rules are the reason the store grew a kind:
-
- - an UNQUOTED empty field becomes an EMPTY cell, which is the distinction
-   `a,,b` exists to make and which a store of bare numbers cannot hold;
- - an UNQUOTED field of ASCII digits, with an optional leading minus,
-   becomes a NUMBER cell;
- - a QUOTED field is ALWAYS text, because quoting is how a CSV says its
-   content is not to be read as a quantity;
- - everything else becomes a TEXT cell.
-
- Two cases are not round trips and the arm records both. A number is written
- back as `show` writes it, so `007` in is `7` out. And a text cell holding
- the empty string writes as nothing, which reads back as an empty cell,
- because CSV has no spelling that separates the two.
-
- We say:
-
 Section: The Bytes That Matter
 
   csv-comma : Integer = 44
@@ -77,9 +60,6 @@ Section: Reading A Field
     if list-at fld 0 == csv-minus then 0 - csv-acc fld 1 n 0
     else csv-acc fld 0 n 0
 
- A quoted field is text whatever it looks like, which is why `quoted` is
- carried through the scan rather than inferred from the bytes at the end.
-
   csv-emit : Integer, Integer, Integer, List Integer, Boolean -> Boolean
   csv-emit (blk) (r) (c) (fld) (quoted) =
     let n = list-length fld
@@ -117,10 +97,6 @@ Section: Reading A Sheet
       csv-scan blk bs n (i + 2) r c (list-push fld csv-quote) True True
     else csv-scan blk bs n (i + 1) r c fld False True
 
- A carriage return outside a quoted field is dropped rather than kept: a CSV
- written on either kind of machine ends its records with LF, with or without
- a CR in front, and a CR left in the field would ride into the cell.
-
   csv-scan-plain : Integer, List Integer, Integer, Integer, Integer, Integer, List Integer, Boolean -> Integer
   csv-scan-plain (blk) (bs) (n) (i) (r) (c) (fld) (quoted) =
     let b = list-at bs i
@@ -139,10 +115,6 @@ Section: Reading A Sheet
   csv-next-record (blk) (bs) (n) (i) (r) (c) (fld) (quoted) =
     let e = csv-emit blk r c fld quoted
     in csv-scan blk bs n (i + 1) (r + 1) 0 [] False False
-
- The answer is the number of RECORDS read, which is what a caller checks
- against the sheet's row count to learn that the sheet was too small: a field
- past the bounds is refused by the store and silently absent otherwise.
 
   csv-load : Integer, Text -> Integer
   csv-load (blk) (t) =
@@ -166,11 +138,6 @@ Section: Writing
     else if list-at bs i == csv-quote then
       csv-escape bs (i + 1) n (list-push (list-push acc csv-quote) csv-quote)
     else csv-escape bs (i + 1) n (list-push acc (list-at bs i))
-
- A text cell whose content would READ BACK as a number is quoted even though
- RFC 4180 does not require it, because the alternative is a round trip that
- silently changes a cell's kind: a text cell holding `42` written bare is a
- number cell when the file is read again.
 
   csv-wrap : Text -> Text
   csv-wrap (t) =
@@ -201,11 +168,6 @@ Section: Writing
   csv-rows (blk) (r) (n) (cols) (acc) =
     if r >= n then acc
     else csv-rows blk (r + 1) n cols (acc & csv-row blk r 0 cols "" & csv-eol)
-
- `csv-save` is told how many records and how many columns to write rather
- than reading the sheet's own bounds, because a sheet is allocated at its
- maximum: writing every row and column of a 1,000 by 26 sheet holding four
- cells emits a thousand records of twenty-five commas.
 
   csv-save : Integer, Integer, Integer -> Text
   csv-save (blk) (rows) (cols) =

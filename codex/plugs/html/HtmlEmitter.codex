@@ -314,11 +314,6 @@ Section: Apply
      in let args = emit-js-apply-args (chain.args) arities indent 0
      in func & "(" & args & ")"
 
- The eta-wrap above covers a definition applied to FEWER arguments than it
- takes. This covers the other direction: a definition applied to MORE, where
- the surplus belongs to what the definition RETURNS and is applied one at a
- time.
-
   emit-html-curried : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-html-curried (base) (args) (arities) (indent) (i) =
     if i >= list-length args then base
@@ -379,11 +374,6 @@ Section: Match
     else
       html-indent (indent + 1) & "if (" & emit-js-expr (b.guard) scope indent & ") { return " & body & "; }\n"
     in html-indent indent & "if (" & cond & ") {\n" & binds & ret & html-indent indent & "}\n" & emit-js-branches branches arities indent (i + 1)
-
- A guarded arm must not chain with else-if: the guard needs the pattern
- bindings, which sit inside the block, so a failed guard has to fall OUT of
- the block and reach the next test. Sequential ifs give that and an else-if
- chain cannot.
 
   html-lit-pat : Text, CodexType -> Text
   html-lit-pat (text) (ty) =
@@ -462,9 +452,6 @@ Section: Records
   emit-js-record : Text, List IRFieldVal, List ArityEntry, Integer -> Text
   emit-js-record (name) (fields) (arities) (indent) =
     "{ _type: \"" & name & "\"" & emit-js-record-fields fields arities indent 0 & " }"
-
- `__record-set` writes through its target and returns that same record, as
- native Codex does (L-ALIAS); a copy loses the write when the result is discarded.
 
   emit-js-record-set : List IRExpr, List ArityEntry, Integer -> Text
   emit-js-record-set (args) (arities) (indent) =
@@ -802,7 +789,7 @@ Section: Chapter Emission
   emit-html-chapter (m) (meta) (type-defs) =
     let arities = build-arity-map (m.defs) 0 []
     in let title = if meta.chapter-title == "" then "Codex App" else meta.chapter-title
-    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction fail(m) { throw new Error(m); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(__u2c(s.codePointAt(Number(i)))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { xs.push(x); return xs; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { return xs[Number(i)]; }\nfunction list_push(xs, x) { xs.push(x); return xs; }\nfunction list_set_at(xs, i, x) { const k = Number(i); if (k < 0 || k >= xs.length) { throw new Error(\"CODEX_TRAP_index_out_of_bounds\"); } xs[k] = x; return xs; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(typeof c === 'string' ? __u2c(c.codePointAt(0)) : c); }\nfunction code_to_char(cp) { return String.fromCodePoint(__c2u(Number(cp))); }\nfunction char_encode(c) { return c; }\nfunction text_concat_list(xs) { return xs.join(''); }\nfunction __list_with_capacity(n) { return []; }\nfunction char_at(s, i) { return s[Number(i)]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\nfunction __TC(f, a) { this.f = f; this.a = a; }\nfunction __real(b) { return new Float64Array(new BigInt64Array([b]).buffer)[0]; }\nfunction real_from_int(n) { return Number(n); }\nfunction real_to_int(x) { return BigInt(Math.trunc(x)); }\nfunction real_to_bits(x) { return new BigInt64Array(new Float64Array([x]).buffer)[0]; }\nfunction bits_to_real(b) { return __real(BigInt.asIntN(64, b)); }\nfunction text_to_double_bits(t) { return real_to_bits(parseFloat(t)); }\nfunction __pa(f, n, got) { return (...more) => { const all = got.concat(more); if (all.length < n) { return __pa(f, n, all); } const r = f(...all.slice(0, n)); return all.length > n && typeof r === 'function' ? r(...all.slice(n)) : r; }; }\n\n"
+    in let builtins = "function print_line_uni(s) { const el = document.createElement('div'); el.textContent = s; document.getElementById('app').appendChild(el); }\nfunction print_line(s) { print_line_uni(s); }\nfunction print_line_raw(s) { print_line_uni(s); }\nfunction fail(m) { throw new Error(m); }\nfunction show(n) { return typeof n === 'boolean' ? (n ? 'True' : 'False') : String(n); }\nfunction text_length(s) { return BigInt(s.length); }\nfunction text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\nfunction text_compare(a, b) { return a < b ? -1n : a > b ? 1n : 0n; }\nfunction text_starts_with(s, p) { return s.startsWith(p); }\nfunction text_contains(s, sub) { return s.includes(sub); }\nfunction text_ends_with(s, suf) { return s.endsWith(suf); }\nfunction substring(s, start, len) { return s.slice(Number(start), Number(start) + Number(len)); }\nfunction char_to_text(c) { return c; }\nfunction char_code_at(s, i) { return BigInt(__u2c(s.codePointAt(Number(i)))); }\nfunction int_mod(a, b) { return a % b; }\nfunction list_snoc(xs, x) { xs.push(x); return xs; }\nfunction list_length(xs) { return BigInt(xs.length); }\nfunction list_at(xs, i) { const k = Number(i); if (!(k >= 0 && k < xs.length)) throw new RangeError('CODEX_TRAP_index'); return xs[k]; }\nfunction list_push(xs, x) { xs.push(x); return xs; }\nfunction list_set_at(xs, i, x) { const k = Number(i); if (k < 0 || k >= xs.length) { throw new Error(\"CODEX_TRAP_index_out_of_bounds\"); } xs[k] = x; return xs; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return BigInt(typeof c === 'string' ? __u2c(c.codePointAt(0)) : c); }\nfunction code_to_char(cp) { return String.fromCodePoint(__c2u(Number(cp))); }\nfunction char_encode(c) { return c; }\nfunction text_concat_list(xs) { return xs.join(''); }\nfunction __list_with_capacity(n) { return []; }\nfunction char_at(s, i) { const k = Number(i); if (!(k >= 0 && k < s.length)) throw new RangeError('CODEX_TRAP_index'); return s[k]; }\nfunction negate(n) { return -n; }\nfunction bit_xor(a,b){return (a^b);}\nfunction bit_and(a,b){return (a&b);}\nfunction bit_or(a,b){return (a|b);}\nfunction bit_shl(a,n){return BigInt.asIntN(64, a<<n);}\nfunction bit_shr(a,n){return (a>>n);}\nfunction bit_shru(a,n){return BigInt.asIntN(64, BigInt.asUintN(64, a)>>n);}\nfunction bit_not(a){return (~a);}\nfunction __narrow(n) { return n; }\nfunction __TC(f, a) { this.f = f; this.a = a; }\nfunction __real(b) { return new Float64Array(new BigInt64Array([b]).buffer)[0]; }\nfunction real_from_int(n) { return Number(n); }\nfunction real_to_int(x) { return BigInt(Math.trunc(x)); }\nfunction real_to_bits(x) { return new BigInt64Array(new Float64Array([x]).buffer)[0]; }\nfunction bits_to_real(b) { return __real(BigInt.asIntN(64, b)); }\nfunction text_to_double_bits(t) { return real_to_bits(parseFloat(t)); }\nfunction __pa(f, n, got) { return (...more) => { const all = got.concat(more); if (all.length < n) { return __pa(f, n, all); } const r = f(...all.slice(0, n)); return all.length > n && typeof r === 'function' ? r(...all.slice(n)) : r; }; }\n\n"
     in let types-text = emit-js-type-defs type-defs 0
     in let defs-text = emit-js-defs (m.defs) 0 arities
     in let entry = if lookup-arity arities "opening" >= 0 then
@@ -830,12 +817,6 @@ Section: Chapter Emission
     & "function __u2c(u){var t=__cce_t0.indexOf(u);if(t>=0)return t;for(var b=0;b*2<__cce_t1.length;b++){var base=__cce_t1[b*2],size=__cce_t1[b*2+1];if(u>=base&&u<base+size){var start=b==0?128:b<8?256+b*128:b==8?1280:b==9?1792:b==10?2048:-1;return start<0?-1:start+(u-base)}}"
     & "var cb=2176;for(var k=0;k*2<__cce_t2.length;k++){var tb=__cce_t2[k*2],ts=__cce_t2[k*2+1];if(u>=tb&&u<tb+ts)return cb+(u-tb);cb+=ts}return -1}\n"
     & html-cce-text-runtime
-
- A page's Text holds whole code points where native Text holds CCE's encoded
- bytes, so CCE.codex's conversions, which assemble those bytes one at a time,
- run here as JavaScript: a code point CCE has no place for is dropped, as
- natively, and a malformed UTF-8 sequence is dropped too (TextDecoder's
- U+FFFD has no CCE place).
 
   html-cce-text-runtime : Text
   html-cce-text-runtime =

@@ -38,6 +38,21 @@ Section: Vectors
 
   dt-record : List Integer = dtls-seal dt-keys dt-epoch dt-seq dt-content dt-type
 
+ A seeded single-byte mutation sweep over a sealed record: every byte is
+ flipped and run through dtls-open, which must return (None or a plaintext,
+ almost always None on a tag mismatch) and never read past the datagram.
+
+  dr-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dr-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else dr-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  dr-sweep : Integer, Integer, Integer -> Integer
+  dr-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else let m = dr-mutate dt-record pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in dr-sweep (pos + 1) n (acc + (when dtls-open dt-keys 0 m is None -> 0 is Just (p) -> 1 + list-length (p.dp-content)))
+
 Section: Hex
 
   dt-hex : List Integer -> Text
@@ -134,4 +149,5 @@ Section: Entry
     print-line-uni test-tamper
     print-line-uni test-short
     print-line-uni test-replay
+    print-line-uni ("dtls open-sweep completed=" & (if dr-sweep 0 (list-length dt-record) 0 >= 0 then "True" else "False"))
   end

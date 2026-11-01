@@ -25,7 +25,8 @@ param(
     # the workspace rather than of the depot, so two agents measured the
     # same source against different compilers and disagreed. Pass -Kernel
     # only to test a compiler that is not the seed, and say so in the CL.
-    [string]$Kernel = ''
+    [string]$Kernel = '',
+    [string]$RawFlags = ''
 )
 
 # Usage:
@@ -55,7 +56,7 @@ $LogFile = Join-Path $OutDir 'compile-ir.log'
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
 $KernelCdx = if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }
 Write-Host "[riscv-compile] Compiling $Src to IR..."
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx
+& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx @(if ($RawFlags) { '-RawFlags', $RawFlags })
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: IR compile step exited $LASTEXITCODE; see $LogFile")
     exit 3

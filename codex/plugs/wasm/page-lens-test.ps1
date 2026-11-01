@@ -15,7 +15,8 @@ param(
     [string]$Subject,
     [string]$Kernel,
     [string[]]$Only,
-    [switch]$Calibrate
+    [switch]$Calibrate,
+    [switch]$Lambda
 )
 
 Set-StrictMode -Version Latest
@@ -50,6 +51,105 @@ if ($Only) {
 }
 $work = Join-Path $PSScriptRoot 'build-output\lens-test'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+# A module is only as fresh as its last build. A merge-down updates the
+# source and rebuilds nothing, so an emitter measured through a stale
+# module reports the previous revision -- as a false green just as readily
+# as a false red.
+#
+# Only the chapters this module is BUILT FROM count. The plug's network
+# entry chapter sits in the same directory and is not bundled here, so a
+# sweep of the directory reports every lens stale the moment anyone edits
+# the TCP half, which is a guard firing on something it does not guard.
+function Get-StaleSource($L, [string]$wasm) {
+    $sources = @()
+    foreach ($ch in ($L.chapters -split ',')) {
+        $name = ($ch -split ':')[0]
+        foreach ($cand in @((Join-Path $Repo ("codex\plugs\{0}\{1}.codex" -f $L.plug, $name)),
+                            (Join-Path $Repo ("codex\plugs\common\{0}.codex" -f $name)))) {
+            if (Test-Path -PathType Leaf $cand) { $sources += (Get-Item $cand); break }
+        }
+    }
+    foreach ($shared in @('PlugStdio.codex', 'PlugTypes.codex', 'IRTextParser.codex')) {
+        $sp2 = Join-Path $Repo "codex\plugs\common\$shared"
+        if (Test-Path -PathType Leaf $sp2) { $sources += (Get-Item $sp2) }
+    }
+    $newest = $sources | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest -and $newest.LastWriteTime -gt (Get-Item $wasm).LastWriteTime) { return $newest.Name }
+    return ''
+}
+
+# -Lambda: every lens's lambda arm (ExaminersAssay, "The page lenses"). The compiler lifts
+# every lambda before IR text, so no compiled subject reaches the arm; the
+# lambda IR is the lifted IR of roc-closure-captures-list with its one lifted
+# site written back as (lambda ...). A lens REACHES the arm when the lambda's
+# parameter `ignored` occurs more often than in its lifted output (a byte
+# difference is not reach: wgsl differs and reaches nothing), and REFUSES when
+# a refusal mark appears that the lifted output lacks. Both lists below run
+# both ways: a listed lens that reaches fails, as does an unlisted one that
+# does not. -Calibrate hands every lens the lifted IR on both sides, so no lens
+# may reach or refuse.
+if ($Lambda) {
+    $LambdaRefusers = @('ada', 'cobol', 'pascal', 'ptx', 'wasm')
+    $LambdaUnreached = @('wgsl')
+    $refusalMark = '!UNSUPPORTED: lambda|CODEX_REFUSED_lambda|no form for lambda'
+    $lamLog = Join-Path $work 'lambda.log'
+    & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') `
+        -Src (Join-Path $Repo 'codex\test\roc-closure-captures-list.codex') -Out (Join-Path $work 'lambda.out') `
+        -Log $lamLog -IrUni -Passes 'text-plug' -Kernel $Kernel | Out-Null
+    $lg = [IO.File]::ReadAllText($lamLog)
+    $a = $lg.IndexOf('IR-BEGIN'); $b = $lg.IndexOf('IR-END')
+    if ($a -lt 0 -or $b -lt $a) { Write-Host "REFUSE: the lambda subject produced no IR; see $lamLog"; exit 2 }
+    $lifted = ($lg.Substring($a + 8, $b - ($a + 8)).Trim() -replace "`r", '') + "`n"
+    $site = '\(apply \(name "__lam_\d+" \(fn \(list int-default\) (\(fn int-default \(list int-default\)\))\)\) \(name "xs" \(list int-default\)\) \1\)'
+    if ([regex]::Matches($lifted, $site).Count -ne 1) {
+        Write-Host 'REFUSE: the lifted lambda site is not where this arm expects it; the IR text format moved, so rewrite the anchor.'
+        exit 2
+    }
+    $lam = [regex]::Replace($lifted, $site, '(lambda (params (param "ignored" int-default)) (name "xs" (list int-default)) $1)')
+    if ($Calibrate) { $lam = $lifted }
+    $inputs = @{ lifted = (Join-Path $work 'lambda-lifted.ir'); lam = (Join-Path $work 'lambda-lam.ir') }
+    [IO.File]::WriteAllText($inputs.lifted, $lifted, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($inputs.lam, $lam, [Text.UTF8Encoding]::new($false))
+    $lrows = @()
+    foreach ($L in $LENSES) {
+        if ($Only -and ($Only -notcontains $L.plug)) { continue }
+        $wasm = Join-Path $Repo ("codex\plugs\{0}\build-output\{1}" -f $L.plug, $L.file)
+        if (-not (Test-Path -PathType Leaf $wasm)) { $lrows += [pscustomobject]@{ plug = $L.plug; verdict = 'ABSENT'; ok = $true; note = '' }; continue }
+        $stale = Get-StaleSource $L $wasm
+        if ($stale) { $lrows += [pscustomobject]@{ plug = $L.plug; verdict = 'STALE'; ok = $false; note = "$stale is newer than the module" }; continue }
+        $text = @{}; $trap = ''
+        foreach ($k in 'lifted', 'lam') {
+            $in = $inputs[$k]
+            if ($L.ContainsKey('inputPrefix')) {
+                $in = Join-Path $work ("lambda-{0}-{1}.input" -f $L.plug, $k)
+                [IO.File]::WriteAllText($in, $L.inputPrefix + [IO.File]::ReadAllText($inputs[$k]), [Text.UTF8Encoding]::new($false))
+            }
+            $out = Join-Path $work ("lambda-{0}-{1}.out" -f $L.plug, $k)
+            $err = Join-Path $work ("lambda-{0}-{1}.err" -f $L.plug, $k)
+            $p = Start-Process -FilePath 'wasmtime' -ArgumentList @('-W', 'max-wasm-stack=16777216', $wasm) -NoNewWindow -PassThru `
+                 -RedirectStandardInput $in -RedirectStandardOutput $out -RedirectStandardError $err
+            if (-not $p.WaitForExit(300000)) { try { $p.Kill() } catch {}; $trap = "$k timed out" }
+            elseif ($p.ExitCode -ne 0) { $trap = "$k exit $($p.ExitCode)" }
+            $text[$k] = if (Test-Path $out) { [IO.File]::ReadAllText($out) } else { '' }
+        }
+        $newMark = ([regex]::Matches($text.lam, $refusalMark)).Count -gt ([regex]::Matches($text.lifted, $refusalMark)).Count
+        $moreParam = ([regex]::Matches($text.lam, 'ignored')).Count -gt ([regex]::Matches($text.lifted, 'ignored')).Count
+        $verdict = if ($trap) { 'TRAP' } elseif ($newMark) { 'REFUSED' } elseif ($moreParam) { 'REACHED' } else { 'UNREACHED' }
+        $ok = if ($Calibrate) { $verdict -eq 'UNREACHED' }
+              elseif ($verdict -eq 'REFUSED') { $LambdaRefusers -contains $L.plug }
+              elseif ($verdict -eq 'REACHED') { ($LambdaRefusers -notcontains $L.plug) -and ($LambdaUnreached -notcontains $L.plug) }
+              elseif ($verdict -eq 'UNREACHED') { $LambdaUnreached -contains $L.plug }
+              else { $false }
+        $lrows += [pscustomobject]@{ plug = $L.plug; verdict = $verdict; ok = $ok; note = $trap }
+    }
+    foreach ($r in $lrows) { Write-Host ("  {0,-12} {1,-9} {2}  {3}" -f $r.plug, $r.verdict, $(if ($r.ok) { 'ok' } else { 'FAIL' }), $r.note) }
+    $bad = @($lrows | Where-Object { -not $_.ok }).Count
+    $tally = ($lrows | Group-Object verdict | ForEach-Object { "$($_.Count) $($_.Name)" }) -join ', '
+    Write-Host ("[lens] lambda{0}: {1} of {2} lenses; {3} failed" -f $(if ($Calibrate) { ' CALIBRATION' } else { '' }), $tally, $lrows.Count, $bad)
+    if ($bad -gt 0) { exit 1 }
+    exit 0
+}
 
 # The subject. Default is the page's own richest example, so the grading input
 # is one a visitor can actually paste into the box.
@@ -112,31 +212,10 @@ foreach ($L in $LENSES) {
         $rows += [pscustomobject]@{ plug = $L.plug; verdict = 'ABSENT'; bytes = 0; note = 'no module; its lens is dark on the page' }
         continue
     }
-    # A module is only as fresh as its last build. A merge-down updates the
-    # source and rebuilds nothing, so an emitter measured through a stale
-    # module reports the previous revision -- as a false green just as readily
-    # as a false red.
-    #
-    # Only the chapters this module is BUILT FROM count. The plug's network
-    # entry chapter sits in the same directory and is not bundled here, so a
-    # sweep of the directory reports every lens stale the moment anyone edits
-    # the TCP half, which is a guard firing on something it does not guard.
-    $sources = @()
-    foreach ($ch in ($L.chapters -split ',')) {
-        $name = ($ch -split ':')[0]
-        foreach ($cand in @((Join-Path $Repo ("codex\plugs\{0}\{1}.codex" -f $L.plug, $name)),
-                            (Join-Path $Repo ("codex\plugs\common\{0}.codex" -f $name)))) {
-            if (Test-Path -PathType Leaf $cand) { $sources += (Get-Item $cand); break }
-        }
-    }
-    foreach ($shared in @('PlugStdio.codex', 'PlugTypes.codex', 'IRTextParser.codex')) {
-        $sp2 = Join-Path $Repo "codex\plugs\common\$shared"
-        if (Test-Path -PathType Leaf $sp2) { $sources += (Get-Item $sp2) }
-    }
-    $newest = $sources | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($newest -and $newest.LastWriteTime -gt (Get-Item $wasm).LastWriteTime) {
+    $stale = Get-StaleSource $L $wasm
+    if ($stale) {
         $rows += [pscustomobject]@{ plug = $L.plug; verdict = 'STALE'; bytes = 0
-                                    note = "$($newest.Name) is newer than the module; rebuild before grading" }
+                                    note = "$stale is newer than the module; rebuild before grading" }
         continue
     }
 

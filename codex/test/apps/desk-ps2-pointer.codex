@@ -1,0 +1,68 @@
+Chapter: DeskPs2Pointer
+  cites Works chapter GopInput
+  cites Works chapter GopInputQueue
+  cites Works chapter GopUsb
+  cites Works chapter GopUsbKbd
+  cites Works chapter GopUsbMouse
+  cites Kernel chapter Hpet
+  cites Foreword chapter Console
+
+ The pointer half of desk-run and desk-loop on a machine with no USB mouse
+ (no -hid-combo). desk-ps2-pointer.vmargs moves the pointer 40 right and 30
+ down from the centre of 1024 x 768, then presses and releases the left
+ button there.
+
+Section: Desk Pointer Path
+
+  dpp-width : Integer = 1024
+  dpp-height : Integer = 768
+
+  dpp-yn : Boolean -> Text
+  dpp-yn (b) = if b then "yes" else "no"
+
+  dpp-iter : Integer, UsbKbd, UsbMouse, Integer -> [Device.Port] Integer
+  dpp-iter (q) (kbd) (mouse) (stats) = act
+    ps2 <- di-ps2-pump q mouse dpp-width dpp-height
+    let collected = di-collect q kbd mouse dpp-width dpp-height
+    in let delivered = di-deliver q mouse
+    in let mv = peek-qword q di-out-kind == di-motion | peek-qword q di-out-kind == di-button
+    in let clicked = mouse-take-click mouse
+    in let a = if mv then poke-qword stats 0 (peek-qword stats 0 + 1) else 0
+    in let b = if clicked then poke-qword stats 8 (peek-qword stats 8 + 1) else 0
+    in let c = if clicked then poke-qword stats 16 (mouse-x mouse) else 0
+    in let d = if clicked then poke-qword stats 24 (mouse-y mouse) else 0
+    in 0
+  end
+
+  dpp-loop : Integer, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Device.Port] Integer
+  dpp-loop (q) (kbd) (mouse) (stats) (start) (duration) = act
+    if hpet-ticks - start >= duration then 0
+    else act
+      i <- dpp-iter q kbd mouse stats
+      dpp-loop q kbd mouse stats start duration
+    end
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Port, Device.Mmio] Nothing = act
+    att <- usb-attach
+    mouse <- di-pointer (att.ua-mouse) dpp-width dpp-height
+    let started = hpet-start
+    in let q = di-new 0
+    in let stats = alloc-zeroed 64 64
+    in act
+      print-line-uni ("usb mouse " & dpp-yn (att.ua-mouse.um-ok) & ", ps2 pointer " & dpp-yn (mouse-is-ps2 mouse))
+      print-line-uni ("start " & show (mouse-x mouse) & "," & show (mouse-y mouse))
+      let heap0 = alloc-bytes 0
+      in act
+        n <- dpp-loop q (att.ua-kbd) mouse stats hpet-ticks (hpet-ticks-per-second * 6)
+        let heap1 = alloc-bytes 0
+        in act
+          print-line-uni ("end " & show (mouse-x mouse) & "," & show (mouse-y mouse) & ", moved " & dpp-yn (peek-qword stats 0 > 0))
+          print-line-uni ("clicks " & show (peek-qword stats 8) & " at " & show (peek-qword stats 16) & "," & show (peek-qword stats 24))
+          print-line-uni ("heap flat " & dpp-yn (heap1 == heap0) & ", loss " & show (peek-qword q di-loss))
+        end
+      end
+    end
+  end

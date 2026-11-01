@@ -7,13 +7,6 @@ Chapter: MqttsLoopbackTest
   cites Encode chapter X509Chain
   cites Foreword chapter Maybe
 
- mqtts:// end to end: an authenticated TLS handshake between two of our
- endpoints, then a CONNECT carried as application data and answered, with
- no network and no broker process.
-
- The whole exchange runs in one let-chain. Each step allocates, there is
- no collector, and a top-level binding is re-evaluated at every mention.
-
    1. CONNECT sealed, opened by the broker, answered CONNACK 0, opened by
       the client: the session is ready and the reason code is read.
    2. What went on the wire is a TLS record and NOT the MQTT packet, and
@@ -138,6 +131,46 @@ Section: Helpers
   tf-loop (bs) (i) (n) (acc) =
     if i >= n then acc else tf-loop bs (i + 1) n (list-push acc (list-at bs i))
 
+Section: An Unauthenticated Session
+
+ A client with no anchors completes the handshake unauthenticated. Each pair is built fresh, so no arm shares an
+ endpoint record with another (L-ALIAS).
+
+  AnonPair = record { tp-c : TlsEp, tp-s : TlsEp }
+
+  anon-feed : TlsEp, List (List Integer), Integer -> TlsEpStep
+  anon-feed (ep) (recs) (i) =
+    let st = tls-ep-recv ep (list-at recs i)
+    in if i + 1 >= list-length recs then st else anon-feed (st.tes-ep) recs (i + 1)
+
+  anon-pair : Integer -> AnonPair
+  anon-pair (k) =
+    let sv = tls-ep-server-new s-priv s-random [leaf-cert] leaf-priv leaf-pub
+    in let h = tls-ep-hello (tls-ep-client-new c-priv c-random [] [] [])
+    in let s1 = tls-ep-recv sv (list-at (h.tes-out) 0)
+    in let c5 = anon-feed (h.tes-ep) (s1.tes-out) k
+    in let s2 = tls-ep-recv (s1.tes-ep) (list-at (c5.tes-out) 0)
+    in AnonPair { tp-c = c5.tes-ep, tp-s = s2.tes-ep }
+
+ anon-ready: the client's CONNECT over pair p reaches the broker, whose CONNACK is handed back to the client's
+ endpoint; with to-default the endpoint is switched to the default constructor's mode after its CONNECT.
+
+  anon-ready : AnonPair, Boolean -> Text
+  anon-ready (p) (to-default) =
+    let cn = mqtts-ep-connect (mqtts-ep-new-unauthenticated mqtt-ep-new (p.tp-c)) default-mqtt-connect
+    in let sv = tls-ep-recv (p.tp-s) (list-at (cn.xms-out) 0)
+    in let ack = tls-ep-send-app (sv.tes-ep) (connack 0)
+    in let cl = if to-default then __record-set (cn.xms-ep) "xm-anon" False else cn.xms-ep
+    in show (mqtts-ep-ready ((mqtts-ep-recv cl (list-at (ack.tes-out) 0) 0).xms-ep))
+
+  anon-row : Text =
+    let p1 = anon-pair 0
+    in let p2 = anon-pair 0
+    in "mqtts unauthenticated done=" & show (tls-ep-done (p1.tp-c)) & " authenticated=" & show (tls-ep-authenticated (p1.tp-c))
+      & " default-connect-out=" & show (list-length ((mqtts-ep-connect (mqtts-ep-new mqtt-ep-new (p1.tp-c)) default-mqtt-connect).xms-out))
+      & " named-connect-out=" & show (list-length ((mqtts-ep-connect (mqtts-ep-new-unauthenticated mqtt-ep-new (p2.tp-c)) default-mqtt-connect).xms-out))
+      & " ready-after-connack named=" & anon-ready (anon-pair 0) False & " default=" & anon-ready (anon-pair 0) True
+
 Section: Entry
 
   opening : [Console] Nothing =
@@ -195,4 +228,5 @@ Section: Entry
       print-line-uni ("mqtts wire not-plain=" & show wire-is-record & " broker-recovered=" & show broker-got)
       print-line-uni ("mqtts split half=" & show split-half & " whole=" & show split-whole)
       print-line-uni ("mqtts authenticated=" & show one-auth)
+      print-line-uni anon-row
     end

@@ -4,8 +4,6 @@ Chapter: Ntp
 
  NTP timestamps are seconds from 1900-01-01 00:00:00 (RFC 5905).
 
- We say:
-
 Section: Constants
   ntp-port : Integer = 123
   ntp-packet-size : Integer = 48
@@ -94,8 +92,22 @@ Section: Response Parsing
       origin-ts = ntp-read-timestamp data 24,
       receive-ts = ntp-read-timestamp data 32,
       transmit-ts = ntp-read-timestamp data 40,
-      valid = True
+      valid = ntp-reply-sane data
     }
+
+ RFC 4330 section 5: a client discards a reply whose mode is not server (4),
+ whose version is not the request's, whose leap indicator is 3 (the server's
+ clock is unsynchronized), whose stratum is 0 (a kiss-o'-death) or above 15,
+ or whose transmit timestamp is zero.
+
+  ntp-reply-sane : List Integer -> Boolean
+  ntp-reply-sane (data) =
+    let li-vn-mode = list-at data 0
+    in if bit-and li-vn-mode 7 /= ntp-mode-server then False
+    else if bit-and (bit-shru li-vn-mode 3) 7 /= ntp-version then False
+    else if bit-and (bit-shru li-vn-mode 6) 3 == 3 then False
+    else if list-at data 1 < 1 | list-at data 1 > 15 then False
+    else ntp-read-be32 data 40 /= 0 | ntp-read-be32 data 44 /= 0
 
   ntp-read-timestamp : List Integer, Integer -> NtpTimestamp
   ntp-read-timestamp (data) (off) =

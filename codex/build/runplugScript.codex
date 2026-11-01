@@ -7,48 +7,133 @@ Chapter: RunPlugScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
-  plug-params : List ShellParam = [sh-param "Plug" SptString, sh-param "InFile" SptString, sh-param "Output" SptString, sh-param-default "MemMB" SptInt (SeInt 4096), sh-param-default "TimeoutSec" SptInt (SeInt 120), sh-param-default "Port" SptInt (SeInt 0), sh-attrs ["ValidateRange(0, 255)"] (sh-param-default "Tag" SptInt (SeInt 1))]
+  plug-params : List ShellParam =
+    [ sh-param "Plug" SptString
+    , sh-param "InFile" SptString
+    , sh-param "Output" SptString
+    , sh-param-default "MemMB" SptInt (SeInt 4096)
+    , sh-param-default "TimeoutSec" SptInt (SeInt 120)
+    , sh-param-default "Port" SptInt (SeInt 0)
+    , sh-attrs ["ValidateRange(0, 255)"] (sh-param-default "Tag" SptInt (SeInt 1))
+    ]
 
 Section: S01 -- Preamble
 
-  s01-port : List ShellCmd =
-    let derive = [ScIf (SeRaw "$Plug -match '[\\\\/]plugs[\\\\/]([^\\\\/]+)[\\\\/]'") [ScAssign "Port" (SeRaw "Get-PlugPort $Matches[1]")] [ScRaw "throw \"run-plug: cannot tell which plug '$Plug' is, so cannot derive its port. Pass -Port, or run it from codex/plugs/<name>/.\""]]
-    in [ScIf (SeRaw "$Port -eq 0") derive [], ScRaw "Assert-PlugPortFree -Port $Port -Plug $Plug"]
-
   s01-body : List ShellCmd =
-    let missing-plug = [ScRaw "[Console]::Error.WriteLine(\"MISSING plug: $Plug\")", ScExit (SeInt 2)]
-    in let missing-input = [ScRaw "[Console]::Error.WriteLine(\"MISSING input: $InFile\")", ScExit (SeInt 2)]
-    in [ScSetStrictMode, ScSetErrorStop, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'plug-ports.ps1')"), ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScBlank, ScSequence s01-port, ScBlank, ScIf (SeNot (SeFileExists (SeVar "Plug"))) missing-plug [], ScIf (SeNot (SeFileExists (SeVar "InFile"))) missing-input []]
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScRunDot (SePathJoin SeScriptRoot (SeLit "vm-config.ps1"))
+    , ScRunDot (SePathJoin SeScriptRoot (SeLit "plug-ports.ps1"))
+    , ScBlank
+    , ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit "..")))
+    , ScBlank
+    , ScSequence s01-port
+    , ScBlank
+    , ScIf (SeNot (SeFileExists (SeVar "Plug"))) [ScWriteError (SeText "MISSING plug: $Plug"), ScExit (SeInt 2)] []
+    , ScIf (SeNot (SeFileExists (SeVar "InFile"))) [ScWriteError (SeText "MISSING input: $InFile"), ScExit (SeInt 2)] []
+    ]
+
+  s01-port : List ShellCmd =
+    [ ScIf (SeBare (SeIntEq (SeVar "Port") (SeInt 0))) [ScIf plug-dir-named port-from-dir [ScThrow (SeText "run-plug: cannot tell which plug '$Plug' is, so cannot derive its port. Pass -Port, or run it from codex/plugs/<name>/.")]] []
+    , ScRaw "Assert-PlugPortFree -Port $Port -Plug $Plug"
+    ]
+
+  plug-dir-named : ShellExpr = SeBare (SeMatch (SeVar "Plug") "[\\\\/]plugs[\\\\/]([^\\\\/]+)[\\\\/]")
+
+  port-from-dir : List ShellCmd = [ScAssign "Port" (SeBare (SeCall "Get-PlugPort" [SeIndex (SeVar "Matches") (SeInt 1)]))]
 
 Section: S02 -- Read input and start listener
 
-  s02-body : List ShellCmd = [ScBlank, ScReadBytes "inputBytes" (SeVar "InFile"), ScEcho (SeRaw "\"[plug] Input: $($inputBytes.Length) bytes\""), ScEcho (SeRaw "\"[plug] Plug: $Plug\""), ScBlank, ScRaw "$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)", ScRaw "$listener.Start()", ScEcho (SeRaw "\"[plug] Listening on TCP $Port\""), ScBlank]
+  s02-body : List ShellCmd =
+    [ ScBlank
+    , ScReadBytes "inputBytes" (SeVar "InFile")
+    , ScEcho (SeText "[plug] Input: $($inputBytes.Length) bytes")
+    , ScEcho (SeText "[plug] Plug: $Plug")
+    , ScBlank
+    , ScDotNetCallAssign "listener" "System.Net.Sockets.TcpListener" "new" [SeBare (SeStaticProp "System.Net.IPAddress" "Loopback"), SeVar "Port"]
+    , ScCallMethod (SeVar "listener") "Start" []
+    , ScEcho (SeText "[plug] Listening on TCP $Port")
+    , ScBlank
+    ]
 
 Section: S03 -- Boot VM
 
-  s03-body : List ShellCmd = [ScAssign "vmBin" (SeBare (SePathJoinN [SeVar "Repo", SeLit "tools\\codex-vm.exe"])), ScTempFile "stderrFile", ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Plug", SeLit "-mem", SeRaw "\"$MemMB\"", SeLit "-headless"]), ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile", ScEcho (SeRaw "\"[plug] VM PID $($proc.Id)\"")]
+  s03-body : List ShellCmd =
+    [ ScAssign "vmBin" (SeBare (SePathJoinN [SeVar "Repo", SeLit "tools\\codex-vm.exe"]))
+    , ScTempFile "stderrFile"
+    , ScAssign "vmArgs" (SeArrayLiteral [SeLit "-kernel", SeVar "Plug", SeLit "-mem", SeText "$MemMB", SeLit "-headless"])
+    , ScRaw "$proc = Start-Process -FilePath $vmBin -ArgumentList $vmArgs -PassThru -WindowStyle Hidden -RedirectStandardError $stderrFile"
+    , ScEcho (SeText "[plug] VM PID $($proc.Id)")
+    ]
 
 Section: S04 -- Wait for TCP connection
 
   s04-body : List ShellCmd =
-    let vm-exited = [ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "[Console]::Error.WriteLine(\"FAIL: VM exited before connecting. stderr: $stderr\")", ScExit (SeInt 4)]
-    in let timeout-hit = [ScRaw "[Console]::Error.WriteLine(\"FAIL: plug did not connect within 60s\")", ScExit (SeInt 5)]
-    in [ScBlank, ScAssign "deadline" (SeRaw "[DateTime]::UtcNow.AddSeconds(60)"), ScLabeledWhile "wait_conn" (SeNot (SeRaw "$listener.Pending()")) [ScIf (SeProperty (SeVar "proc") "HasExited") vm-exited [], ScIf (SeRaw "[DateTime]::UtcNow -gt $deadline") timeout-hit [], ScRaw "Start-Sleep -Milliseconds 100"], ScRaw "$client = $listener.AcceptTcpClient()", ScRaw "$stream = $client.GetStream()", ScRaw "$listener.Stop()", ScEcho (SeLit "[plug] Connected")]
+    [ ScBlank
+    , ScAssign "deadline" (SeMethodCall utc-now "AddSeconds" [SeInt 60])
+    , ScLabeledWhile "wait_conn" (SeNot (SeMethodCall (SeVar "listener") "Pending" [])) s04-wait-once
+    , ScAssign "client" (SeMethodCall (SeVar "listener") "AcceptTcpClient" [])
+    , ScAssign "stream" (SeMethodCall (SeVar "client") "GetStream" [])
+    , ScCallMethod (SeVar "listener") "Stop" []
+    , ScEcho (SeLit "[plug] Connected")
+    ]
+
+  utc-now : ShellExpr = SeBare (SeStaticProp "DateTime" "UtcNow")
+
+  s04-wait-once : List ShellCmd =
+    [ ScIf (SeProperty (SeVar "proc") "HasExited") s04-vm-exited []
+    , ScIf (SeBare (SeIntGt utc-now (SeVar "deadline"))) [ScWriteError (SeText "FAIL: plug did not connect within 60s"), ScExit (SeInt 5)] []
+    , ScSleepMs (SeInt 100)
+    ]
+
+  s04-vm-exited : List ShellCmd =
+    [ ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }"
+    , ScWriteError (SeText "FAIL: VM exited before connecting. stderr: $stderr")
+    , ScExit (SeInt 4)
+    ]
 
 Section: S05 -- Send input as ONE FRAMED MESSAGE
 
  Frame format, matching frame-encode and build/work-wire.ps1:
      le32(1 + length of body) ++ [tag] ++ body
 
-  s05-body : List ShellCmd = [ScBlank, ScRaw "$frame = [System.Collections.Generic.List[byte]]::new()", ScRaw "$flen = 1 + $inputBytes.Length", ScRaw "$frame.Add([byte]($flen -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 8) -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 16) -band 0xFF))", ScRaw "$frame.Add([byte](($flen -shr 24) -band 0xFF))", ScRaw "$frame.Add([byte]$Tag)", ScRaw "$frame.AddRange($inputBytes)", ScRaw "$frameBytes = $frame.ToArray()", ScRaw "$stream.Write($frameBytes, 0, $frameBytes.Length)", ScRaw "$stream.Flush()", ScEcho (SeRaw "\"[plug] Sent one frame of $($frameBytes.Length) bytes (tag $Tag), waiting for the reply...\"")]
+  s05-body : List ShellCmd =
+    [ ScBlank
+    , ScDotNetCallAssign "frame" "System.Collections.Generic.List[byte]" "new" []
+    , ScAssign "flen" (SeBare (SeAdd (SeInt 1) (SeProperty (SeVar "inputBytes") "Length")))
+    , ScRaw "$frame.Add([byte]($flen -band 0xFF))"
+    , ScRaw "$frame.Add([byte](($flen -shr 8) -band 0xFF))"
+    , ScRaw "$frame.Add([byte](($flen -shr 16) -band 0xFF))"
+    , ScRaw "$frame.Add([byte](($flen -shr 24) -band 0xFF))"
+    , ScCallMethod (SeVar "frame") "Add" [SeCast "byte" (SeVar "Tag")]
+    , ScCallMethod (SeVar "frame") "AddRange" [SeVar "inputBytes"]
+    , ScAssign "frameBytes" (SeMethodCall (SeVar "frame") "ToArray" [])
+    , ScCallMethod (SeVar "stream") "Write" [SeVar "frameBytes", SeInt 0, SeProperty (SeVar "frameBytes") "Length"]
+    , ScCallMethod (SeVar "stream") "Flush" []
+    , ScEcho (SeText "[plug] Sent one frame of $($frameBytes.Length) bytes (tag $Tag), waiting for the reply...")
+    ]
 
 Section: S06 -- Receive output
 
-  s06-body : List ShellCmd = [ScBlank, ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000", ScComment "A per-byte accumulate here costs 58.33 s per 8 MB against 0.015 s for", ScComment "the bulk write. It is overlapped with the guest, so it buys a core and", ScComment "not a second: at -Jobs 8 that is contention, not a faster single run.", ScRaw "$allBytes = [System.IO.MemoryStream]::new(65536)", ScRaw "$readBuf = [byte[]]::new(8192)", ScTryCatch [ScLabeledWhile "recv_loop" (SeRaw "$true") [ScRaw "$n = $stream.Read($readBuf, 0, $readBuf.Length)", ScIf (SeRaw "$n -le 0") [ScBreak] [], ScRaw "$allBytes.Write($readBuf, 0, $n)"]] "System.IO.IOException" [ScComment "Read timeout or connection reset -- normal end"] [], ScRaw "$client.Close()"]
+  s06-body : List ShellCmd =
+    [ ScBlank
+    , ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000"
+    , ScComment "A per-byte accumulate here costs 58.33 s per 8 MB against 0.015 s for"
+    , ScComment "the bulk write. It is overlapped with the guest, so it buys a core and"
+    , ScComment "not a second: at -Jobs 8 that is contention, not a faster single run."
+    , ScDotNetCallAssign "allBytes" "System.IO.MemoryStream" "new" [SeInt 65536]
+    , ScDotNetCallAssign "readBuf" "byte[]" "new" [SeInt 8192]
+    , ScTryCatch [ScLabeledWhile "recv_loop" (SeBool True) s06-read-once] "System.IO.IOException" [ScComment "Read timeout or connection reset -- normal end"] []
+    , ScCallMethod (SeVar "client") "Close" []
+    ]
+
+  s06-read-once : List ShellCmd =
+    [ ScAssign "n" (SeMethodCall (SeVar "stream") "Read" [SeVar "readBuf", SeInt 0, SeProperty (SeVar "readBuf") "Length"])
+    , ScIf (SeBare (SeIntLe (SeVar "n") (SeInt 0))) [ScBreak] []
+    , ScCallMethod (SeVar "allBytes") "Write" [SeVar "readBuf", SeInt 0, SeVar "n"]
+    ]
 
 Section: S07 -- Check output, unframe the reply, write
 
@@ -56,17 +141,47 @@ Section: S07 -- Check output, unframe the reply, write
  width, so the bits shift off the end and the length silently reads back as
  (n -band 0xFF).
 
-  s07-unframe : List ShellCmd =
-    let strip = [ScRaw "$payload = [byte[]]::new($raw.Length - 5)", ScRaw "[Array]::Copy($raw, 5, $payload, 0, $payload.Length)", ScEcho (SeRaw "\"[plug] Reply was framed (tag $($raw[4]))\"")]
-    in [ScRaw "$raw = $allBytes.ToArray()", ScAssign "payload" (SeVar "raw"), ScIf (SeRaw "$raw.Length -ge 5") [ScRaw "$bodyLen = ([int]$raw[0]) -bor (([int]$raw[1]) -shl 8) -bor (([int]$raw[2]) -shl 16) -bor (([int]$raw[3]) -shl 24)", ScIf (SeRaw "$bodyLen -eq ($raw.Length - 4)") strip []] []]
-
   s07-body : List ShellCmd =
-    let no-output = [ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScRaw "$proc.WaitForExit(5000)"] [], ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }", ScRaw "[Console]::Error.WriteLine(\"FAIL: plug produced no output. stderr: $stderr\")", ScExit (SeInt 6)]
-    in [ScBlank, ScIf (SeRaw "$allBytes.Length -eq 0") no-output [], ScBlank, ScSequence s07-unframe, ScBlank, ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "payload"], ScEcho (SeRaw "\"[plug] OK: $Output ($($payload.Length) bytes)\"")]
+    [ ScBlank
+    , ScIf (SeBare (SeIntEq (SeProperty (SeVar "allBytes") "Length") (SeInt 0))) s07-no-output []
+    , ScBlank
+    , ScSequence s07-unframe
+    , ScBlank
+    , ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Output", SeVar "payload"]
+    , ScEcho (SeText "[plug] OK: $Output ($($payload.Length) bytes)")
+    ]
+
+  s07-no-output : List ShellCmd =
+    [ ScIf (SeNot (SeProperty (SeVar "proc") "HasExited")) [ScCallMethod (SeVar "proc") "WaitForExit" [SeInt 5000]] []
+    , ScRaw "$stderr = if (Test-Path $stderrFile) { Get-Content $stderrFile -Raw } else { '' }"
+    , ScWriteError (SeText "FAIL: plug produced no output. stderr: $stderr")
+    , ScExit (SeInt 6)
+    ]
+
+  s07-unframe : List ShellCmd =
+    [ ScAssign "raw" (SeMethodCall (SeVar "allBytes") "ToArray" [])
+    , ScAssign "payload" (SeVar "raw")
+    , ScIf (SeBare (SeIntGe (SeProperty (SeVar "raw") "Length") (SeInt 5))) s07-read-length []
+    ]
+
+  s07-read-length : List ShellCmd =
+    [ ScRaw "$bodyLen = ([int]$raw[0]) -bor (([int]$raw[1]) -shl 8) -bor (([int]$raw[2]) -shl 16) -bor (([int]$raw[3]) -shl 24)"
+    , ScIf (SeBare (SeIntEq (SeVar "bodyLen") (SeSub (SeProperty (SeVar "raw") "Length") (SeInt 4)))) s07-strip []
+    ]
+
+  s07-strip : List ShellCmd =
+    [ ScDotNetCallAssign "payload" "byte[]" "new" [SeBare (SeSub (SeProperty (SeVar "raw") "Length") (SeInt 5))]
+    , ScDotNetCall "Array" "Copy" [SeVar "raw", SeInt 5, SeVar "payload", SeInt 0, SeProperty (SeVar "payload") "Length"]
+    , ScEcho (SeText "[plug] Reply was framed (tag $($raw[4]))")
+    ]
 
 Section: S08 -- Cleanup
 
-  s08-body : List ShellCmd = [ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] [], ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue", ScRaw "try { $listener.Stop() } catch {}"]
+  s08-body : List ShellCmd =
+    [ ScIf (SeAnd (SeVar "proc") (SeNot (SeProperty (SeVar "proc") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $proc.Id"] []
+    , ScRaw "Remove-Item -Force $stderrFile -ErrorAction SilentlyContinue"
+    , ScRaw "try { $listener.Stop() } catch {}"
+    ]
 
 Section: Assembly
 

@@ -42,6 +42,7 @@ $QuireDirs = @{
     'Sass' = 'codex\plugs\sass'
     'WaDemo' = 'apps\wademo'
     'Diffusion' = 'apps\diffusion'
+    'AssetForge' = 'apps\assetforge'
     'Explorer' = 'apps\explorer'; 'FontExplorer' = 'apps\fontexplorer'
     'CodexMagic' = 'apps\games\codexmagic'
     'Mathbook' = 'apps\mathbook'

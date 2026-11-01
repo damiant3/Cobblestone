@@ -28,6 +28,10 @@ function Load-Cil([string]$name) {
 function Invoke-Cil($type,[string]$name,[object[]]$values) { $type.GetMethod($name).Invoke($null,$values) }
 $tail=Load-Cil tail
 Assert ((Invoke-Cil $tail opening @()) -eq 21L) 'deep self tail recursion uses a loop and preserves parallel argument evaluation'
+$guards=Load-Cil guards
+Assert ((Invoke-Cil $guards opening @()) -eq 1L) 'boolean & and | short-circuit, so a guarded list-at past the end never runs'
+$longArgument=[object[]]::new(1);$longArgument[0]=[Collections.Generic.List[long]]::new([long[]]@(0L,0L,0L,0L,0L,1L))
+Assert ($guards.GetMethod('and-guard').Invoke($null,$longArgument) -eq 1L) 'a guard that holds still evaluates its right operand'
 $closure=Load-Cil closure
 Assert ((Invoke-Cil $closure opening @()) -eq 5L) 'escaping partial application and indirect invocation'
 $callbacks=Load-Cil callbacks

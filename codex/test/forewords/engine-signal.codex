@@ -1,7 +1,32 @@
 Chapter: FwdSignalTest
   cites Engine chapter Signal
 
+Section: Fixtures
+
+  sgt-events : List SignalEvent, Integer, Text -> Text
+  sgt-events (evs) (i) (acc) =
+    if i >= list-length evs then acc
+    else sgt-events evs (i + 1) (acc & (if i == 0 then "" else "; ") & format-signal-event (list-at evs i))
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Engine/Signal OK"
-  end
+
+  opening : [Console] Nothing =
+    let t3 = signal-connect (signal-connect (signal-connect (signal-table-new 3) "hit" 1 2) "hit" 1 3) "die" 1 4
+    in let t4 = signal-connect t3 "hit" 1 5
+    in let hits = signal-emit t3 "hit" 1 5
+    in let cut = signal-disconnect t3 "hit" 1 3
+    in let cut-hits = signal-count-connections cut "hit" 1
+    in let gone = signal-disconnect-all cut 1
+    in let base = signal-connect (signal-table-new 4) "a" 1 7
+    in let left = signal-connect base "x" 1 2
+    in let right = signal-connect base "y" 1 3
+    in act
+      print-line-uni ("table " & format-signal-table t3 & ", over capacity " & format-signal-table t4)
+      print-line-uni ("emit hit from 1: " & sgt-events hits 0 "")
+      print-line-uni ("emit hit from 2: " & show (list-length (signal-emit t3 "hit" 2 5)) & " events")
+      print-line-uni ("after disconnect 1->3: hit connections " & show cut-hits)
+      print-line-uni ("after disconnect-all 1: hit " & show (signal-count-connections gone "hit" 1) & ", die " & show (signal-count-connections gone "die" 1) & ", emit " & show (list-length (signal-emit gone "hit" 1 5)) & ", table " & format-signal-table gone)
+      let again = signal-connect gone "hit" 1 9
+      in print-line-uni ("connect after disconnect-all: " & format-signal-table again & ", hit " & show (signal-count-connections again "hit" 1))
+      print-line-uni ("connect writes in place, two connects from one table: left x " & show (signal-count-connections left "x" 1) & ", right y " & show (signal-count-connections right "y" 1))
+    end

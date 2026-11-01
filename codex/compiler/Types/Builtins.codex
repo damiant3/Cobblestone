@@ -3,12 +3,6 @@ Chapter: Builtins
   cites Codex chapter Codex Types (empty-row, int-ty-default)
   cites Codex chapter X86-64 Code Generator (emit-negate-builtin, emit-text-length-builtin, emit-helper-call-1, emit-char-at-builtin, emit-char-to-text-builtin, emit-char-encode-builtin)
 
- A row's emitter is a `Maybe` because not every name has one. A row with
- `None` is an effect op, a kernel syscall or a constructor reached by a path
- other than `emit-builtin`, and `None` is the
- honest answer for them rather than a stub that would route them here and
- then fail.
-
  `bs-alloc` IS "unknown" ON A ROW NOBODY HAS MEASURED, AND THAT IS NOT A PLACEHOLDER.
  It is the cost model's allocation class (`CostModel.md`), and the only values
  that may appear are ones somebody MEASURED: `none` for the text accessors and
@@ -28,12 +22,6 @@ Chapter: Builtins
  length it is asked for and not the text it reads from -- measured 16 bytes
  for a four-character slice of 64 characters and of 256, against 40 then 136
  when the slice grows with the source.
-
- The field is here rather than in a name list beside the checker so that the
- class sits with the name and the type, and so that adding a builtin puts the
- question in front of whoever adds it. `codex/test/cost/builtin-alloc` is the
- instrument that fills it in; a row moves off `unknown` when that harness, or
- one like it, has run against the name.
 
 Section: The Table
 
@@ -70,11 +58,6 @@ Section: The Table
    bs-type : Maybe CodexType,
    bs-emit : Maybe (CodegenState, List IRExpr -> EmitResult)
   }
-
-  ssend-name : Name = Name { value = "SSend" }
-  srecv-name : Name = Name { value = "SRecv" }
-  send-name : Name = Name { value = "SEnd" }
-  schan-name : Name = Name { value = "SChan" }
 
   builtins : List BuiltinSpec
   builtins = [
@@ -482,23 +465,23 @@ Section: The Table
      bs-name = "fork",
      bs-alloc = "unknown",
      bs-varies = True,
-     bs-type = Just (ForAllTy 0 (FunTy (FunTy NothingTy empty-row (TypeVar 0)) empty-row (ConstructedTy (Name { value = "Task" }) [
+     bs-type = Just (ForAllTy 0 (FunTy (FunTy NothingTy empty-row (TypeVar 0)) empty-row (LinearTy (ConstructedTy (Name { value = "Task" }) [
        TypeVar 0
-     ]))),
+     ])))),
      bs-emit = None
    },
    BuiltinSpec {
      bs-name = "await",
      bs-alloc = "none",
      bs-varies = True,
-     bs-type = Just (ForAllTy 0 (FunTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0]) empty-row (TypeVar 0))),
+     bs-type = Just (ForAllTy 0 (FunTy (LinearTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0])) empty-row (TypeVar 0))),
      bs-emit = None
    },
    BuiltinSpec {
      bs-name = "await-any",
      bs-alloc = "none",
      bs-varies = True,
-     bs-type = Just (ForAllTy 0 (FunTy (ListTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0])) empty-row (TypeVar 0))),
+     bs-type = Just (ForAllTy 0 (FunTy (LinearTy (ListTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0]))) empty-row (TypeVar 0))),
      bs-emit = Just (\s a -> emit-helper-call-1 s a "__task_wait_any")
    },
    BuiltinSpec {
@@ -1309,6 +1292,62 @@ Section: The Table
      bs-emit = None
    },
    BuiltinSpec {
+     bs-name = "write-vbar-el1",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just (FunTy int-ty-default empty-row int-ty-default),
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "write-icc-sre-el1",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just (FunTy int-ty-default empty-row int-ty-default),
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "write-icc-pmr-el1",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just (FunTy int-ty-default empty-row int-ty-default),
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "write-icc-igrpen1-el1",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just (FunTy int-ty-default empty-row int-ty-default),
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "read-icc-iar1-el1",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just int-ty-default,
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "write-icc-eoir1-el1",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just (FunTy int-ty-default empty-row int-ty-default),
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "read-daif",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just int-ty-default,
+     bs-emit = None
+   },
+   BuiltinSpec {
+     bs-name = "write-daif",
+     bs-alloc = "none",
+     bs-varies = True,
+     bs-type = Just (FunTy int-ty-default empty-row int-ty-default),
+     bs-emit = None
+   },
+   BuiltinSpec {
      bs-name = "vmlaunch-full",
      bs-alloc = "none",
      bs-varies = True,
@@ -1579,21 +1618,21 @@ Section: The Table
      bs-alloc = "none",
      bs-varies = False,
      bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)),
-     bs-emit = Just (\s a -> emit-bit-shift s a shl-cl)
+     bs-emit = Just (\s a -> emit-bit-shift s a shl-cl False)
    },
    BuiltinSpec {
      bs-name = "bit-shr",
      bs-alloc = "none",
      bs-varies = False,
      bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)),
-     bs-emit = Just (\s a -> emit-bit-shift s a sar-cl)
+     bs-emit = Just (\s a -> emit-bit-shift s a sar-cl True)
    },
    BuiltinSpec {
      bs-name = "bit-shru",
      bs-alloc = "none",
      bs-varies = False,
      bs-type = Just (FunTy int-ty-default empty-row (FunTy int-ty-default empty-row int-ty-default)),
-     bs-emit = Just (\s a -> emit-bit-shift s a shr-cl)
+     bs-emit = Just (\s a -> emit-bit-shift s a shr-cl False)
    },
    BuiltinSpec {
      bs-name = "bit-not",
@@ -2222,51 +2261,6 @@ Section: The Table
      bs-emit = Just (\s a -> emit-list-length-builtin s a)
    },
    BuiltinSpec {
-     bs-name = "s-new",
-     bs-alloc = "none",
-     bs-varies = True,
-     bs-type = Just (ForAllTy 0 (EffectfulTy [Name { value = "Concurrent" }] [] (deck-record (ConstructedTy schan-name [TypeVar 0])))),
-     bs-emit = Just (\s a -> emit-s-new-builtin s a)
-   },
-   BuiltinSpec {
-     bs-name = "s-send",
-     bs-alloc = "none",
-     bs-varies = True,
-     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [
-       deck-record (ConstructedTy ssend-name [TypeVar 0, TypeVar 1])
-     ])) empty-row (FunTy (TypeVar 0) (concrete-row "Concurrent") (deck-record (ConstructedTy schan-name [
-       TypeVar 1
-     ])))))),
-     bs-emit = Just (\s a -> emit-s-send-builtin s a)
-   },
-   BuiltinSpec {
-     bs-name = "s-recv",
-     bs-alloc = "none",
-     bs-varies = True,
-     bs-type = Just (ForAllTy 0 (ForAllTy 1 (FunTy (deck-record (ConstructedTy schan-name [
-       deck-record (ConstructedTy srecv-name [TypeVar 0, TypeVar 1])
-     ])) empty-row (deck-record (ConstructedTy schan-name [
-       TypeVar 1
-     ]))))),
-     bs-emit = Just (\s a -> emit-s-recv-builtin s a)
-   },
-   BuiltinSpec {
-     bs-name = "s-recv-value",
-     bs-alloc = "none",
-     bs-varies = True,
-     bs-type = Just (ForAllTy 0 (FunTy (deck-record (ConstructedTy schan-name [TypeVar 0])) (concrete-row "Concurrent") int-ty-default)),
-     bs-emit = Just (\s a -> emit-helper-call-1 s a "chan-kern-recv-block")
-   },
-   BuiltinSpec {
-     bs-name = "s-close",
-     bs-alloc = "none",
-     bs-varies = True,
-     bs-type = Just (FunTy (deck-record (ConstructedTy schan-name [
-       deck-record (ConstructedTy send-name [])
-     ])) (concrete-row "Concurrent") int-ty-default),
-     bs-emit = Just (\s a -> emit-helper-call-1 s a "chan-kern-close")
-   },
-   BuiltinSpec {
      bs-name = "True",
      bs-alloc = "unknown",
      bs-varies = False,
@@ -2346,6 +2340,15 @@ Section: Constant Definitions
     else let b = list-at bs i
     in if b.bs-name == n then b.bs-varies
     else builtin-varies-by-name bs n (i + 1) len
+
+  builtin-emits-by-name : List BuiltinSpec, Text, Integer, Integer -> Boolean
+  builtin-emits-by-name (bs) (n) (i) (len) =
+    if i >= len then False
+    else let b = list-at bs i
+    in if b.bs-name == n then (when b.bs-emit
+      is Just (f) -> True
+      is otherwise -> False)
+    else builtin-emits-by-name bs n (i + 1) len
 
   const-name-in : List Text, Text, Integer -> Boolean
   const-name-in (xs) (n) (i) =

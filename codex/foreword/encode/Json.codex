@@ -2,8 +2,6 @@ Chapter: Json
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
- We say:
-
 Section: Value Type
   JsonValue =
     | JsonNull
@@ -13,10 +11,6 @@ Section: Value Type
     | JsonStr (Text)
     | JsonArray (List JsonValue)
     | JsonObject (List JsonPair)
-
- A JsonNumber is the exact decimal mantissa / 10 ^ decimals. JSON has one
- number type and no binary floating point, so carrying the digits as they
- were written is what round-trips: 2.000 stays 2.000 and does not become 2.
 
   JsonNumber = record {
     jn-mantissa : Integer,
@@ -198,12 +192,6 @@ Section: Array Access
 
 Section: Parser
 
- Recursive-descent JSON parser. Total: malformed input yields
- None, never crashes the caller. Handles null, booleans, integer
- numbers, double-quoted strings with the standard escapes
- (\" \\ \/ \b \f \n \r \t \uXXXX), arrays, and objects.
- Whitespace tolerant per RFC 8259.
-
   JsonParseResult = record {
     value : JsonValue,
     next : Integer,
@@ -215,6 +203,8 @@ Section: Parser
 
   parse-ok : JsonValue, Integer -> JsonParseResult
   parse-ok (v) (next) = JsonParseResult { value = v, next = next, ok = True }
+
+  json-max-depth : Integer = 128
 
   json-parse : Text -> Maybe JsonValue
   json-parse (s) =
@@ -261,19 +251,23 @@ Section: Whitespace and Codepoints
 Section: Value Dispatch
 
   json-parse-value : Text, Integer, Integer -> JsonParseResult
-  json-parse-value (s) (i) (len) =
-    let p = skip-ws s i len
-    in if p >= len then parse-fail p
-    else dispatch-on-first s p len (cp-at s p)
+  json-parse-value (s) (i) (len) = json-parse-value-at s i len 0
 
-  dispatch-on-first : Text, Integer, Integer, Integer -> JsonParseResult
-  dispatch-on-first (s) (i) (len) (cp) =
+  json-parse-value-at : Text, Integer, Integer, Integer -> JsonParseResult
+  json-parse-value-at (s) (i) (len) (depth) =
+    if depth > json-max-depth then parse-fail i
+    else let p = skip-ws s i len
+    in if p >= len then parse-fail p
+    else dispatch-on-first s p len (cp-at s p) depth
+
+  dispatch-on-first : Text, Integer, Integer, Integer, Integer -> JsonParseResult
+  dispatch-on-first (s) (i) (len) (cp) (depth) =
     if cp == 110 then json-parse-null s i len
     else if cp == 116 then json-parse-true s i len
     else if cp == 102 then json-parse-false s i len
     else if cp == 34 then json-parse-string-value s i len
-    else if cp == 91 then json-parse-array s i len
-    else if cp == 123 then json-parse-object s i len
+    else if cp == 91 then json-parse-array s i len depth
+    else if cp == 123 then json-parse-object s i len depth
     else if cp == 45 then json-parse-number s i len
     else if json-is-digit cp then json-parse-number s i len
     else parse-fail i
@@ -304,10 +298,7 @@ Section: Literal Keywords
 Section: Numbers
 
  RFC 8259 section 6: minus? int frac? exp?, where frac and exp each
- require at least one digit after their marker. A number whose decimal
- places all cancel against its exponent is an integer and is answered as
- JsonInt, so 1e3 reads as 1000 and a document of plain integers parses
- exactly as it did before this chapter grew a decimal.
+ require at least one digit after their marker.
 
   JsonNumScan = record {
     jns-mantissa : Integer,
@@ -339,7 +330,8 @@ Section: Numbers
     in let int-stop = scan-digits s start len
     in if int-stop == start then parse-fail i
     else let whole = digits-to-int s start int-stop False 0
-    in json-number-after-int s i len neg whole int-stop
+    in if whole < 0 then parse-fail i
+    else json-number-after-int s i len neg whole int-stop
 
   json-number-after-int : Text, Integer, Integer, Boolean, Integer, Integer -> JsonParseResult
   json-number-after-int (s) (i) (len) (neg) (whole) (at) =
@@ -356,9 +348,11 @@ Section: Numbers
   json-number-result : Integer, Integer, Boolean, Integer -> JsonParseResult
   json-number-result (mantissa) (decimals) (neg) (next) =
     let m = if neg then 0 - mantissa else mantissa
-    in if decimals > 0 then parse-ok (json-num m decimals) next
+    in if decimals > json-max-decimals then parse-fail next
+    else if decimals > 0 then parse-ok (json-num m decimals) next
     else if decimals == 0 then parse-ok (JsonInt m) next
     else if 0 - decimals > json-max-decimals then parse-fail next
+    else if mantissa > 9223372036854775807 / json-pow10 (0 - decimals) then parse-fail next
     else parse-ok (JsonInt (m * json-pow10 (0 - decimals))) next
 
   json-scan-frac : Text, Integer, Integer, Integer -> JsonNumScan
@@ -372,6 +366,7 @@ Section: Numbers
     if i >= len then json-frac-end i acc count
     else if json-is-digit (cp-at s i) == False then json-frac-end i acc count
     else if count >= json-max-decimals then json-scan-frac-digits s (i + 1) len acc count
+    else if json-mul10-over acc (cp-at s i - 48) then json-scan-fail i
     else json-scan-frac-digits s (i + 1) len (acc * 10 + (cp-at s i - 48)) (count + 1)
 
   json-frac-end : Integer, Integer, Integer -> JsonNumScan
@@ -400,7 +395,7 @@ Section: Numbers
     let stop = scan-digits s i len
     in if stop == i then json-scan-fail i
     else let v = digits-to-int s i stop False 0
-    in if v > json-max-decimals then json-scan-fail i
+    in if v < 0 | v > json-max-decimals then json-scan-fail i
     else let signed = if neg then 0 - v else v
     in json-scan-ok signed 0 stop
 
@@ -418,12 +413,17 @@ Section: Numbers
   digits-to-int : Text, Integer, Integer, Boolean, Integer -> Integer
   digits-to-int (s) (i) (stop) (neg) (acc) =
     if i >= stop then if neg then 0 - acc else acc
-    else digits-to-int s (i + 1) stop neg (acc * 10 + (cp-at s i - 48))
+    else let d = cp-at s i - 48
+    in if json-mul10-over acc d then -1
+    else digits-to-int s (i + 1) stop neg (acc * 10 + d)
+
+ A digit string past 2^63 - 1 answers -1 from digits-to-int, and every caller
+ refuses a negative: acc * 10 + d would otherwise overflow, which traps.
+
+  json-mul10-over : Integer, Integer -> Boolean
+  json-mul10-over (acc) (d) = acc > (9223372036854775807 - d) / 10
 
 Section: Strings
-
- Double-quoted, with the standard JSON escapes. \uXXXX yields
- the codepoint converted back to CCE via from-unicode.
 
   json-parse-string-value : Text, Integer, Integer -> JsonParseResult
   json-parse-string-value (s) (i) (len) =
@@ -463,29 +463,9 @@ Section: Strings
     if i >= len then string-fail i
     else apply-escape s i len acc (cp-at s i)
 
- RFC 8259 requires \b \f \r \t to be accepted and we deliberately do not do
- what it says with them, because CCE has no code point for any of the four:
- from-unicode answers -1 for Unicode 8, 9, 12 and 13, and tier 0 carries LF
- at 1 and SPACE at 2 and nothing else in that region. Until 2026-08-25 all
- four were handed to the encoder as -1 and came back as the single unit 255,
- which is not a corruption a reader would notice: to-unicode 255 is 255, a
- legal character that renders as a letter, so three distinct escapes
- collapsed onto one plausible wrong one.
-
- The rule now is intent, not conformance. A tab means horizontal whitespace,
- which CCE can express, so it becomes a space; the column semantics are lost
- because CCE cannot hold them either way. Backspace and formfeed are
- teletype and line-printer machinery with no modern meaning, and a carriage
- return is line-ending machinery whose meaning the LF beside it already
- carries, so all three are dropped rather than invented. Dropping a lone CR
- loses an archaic line break; mapping it to a newline would double every
- CRLF, which is the common case and the worse trade.
-
- A \\uXXXX escape is different in kind. It is CONTENT rather than machinery,
- so when CCE cannot represent it the parser refuses instead of dropping it:
- silently losing what an author wrote is the failure this whole block exists
- to remove. CCE has no replacement character to substitute either --
- from-unicode 65533 is also -1.
+ RFC 8259 requires \b \f \r \t to be accepted, and CCE has no code point for
+ any of the four: from-unicode answers -1 for Unicode 8, 9, 12 and 13, and
+ for the replacement character 65533.
   apply-escape : Text, Integer, Integer, List Text, Integer -> StringReadResult
   apply-escape (s) (i) (len) (acc) (cp) =
     if cp == 34 then read-string-body s (i + 1) len (list-push acc "\"")
@@ -526,64 +506,64 @@ Section: Strings
 
 Section: Arrays
 
-  json-parse-array : Text, Integer, Integer -> JsonParseResult
-  json-parse-array (s) (i) (len) =
+  json-parse-array : Text, Integer, Integer, Integer -> JsonParseResult
+  json-parse-array (s) (i) (len) (depth) =
     let p = skip-ws s (i + 1) len
     in if p >= len then parse-fail i
     else if cp-at s p == 93 then parse-ok (JsonArray []) (p + 1)
-    else read-array-items s p len []
+    else read-array-items s p len [] depth
 
-  read-array-items : Text, Integer, Integer, List JsonValue -> JsonParseResult
-  read-array-items (s) (i) (len) (acc) =
-    let r = json-parse-value s i len
+  read-array-items : Text, Integer, Integer, List JsonValue, Integer -> JsonParseResult
+  read-array-items (s) (i) (len) (acc) (depth) =
+    let r = json-parse-value-at s i len (depth + 1)
     in if r.ok == False then parse-fail i
-    else array-after-item s (skip-ws s (r.next) len) len (list-snoc acc (r.value))
+    else array-after-item s (skip-ws s (r.next) len) len (list-snoc acc (r.value)) depth
 
-  array-after-item : Text, Integer, Integer, List JsonValue -> JsonParseResult
-  array-after-item (s) (i) (len) (acc) =
+  array-after-item : Text, Integer, Integer, List JsonValue, Integer -> JsonParseResult
+  array-after-item (s) (i) (len) (acc) (depth) =
     if i >= len then parse-fail i
     else if cp-at s i == 93 then parse-ok (JsonArray acc) (i + 1)
-    else if cp-at s i == 44 then read-array-items s (skip-ws s (i + 1) len) len acc
+    else if cp-at s i == 44 then read-array-items s (skip-ws s (i + 1) len) len acc depth
     else parse-fail i
 
 Section: Objects
 
-  json-parse-object : Text, Integer, Integer -> JsonParseResult
-  json-parse-object (s) (i) (len) =
+  json-parse-object : Text, Integer, Integer, Integer -> JsonParseResult
+  json-parse-object (s) (i) (len) (depth) =
     let p = skip-ws s (i + 1) len
     in if p >= len then parse-fail i
     else if cp-at s p == 125 then parse-ok (JsonObject []) (p + 1)
-    else read-object-pairs s p len []
+    else read-object-pairs s p len [] depth
 
-  read-object-pairs : Text, Integer, Integer, List JsonPair -> JsonParseResult
-  read-object-pairs (s) (i) (len) (acc) =
+  read-object-pairs : Text, Integer, Integer, List JsonPair, Integer -> JsonParseResult
+  read-object-pairs (s) (i) (len) (acc) (depth) =
     if i >= len then parse-fail i
-    else if cp-at s i == 34 then read-object-key-value s i len acc
+    else if cp-at s i == 34 then read-object-key-value s i len acc depth
     else parse-fail i
 
-  read-object-key-value : Text, Integer, Integer, List JsonPair -> JsonParseResult
-  read-object-key-value (s) (i) (len) (acc) =
+  read-object-key-value : Text, Integer, Integer, List JsonPair, Integer -> JsonParseResult
+  read-object-key-value (s) (i) (len) (acc) (depth) =
     let kr = read-string-body s (i + 1) len []
     in if kr.ok == False then parse-fail i
-    else expect-colon-then-value s (skip-ws s (kr.next) len) len acc (kr.value-text)
+    else expect-colon-then-value s (skip-ws s (kr.next) len) len acc (kr.value-text) depth
 
-  expect-colon-then-value : Text, Integer, Integer, List JsonPair, Text -> JsonParseResult
-  expect-colon-then-value (s) (i) (len) (acc) (key) =
+  expect-colon-then-value : Text, Integer, Integer, List JsonPair, Text, Integer -> JsonParseResult
+  expect-colon-then-value (s) (i) (len) (acc) (key) (depth) =
     if i >= len then parse-fail i
-    else if cp-at s i == 58 then read-object-value s (skip-ws s (i + 1) len) len acc key
+    else if cp-at s i == 58 then read-object-value s (skip-ws s (i + 1) len) len acc key depth
     else parse-fail i
 
-  read-object-value : Text, Integer, Integer, List JsonPair, Text -> JsonParseResult
-  read-object-value (s) (i) (len) (acc) (key) =
-    let r = json-parse-value s i len
+  read-object-value : Text, Integer, Integer, List JsonPair, Text, Integer -> JsonParseResult
+  read-object-value (s) (i) (len) (acc) (key) (depth) =
+    let r = json-parse-value-at s i len (depth + 1)
     in if r.ok == False then parse-fail i
-    else object-after-value s (skip-ws s (r.next) len) len (list-snoc acc (json-pair key (r.value)))
+    else object-after-value s (skip-ws s (r.next) len) len (list-snoc acc (json-pair key (r.value))) depth
 
-  object-after-value : Text, Integer, Integer, List JsonPair -> JsonParseResult
-  object-after-value (s) (i) (len) (acc) =
+  object-after-value : Text, Integer, Integer, List JsonPair, Integer -> JsonParseResult
+  object-after-value (s) (i) (len) (acc) (depth) =
     if i >= len then parse-fail i
     else if cp-at s i == 125 then parse-ok (JsonObject acc) (i + 1)
-    else if cp-at s i == 44 then read-object-pairs s (skip-ws s (i + 1) len) len acc
+    else if cp-at s i == 44 then read-object-pairs s (skip-ws s (i + 1) len) len acc depth
     else parse-fail i
 
 Page 1

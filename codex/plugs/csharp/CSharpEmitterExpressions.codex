@@ -38,7 +38,9 @@ Section: Identifier Helpers
 
   sanitize : Text -> Text
   sanitize (name) =
-    let s = text-replace name "-" "_"
+    let s0 = text-replace name "-" "_"
+    in let s1 = text-replace (text-replace s0 "@" "_at_") "[" "_lb_"
+    in let s = text-replace (text-replace (text-replace s1 "]" "_rb_") "," "_cm_") " " "_"
     in if is-cs-keyword s then "@" & s
     else if is-cs-member-name s then s & "_"
     else s
@@ -57,7 +59,7 @@ Section: Identifier Helpers
      is BooleanTy -> "bool"
      is CharTy -> "long"
      is VoidTy -> "void"
-     is UnitTy (name) (inner) -> "void"
+     is UnitTy (name) (inner) -> cs-type inner
      is NothingTy -> "object"
      is ProofTy -> "object"
      is PropEqTy (pl) (pr) -> "object"
@@ -106,8 +108,34 @@ Section: Arity Map
    arities : List ArityEntry,
    type-defs : List ATypeDef,
    locals : List Text,
-   dyn-locals : List Text
+   dyn-locals : List Text,
+   ops : List Text,
+   resume-names : List Text
   }
+
+  cs-is-op : CsCtx, Text -> Boolean
+  cs-is-op (ctx) (n) =
+    if name-in-list (ctx.locals) n 0 | lookup-arity (ctx.arities) n >= 0 | is-builtin-name n then False
+    else if text-length (lookup-raw-builtin n) > 0 then False
+    else name-in-list (ctx.ops) n 0
+
+  cs-is-fun-ty : CodexType -> Boolean
+  cs-is-fun-ty (t) =
+    when t
+     is FunTy (a) (r) (b) -> True
+     is EffectfulTy (effs) (scopes) (inner) -> cs-is-fun-ty inner
+     is otherwise -> False
+
+  cs-perform : Text, List IRExpr, CodexType, CsCtx -> Text
+  cs-perform (n) (args) (ty) (ctx) =
+    "_Cxh.As<" & cs-type ty & ">(_Cxh.Perform(\"" & sanitize n & "\"" & (if list-length args > 0 then ", " & emit-apply-args args ctx 0 else "") & "))"
+
+  cs-clause-cast : Integer -> Text
+  cs-clause-cast (n) =
+    if n <= 0 then "dynamic" else "Func<dynamic, " & cs-clause-cast (n - 1) & ">"
+
+  cs-handler-runtime : Text
+  cs-handler-runtime = "static class _Cxh {\n    static readonly Dictionary<string, List<Func<Func<dynamic, dynamic>, dynamic>>> _stack = new Dictionary<string, List<Func<Func<dynamic, dynamic>, dynamic>>>();\n    public static dynamic With(Dictionary<string, Func<Func<dynamic, dynamic>, dynamic>> cs, Func<dynamic> body) {\n        foreach (var kv in cs) { if (!_stack.ContainsKey(kv.Key)) _stack[kv.Key] = new List<Func<Func<dynamic, dynamic>, dynamic>>(); _stack[kv.Key].Add(kv.Value); }\n        try { return body(); }\n        finally { foreach (var kv in cs) { var l = _stack[kv.Key]; l.RemoveAt(l.Count - 1); } }\n    }\n    public static dynamic Perform(string k, params dynamic[] a) {\n        var l = _stack[k];\n        dynamic r = l[l.Count - 1](new Func<dynamic, dynamic>(v => v));\n        foreach (var x in a) r = r(x);\n        return r;\n    }\n    public static T As<T>(dynamic v) => (T)v;\n    public static T Id<T>(T v) => v;\n}\n\n"
 
   name-in-list : List Text, Text, Integer -> Boolean
   name-in-list (xs) (n) (i) =
@@ -143,12 +171,6 @@ Section: Arity Map
      arity = __narrow (list-length (d.params)),
      generic-count = __narrow (list-length (collect-type-var-ids (d.type-val) []))
     }))
-
- Streaming variants: build the arity map and find the entry return type
- straight from the raw def S-expressions, reading only each def's
- signature (name xs[1], params xs[3], return type xs[4]) - never the
- body xs[5]. This lets the plug emit defs one at a time without ever
- materializing the whole IRChapter (2295 IRDefs blew the 2GB heap).
 
  Accumulate with list-push (O(1) amortized, array-backed) then sort
  once with sort-by - NOT sorted-insert-arity per def. sorted-insert
@@ -433,6 +455,24 @@ Section: Apply Chain
   builtin-emitters : List BuiltinEmitter = sort-emitters [
 
    BuiltinEmitter { name = "show", emit = \args -> \ctx -> \ty -> emit-builtin-show args ctx },
+   BuiltinEmitter { name = "real-to-bits", emit = \args -> \ctx -> \ty -> cs-call1 "BitConverter.DoubleToInt64Bits" args ctx },
+   BuiltinEmitter { name = "bits-to-real", emit = \args -> \ctx -> \ty -> cs-call1 "BitConverter.Int64BitsToDouble" args ctx },
+   BuiltinEmitter { name = "to-real-approx", emit = \args -> \ctx -> \ty -> cs-call1 "(double)(float)" args ctx },
+   BuiltinEmitter { name = "bits-to-real-approx", emit = \args -> \ctx -> \ty -> cs-call1 "_cxr_b2ra" args ctx },
+   BuiltinEmitter { name = "real-approx-to-bits", emit = \args -> \ctx -> \ty -> cs-call1 "_cxr_ra2b" args ctx },
+   BuiltinEmitter { name = "real-to-int", emit = \args -> \ctx -> \ty -> cs-call1 "_cxr_r2i" args ctx },
+   BuiltinEmitter { name = "real-approx-to-int", emit = \args -> \ctx -> \ty -> cs-call1 "_cxr_r2i" args ctx },
+   BuiltinEmitter { name = "real-from-int", emit = \args -> \ctx -> \ty -> cs-call1 "(double)" args ctx },
+   BuiltinEmitter { name = "real-approx-from-int", emit = \args -> \ctx -> \ty -> cs-call1 "(double)(float)" args ctx },
+   BuiltinEmitter { name = "from-real-approx", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "to-real-trapping", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "from-real-trapping", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "to-real-saturating", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "from-real-saturating", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "to-real-approx-trapping", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "from-real-approx-trapping", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "to-real-approx-saturating", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
+   BuiltinEmitter { name = "from-real-approx-saturating", emit = \args -> \ctx -> \ty -> emit-expr (list-at args 0) ctx },
    BuiltinEmitter {
      name = "negate",
      emit = \args -> \ctx -> \ty -> "(-" & emit-expr (list-at args 0) ctx & ")"
@@ -721,15 +761,15 @@ Section: Apply Chain
    },
    BuiltinEmitter {
      name = "bit-shl",
-     emit = \args -> \ctx -> \ty -> emit-bit-builtin "bit-shl" args ctx
+     emit = \args -> \ctx -> \ty -> "_Shf.Shl((long)(" & emit-expr (list-at args 0) ctx & "), (long)(" & emit-expr (list-at args 1) ctx & "))"
    },
    BuiltinEmitter {
      name = "bit-shr",
-     emit = \args -> \ctx -> \ty -> emit-bit-builtin "bit-shr" args ctx
+     emit = \args -> \ctx -> \ty -> "_Shf.Shr((long)(" & emit-expr (list-at args 0) ctx & "), (long)(" & emit-expr (list-at args 1) ctx & "))"
    },
    BuiltinEmitter {
      name = "bit-shru",
-     emit = \args -> \ctx -> \ty -> "((long)((ulong)" & emit-expr (list-at args 0) ctx & " >> (int)" & emit-expr (list-at args 1) ctx & "))"
+     emit = \args -> \ctx -> \ty -> "_Shf.Shru((long)(" & emit-expr (list-at args 0) ctx & "), (long)(" & emit-expr (list-at args 1) ctx & "))"
    },
    BuiltinEmitter {
      name = "bit-not",
@@ -841,6 +881,22 @@ Section: Apply Chain
    BuiltinEmitter {
      name = "peek-16",
      emit = \args -> \ctx -> \ty -> "_Buf.peek_16(" & emit-expr (list-at args 0) ctx & ", " & emit-expr (list-at args 1) ctx & ")"
+   },
+   BuiltinEmitter {
+     name = "vec-load-at",
+     emit = \args -> \ctx -> \ty -> (if cs-real-kind (cs-vec-elem-any ty) > 0 then "_Buf.vec_load_d(" else "_Buf.vec_load_q(") & emit-expr (list-at args 0) ctx & ")"
+   },
+   BuiltinEmitter {
+     name = "vec-extract",
+     emit = \args -> \ctx -> \ty -> "(" & emit-expr (list-at args 0) ctx & ")[checked((int)" & emit-expr (list-at args 1) ctx & ")]"
+   },
+   BuiltinEmitter {
+     name = "vec-reduce-add",
+     emit = \args -> \ctx -> \ty -> "((" & emit-expr (list-at args 0) ctx & ").Aggregate((_a, _b) => _a + _b))"
+   },
+   BuiltinEmitter {
+     name = "poke-qword",
+     emit = \args -> \ctx -> \ty -> "_Buf.poke_qword(" & emit-expr (list-at args 0) ctx & ", " & emit-expr (list-at args 1) ctx & ", " & emit-expr (list-at args 2) ctx & ")"
    },
    BuiltinEmitter {
      name = "poke-16",
@@ -973,17 +1029,44 @@ Section: Apply Chain
     in if slash >= 0 then sanitize (substring f 0 slash)
     else sanitize f
 
- `show` is the one conversion that has to look at its argument's type.
- Convert.ToString of a Text hands back the same string, which is already
- CCE and must not be converted twice; of anything else it builds a fresh
- native string out of .NET's own digits and words, which must be.
-
   emit-builtin-show : List IRExpr, CsCtx -> Text
   emit-builtin-show (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
-    in when ir-expr-type (list-at args 0)
+    in if cs-real-kind (ir-expr-type (list-at args 0)) > 0 then "_Cce.FromUnicode(_cxr_show(" & a0 & "))"
+    else when strip-unit-ty (ir-expr-type (list-at args 0))
      is TextTy -> "Convert.ToString(" & a0 & ")"
      is otherwise -> "_Cce.FromUnicode(Convert.ToString(" & a0 & "))"
+
+  cs-real-kind : CodexType -> Integer
+  cs-real-kind (ty) =
+    when ty
+     is UnitTy (n) (inner) -> cs-real-kind inner
+     is EffectfulTy (effs) (scopes) (inner) -> cs-real-kind inner
+     is RealTy (w) (m) -> when w
+      is RwF32 -> 2
+      is otherwise -> 1
+     is otherwise -> 0
+
+  cs-real-round : CodexType, Text -> Text
+  cs-real-round (ty) (e) = if cs-real-kind ty == 2 then "((double)(float)" & e & ")" else e
+
+  cs-real-near : IRExpr, IRExpr, Text, CsCtx -> Text
+  cs-real-near (l) (r) (tol) (ctx) =
+    let k = cs-real-kind (ir-expr-type l)
+    in if k > 0 then "_cxr_near(" & emit-expr l ctx & ", " & emit-expr r ctx & ", " & (if k == 2 then "true" else "false") & ", " & tol & ")"
+    else "(" & emit-expr l ctx & " == " & emit-expr r ctx & ")"
+
+  cs-vec-elem-any : CodexType -> CodexType
+  cs-vec-elem-any (ty) =
+    when ty
+     is VectorTy (n) (et) -> et
+     is SizedVecTy (n) (et) -> et
+     is UnitTy (n) (inner) -> cs-vec-elem-any inner
+     is EffectfulTy (effs) (scopes) (inner) -> cs-vec-elem-any inner
+     is otherwise -> ErrorTy
+
+  cs-call1 : Text, List IRExpr, CsCtx -> Text
+  cs-call1 (f) (args) (ctx) = f & "(" & emit-expr (list-at args 0) ctx & ")"
 
   emit-builtin-print-line-uni : List IRExpr, CsCtx -> Text
   emit-builtin-print-line-uni (args) (ctx) =
@@ -1025,37 +1108,37 @@ Section: Apply Chain
   emit-builtin-text-to-double-bits : List IRExpr, CsCtx -> Text
   emit-builtin-text-to-double-bits (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
-    in "BitConverter.DoubleToInt64Bits(double.Parse(_Cce.ToUnicode(" & a0 & "), System.Globalization.CultureInfo.InvariantCulture))"
+    in "_cxr_t2db(_Cce.ToUnicode(" & a0 & "))"
 
   emit-builtin-integer-to-text : List IRExpr, CsCtx -> Text
   emit-builtin-integer-to-text (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
-    in "_Cce.FromUnicode(" & a0 & ".ToString())"
+    in "_Cce.FromUnicode((" & a0 & ").ToString())"
 
   emit-builtin-char-code-at : List IRExpr, CsCtx -> Text
   emit-builtin-char-code-at (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
-    in "((long)" & a0 & "[(int)" & a1 & "])"
+    in "((long)" & a0 & "[checked((int)" & a1 & ")])"
 
   emit-builtin-char-at : List IRExpr, CsCtx -> Text
   emit-builtin-char-at (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
-    in "((long)" & a0 & "[(int)" & a1 & "])"
+    in "((long)" & a0 & "[checked((int)" & a1 & ")])"
 
   emit-builtin-substring : List IRExpr, CsCtx -> Text
   emit-builtin-substring (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
     in let a2 = emit-expr (list-at args 2) ctx
-    in a0 & ".Substring((int)" & a1 & ", (int)" & a2 & ")"
+    in a0 & ".Substring(checked((int)" & a1 & "), checked((int)" & a2 & "))"
 
   emit-builtin-list-at : List IRExpr, CsCtx -> Text
   emit-builtin-list-at (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
-    in a0 & "[(int)" & a1 & "]"
+    in a0 & "[checked((int)" & a1 & ")]"
 
   emit-builtin-list-insert-at : List IRExpr, CsCtx -> Text
   emit-builtin-list-insert-at (args) (ctx) =
@@ -1066,7 +1149,7 @@ Section: Apply Chain
     in let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
     in let a2 = emit-expr (list-at args 2) ctx
-    in "((Func<List<" & ty & ">>)(() => { List<" & ty & "> _l = " & a0 & "; _l.Insert((int)" & a1 & ", " & a2 & "); return _l; }))()"
+    in "((Func<List<" & ty & ">>)(() => { List<" & ty & "> _l = " & a0 & "; _l.Insert(checked((int)" & a1 & "), " & a2 & "); return _l; }))()"
 
   emit-builtin-list-set-at : List IRExpr, CsCtx -> Text
   emit-builtin-list-set-at (args) (ctx) =
@@ -1077,7 +1160,7 @@ Section: Apply Chain
     in let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
     in let a2 = emit-expr (list-at args 2) ctx
-    in "((Func<List<" & ty & ">>)(() => { List<" & ty & "> _l = " & a0 & "; _l[(int)" & a1 & "] = " & a2 & "; return _l; }))()"
+    in "((Func<List<" & ty & ">>)(() => { List<" & ty & "> _l = " & a0 & "; _l[checked((int)" & a1 & ")] = " & a2 & "; return _l; }))()"
 
   cs-vec-elem : CodexType -> CodexType
   cs-vec-elem (ty) =
@@ -1100,7 +1183,7 @@ Section: Apply Chain
   emit-builtin-text-compare (args) (ctx) =
     let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
-    in "(long)string.CompareOrdinal(" & a0 & ", " & a1 & ")"
+    in "(long)Math.Sign(string.CompareOrdinal(" & a0 & ", " & a1 & "))"
 
   emit-builtin-text-replace : List IRExpr, CsCtx -> Text
   emit-builtin-text-replace (args) (ctx) =
@@ -1147,13 +1230,6 @@ Section: Apply Chain
     let a0 = emit-expr (list-at args 0) ctx
     in let a1 = emit-expr (list-at args 1) ctx
     in a0 & ".Contains(" & a1 & ", StringComparison.Ordinal)"
-
- A lifted lambda's def takes `dynamic` parameters (see the emitter's
- def-side note), and C# refuses to convert such a method group to a
- concrete delegate type. A bare lambda converts where the group cannot,
- because the site's delegate context target-types it; a cast must NOT be
- added here, since the site's IR type can carry free type variables that
- name nothing in the enclosing method.
 
   is-lam-name : Text -> Boolean
   is-lam-name (n) =
@@ -1230,13 +1306,6 @@ Section: Apply Chain
     else if sum-name == sanitize name then ctor
     else "((" & cs-type ty & ")(" & ctor & "))"
 
- The result type recorded on the outermost apply node carries the
- constructor's DECLARED type variable, not the one substituted at the call
- site: `hamt-node-set` is generic over tvar 35 and every inner type says
- 35, while the node itself says tvar 8. Walking the root's function type
- one arrow per argument reaches the substituted result. The node's own
- type stays the fallback for any root that is not a full function type.
-
   applied-result-ty : CodexType, Integer, CodexType -> CodexType
   applied-result-ty (fn-ty) (n) (fallback) =
     if n == 0 then fn-ty
@@ -1246,13 +1315,6 @@ Section: Apply Chain
      is ForAllEff (id) (body) -> applied-result-ty body n fallback
      is EffectfulTy (effs) (sc) (ret) -> applied-result-ty ret n fallback
      is otherwise -> fallback
-
- `deck-record` is intercepted here by name, the same way x86-64 does it
- at `X86_64Compound.codex:149`, because its source body is `x` and its
- real meaning is in codegen: `emit-deck-record-wrapper` brackets the
- ARGUMENT's evaluation in __deck-enter / __deck-exit, which swaps the
- live allocation pointer onto the deck for the extent. C# evaluates an
- argument before the call, so only a lambda can bracket it.
 
  C# refuses a bare lambda as an argument to a dynamically dispatched
  call (CS1977), and a `map-list` whose list is a field read off a
@@ -1291,6 +1353,7 @@ Section: Apply Chain
        is IrName (n) (ty) (sp) ->
         if n == "deck-record" & list-length args == 1 then
           "_Buf.deck_scope(() => " & emit-expr (list-at args 0) ctx & ")"
+        else if cs-is-op ctx n then cs-perform n args (ir-expr-type e) ctx
         else if is-builtin-name n & prefer-user-over-builtin n args ctx == False then
           emit-builtin n args ctx (ir-expr-type e)
         else if is-mktup-name n then "(" & emit-apply-args args ctx 0 & ")"
@@ -1317,7 +1380,7 @@ Section: Apply Chain
     if lookup-arity (ctx.arities) n < 0 then False
     else if n == "list-length" then
       list-length args > 0 & is-builtin-list-arg-ty (ir-expr-type (list-at args 0)) == False
-    else False
+    else True
 
   is-builtin-list-arg-ty : CodexType -> Boolean
   is-builtin-list-arg-ty (ty) =
@@ -1342,11 +1405,14 @@ Section: Expression Emission
      is IrTextLit (s) (sp) -> "\"" & escape-text s & "\""
      is IrBoolLit (b) (sp) -> if b then "true" else "false"
      is IrCharLit (n) (sp) -> integer-to-text n
-     is IrName (n) (ty) (sp) -> if name-in-list (ctx.locals) n 0 then
+     is IrName (n) (ty) (sp) -> if name-in-list (ctx.resume-names) n 0 then
+       (if cs-is-fun-ty ty & ty-has-tvar ty == False then "new " & cs-type ty & "(_Cxh.Id)" else "_Cxh.Id")
+     else if name-in-list (ctx.locals) n 0 then
        sanitize n
+     else if cs-is-op ctx n & cs-is-fun-ty ty == False then cs-perform n [] ty ctx
      else if n == "vec-empty" then
        "new List<" & (if ty-has-tvar (cs-vec-elem ty) then "object" else cs-type (cs-vec-elem ty)) & ">()"
-     else let raw = lookup-raw-builtin n in if text-length raw > 0 then
+     else let raw = if lookup-arity (ctx.arities) n >= 0 then "" else lookup-raw-builtin n in if text-length raw > 0 then
        raw
      else if text-length n > 0 & is-upper-letter (char-at n 0) then
        emit-ctor-upcast n ty ""
@@ -1425,14 +1491,6 @@ Section: Expression Emission
   hex4 (n) =
     "00" & hex-digit (n / 16) & hex-digit (n - n / 16 * 16)
 
- Every character of a text literal is emitted as a `\u00XX` escape of its
- CCE BYTE, because the runtime string has to be CCE and the file does not.
- The plug's own Text is already CCE, one char per byte, so the byte is
- just `char-code-at`. Writing the escape rather than the character is what
- gets it past `print-uni`, which converts CCE to Unicode on the way out
- and would otherwise undo this on every literal in the file; the escape
- itself is ASCII and survives that conversion unchanged.
-
   escape-text : Text -> Text
   escape-text (s) =
     text-concat-list (escape-text-chars s 0 (text-length s) [])
@@ -1500,6 +1558,11 @@ Section: Expression Emission
      is IrConsList -> "new List<" & cs-type (ir-expr-type l) & "> { " & emit-expr l ctx & " }.Concat(" & emit-expr r ctx & ").ToList()"
      is IrPowInt -> "_cx_ipow((long)" & emit-expr l ctx & ", (long)" & emit-expr r ctx & ")"
      is IrAddVec | IrSubVec | IrMulVec | IrDivVec -> emit-expr l ctx & ".Zip(" & emit-expr r ctx & ", (a, b) => a " & emit-bin-op op & " b).ToList()"
+     is IrApproxEq -> cs-real-near l r "4L" ctx
+     is IrApproxEqExact -> cs-real-near l r "0L" ctx
+     is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox -> "((double)(float)(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & "))"
+     is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping -> "_cxr_trap(" & cs-real-round ty ("(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & ")") & ")"
+     is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating -> "_cxr_sat(" & cs-real-round ty ("(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & ")") & ", " & (if cs-real-kind ty == 2 then "true" else "false") & ")"
      is otherwise -> "(" & emit-expr l ctx & " " & emit-bin-op op & " " & emit-expr r ctx & ")"
 
   has-typevar : CodexType -> Boolean
@@ -1621,13 +1684,6 @@ Section: Expression Emission
  `__record-set` names its field with a text literal, which gives the type
  checker nothing to unify an empty list against, and the IR spells those
  ten sites `(list-expr (elems) error)`.
-
- A non-empty list carries the same unsubstituted-tvar defect as the apply
- node above: `collision-set-loop` is generic over tvar 39, its one element
- is typed 39, and the list says tvar 9. Where the recorded element type
- mentions a type variable the element's own type is the substituted one;
- where it does not, the recorded type is kept, so a list of constructors
- still widens to its declared sum type.
 
   emit-list : List IRExpr, CodexType, CsCtx -> Text
   emit-list (elems) (ty) (ctx) =
@@ -1766,7 +1822,7 @@ Section: Expression Emission
   emit-pattern (p) =
     when p
      is IrVarPat (name) (ty) (sp) -> cs-type ty & " " & sanitize name
-     is IrLitPat (text) (ty) (sp) -> cs-bool-lit-text text
+     is IrLitPat (text) (ty) (sp) -> cs-lit-pat-text text ty
      is IrCtorPat (name) (subs) (ty) (sp) ->
       if is-mktup-name name then "(" & emit-sub-patterns subs 0 & ")"
       else if list-length subs == 0 then sanitize name & extract-ctor-type-args ty & " { }"
@@ -1786,8 +1842,14 @@ Section: Expression Emission
      is IrVarPat (name) (ty) (sp) -> "var " & sanitize name
      is IrCtorPat (name) (subs) (ty) (sp) -> emit-pattern p
      is IrWildPat (sp) -> "_"
-     is IrLitPat (text) (ty) (sp) -> cs-bool-lit-text text
+     is IrLitPat (text) (ty) (sp) -> cs-lit-pat-text text ty
      is IrVecPat (pats) (ty) (sp) -> "_"
+
+  cs-lit-pat-text : Text, CodexType -> Text
+  cs-lit-pat-text (text) (ty) =
+    when strip-unit-ty ty
+     is TextTy -> "\"" & escape-text text & "\""
+     is otherwise -> cs-bool-lit-text text
 
   emit-cs-try : Integer, List IRActStmt, List IRActStmt, List IRActStmt, CodexType, CsCtx -> Text
   emit-cs-try (max) (body) (fb) (fail-stmts) (ty) (ctx) =
@@ -1858,6 +1920,10 @@ Section: Expression Emission
        is IntegerTy (lo) (hi) (mode) ->
         when mode
          is OvClamping -> "Math.Clamp(" & val-text & ", " & integer-to-text lo & "L, " & integer-to-text hi & "L)"
+         is OvWrapping ->
+          if lo < 0 - 4611686018427387904 | hi > 4611686018427387904 then val-text
+          else let m = integer-to-text (hi - lo + 1) & "L"
+          in "((Func<long, long>)(_v => " & integer-to-text lo & "L + ((((_v - " & integer-to-text lo & "L) % " & m & ") + " & m & ") % " & m & ")))(" & val-text & ")"
          is otherwise -> val-text
        is otherwise -> val-text
      is otherwise -> val-text
@@ -1877,7 +1943,8 @@ Section: Expression Emission
   emit-handle : Text, IRExpr, List IRHandleClause, CodexType, CsCtx -> Text
   emit-handle (eff) (body) (clauses) (ty) (ctx) =
     let ret-type = cs-type ty
-    in "((Func<" & ret-type & ">)(() => { " & emit-handle-clauses clauses ret-type ctx & "return " & emit-expr body ctx & "; }))()"
+    in if list-length clauses == 0 then emit-expr body ctx
+    else "_Cxh.As<" & ret-type & ">(_Cxh.With(new Dictionary<string, Func<Func<dynamic, dynamic>, dynamic>> { " & emit-handle-clauses clauses ret-type ctx & "}, () => (dynamic)(" & emit-expr body ctx & ")))"
 
   emit-handle-clauses : List IRHandleClause, Text, CsCtx -> Text
   emit-handle-clauses (clauses) (ret-type) (ctx) =
@@ -1887,8 +1954,9 @@ Section: Expression Emission
   emit-handle-clauses-loop (clauses) (i) (ret-type) (ctx) =
     if i == list-length clauses then ""
     else let c = list-at clauses i
-    in let body-to-emit = unwrap-cs-clause-lambda (c.body) (list-length (c.params))
-    in "Func<Func<" & ret-type & ", " & ret-type & ">, " & ret-type & "> _handle_" & sanitize (c.op-name) & "_ = (" & sanitize (c.resume-name) & ") => { return " & emit-expr body-to-emit ctx & "; }; " & emit-handle-clauses-loop clauses (i + 1) ret-type ctx
+    in let cctx = CsCtx { arities = ctx.arities, type-defs = ctx.type-defs, locals = ctx.locals, dyn-locals = ctx.dyn-locals, ops = ctx.ops, resume-names = ctx.resume-names & [c.resume-name] }
+    in let n = list-length (c.params)
+    in "[\"" & sanitize (c.op-name) & "\"] = (_cxh_r) => (dynamic)((" & cs-clause-cast n & ")(" & emit-expr (c.body) cctx & ")), " & emit-handle-clauses-loop clauses (i + 1) ret-type ctx
 
   unwrap-cs-clause-lambda : IRExpr, Integer -> IRExpr
   unwrap-cs-clause-lambda (e) (n) =

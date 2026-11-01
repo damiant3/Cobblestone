@@ -10,8 +10,6 @@ Chapter: HairSim
  are grouped into guide hairs that interpolated hairs follow.
  Fixed-point (scale 1000).
 
- We say:
-
 Section: Hair Strand
 
   HairStrand = record {
@@ -71,8 +69,10 @@ Section: Simulation
   hair-step-strand (strand) (sys) (dt) =
     let integrated = hair-integrate (strand.hs-particles) sys (strand.hs-damping) dt 0 (strand.hs-count) []
     in let constrained = hair-solve-chain integrated 0 (strand.hs-count - 1) 0 (sys.hair-iterations)
-    in let collided = hair-collide-head constrained sys 0 (strand.hs-count) []
-    in HairStrand { hs-particles = collided, hs-count = strand.hs-count, hs-root-bone = strand.hs-root-bone, hs-stiffness = strand.hs-stiffness, hs-damping = strand.hs-damping }
+    in let sprung = hair-rest-spring constrained (strand.hs-stiffness) 0 (strand.hs-count) []
+    in let collided = hair-collide-head sprung sys 0 (strand.hs-count) []
+    in let relinked = hair-solve-chain collided 0 (strand.hs-count - 1) 0 1
+    in HairStrand { hs-particles = relinked, hs-count = strand.hs-count, hs-root-bone = strand.hs-root-bone, hs-stiffness = strand.hs-stiffness, hs-damping = strand.hs-damping }
 
 Section: Integration
 
@@ -81,9 +81,9 @@ Section: Integration
     if i >= n then acc
     else let p = list-at parts i
     in if p.sft-pinned then hair-integrate parts sys damping dt (i + 1) n (list-push acc p)
-    else let vx = (p.sft-x - p.sft-px) * damping / 1000 + sys.hair-wind-x * dt / 10000
+    else let vx = (p.sft-x - p.sft-px) * damping / 1000 + sys.hair-wind-x * dt / 1000
     in let vy = (p.sft-y - p.sft-py) * damping / 1000 - sys.hair-gravity * dt / 1000
-    in let vz = (p.sft-z - p.sft-pz) * damping / 1000 + sys.hair-wind-z * dt / 10000
+    in let vz = (p.sft-z - p.sft-pz) * damping / 1000 + sys.hair-wind-z * dt / 1000
     in let updated = SoftParticle { sft-x = p.sft-x + vx * dt / 1000, sft-y = p.sft-y + vy * dt / 1000, sft-z = p.sft-z + vz * dt / 1000, sft-px = p.sft-x, sft-py = p.sft-y, sft-pz = p.sft-z, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
     in hair-integrate parts sys damping dt (i + 1) n (list-push acc updated)
 
@@ -114,22 +114,46 @@ Section: Chain Distance Constraints
     in let nb = SoftParticle { sft-x = pb.sft-x - cx, sft-y = pb.sft-y - cy, sft-z = pb.sft-z - cz, sft-px = pb.sft-px, sft-py = pb.sft-py, sft-pz = pb.sft-pz, sft-rest-x = pb.sft-rest-x, sft-rest-y = pb.sft-rest-y, sft-rest-z = pb.sft-rest-z, sft-mass = pb.sft-mass, sft-pinned = False }
     in hair-chain-pass (list-set-at (list-set-at parts i na) (i + 1) nb) (i + 1) n
 
+Section: Rest Pose
+
+  hair-rest-spring : List SoftParticle, Integer, Integer, Integer, List SoftParticle -> List SoftParticle
+  hair-rest-spring (parts) (stiffness) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at parts i
+    in if p.sft-pinned then hair-rest-spring parts stiffness (i + 1) n (list-push acc p)
+    else let pulled = SoftParticle { sft-x = p.sft-x + (p.sft-rest-x - p.sft-x) * stiffness / 10000, sft-y = p.sft-y + (p.sft-rest-y - p.sft-y) * stiffness / 10000, sft-z = p.sft-z + (p.sft-rest-z - p.sft-z) * stiffness / 10000, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in hair-rest-spring parts stiffness (i + 1) n (list-push acc pulled)
+
 Section: Head Collision
 
   hair-collide-head : List SoftParticle, HairSystem, Integer, Integer, List SoftParticle -> List SoftParticle
   hair-collide-head (parts) (sys) (i) (n) (acc) =
     if i >= n then acc
     else let p = list-at parts i
-    in let dx = p.sft-x - sys.hair-head-x
+    in if p.sft-pinned | i == 0 then hair-collide-head parts sys (i + 1) n (list-push acc p)
+    else if hair-head-dist p sys >= sys.hair-head-radius then hair-collide-head parts sys (i + 1) n (list-push acc p)
+    else hair-collide-head parts sys (i + 1) n (list-push acc (hair-lay-out p (list-at acc (i - 1)) (list-at parts (i - 1)) sys))
+
+  hair-head-dist : SoftParticle, HairSystem -> Integer
+  hair-head-dist (p) (sys) =
+    let dx = p.sft-x - sys.hair-head-x
     in let dy = p.sft-y - sys.hair-head-y
     in let dz = p.sft-z - sys.hair-head-z
-    in let dist = math-isqrt (dx * dx + dy * dy + dz * dz)
-    in if dist < sys.hair-head-radius then
-      if dist == 0 then hair-collide-head parts sys (i + 1) n (list-push acc p)
-      else let push = sys.hair-head-radius - dist
-      in let pushed = SoftParticle { sft-x = p.sft-x + dx * push / dist, sft-y = p.sft-y + dy * push / dist, sft-z = p.sft-z + dz * push / dist, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = p.sft-pinned }
-      in hair-collide-head parts sys (i + 1) n (list-push acc pushed)
-    else hair-collide-head parts sys (i + 1) n (list-push acc p)
+    in math-isqrt (dx * dx + dy * dy + dz * dz)
+
+  hair-lay-out : SoftParticle, SoftParticle, SoftParticle, HairSystem -> SoftParticle
+  hair-lay-out (p) (prev) (prev-rest) (sys) =
+    let seg = math-isqrt ((p.sft-rest-x - prev-rest.sft-rest-x) * (p.sft-rest-x - prev-rest.sft-rest-x) + (p.sft-rest-y - prev-rest.sft-rest-y) * (p.sft-rest-y - prev-rest.sft-rest-y) + (p.sft-rest-z - prev-rest.sft-rest-z) * (p.sft-rest-z - prev-rest.sft-rest-z))
+    in let ox = prev.sft-x - sys.hair-head-x
+    in let oy = prev.sft-y - sys.hair-head-y
+    in let oz = prev.sft-z - sys.hair-head-z
+    in let od = math-isqrt (ox * ox + oy * oy + oz * oz)
+    in let nx = if od == 0 then 0 else ox * 1000 / od
+    in let ny = if od == 0 then 1000 else oy * 1000 / od
+    in let nz = if od == 0 then 0 else oz * 1000 / od
+    in let cand = SoftParticle { sft-x = prev.sft-x + nx * seg / 1000, sft-y = prev.sft-y + ny * seg / 1000, sft-z = prev.sft-z + nz * seg / 1000, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
+    in if hair-head-dist cand sys >= sys.hair-head-radius then cand
+    else SoftParticle { sft-x = sys.hair-head-x + nx * sys.hair-head-radius / 1000, sft-y = sys.hair-head-y + ny * sys.hair-head-radius / 1000, sft-z = sys.hair-head-z + nz * sys.hair-head-radius / 1000, sft-px = p.sft-px, sft-py = p.sft-py, sft-pz = p.sft-pz, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = False }
 
 Section: Wind
 

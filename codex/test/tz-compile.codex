@@ -1,0 +1,51 @@
+Chapter: TzCompileTest
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hmac
+  cites Foreword chapter CCE
+  cites Foreword chapter Console
+
+ Every zone of the vendored release compiled to its transitions through
+ 2037. A zone's listing is "Z name", "I utoff abbr" for the type before the
+ first transition, then "T utc utoff abbr" per transition, one per line;
+ the test prints the zone, its transition count and the SHA-256 of that
+ listing, and build/tz-oracle.ps1 -Compiled hashes the same listing from
+ Python's zoneinfo over zic's TZif output at the same release.
+
+Section: Listing
+
+  tz-hex-digit : Integer -> Text
+  tz-hex-digit (n) = substring "0123456789abcdef" n 1
+
+  tz-hex : List Integer, Integer -> Text
+  tz-hex (bs) (i) =
+    if i >= list-length bs then ""
+    else tz-hex-digit (bit-shr (list-at bs i) 4) & tz-hex-digit (bit-and (list-at bs i) 15) & tz-hex bs (i + 1)
+
+  zone-listing : Text, TzCompiled -> Text
+  zone-listing (name) (c) =
+    "Z " & name & "\nI " & show (c.initial.utoff) & " " & c.initial.abbr & "\n"
+      & text-concat-list (for t in (c.trans) -> "T " & show (t.at) & " " & show (t.kind.utoff) & " " & t.kind.abbr & "\n")
+
+  zone-line : TzDb, TzZone -> Text
+  zone-line (db) (z) =
+    let c = tz-compile db z
+    in z.name & " " & show (list-length (c.trans)) & " " & tz-hex (hash-words-to-bytes (sha256 (text-to-unicode-bytes (zone-listing (z.name) c)))) 0
+
+  print-zones : TzDb, Integer -> [Console] Nothing
+  print-zones (db) (i) =
+    if i >= list-length (db.zones) then print-line-uni "end"
+    else let m = __heap-save
+    in act
+      print-line-uni (zone-line db (list-at (db.zones) i))
+      print-next db i m
+    end
+
+  print-next : TzDb, Integer, Integer -> [Console] Nothing
+  print-next (db) (i) (m) = let r = __heap-restore m in print-zones db (i + 1)
+
+  opening : [Console] Nothing =
+    let db = tz-parse tz-sources
+    in print-zones db 0

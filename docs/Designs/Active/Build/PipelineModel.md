@@ -173,7 +173,7 @@ lanes' scripts. A lane repairing its own byte difference with `-Update` would
 record those as decided.
 
 **The drift gate REFUSES an undeclared missing target.** A generator with no
-target grades nothing, and the gate used to report that and exit 0, which is
+target grades nothing, and a gate that reported that and exited 0 would be
 L-ACCEPTED in the gate's own lane. `$NoTargetByDesign` carries one entry with
 its reason and the run FAILS on any other missing target, naming the three
 repairs: the target moved, so map it in `$AltTarget`; it is gone, so delete the

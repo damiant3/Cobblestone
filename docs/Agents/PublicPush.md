@@ -312,9 +312,11 @@ The update procedure:
    module, which is why that one is the only module ever tracked there.
    Show those two facts before claiming a file is unserved; adding a
    module later is cheap and removing one from history is not.
-5b. **Grade before you stage.** None of these is run by `build.ps1`:
-   `codex/plugs/wasm/page-lens-test.ps1` (with `-Calibrate` first, then
-   plain) and `page-bytes-test.ps1` over the modules the page copies;
+5b. **Grade before you stage.** `build.ps1` runs none of these (Damian,
+   2026-10-31): `codex/plugs/wasm/build-page-modules.ps1` rebuilds every
+   module, then `codex/plugs/wasm/page-lens-test.ps1` (plain, then
+   `-Calibrate`);
+   `page-bytes-test.ps1` over the modules the page copies;
    `page-wire-test.ps1` (same order) for the two the other two cannot
    reach, `riscv-stdio.wasm` and `arm64-stdio.wasm`, which the page ships
    like any lens; it needs both modules AND each

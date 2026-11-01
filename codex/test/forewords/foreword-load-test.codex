@@ -1,7 +1,40 @@
 Chapter: FwdLoadTestTest
   cites Foreword chapter LoadTest
 
+Section: Fixtures
+
+  ltt-handler : Integer, Integer -> LoadStep
+  ltt-handler (i) (size) =
+    if i - (i / 3) * 3 == 2 then load-step-fail else load-step-ok size
+
+  ltt-first : List Integer, Integer, Integer, Text -> Text
+  ltt-first (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else ltt-first xs (i + 1) n (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
+  ltt-last : List Integer, Integer -> Text
+  ltt-last (xs) (n) = ltt-first (ltt-drop xs (list-length xs - n) 0 []) 0 n ""
+
+  ltt-drop : List Integer, Integer, Integer, List Integer -> List Integer
+  ltt-drop (xs) (k) (i) (acc) =
+    if i >= list-length xs then acc
+    else ltt-drop xs k (i + 1) (if i < k then acc else list-push acc (list-at xs i))
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Foreword/LoadTest OK"
-  end
+
+  opening : [Console] Nothing =
+    let run = load-run-fold (load-scenario "s" 10 5) ltt-handler
+    in let r0 = load-result-with-ticks run 0
+    in let r18 = load-result-with-ticks run 18
+    in let pay = load-payload 28
+    in let get = load-http-get "/x"
+    in let post = load-http-post "/p" 3
+    in act
+      print-line-uni ("run: " & show (run.lr-completed) & " ok, " & show (run.lr-errors) & " err, " & show (run.lr-bytes) & " bytes")
+      print-line-uni (load-report r0)
+      print-line-uni (load-report r18)
+      print-line-uni ("payload 28: " & ltt-first pay 0 3 "" & " ... index 26 " & show (list-at pay 26) & ", length " & show (list-length pay))
+      print-line-uni ("GET /x: " & show (list-length get) & " bytes, " & ltt-first get 0 4 "" & " ... " & ltt-last get 4)
+      print-line-uni ("POST /p 3: " & show (list-length post) & " bytes, ends " & ltt-last post 3)
+      print-line-uni (load-suite-summary [r0, r0])
+    end

@@ -38,6 +38,40 @@ Section: Body
       is Just (v) -> "ACCEPTED " & json-emit v
       is None -> "refused"
 
+  verdict : Text -> Text
+  verdict (src) =
+    when json-parse src
+      is Just (v) -> "accepted"
+      is None -> "refused"
+
+  repeat-char : Text, Integer, Text -> Text
+  repeat-char (c) (n) (acc) = if n <= 0 then acc else repeat-char c (n - 1) (acc & c)
+
+  deep-closed : Integer -> Text
+  deep-closed (n) = repeat-char "[" n "" & repeat-char "]" n ""
+
+ A seeded single-character mutation sweep over a structured document: each
+ position in turn is replaced with a structural character and the result
+ parsed, which must return (a value or None) and never read past the text.
+
+  jrepl : Integer -> Text
+  jrepl (pos) =
+    let m = pos - (pos / 4) * 4
+    in if m == 0 then "[" else if m == 1 then "{" else if m == 2 then "\"" else "9"
+
+  jmut : Text, Integer -> Text
+  jmut (s) (pos) = substring s 0 pos & jrepl pos & substring s (pos + 1) (text-length s - pos - 1)
+
+  jverdict : Text -> Integer
+  jverdict (s) = when json-parse s is Just (v) -> 1 is None -> 0
+
+  jsweep : Text, Integer, Integer, Integer -> Integer
+  jsweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else jsweep base (pos + 1) n (acc + jverdict (jmut base pos))
+
+  json-doc : Text = "{\"a\":[1,2,{\"b\":3}],\"c\":true,\"d\":-5}"
+
 Section: Report
 
   opening : [Console] Nothing = act
@@ -73,6 +107,14 @@ Section: Report
     print-line-uni (e "1e+" (refused "1e+") "refused, exp needs a digit after the sign")
     print-line-uni (e ".5" (refused ".5") "refused, int is not optional")
     print-line-uni (e "1e99" (refused "1e99") "refused, past the bound this chapter states")
+    print-line-uni (e "20 digits" (refused "12345678901234567890") "refused, past i64")
+    print-line-uni (e "exp of 22 digits" (refused "1e9999999999999999999999") "refused, past i64 before the bound")
+    print-line-uni (e "i64 max e18" (refused "9223372036854775807e18") "refused, the scaled mantissa is past i64")
+    print-line-uni (e "frac on a big whole" (refused "922337203685477580.71234") "refused, the mantissa is past i64")
+    print-line-uni (e "parse i64 max" (round "9223372036854775807") "9223372036854775807, the control")
+    print-line-uni (e "36 places" (refused "0.123456789012345678e-18") "refused, past the 18 places a number carries")
+    print-line-uni (e "19 places" (refused "-9.123456789012345678e-1") "refused, past the 18 places a number carries")
+    print-line-uni (e "18 places" (round "1.23456789012345678e-1") "0.123456789012345678, the control")
     print-line-uni ""
     print-line-uni "A number reached through the object accessors. json-get-int on a"
     print-line-uni "decimal truncates toward zero rather than answering the default,"
@@ -85,6 +127,12 @@ Section: Report
     print-line-uni "walks and not only at the top level:"
     print-line-uni (e "array" (json-emit (json-array [json-num 2000 3, json-int 4, json-num (0 - 15) 1])) "[2.000,4,-1.5]")
     print-line-uni (e "object" (json-emit (json-object [json-pair "min" (json-num 0 3), json-pair "max" (json-num 2000 3)])) "{\"min\":0.000,\"max\":2.000}")
+    print-line-uni ""
+    print-line-uni "Nesting depth is bounded, so a hostile deeply-nested document is"
+    print-line-uni "refused rather than recursing the parser off the stack:"
+    print-line-uni (e "nest 100" (verdict (deep-closed 100)) "accepted, within the depth cap")
+    print-line-uni (e "nest 200" (verdict (deep-closed 200)) "refused, past the depth cap")
+    print-line-uni (e "mutation-sweep" (if jsweep json-doc 0 (text-length json-doc) 0 >= 0 then "completed" else "trapped") "completed, every single-char mutation parses without trapping")
   end
 
 Page 1

@@ -11,6 +11,8 @@ Chapter: CvmmServer
   cites Cvmm chapter UsbManager
   cites Cvmm chapter UsbLive
   cites Works chapter GopUsb
+  cites Works chapter GopRtc
+  cites Dev chapter DateTimeSettings
   cites Cvmm chapter ProcessManager
   cites Cvmm chapter ServiceManager
   cites OS chapter ServiceRegistry
@@ -33,8 +35,8 @@ Section: Mock Data
   server-registry : ServiceRegistry
   server-registry = service-register service-registry-empty "web" 0 0
 
-  server-views : DriveManagerState, UsbManagerState, ExplorerState -> ManagerViews
-  server-views (drives) (usb) (files) = ManagerViews {
+  server-views : DriveManagerState, UsbManagerState, ExplorerState, DateTimeState -> ManagerViews
+  server-views (drives) (usb) (files) (now) = ManagerViews {
     mv-file = files,
     mv-drive = drives,
     mv-usb = usb,
@@ -49,8 +51,23 @@ Section: Mock Data
     mv-log = lv-live disk-load,
     mv-terminal = term-from-views nm-live usb dm-live,
     mv-mesh-group = group-new "codex-mesh" "local",
-    mv-mesh-health = health-checker-new
+    mv-mesh-health = health-checker-new,
+    mv-datetime = now
   }
+
+  boot-datetime : Integer -> [Device.Port] DateTimeState
+  boot-datetime (d) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- rtc-read rtc-reg-status-b
+    s <- rtc-read 0
+    mi <- rtc-read 2
+    h <- rtc-read 4
+    day <- rtc-read 7
+    mo <- rtc-read 8
+    y <- rtc-read 9
+    if idle == 0 then datetime-new
+    else dt-from-rtc datetime-new b s mi h day mo y
+  end
 
 Section: Summary from Views
 
@@ -92,7 +109,8 @@ Section: Entry
     drives <- dm-read-block-devices
     attached <- usb-attach
     files <- fe-live
-    let views = server-views drives (um-from-attach attached) files
+    now <- boot-datetime 0
+    let views = server-views drives (um-from-attach attached) files now
     in let summary = summary-from-views views
     in let st = __record-set app-state-new "app-summary" summary
     in act

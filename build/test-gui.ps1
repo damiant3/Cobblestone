@@ -23,7 +23,14 @@ param(
     [int]$Retries = 3,            # extra attempts when a run captures no frame / blanks under load
     [int]$RetrySettleMs = 2500,   # extra wall-clock added to the screenshot deadline per retry
     [switch]$Accept,
-    [switch]$KeepArtifacts
+    [switch]$KeepArtifacts,
+    # -Record keeps a recording of the run: codex-vm -record saves a frame every
+    # RecordEveryMs into <OutDir>\<name>.frames, at most RecordMax of them. A
+    # failing test keeps the frames of its last attempt; a passing one deletes
+    # them unless -KeepArtifacts.
+    [switch]$Record,
+    [int]$RecordEveryMs = 250,
+    [int]$RecordMax = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,6 +174,7 @@ $shotAt = [int]($t + $settle)
 $mouseFile = Join-Path $OutDir "$name.mouse"
 $keysFile  = Join-Path $OutDir "$name.keys"
 $actual    = Join-Path $OutDir "$name.actual.bmp"
+$framesDir = Join-Path $OutDir "$name.frames"
 Set-Content $mouseFile -Value ($mouseEvents -join "`n") -NoNewline
 if ($keyEvents.Count -gt 0) { Set-Content $keysFile -Value ($keyEvents -join "`n") -NoNewline }
 
@@ -182,8 +190,19 @@ function Run-Vm([int]$delay) {
     )
     if ($keyEvents.Count -gt 0) { $a += @("-keys-file", $keysFile) }
     if ($extraVmArgs.Count -gt 0) { $a += $extraVmArgs }
+    if ($Record) {
+        Remove-Item $framesDir -Recurse -Force -ErrorAction SilentlyContinue
+        $a += @("-record", $framesDir, "-record-every-ms", $RecordEveryMs, "-record-min-ms", 0, "-record-max", $RecordMax)
+    }
     Remove-Item $actual -Force -ErrorAction SilentlyContinue
     & $vm @a 2>&1 | Out-Null
+}
+
+# On a failure the recording is the evidence: say where it is and how long it is.
+function Report-Frames {
+    if (-not $Record) { return }
+    $n = @(Get-ChildItem $framesDir -Filter *.bmp -ErrorAction SilentlyContinue).Count
+    Write-Host ("[gui] {0}: {1} recorded frame(s) kept in {2}" -f $name, $n, $framesDir)
 }
 
 Write-Host ("[gui] {0}: {1} pointer events, {2} keys, frame at {3} ms{4}" -f `
@@ -313,10 +332,12 @@ for ($attempt = 1; $attempt -le $attempts; $attempt++) {
 
 if ($diff -lt 0) {
     Write-Host ("[gui] FAIL {0} -- no frame captured after {1} attempts" -f $name, $attempts)
+    Report-Frames
     exit 1
 }
 if ($diff -gt $Tolerance) {
     Write-Host ("[gui] FAIL {0} -- {1} pixels differ (tolerance {2}). Actual: {3}" -f $name, $diff, $Tolerance, $actual)
+    Report-Frames
     exit 1
 }
 # The ink checks run on the frame that just passed the pixel comparison, so a
@@ -325,8 +346,12 @@ if ($diff -gt $Tolerance) {
 $inkFailed = Test-InkChecks
 if ($inkFailed -gt 0) {
     Write-Host ("[gui] FAIL {0} -- {1} ink check(s) out of range. Actual: {2}" -f $name, $inkFailed, $actual)
+    Report-Frames
     exit 1
 }
-if (-not $KeepArtifacts) { Remove-Item $mouseFile, $actual -Force -ErrorAction SilentlyContinue }
+if (-not $KeepArtifacts) {
+    Remove-Item $mouseFile, $actual -Force -ErrorAction SilentlyContinue
+    if ($Record) { Remove-Item $framesDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
 Write-Host ("[gui] PASS {0} ({1} pixels differ)" -f $name, $diff)
 exit 0

@@ -223,9 +223,9 @@ flushed, 0 this medium has no flush primitive (neither a failure nor a
 certification), -1 refused, which fails the write. A size that disagrees is a
 refusal, and the first stage that loses an append is banked in cell 90 and
 named in the row, on the serial as well as the glass. Bed arm: `bank-lost`,
-which wedges the medium from the refusal onward rather than transiently. No
-bed can exercise the flush: codex-vm's BOT model completes and commits in one
-step.
+which wedges the medium from the refusal onward rather than transiently.
+codex-vm's BOT model commits each write in one step unless `-usb-writeback` is
+passed; under that flag a write is durable only at a 0x35 commit (WORKS-62).
 
 **A REHEARSAL CERTIFIES AN IMAGE, so what counts as stale decides what the
 record is worth.** `diag-arm.ps1` refuses an image older than any

@@ -6,6 +6,7 @@ Chapter: GopWizard
   cites Works chapter GopUsbKbd
   cites Works chapter GopFat16
   cites Works chapter GopZone
+  cites Works chapter GopZones
   cites Kernel chapter BitmapFont
   cites Foreword chapter Ed25519
   cites Foreword chapter Sha256
@@ -28,8 +29,6 @@ Chapter: GopWizard
  tick count sampled after typing -- keystroke timing the machine
  cannot predict. The wrapped key lives only in memory: persistence to
  the stick is B3.
-
- We say:
 
 Section: Context
 
@@ -265,44 +264,46 @@ Section: Upstream
 
 Section: Timezone
 
- Asked at first boot because a machine that does not know where it is
- shows the wrong time to everyone who reads it, and the answer is one
- keystroke to change and nobody's secret. It is stored beside the
- identity on the stick, and the pane in Accessories changes it later.
-
- The offset is a DISPLAY offset and is never written to the MC146818,
- for the reason `GopZone` records: the top bar reads that part directly.
-
   wz-zone-draw : WzCtx, Integer -> [Device.Port] Integer
-  wz-zone-draw (c) (z) =
-    let d0 = wz-clear c
+  wz-zone-draw (c) (id) =
+    let r = zone-row-of id
+    in let d0 = wz-clear c
     in let t0 = wz-text c 0 "Timezone" wz-col-title
     in let t1 = wz-text c 2 "The hardware clock keeps the time for this machine." wz-col-text
-    in let t2 = wz-text c 3 "Choose the offset this device should report." wz-col-text
-    in let t3 = wz-text c 5 ("    " & zone-text z) wz-col-green
+    in let t2 = wz-text c 3 "Choose the place whose time this device should show." wz-col-text
+    in let t3 = wz-text c 5 ("    " & r.zr-city & "    " & r.zr-name) wz-col-green
     in let t4 = wz-text c 7 "Up and Down change it. Enter accepts." wz-col-text
     in wz-text c 9 "UTC is the default and is never a guess about where you are." wz-col-text
 
+  wz-zone-step : Integer, Integer -> Integer
+  wz-zone-step (id) (delta) =
+    let n = id + delta
+    in if n < 1 then zone-count else if n > zone-count then 1 else n
+
   wz-zone-loop : WzCtx, Integer -> [Device.Port] Integer
-  wz-zone-loop (c) (z) = act
-    d <- wz-zone-draw c z
-    wz-zone-keys c z
+  wz-zone-loop (c) (id) = act
+    d <- wz-zone-draw c id
+    wz-zone-keys c id
   end
 
   wz-zone-keys : WzCtx, Integer -> [Device.Port] Integer
-  wz-zone-keys (c) (z) = act
+  wz-zone-keys (c) (id) = act
     sc <- kbd-take (c.wz-kbd)
-    if sc == 28 then z
-    else if sc == 72 then wz-zone-loop c (zone-clamp (z + 1))
-    else if sc == 80 then wz-zone-loop c (zone-clamp (z - 1))
-    else wz-zone-keys c z
+    if sc == 28 then id
+    else if sc == 72 then wz-zone-loop c (wz-zone-step id 1)
+    else if sc == 80 then wz-zone-loop c (wz-zone-step id (0 - 1))
+    else wz-zone-keys c id
   end
+
+  wz-zone-rec : Integer -> ZoneRec
+  wz-zone-rec (id) = ZoneRec { zc-minutes = (zone-row-of id).zr-base, zc-id = id, zc-clock = 0, zc-date = 0, zc-band = zone-band-default }
 
   wz-zone : WzCtx -> [Device.Port] Integer
   wz-zone (c) = act
-    z <- wz-zone-loop c 0
-    s <- zone-save z
-    z
+    id <- wz-zone-loop c (zone-find "UTC")
+    s <- zone2-save (wz-zone-rec id)
+    m <- zone-machine-save (ZoneMachine { zm-name = (zone-row-of id).zr-name, zm-rtc-local = False })
+    (zone-row-of id).zr-base / 60
   end
 
 Section: Key Generation

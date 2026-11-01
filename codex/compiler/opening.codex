@@ -4,7 +4,7 @@ Chapter: Opening
   cites Codex chapter Collections (copy-list-with-headroom)
   cites Codex chapter Passes (default-ir-pipeline, text-plug-ir-pipeline)
   cites Codex chapter IR Fidelity (ir-fidelity-bag)
-  cites Codex chapter LambdaLifting (lift-lambdas)
+  cites Codex chapter LambdaLifting (lift-lambdas, lift-lambdas-thunked)
   cites Codex chapter Resolve Types (rewrite-ir-defs)
   cites Foreword chapter Maybe
   cites Foreword chapter Wrap64
@@ -71,13 +71,6 @@ Section: Compile Flags
  while the phase's real usage was 88 KB. That put a hard bottom on the knob at
  about 12 per cent for reasons unrelated to how much room anything needed.
 
- At pct 100 the branch evaluates the previous expression exactly, truncation
- included, so every reservation is unchanged at the shipping setting. The
- emitted binary does change, because this function gained a parameter; what
- is preserved is what it computes. Verified rather than argued: the same
- source measured under the seed and under the new compiler produces
- byte-identical deck origins across all seven decks.
-
   deck-min-workspace : Integer = 2097152
 
   scaled-floor : Integer, Integer, Integer -> Integer
@@ -136,38 +129,15 @@ Section: Compile Flags
  43. So 64 against 43 is 1.49x. Outside those 46 and the compiler, nothing in
  the tree measured closer than 2.13x.
 
- A FLOOR CANNOT BE CERTIFIED BY THE ABSENCE OF CDX9002, because a short deck
- fails silently as well as loudly: at the old floor of 32, `checkappsScript`
- compiled CLEAN and its output carried the intermediate states of a string
- concatenation, while `BuildScript` refused with CDX9002 in CHECK. A sweep that
- raises no diagnostic says nothing about the silent half. Certify a floor by
- OUTPUT EQUALITY over a corpus that names its scope; `build/deck-headroom.ps1`
- re-measures the requirement.
-
- The requirement grows with the units and the floor is a constant that does not
- follow them, so it is re-measured rather than assumed: the Shell quire needed
- 33 on 2026-08-05 and 43 on 2026-08-09, with the same unit's CHECK deck usage
- byte-identical under three different seeds, so what moved was the units.
-
  The ceiling on the cost is that `derive-deck-scale` clamps at 100 and 100 is
  what every unit received before this derivation existed, so 64 cannot reserve
  more than the arrangement it replaced.
 
  The clamp is a ceiling on the CURE as well as on the cost, and one unit is
  already past it: `codex/test/apps/foreword-all-compile` needs at least 131,
- and compiles only because a `.flags` sidecar sets decks=200. RULED 2026-09-08
- (root, COMPILER-50): the clamp STAYS and the flag carries the rare unit that
- outgrows it. Decks are reserved eagerly, so raising the clamp would raise real
+ and compiles only because a `.flags` sidecar sets decks=200. Decks are reserved eagerly, so raising the clamp would raise real
  memory on every unit above half the anchor, including the compiler's own
  self-compile, to serve one unit an 11-byte sidecar already serves.
-
- A unit that outgrows the clamp refuses with CDX9002 naming the phase. What no
- longer happens is the overflow itself: measured 2026-09-08, neither
- `foreword-all-compile` nor the compiler's own 3.1 MB unit provokes it at
- decks=64, and the first compiles at 64 and at 100 with byte-identical output.
- So the clamp binds nothing in the tree today, and either the reservation or
- the estimate is not what this prose describes. The `-Measure` path faults in
- `bag-add` rather than raising, which is C2's open item.
 
   deck-scale-anchor : Integer = 2993576
   deck-scale-margin : Integer = 2
@@ -417,7 +387,8 @@ Section: Frontend
   check-escape-invariant (m) (phase-name) =
     let violations = scan-deck-dangling (m.deck-origin) (m.deck-end) (m.bivy-origin) (m.bivy-close) 0
     in if violations > 0 then
-      let ev-msg = "Escape invariant: " & show violations & " deck pointer(s) target bivy in " & phase-name
+      let ev-head = "Escape scan (conservative): " & show violations & " deck word(s) hold a value inside the bivy range in " & phase-name
+      in let ev-msg = ev-head & "; a word is not known to be a pointer, so the phase's PRECISE line, where it has one, is the escape count"
       in bag-from-list [
         make-warning cdx-escape-violation ev-msg synthetic-span
       ]
@@ -775,9 +746,6 @@ Section: Frontend
  catch. Reading CHECK's requirement off the first number understates it by 7 to
  29 per cent, measured over four units 2026-08-09.
 
- A hosted compiler does not grow the keep: the guard cell that bounds the
- arena is a fixed physical address a hosted process does not map.
-
   compile-type-check : ScopeResult, Integer, CompileFlags -> CompileChecked
   compile-type-check (sr) (source-len) (flags) =
     let keep0 = scaled-floor (flags.deck-scale) demand-check-keep-floor 0
@@ -824,9 +792,6 @@ Section: Frontend
     else let msg = label & " deck grown to " & show height & " bytes; phase repeated"
     in let note = make-info cdx-deck-grown msg synthetic-span
     in deck-grown-notes label (height / 2) (n - 1) ([note] & acc)
-
- The emit deck's own sizing (`compile-cdx`), so a grown deck before emit
- leaves emit the room it will ask for.
 
   emit-deck-headroom : List IRDef -> Integer
   emit-deck-headroom (defs) = list-length defs * 65536 + 29360128
@@ -949,9 +914,6 @@ Section: Frontend
    grown : Integer
   }
 
- `lift-lambdas` writes its answer into the chapter record it is handed, so
- every attempt lifts a chapter record of its own.
-
   lift-run : IRChapter, List IRDef, Integer, Integer -> LiftRun
   lift-run (ir) (defs) (height) (grown) =
     let mark = __heap-save
@@ -959,7 +921,7 @@ Section: Frontend
     in let lift-base = build height
     in let lift-ceiling = lift-base + height
     in let lift-phase = phase-start
-    in let lifted = deck-record (lift-lambdas (IRChapter {
+    in let lifted = deck-record (lift-lambdas-thunked (IRChapter {
      name = ir.name,
      defs = defs,
      effect-op-names = ir.effect-op-names,
@@ -1182,6 +1144,7 @@ Section: Frontend
      dirty-slots = [],
      empty-lists = [],
      eq-sites = [],
+     field-sites = [],
      fidelity = flags.fidelity,
      fid-types = sorted-fid
     })
@@ -1232,9 +1195,6 @@ Section: Frontend
     in let msg = label & " deck grown to " & show (early-floor flags label) & " bytes; front end repeated"
     in early-grown-notes flags grows (i + 1) n (acc & [make-info cdx-deck-grown msg synthetic-span])
 
- DESUGAR and DESUGAR-KEEP both write the frontend keep deck, so either one
- grows that deck.
-
   early-label-of : Text -> Text
   early-label-of (m) =
     if text-starts-with m "Deck overflow in LEX;" then "LEX"
@@ -1251,10 +1211,6 @@ Section: Frontend
     else let d = list-at ds i
     in let lbl = if d.code == cdx-deck-overflow then early-label-of (d.message) else ""
     in if lbl /= "" then lbl else early-overflow-label ds (i + 1) n
-
- The front end's peak is the frontend keep under either the PARSE pair (LEX's
- tokens still live) or SCOPE with CHECK or the lowering decks above it; every
- later deck starts at a compacted cursor no higher than these.
 
   early-grow-fits : CompileFlags, Integer -> Boolean
   early-grow-fits (flags) (mark) =
@@ -1633,12 +1589,6 @@ Section: Quoted Works
  did not pin, a forged signature, and a score below the floor are each
  refused independently.
 
- The offered-works wire format, after the marker line: a KEY line per
- trusted key, giving its fingerprint, its public key in hex, and the
- score; and a WORK line per offered definition, giving its digest, its
- author, its timestamp, the fingerprint that signed it, the signature in
- hex, and the number of lines of content that follow.
-
   quoted-works-marker : Text = "%%QUOTED-WORKS%%"
 
   SourceSplit = record {
@@ -1657,13 +1607,6 @@ Section: Quoted Works
     if i + mlen > tlen then -1
     else if match-at t m i 0 mlen then i
     else index-of-from t m (i + 1) tlen mlen
-
- The source is CCE by the time it reaches here, and CCE is not ASCII: a
- newline is 1, a space is 2, and 10 is the digit seven. A guard written
- against the ASCII numbers asks whether the character before the marker
- is a seven, decides it is not, and hands the offered works to the parser
- as if they were code. Ask the encoding for its own numbers. Never write
- them down.
 
   at-line-start : Text, Integer -> Boolean
   at-line-start (t) (i) =
@@ -1716,12 +1659,6 @@ Section: Quoted Works
   has-quotations (body) = scan-for-quotes body 0 (text-length body)
 
 Section: Hex
-
- The digits are contiguous in CCE and the letters are not: CCE orders
- them by frequency, so a is 15 and f is 28, and everything from o to w
- sits between them. A hex decoder written as two range checks over ASCII
- therefore accepts a dozen letters that are not hex digits and mis-values
- every one of them.
 
   hex-to-bytes : Text, Integer, Integer, List Integer -> List Integer
   hex-to-bytes (t) (i) (len) (acc) =
@@ -1808,11 +1745,6 @@ Section: Reading The Offered Works
     in let st2 = __record-set st "ws-bundle" (bundle-publish (st.ws-bundle) sf)
     in parse-works lines (i + 1 + nlines) len st2
 
- No carriage return survives to be stripped here. CCE has no code point
- for one -- 13 is not in the table -- so the conversion at the I/O
- boundary drops it, and a CRLF file and an LF file are the same text by
- the time the gate sees them.
-
   build-works : Text -> WorksState
   build-works (works) =
     let lines = text-split works "\n"
@@ -1861,10 +1793,6 @@ Section: Refusing A Quotation
    qr-prefix : Text,
    qr-bag : DiagnosticBag
   }
-
- A quotation names its digest with the algorithm that produced it, so
- that the day we outgrow SHA-256 the old quotations still say what they
- meant. The store is keyed by the digest alone.
 
   digest-of : Text -> Text
   digest-of (h) =
@@ -1933,24 +1861,6 @@ Section: Binary Compilation
 
   cdx-emit-roots : List Text
   cdx-emit-roots = ["opening", "fat16-servicer-read", "fat16-servicer-write", "fat16-servicer-append", "fat16-servicer-list", "fat16-servicer-make-dir"]
-
- The IR handed to a native plug needs the same treatment for the same
- reason, one lane over. A plug's block builtin is emitted machine code
- that calls the Codex virtio driver (`Arm64Runtime.codex`, block device
- helpers), and the compiler cannot see that caller, so pruning from
- `opening` alone deletes the driver and the plug's branch resolves to
- nothing. These roots are the driver's entry points, and they are exactly
- as much a root as `fat16-servicer-read` is: reached from an emitter, not
- from Codex.
-
- Ruled 2026-08-16 (red): reachability is derived from the program's own
- declaration and a disk program never cites a driver chapter to make its
- disk exist. That would be a guarantee held by whoever remembers the
- incantation (L-FREEDOM), which fails silently for the next reader.
-
- **A new driver entry point must be added here.** Nothing checks that, and
- the symptom is an unresolved-call warning naming the missing function
- rather than anything at this line.
 
   ir-emit-roots : List Text
   ir-emit-roots = [
@@ -2301,14 +2211,6 @@ Section: Entry Point
  metal compile puts the CDX on the boot volume instead, and the verdict beside
  it, because print-line-uni is that same serial line.
 
- DISK mode takes this arm unconditionally, and emit-from-disk says so with an
- argument rather than emit-cdx re-deriving it from the mode line. Measured
- 2026-08-09 with a probe at the head of emit-cdx: on that path `mode` is not a
- damaged string but not a string at all, arriving as twelve bytes of unrelated
- memory, so every has-mode-flag answers False and `parse-mode-cmd mode` does
- not equal "DISK" either. Deriving the sink from a value in that state is what
- made an earlier attempt dead code.
-
  The segments go down uncopied. The content is already a buffer, and routing it
  through a List would cost eight bytes of arena per byte of file.
 
@@ -2318,12 +2220,6 @@ Section: Entry Point
    ok <- fat16-write-segments "OUT.CDX" (result.header-bytes) (result.content-buf) (result.content-len) (result.tail-bytes)
    emit-disk-verdict ok (emit-binary-size result)
   end
-
- The verdict re-reads the directory instead of taking the writer's word.
- Measured 2026-08-11: with the medium read-only, codex-vm printed
- `WARN: cannot reopen disk ... for write` on every sector and
- fat16-write-segments still answered True, so a rung that trusted `ok` was a
- rung that could not fail.
 
   disk-entry-size : Maybe Fat16DirEntry -> Integer
   disk-entry-size (m) = when m
@@ -2342,10 +2238,6 @@ Section: Entry Point
    entry <- fat16-resolve-path vol "OUT.CDX"
    emit-disk-say (disk-landed ok (disk-entry-size entry) size) size (disk-entry-size entry)
   end
-
- The footer: verdict, total wall seconds, then the phase table the pipeline
- banked through bp-log-phase. A row's first qword is eight packed label
- bytes; unpacking stops at the first zero byte.
 
   disk-unpack8 : Integer, Integer, Text -> Text
   disk-unpack8 (v) (i) (acc) =
@@ -2435,17 +2327,6 @@ Section: Entry Point
     end
 
 
- COMPILER-44. The x86 path attaches the instantiated equality helpers at
- `X86_64Chapter`, and the plugs never went through it: they received a bare
- `binary eq` over `(ctd "Box" (args text))` and compared two heap pointers, so
- every structurally-equal pair built from separate allocations answered `no`.
- Measured on Renode 2026-09-07, arm64: `box-text-eq`, `box-int-eq`,
- `box-nested` and `pair-generic` all wrong, `named-concrete` right because it
- goes through the desugarer's own `__eq_Named`.
- `lower-eq-dispatch` now calls the INSTANTIATED name, so the wire has to carry
- the def that name refers to or the reference dangles. The state is empty but
- for the binding table, which is all `resolve-constructed-ty` reads.
-
   eq-attach-helpers : IRChapter, List ATypeDef -> IRChapter
   eq-attach-helpers (ir) (tds) =
     let tmap = deck-record (build-type-def-map tds 0 (list-length tds) [])
@@ -2511,13 +2392,6 @@ Section: Entry Point
      let h-post-emit = __heap-save
      in print-line-uni ((format-heap-marks-wd (fe.heap-marks) & format-emit-marks h-pre-emit h-post-emit "WD:PHASE-"))
     end
-
- The SIZE-framed wire format the emit plugs consume: the SIZE line must
- precede the first payload byte, and the closing print-line supplies the
- one raw linefeed that follows the payload. Only emission knows a def's
- length, hence two passes -- ir-defs-wire-size for the total, then
- ir-print-defs through print-text so the wire bytes are exactly what
- emit-ir-chapter produced.
 
   emit-ir-cce : Text, CompileFlags -> [Console] Nothing
   emit-ir-cce (source) (flags) =
@@ -2673,28 +2547,10 @@ Section: Entry Point
      is None -> disk-no-source ("DISK: file not found: " & disk-path-of path-result)
   end
 
- The volume rung reads the BPB rather than the mount's own answer.
- fat16-boot-volume returns a record whatever the medium said, so a payload
- built without UEFI mode reads down the bare-metal path, gets zeroes, and
- mounts a volume that satisfies every pointer test.
-
- The source rung paints on the way through and does not trace, because
- `mode` is intact in this frame and damaged one call deeper. The next rung's
- line names it: nothing reaches `compiled` without ORANGE having been painted.
-
  On this box every sector of the source is a separate firmware Block I/O call
  over USB, and a 2.78 MB source is 5,429 of them. The bed's disk is an
  in-memory image, so the same read costs nothing there and the difference does
  not appear until a stick is in a machine.
-
- The two phases are counted separately because they fail differently. The
- chain walk is I/O and is slow only on metal; the conversion is arithmetic and
- costs the same in both. Which of them a stall lands in is what no flight has
- been able to say.
-
- The counter starts AT the threshold so the first bar is drawn before the
- first sector is asked for. A heartbeat whose first beat is minutes away
- answers the question too late to be worth having.
 
   disk-read-report-every : Integer
   disk-read-report-every = 64
@@ -2735,24 +2591,12 @@ Section: Entry Point
     else
       disk-read-chain vol cluster (remaining - bytes-this) next-sector-off acc2 (n + 1) since total
 
- The chunking exists for the bar and for nothing else: fat16-source-chars
- threads its accumulator, so converting in pieces pushes onto the same list
- the single call would have built and the text is identical either way.
-
   disk-convert : List Integer, List Integer, Integer, Integer, List Text -> Text
   disk-convert (tbl) (bs) (i) (len) (acc) =
     if i >= len then text-concat-list acc
     else let p = bp-progress i len bp-progress-height bp-cyan
     in let hi = if i + disk-convert-chunk > len then len else i + disk-convert-chunk
     in disk-convert tbl bs hi len (fat16-source-chars tbl bs i hi acc)
-
- The board's state, printed as integers only. Every previous build died before
- its first line here, and each of them built that line out of the path Text --
- so nothing below touches the path as text until its length has been shown to
- be sane. The addresses are proc 0's filesystem and network scope
- (proc-table-base + proc-scope-offset / + proc-net-scope-offset) and the serial
- ring's write and read positions (serial-write-pos-addr, serial-read-pos-addr),
- all in X86_64Boot.codex.
 
   disk-diag-stamp : Integer
   disk-diag-stamp = 20260815
@@ -2764,18 +2608,6 @@ Section: Entry Point
    print-line-uni ("DIAG ring w " & integer-to-text (peek-qword 28704 0) & " r " & integer-to-text (peek-qword 28712 0))
    disk-diag-path pr
   end
-
- Where things LIVE, and whether painting moves them. The 2026-08-13 flight of
- a5fix.img read every field of the volume record as 71777214294589695, which
- is 00FF00FF00FF00FF -- two MAGENTA pixels -- after the volume rung's magenta
- fill, on a board where the same binary under OVMF reads them correctly. So
- either the record's memory is being painted over, or the record pointer has
- come to point into painted memory, and the addresses decide which: the
- record's own address against the handoff's base + h*stride*4 extent, read
- raw off the block the stub published. The stomp pair reads one field, paints
- the full field magenta again, and reads it back: a value that MOVES convicts
- the paint live, with every address needed for the arithmetic already on the
- glass.
 
   disk-diag-mem : Fat16Volume -> [Console] Nothing
   disk-diag-mem (vol) = act
@@ -2789,11 +2621,7 @@ Section: Entry Point
    print-line-uni ("DIAG stomp post " & integer-to-text (vol.vol-bytes-per-sector))
   end
 
- Which volume was actually mounted. fat16-boot-volume takes the first usable
- GPT partition and the ladder only ever checked bytes-per-sector, so any real
- FAT volume on the machine passes -- including one on a different disk, which
- would mount cleanly and hold no SOURCE.SRC. Our own image is part 2048, root
- 32 sectors, 26591 total.
+ Our own image is part 2048, root 32 sectors, 26591 total.
 
   disk-diag-vol : Fat16Volume -> [Console] Nothing
   disk-diag-vol (vol) = act
@@ -2811,23 +2639,8 @@ Section: Entry Point
    )
   end
 
- Measured on the ASUS 2026-08-13: the three lines above print and this one does
- not, and the None arm would have printed too, so the Maybe read-line returns
- for the SECOND call cannot be dispatched on at all. The first call's value is
- sound -- the mode line reaches dispatch-on-mode and selects DISK. The ring is
- sound: write 32, read 16, both lines consumed, the sixteen extra bytes are the
- UART poll's phantoms and sit past the read point. So the bytes are right and
- the value built from them is not. Left here as the record of what was measured;
- the path below no longer depends on it.
-
   disk-diag-path : Maybe Text -> [Console] Nothing
   disk-diag-path (pr) = print-line-uni "DIAG path SKIPPED (see chapter note)"
-
- SOURCE.SRC is the FALLBACK, not the only answer. The stub's second stdin line
- carries the path, and DISK mode read that line and then compiled the constant
- anyway, so an image holding two sources could only ever compile whichever one
- the builder had named SOURCE.SRC. Honouring the line is what lets one image
- hold a directory of them.
 
   disk-default-path : Text
   disk-default-path = "SOURCE.SRC"
@@ -2903,13 +2716,6 @@ Section: Entry Point
       & " c2 " & integer-to-text (char-code-at p (if n > 2 then 2 else 0))
       & " c3 " & integer-to-text (char-code-at p (if n > 3 then 3 else 0)))
 
- Each step announces itself BEFORE it acts, so the last line on the glass names
- the step that did not return rather than the last one that did.
-
- The build header. Wall clock off the CMOS RTC (armed-guarded, zeroes in any
- bed with no handoff), then the log cells are zeroed so the footer's phase
- table starts empty, and the start second is banked for the footer's total.
-
   disk-build-header : Text -> [Console] Nothing
   disk-build-header (path) =
     if bp-armed 0 == False then print-text ""
@@ -2976,16 +2782,6 @@ Section: Entry Point
   disk-root-sectors (vol) =
     ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
 
- The print comes FIRST. disk-rung holds on a failed rung and never returns, so
- a reason printed after it is a reason nobody has ever read: both of these
- callers looked identical on the glass for as long as the ladder has existed.
-
- The memory line prints LAST, in the failure path itself, because the
- firmware console scrolls and keeps no history: the 2026-08-13 boot printed
- the addresses that would have settled the corruption question and they were
- off the top of the glass before the failure line landed. The last lines are
- the only ones an operator can photograph.
-
   disk-no-source : Text -> [Console] Nothing
   disk-no-source (why) = act
    print-line-uni why
@@ -3005,22 +2801,6 @@ Section: Entry Point
     else if cmd == "MEASURE" then emit-measure source flags
     else if cmd == "TEXT" then emit-text-streaming source flags
     else refuse-unknown-mode cmd
-
- TEXT is named here rather than reached by falling through, and the fall-through
- is a refusal. An `is otherwise` on a front door makes a setting that does
- nothing look exactly like one that works (L-ACCEPTED): measured at seed
- 8769F31E, `ELF`, `EFI`, `UEFI` and `IMG` each emitted text byte-identical to
- `TEXT` and to a deliberately nonsensical `ZZZZ-NOT-A-MODE` once the WD:/HEAP:
- telemetry every consumer already strips is removed, with `CDX` at 89,466 bytes
- as the control.
-
- The refusal ships only because a census said no live caller dies by it. The
- mode token is the first space-separated word, so flags ride along untouched;
- every producer in the tree sends CDX, TEXT, IR-UNI, IR-CCE, MEASURE, or DISK,
- which `dispatch-on-mode` takes before this. The single producer of anything
- else is `codex/plugs/elf/extract-x86-output.ps1`, which sends `ELF` and which
- nothing invokes: both greps that name it are comments, one of them the elf
- plug's own instructions for a workflow that this defect had already broken.
 
   refuse-unknown-mode : Text -> [Console, FileSystem] Nothing
   refuse-unknown-mode (cmd) = act
@@ -3067,32 +2847,6 @@ Section: Entry Point
     in let kept = deck-record (copy-sx-text keep-base prefix)
     in let sealed = compact-phase flags poison-parse
     in compile-plain (kept & split.sp-body) cmd mode flags
-
- RESOLVE's wire, for the consumers built against it (the Prism page and
- its beds; the boundary and this wire are recorded in
- PrismDevEnvironment.md's stage-2 convergence): source arrives on stdin
- exactly as TEXT/CDX take it; the disk is the linear-memory contract
- (`disk_reserve` before `_start` on wasm, the boot medium on metal);
- stdout carries the RESOLVED UNIT between `RESOLVE-BEGIN` and
- `RESOLVE-END` lines, in UNICODE like every other text mode and not in
- the CCE wire encoding -- the frame's whole purpose is to be read by a
- host, and `print-text` is `IR-CCE`'s writer, so a frame printed with it
- came back as mojibake for a consumer that had done nothing wrong --
- resolved chapters first, renamed
- `Chapter: quire--name` exactly as `disk-load-cite` does, then the source
- verbatim. A host with no volume (`block-sector-count` 0) gets the source
- back unchanged: the mount is never attempted, so the zeroed-BPB divide a
- bare medium produces cannot happen here. Resolution is best-effort: a
- cite whose chapter is not on the volume prepends nothing, and the
- downstream compile answers ONE CDX3007 at the cite (measured against a
- library image and its no-library control, 2026-08-28 -- an earlier
- draft of this paragraph claimed a use-site cascade, and the measurement
- killed it). `disk-load-cite` still prints one
- `CITE-MISSING <quire> <name>` line per absent chapter, before the
- frame, as a refinement CDX3007 cannot make: CDX3007's "not present in
- this compilation unit" is also what a typo'd chapter name produces,
- while CITE-MISSING says specifically that the medium was asked and did
- not have it, and it says so before a compile is paid for.
 
   emit-resolved : Text -> [Console, FileSystem, Device.Block] Nothing
   emit-resolved (mode) = act

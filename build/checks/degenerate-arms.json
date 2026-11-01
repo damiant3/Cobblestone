@@ -213,6 +213,39 @@
         }
       ]
     },
+    "AesGcm.aesgcm-decrypt-at": {
+      "waive": "same decision as aesgcm-decrypt, which is this function at offset 0 and is armed by sigslip-tags; its one added refusal, a range outside the data, no caller can produce (tls13-record-open and dtls-open-body bound the range first, armed by tls13-degenerate and dtls-degenerate), so no arm can name it with a reachable input"
+    },
+    "Tls.tls13-record-open": {
+      "waive": "same decision as tls13-record-decrypt, which is this function with the content copied out and answers None exactly when this does; tls13-degenerate arms every class through it"
+    },
+    "TlsEndpoint.tep-dec": {
+      "waive": "adds no decision: tls13-record-decrypt under the endpoint's traffic key and IV, armed by tls13-degenerate"
+    },
+    "TlsEndpoint.tep-ee-seen": {
+      "waive": "not a trust decision: list membership; the refusal it feeds (EncryptedExtensions server-name twice, alert 47) is graded by tls-handshake-order row 9"
+    },
+    "TlsEndpoint.tep-cert-decodes": {
+      "waive": "not a trust decision: Certificate message shape (decode_error); tls-handshake-order rows 42 and 43 grade the refusal, and the authentication decision is tls-ep-authenticated, armed by tls-auth-degenerate"
+    },
+    "Dtls.dtls-has-seq16": {
+      "waive": "not a trust decision: one DTLS 1.3 unified-header flag bit; the decision is dtls-open, armed by dtls-degenerate"
+    },
+    "Dtls.dtls-has-len": {
+      "waive": "not a trust decision: one DTLS 1.3 unified-header flag bit; the decision is dtls-open, armed by dtls-degenerate"
+    },
+    "Dtls.dtls-plain-of": {
+      "waive": "not a trust decision: copies an opened record's content out and answers None only when its argument is None"
+    },
+    "Dtls.dtls-open-near": {
+      "open": "CORE-25: no arm feeds dtls-open-near the degenerate classes; the tag classes reach it through dtls-open-raw, the sequence reconstruction is unarmed"
+    },
+    "Dtls.dtls-open-near-raw": {
+      "open": "CORE-25: as dtls-open-near, whose opened record it returns"
+    },
+    "OtaUpdate.ota-check-preconditions": {
+      "open": "CORE-24: no test feeds ota-check-preconditions a battery below the floor or a version not newer"
+    },
     "AesGcm.gcm-tags-equal": {
       "waive": "the compare aesgcm-decrypt uses; sigslip-tags goes red when it skips its last byte (campaign Findings, part D)"
     },
@@ -307,37 +340,171 @@
       "waive": "certificate constructor: None is a build failure"
     },
     "Dtls.dtls-open": {
-      "open": "SignatureSlippage part D (val): no degenerate tag arm"
+      "arm": [
+        {
+          "test": "codex/test/dtls-degenerate",
+          "lines": [
+            "open empty record = refused",
+            "open 4-byte record = refused",
+            "open record cut one byte short = refused",
+            "open declared length 15 = refused",
+            "open last tag byte changed = refused",
+            "open all-zero tag = refused",
+            "open first ciphertext byte changed = refused",
+            "open sequence byte changed = refused",
+            "open header byte changed = refused",
+            "open wrong high sequence bits = refused",
+            "open plaintext header byte = refused",
+            "open all-zero inner (no content type) = refused"
+          ]
+        }
+      ]
     },
     "Dtls.dtls-replay-ok": {
-      "open": "SignatureSlippage part D (val): no replay-window degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/dtls-degenerate",
+          "lines": [
+            "replay fresh window, negative sequence = False",
+            "replay seen sequence 100 again = False",
+            "replay seen sequence 37 again = False",
+            "replay sequence 36 at the window's far edge (right - 64) = False",
+            "replay negative sequence after traffic = False"
+          ]
+        }
+      ]
     },
     "DtlsHandshake.dtls-amplification-ok": {
-      "open": "SignatureSlippage part D (val): no degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/dtls-degenerate",
+          "lines": [
+            "amplification one byte past three times = False",
+            "amplification already sent counts = False",
+            "amplification nothing received, one byte wanted = False",
+            "amplification negative received = False"
+          ]
+        }
+      ]
     },
     "EcdsaP256.ecdsa-p384-verify-sha384": {
-      "open": "SignatureSlippage part C (reek): no degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/ecdsa-degenerate",
+          "lines": [
+            "p-384 sha-384: the same signature under the sha-256 verifier = False",
+            "p-384 sha-384: all-zero key and signature = False",
+            "p-384 sha-384: genuine key, all-zero signature = False",
+            "p-384 sha-384: r of zero with the genuine s = False",
+            "p-384 sha-384: r equal to the order n = False",
+            "p-384 sha-384: s equal to the order n = False",
+            "p-384 sha-384: key with x equal to p = False",
+            "p-384 sha-384: compressed prefix 2 on the genuine coordinates = False",
+            "p-384 sha-384: a p-256 key = False",
+            "p-384 sha-384: empty key and empty signature = False"
+          ]
+        }
+      ]
     },
     "ImportGate.manifest-lookup": {
-      "open": "SignatureSlippage part B (blu): trust-anchor lookup"
+      "arm": [
+        {
+          "test": "codex/test/import-gate-degenerate",
+          "lines": [
+            "lookup empty fingerprint = none",
+            "lookup unknown fingerprint = none",
+            "lookup fingerprint differing in case = none"
+          ]
+        }
+      ]
     },
     "ImportGate.verify-content-signature": {
-      "open": "SignatureSlippage part B (blu)"
+      "arm": [
+        {
+          "test": "codex/test/import-gate-degenerate",
+          "lines": [
+            "content signature over other content = False",
+            "content signature all-zero = False",
+            "content signature empty = False",
+            "content signature all-zero key and signature = False",
+            "content signature empty key = False"
+          ]
+        }
+      ]
     },
     "ImportGate.verify-fact-signature": {
-      "open": "SignatureSlippage part B (blu)"
+      "arm": [
+        {
+          "test": "codex/test/import-gate-degenerate",
+          "lines": [
+            "fact signature under another key = False",
+            "gate signed entry whose content is replaced = corrupt",
+            "gate genuine signed entry for another fact, filed under this hash = corrupt",
+            "gate signed entry with the signature zeroed = forged",
+            "gate signed entry naming an unknown signer = unknown-signer",
+            "gate no signed entry = unsigned"
+          ]
+        }
+      ]
     },
     "Lorawan.lw-ja-verify": {
-      "open": "SignatureSlippage part D (val): MIC compare, no degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/dtls-degenerate",
+          "lines": [
+            "join-accept first MIC byte changed = False",
+            "join-accept second MIC byte changed = False",
+            "join-accept third MIC byte changed = False",
+            "join-accept fourth MIC byte changed = False",
+            "join-accept all-zero MIC = False",
+            "join-accept body byte changed = False",
+            "join-accept another key = False",
+            "join-accept 17 bytes, a trailing byte = False",
+            "join-accept 12 bytes, no MIC = False",
+            "join-accept empty join-accept = False",
+            "join-accept empty key = False"
+          ]
+        }
+      ]
     },
     "OtaUpdate.ota-can-activate": {
-      "open": "SignatureSlippage part B (blu)"
+      "arm": [
+        {
+          "test": "codex/test/ota-degenerate",
+          "lines": [
+            "activate fresh slot B = False",
+            "activate unverified slot A = False",
+            "activate unverified slot B = False"
+          ]
+        }
+      ]
     },
     "OtaUpdate.ota-hash-eq": {
-      "open": "SignatureSlippage part B (blu)"
+      "arm": [
+        {
+          "test": "codex/test/ota-degenerate",
+          "lines": [
+            "hash-eq last byte differs = False",
+            "hash-eq first byte differs = False",
+            "hash-eq an element 256 above = False",
+            "hash-eq 31-byte first = False",
+            "hash-eq 31-byte second = False",
+            "hash-eq both empty = False"
+          ]
+        }
+      ]
     },
     "OtaUpdate.ota-version-is-newer": {
-      "open": "SignatureSlippage part B (blu): rollback"
+      "arm": [
+        {
+          "test": "codex/test/ota-degenerate",
+          "lines": [
+            "newer equal sequence (replay) = False",
+            "newer older sequence (rollback) = False",
+            "newer zero against zero = False"
+          ]
+        }
+      ]
     },
     "ProofOfWork.pow-check": {
       "arm": [
@@ -355,34 +522,201 @@
       ]
     },
     "Rsa.rsa-verify-pkcs1-sha384": {
-      "open": "SignatureSlippage part C (reek): no degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/rsa-degenerate",
+          "lines": [
+            "sha-384: the openssl sha-256 signature under the sha-384 verifier = False",
+            "sha-384: signature zero = False",
+            "sha-384: signature one = False",
+            "sha-384: signature equal to n = False",
+            "sha-384: signature all ones (above n) = False",
+            "sha-384: last signature byte changed = False",
+            "sha-384: exponent two = False",
+            "sha-384: modulus all zero = False",
+            "sha-384: 1024-bit key, its genuine sha-256 signature = False"
+          ]
+        }
+      ]
     },
     "Tls.tls13-ct-equal": {
-      "open": "SignatureSlippage part D (val): examined by reading, no empty/short/long arm"
+      "arm": [
+        {
+          "test": "codex/test/tls13-degenerate",
+          "lines": [
+            "ct-equal different length = False",
+            "ct-equal longer second = False",
+            "ct-equal empty against 32 bytes = False",
+            "ct-equal first byte differs = False",
+            "ct-equal last byte differs = False",
+            "ct-equal an element 256 above = False",
+            "ct-equal a negated element = False"
+          ]
+        }
+      ]
     },
     "Tls.tls13-finished-ok": {
-      "open": "SignatureSlippage part D (val): examined by reading, no degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/tls13-degenerate",
+          "lines": [
+            "finished empty offered = False",
+            "finished 31 bytes offered = False",
+            "finished 33 bytes offered = False",
+            "finished last byte changed = False",
+            "finished all-zero offered = False",
+            "finished another transcript hash = False",
+            "finished empty transcript hash = False",
+            "finished another base secret = False",
+            "finished empty base secret = False"
+          ]
+        }
+      ]
     },
     "Tls.tls13-record-decrypt": {
-      "open": "SignatureSlippage part D (val): no degenerate tag arm"
+      "arm": [
+        {
+          "test": "codex/test/tls13-degenerate",
+          "lines": [
+            "record empty wire = refused",
+            "record 5-byte header only = refused",
+            "record declared length 16 (tag only) = refused",
+            "record declared length past the wire = refused",
+            "record wire cut one byte short = refused",
+            "record last tag byte changed = refused",
+            "record first tag byte changed = refused",
+            "record all-zero tag = refused",
+            "record first ciphertext byte changed = refused",
+            "record outer type changed to 22 = refused",
+            "record version byte changed = refused",
+            "record sequence number off by one = refused",
+            "record another key = refused",
+            "record another iv = refused",
+            "record empty key = refused",
+            "record empty iv = refused",
+            "record all-zero inner (no content type) = type 0, 0 bytes"
+          ]
+        }
+      ]
     },
     "TlsCert.tls-cv-verify": {
-      "open": "SignatureSlippage part C (reek): graded through tls-cv-schemes, no degenerate arm by name"
+      "arm": [
+        {
+          "test": "codex/test/tls-auth-degenerate",
+          "lines": [
+            "cv ed25519 checked as the client role = False",
+            "cv ed25519 under another transcript hash = False",
+            "cv ed25519 under an empty transcript hash = False",
+            "cv empty body = False",
+            "cv 3-byte body = False",
+            "cv declared length one longer = False",
+            "cv declared length one shorter = False",
+            "cv body cut one byte short = False",
+            "cv empty signature = False",
+            "cv all-zero signature = False",
+            "cv all-zero key and signature = False",
+            "cv ecdsa-p256 scheme on an ed25519 key = False",
+            "cv ecdsa-p384 scheme on an ed25519 key = False",
+            "cv rsa-pss scheme on an ed25519 key = False",
+            "cv scheme 0 = False",
+            "cv scheme 65535 = False",
+            "cv x25519 key with the signer's bytes = False",
+            "cv unknown key with the signer's bytes = False",
+            "cv rsa-pss checked as the client role = False",
+            "cv pkcs1 signature under rsa_pkcs1_sha256 (1025) = False",
+            "cv pkcs1 signature under rsa-pss = False",
+            "cv pss signature under rsa_pss_pss_sha256 (2057) = False",
+            "cv ed25519 scheme on an rsa key = False"
+          ]
+        }
+      ]
     },
     "TlsEndpoint.tls-ep-authenticated": {
-      "open": "SignatureSlippage part C (reek): no degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/tls-auth-degenerate",
+          "lines": [
+            "handshake server signs with a key other than its certificate's: authenticated = False, done = False, phase = -1",
+            "handshake client expects another host: authenticated = False, done = False, phase = -1",
+            "handshake client expects an empty host: authenticated = False, done = False, phase = -1",
+            "handshake client anchors a same-name CA with another key: authenticated = False, done = False, phase = -1",
+            "handshake client clock after the leaf expires: authenticated = False, done = False, phase = -1",
+            "handshake server sends no certificate: authenticated = False, done = False, phase = -1",
+            "handshake server sends the CA as its leaf: authenticated = False, done = False, phase = -1",
+            "handshake client holds no anchor: authenticated = False, done = True, phase = 3"
+          ]
+        }
+      ]
     },
     "X509Chain.x509-identity-matches": {
-      "open": "SignatureSlippage part C (reek): no empty-name or wildcard degenerate arm"
+      "arm": [
+        {
+          "test": "codex/test/x509-degenerate",
+          "lines": [
+            "identity empty expected = False",
+            "identity trailing-dot host = False",
+            "identity no names = False",
+            "identity empty dns entry = False",
+            "identity wildcard bare domain = False",
+            "identity wildcard two labels = False",
+            "identity wildcard leading dot = False",
+            "identity partial-label wildcard = False",
+            "identity ip literal against a dns name = False",
+            "identity ip octet 256 = False",
+            "identity ip five octets = False",
+            "identity ip four-digit octet = False"
+          ]
+        }
+      ]
     },
     "X509Chain.x509-signed-by": {
-      "open": "SignatureSlippage part C (reek)"
+      "arm": [
+        {
+          "test": "codex/test/x509-degenerate",
+          "lines": [
+            "signed-by all-zero signature = False",
+            "signed-by empty signature = False",
+            "signed-by empty tbs = False",
+            "signed-by all-zero key and signature = False",
+            "signed-by empty key = False",
+            "signed-by x25519 key with the issuer's bytes = False",
+            "signed-by unknown key with the issuer's bytes = False",
+            "signed-by rsa key with no modulus = False",
+            "signed-by leaf's own key = False"
+          ]
+        }
+      ]
     },
     "X509Chain.x509-time-le": {
-      "open": "SignatureSlippage part C (reek): validity window"
+      "arm": [
+        {
+          "test": "codex/test/x509-degenerate",
+          "lines": [
+            "time-le one second later = False",
+            "time-le empty first = False",
+            "time-le empty second = False",
+            "time-le both empty = False",
+            "time-le 13-byte prefix first = False",
+            "time-le 15-byte first = False"
+          ]
+        }
+      ]
     },
     "X509Chain.x509-verify-with": {
-      "open": "SignatureSlippage part C (reek)"
+      "arm": [
+        {
+          "test": "codex/test/x509-degenerate",
+          "lines": [
+            "verify-with unknown algorithm = False",
+            "verify-with rsa-sha1 = False",
+            "verify-with rsa-sha256 on an ed25519 key = False",
+            "verify-with rsa-sha384 on an ed25519 key = False",
+            "verify-with ecdsa-sha256 on an ed25519 key = False",
+            "verify-with ecdsa-sha384 on an ed25519 key = False",
+            "verify-with ed25519 on an empty key = False"
+          ]
+        }
+      ]
     },
     "Sha256.sha256-checked": {
       "arm": [

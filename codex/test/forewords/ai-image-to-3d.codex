@@ -1,0 +1,100 @@
+Chapter: FwdImageTo3dTest
+  cites AI chapter ImageTo3d
+  cites Foreword chapter MathLib
+
+Section: Fixtures
+
+  i3t-grid : Integer, Integer, List Integer -> List Integer
+  i3t-grid (i) (mode) (acc) =
+    if i >= 27 then acc
+    else let x = i - (i / 3) * 3
+    in let on = if mode == 0 then x == 0 else i == 13
+    in i3t-grid (i + 1) mode (list-push acc (if on then 1000 else 0))
+
+  i3t-noise : Integer, List Integer -> List Integer
+  i3t-noise (i) (acc) =
+    if i >= 125 then acc
+    else let x = i - (i / 5) * 5
+    in let y = (i / 5) - (i / 25) * 5
+    in let z = i / 25
+    in let border = x == 0 | x == 4 | y == 0 | y == 4 | z == 0 | z == 4
+    in let v = ((i * 389 + 17) - ((i * 389 + 17) / 500) * 500) * 2 + 1
+    in i3t-noise (i + 1) (list-push acc (if border then 0 else v))
+
+  i3t-join : List Integer, Integer, Text -> Text
+  i3t-join (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else i3t-join xs (i + 1) (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
+  i3t-count-off : List GltfVertex, Integer, Integer -> Integer
+  i3t-count-off (vs) (i) (acc) =
+    if i >= list-length vs then acc
+    else let v = list-at vs i
+    in i3t-count-off vs (i + 1) (if v.gv-px == 0 - 500 & v.gv-nx == 1000 & v.gv-ny == 0 & v.gv-nz == 0 then acc else acc + 1)
+
+  i3t-area2 : List GltfVertex, Integer, Integer -> Integer
+  i3t-area2 (vs) (t) (acc) =
+    if t * 3 >= list-length vs then acc
+    else let a = list-at vs (t * 3)
+    in let b = list-at vs (t * 3 + 1)
+    in let c = list-at vs (t * 3 + 2)
+    in let ux = b.gv-px - a.gv-px
+    in let uy = b.gv-py - a.gv-py
+    in let uz = b.gv-pz - a.gv-pz
+    in let vx = c.gv-px - a.gv-px
+    in let vy = c.gv-py - a.gv-py
+    in let vz = c.gv-pz - a.gv-pz
+    in let nx = uy * vz - uz * vy
+    in let ny = uz * vx - ux * vz
+    in let nz = ux * vy - uy * vx
+    in i3t-area2 vs (t + 1) (acc + math-isqrt (nx * nx + ny * ny + nz * nz))
+
+  i3t-same : GltfVertex, GltfVertex -> Boolean
+  i3t-same (a) (b) = a.gv-px == b.gv-px & a.gv-py == b.gv-py & a.gv-pz == b.gv-pz
+
+  i3t-edge-from : List GltfVertex, Integer -> GltfVertex
+  i3t-edge-from (vs) (e) = list-at vs e
+
+  i3t-edge-to : List GltfVertex, Integer -> GltfVertex
+  i3t-edge-to (vs) (e) = list-at vs ((e / 3) * 3 + (e - (e / 3) * 3 + 1) - ((e - (e / 3) * 3 + 1) / 3) * 3)
+
+  i3t-twins : List GltfVertex, GltfVertex, GltfVertex, Integer, Integer, Integer -> Integer
+  i3t-twins (vs) (p) (q) (wanted-reverse) (e) (acc) =
+    if e >= list-length vs then acc
+    else let a = i3t-edge-from vs e
+    in let b = i3t-edge-to vs e
+    in let hit = if wanted-reverse == 1 then i3t-same a q & i3t-same b p else i3t-same a p & i3t-same b q
+    in i3t-twins vs p q wanted-reverse (e + 1) (if hit then acc + 1 else acc)
+
+  i3t-unmatched : List GltfVertex, Integer, Integer -> Integer
+  i3t-unmatched (vs) (e) (acc) =
+    if e >= list-length vs then acc
+    else let p = i3t-edge-from vs e
+    in let q = i3t-edge-to vs e
+    in let ok = i3t-twins vs p q 1 0 0 == 1 & i3t-twins vs p q 0 0 0 == 1
+    in i3t-unmatched vs (e + 1) (if ok then acc else acc + 1)
+
+  i3t-inward : List GltfVertex, Integer, Integer -> Integer
+  i3t-inward (vs) (t) (acc) =
+    if t * 3 >= list-length vs then acc
+    else let a = list-at vs (t * 3)
+    in let b = list-at vs (t * 3 + 1)
+    in let c = list-at vs (t * 3 + 2)
+    in let facing = a.gv-nx * (a.gv-px + b.gv-px + c.gv-px) + a.gv-ny * (a.gv-py + b.gv-py + c.gv-py) + a.gv-nz * (a.gv-pz + b.gv-pz + c.gv-pz)
+    in i3t-inward vs (t + 1) (if facing > 0 then acc else acc + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let slab = r3-march-grid (i3t-grid 0 0 []) 3 500 0 0 0 [] []
+    in let dot = r3-march-grid (i3t-grid 0 1 []) 3 500 0 0 0 [] []
+    in let noise = r3-march-grid (i3t-noise 0 []) 5 500 0 0 0 [] []
+    in let v0 = list-at (slab.mc-verts) 0
+    in act
+      print-line-uni ("slab at x 0 in a 3-grid: " & show (list-length (slab.mc-verts) / 3) & " triangles, " & show (list-length (slab.mc-indices)) & " indices; first vertex " & show (v0.gv-px) & "," & show (v0.gv-py) & "," & show (v0.gv-pz) & " normal " & show (v0.gv-nx) & "," & show (v0.gv-ny) & "," & show (v0.gv-nz) & "; off the plane x -500 or not facing +x: " & show (i3t-count-off (slab.mc-verts) 0 0) & "; area " & show (i3t-area2 (slab.mc-verts) 0 0 / 2))
+      print-line-uni ("one inside point at 1,1,1: " & show (list-length (dot.mc-verts) / 3) & " triangles, unmatched directed edges " & show (i3t-unmatched (dot.mc-verts) 0 0) & ", facing the point " & show (i3t-inward (dot.mc-verts) 0 0))
+      print-line-uni ("noise inside an outside border, 5-grid: " & show (list-length (noise.mc-verts) / 3) & " triangles, unmatched directed edges " & show (i3t-unmatched (noise.mc-verts) 0 0))
+      print-line-uni ("sample plane res 2 dim 2 at 1,1: " & i3t-join (r3-sample-plane [1, 2, 3, 4, 5, 6, 7, 8] 2 2 1 1) 0 "" & ", at 5,0 clamps to " & i3t-join (r3-sample-plane [1, 2, 3, 4, 5, 6, 7, 8] 2 2 5 0) 0 "")
+      print-line-uni ("project 1000 2000 by identity plus 5 6: " & i3t-join (r3-linear-project [1000, 2000] [1000, 0, 0, 1000] [5, 6] 2 2) 0 "" & "; add features: " & i3t-join (r3-add-features [1, 2] [10, 20] [100, 200] 2 0 []) 0 "")
+      print-line-uni (format-r3-config triposr-config & "; triplane outputs " & show (triposr-config.r3-feature-dim * triposr-config.r3-grid-res * triposr-config.r3-grid-res * 3))
+    end

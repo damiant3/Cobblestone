@@ -1,16 +1,9 @@
 Chapter: FractalPlant
   cites Engine chapter Mesh
   cites Math chapter Quaternion
+  cites Foreword chapter Random
 
- L-system fractal plant generator. Produces branching tree/shrub/
- fern/grass geometry from production rules. Each plant has a growth
- phase (seedling, sapling, mature, old, dead) driven by accumulated
- growth points. Seasonal color changes (spring green, summer deep
- green, autumn gold/red, winter bare). Deciduous trees lose leaves
- in autumn. Procedural variation via seed-based rule perturbation.
  Fixed-point (scale 1000).
-
- We say:
 
 Section: L-System Rules
 
@@ -59,31 +52,32 @@ Section: Presets
 Section: L-System Expansion
 
   ls-expand : LSystem, Integer -> List Integer
-  ls-expand (sys) (iterations) = ls-expand-loop (sys.ls-axiom) (sys.ls-rules) (sys.ls-rule-count) iterations
+  ls-expand (sys) (iterations) = ls-expand-seeded sys iterations 0
 
-  ls-expand-loop : List Integer, List LRule, Integer, Integer -> List Integer
-  ls-expand-loop (symbols) (rules) (rule-count) (iter) =
+  ls-expand-seeded : LSystem, Integer, Integer -> List Integer
+  ls-expand-seeded (sys) (iterations) (seed) = ls-expand-loop (sys.ls-axiom) (sys.ls-rules) (sys.ls-rule-count) iterations seed
+
+  ls-expand-loop : List Integer, List LRule, Integer, Integer, Integer -> List Integer
+  ls-expand-loop (symbols) (rules) (rule-count) (iter) (seed) =
     if iter <= 0 then symbols
-    else let expanded = ls-apply-rules symbols rules rule-count 0 (list-length symbols) []
-    in ls-expand-loop expanded rules rule-count (iter - 1)
+    else let expanded = ls-apply-rules symbols rules rule-count (mix-bits seed iter) 0 (list-length symbols) []
+    in ls-expand-loop expanded rules rule-count (iter - 1) seed
 
-  ls-apply-rules : List Integer, List LRule, Integer, Integer, Integer, List Integer -> List Integer
-  ls-apply-rules (syms) (rules) (rc) (i) (n) (acc) =
+  ls-apply-rules : List Integer, List LRule, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ls-apply-rules (syms) (rules) (rc) (step-seed) (i) (n) (acc) =
     if i >= n then acc
     else let sym = list-at syms i
-    in let replacement = ls-find-rule rules rc sym
+    in let replacement = ls-pick-rule rules rc sym (rand-in-range step-seed i 0 999) 0 0
     in let acc2 = ls-append-list acc replacement 0 (list-length replacement)
-    in ls-apply-rules syms rules rc (i + 1) n acc2
+    in ls-apply-rules syms rules rc step-seed (i + 1) n acc2
 
-  ls-find-rule : List LRule, Integer, Integer -> List Integer
-  ls-find-rule (rules) (n) (sym) = ls-find-rule-loop rules n sym 0
-
-  ls-find-rule-loop : List LRule, Integer, Integer, Integer -> List Integer
-  ls-find-rule-loop (rules) (n) (sym) (i) =
+  ls-pick-rule : List LRule, Integer, Integer, Integer, Integer, Integer -> List Integer
+  ls-pick-rule (rules) (n) (sym) (roll) (i) (cum) =
     if i >= n then [sym]
     else let r = list-at rules i
-    in if r.lr-symbol == sym then r.lr-replacement
-    else ls-find-rule-loop rules n sym (i + 1)
+    in if r.lr-symbol /= sym then ls-pick-rule rules n sym roll (i + 1) cum
+    else if roll < cum + r.lr-probability then r.lr-replacement
+    else ls-pick-rule rules n sym roll (i + 1) (cum + r.lr-probability)
 
   ls-append-list : List Integer, List Integer, Integer, Integer -> List Integer
   ls-append-list (acc) (src) (i) (n) =
@@ -179,6 +173,135 @@ Section: Plant Instance
     else if pct < 80 then PhMature
     else if pct < 120 then PhOld
     else PhDead
+
+Section: Turtle Interpreter
+
+  FplTurtle = record {
+    ftu-pos : Vec3,
+    ftu-rot : Quat,
+    ftu-length : Integer,
+    ftu-thickness : Integer
+  }
+
+  FplStyle = record {
+    fsy-angle : Real,
+    fsy-length-decay : Integer,
+    fsy-thickness-decay : Integer,
+    fsy-leaves : Boolean,
+    fsy-leaf-density : Integer,
+    fsy-leaf-color : Integer,
+    fsy-seed : Integer
+  }
+
+  FplRun = record {
+    fru-turtle : FplTurtle,
+    fru-stack : List FplTurtle,
+    fru-depth : Integer,
+    fru-verts : List Vertex,
+    fru-indices : List Integer
+  }
+
+  fpl-bark-color : Integer = #664422
+  fpl-flower-color : Integer = #EE88AA
+
+  plant-mesh : PlantInstance -> Mesh
+  plant-mesh (p) =
+    let sys = p.pi-lsystem
+    in let symbols = ls-expand-seeded sys (gp-iterations (p.pi-phase)) (p.pi-seed)
+    in let style = FplStyle {
+      fsy-angle = real-from-int (sys.ls-angle) / 1000.0,
+      fsy-length-decay = sys.ls-length-decay,
+      fsy-thickness-decay = sys.ls-thickness-decay,
+      fsy-leaves = season-has-leaves (p.pi-season) (p.pi-deciduous),
+      fsy-leaf-density = gp-leaf-density (p.pi-phase),
+      fsy-leaf-color = season-leaf-color (p.pi-season),
+      fsy-seed = p.pi-seed
+    }
+    in let start = FplTurtle { ftu-pos = vec3-new (real-from-int (p.pi-x)) (real-from-int (p.pi-y)) (real-from-int (p.pi-z)), ftu-rot = quat-identity, ftu-length = sys.ls-length, ftu-thickness = sys.ls-thickness }
+    in let run = fpl-run symbols style 0 (list-length symbols) (FplRun { fru-turtle = start, fru-stack = [], fru-depth = 0, fru-verts = [], fru-indices = [] })
+    in mesh-new (run.fru-verts) (run.fru-indices)
+
+  fpl-run : List Integer, FplStyle, Integer, Integer, FplRun -> FplRun
+  fpl-run (syms) (style) (i) (n) (r) =
+    if i >= n then r
+    else fpl-run syms style (i + 1) n (fpl-step (list-at syms i) i style r)
+
+  fpl-step : Integer, Integer, FplStyle, FplRun -> FplRun
+  fpl-step (sym) (i) (style) (r) =
+    let t = r.fru-turtle
+    in if sym == sym-forward then fpl-forward style r
+    else if sym == sym-turn-left then fpl-set-turtle r (fpl-rotate t (vec3-new 0.0 0.0 1.0) (style.fsy-angle))
+    else if sym == sym-turn-right then fpl-set-turtle r (fpl-rotate t (vec3-new 0.0 0.0 1.0) (0.0 - style.fsy-angle))
+    else if sym == sym-pitch-up then fpl-set-turtle r (fpl-rotate t (vec3-new 1.0 0.0 0.0) (style.fsy-angle))
+    else if sym == sym-pitch-down then fpl-set-turtle r (fpl-rotate t (vec3-new 1.0 0.0 0.0) (0.0 - style.fsy-angle))
+    else if sym == sym-push then fpl-push style r
+    else if sym == sym-pop then fpl-pop r
+    else if sym == sym-leaf then (if style.fsy-leaves & rand-in-range (style.fsy-seed) i 0 999 < style.fsy-leaf-density then fpl-diamond (style.fsy-leaf-color) r else r)
+    else if sym == sym-flower then fpl-diamond fpl-flower-color r
+    else r
+
+  fpl-set-turtle : FplRun, FplTurtle -> FplRun
+  fpl-set-turtle (r) (t) = FplRun { fru-turtle = t, fru-stack = r.fru-stack, fru-depth = r.fru-depth, fru-verts = r.fru-verts, fru-indices = r.fru-indices }
+
+  fpl-rotate : FplTurtle, Vec3, Real -> FplTurtle
+  fpl-rotate (t) (axis) (angle) =
+    FplTurtle { ftu-pos = t.ftu-pos, ftu-rot = quat-normalize (quat-multiply (t.ftu-rot) (quat-from-axis-angle axis angle)), ftu-length = t.ftu-length, ftu-thickness = t.ftu-thickness }
+
+  fpl-push : FplStyle, FplRun -> FplRun
+  fpl-push (style) (r) =
+    let t = r.fru-turtle
+    in let stack = if r.fru-depth < list-length (r.fru-stack) then list-set-at (r.fru-stack) (r.fru-depth) t else list-push (r.fru-stack) t
+    in let child = FplTurtle { ftu-pos = t.ftu-pos, ftu-rot = t.ftu-rot, ftu-length = t.ftu-length * style.fsy-length-decay / 1000, ftu-thickness = t.ftu-thickness * style.fsy-thickness-decay / 1000 }
+    in FplRun { fru-turtle = child, fru-stack = stack, fru-depth = r.fru-depth + 1, fru-verts = r.fru-verts, fru-indices = r.fru-indices }
+
+  fpl-pop : FplRun -> FplRun
+  fpl-pop (r) =
+    if r.fru-depth <= 0 then r
+    else FplRun { fru-turtle = list-at (r.fru-stack) (r.fru-depth - 1), fru-stack = r.fru-stack, fru-depth = r.fru-depth - 1, fru-verts = r.fru-verts, fru-indices = r.fru-indices }
+
+  fpl-forward : FplStyle, FplRun -> FplRun
+  fpl-forward (style) (r) =
+    let t = r.fru-turtle
+    in let dir = quat-rotate-vec (t.ftu-rot) (vec3-new 0.0 1.0 0.0)
+    in let side = quat-rotate-vec (t.ftu-rot) (vec3-new 1.0 0.0 0.0)
+    in let front = quat-rotate-vec (t.ftu-rot) (vec3-new 0.0 0.0 1.0)
+    in let p0 = t.ftu-pos
+    in let p1 = vec3-add p0 (vec3-scale dir (real-from-int (t.ftu-length)))
+    in let w = real-from-int (t.ftu-thickness) / 2.0
+    in let r1 = fpl-prism-face p0 p1 dir side w r
+    in let r2 = fpl-prism-face p0 p1 dir front w r1
+    in let r3 = fpl-prism-face p0 p1 dir (vec3-scale side (0.0 - 1.0)) w r2
+    in let r4 = fpl-prism-face p0 p1 dir (vec3-scale front (0.0 - 1.0)) w r3
+    in fpl-set-turtle r4 (FplTurtle { ftu-pos = p1, ftu-rot = t.ftu-rot, ftu-length = t.ftu-length, ftu-thickness = t.ftu-thickness })
+
+  fpl-prism-face : Vec3, Vec3, Vec3, Vec3, Real, FplRun -> FplRun
+  fpl-prism-face (p0) (p1) (dir) (n) (w) (r) =
+    let a = vec3-cross dir n
+    in let out = vec3-scale n w
+    in let lo = vec3-scale a (0.0 - w)
+    in let hi = vec3-scale a w
+    in fpl-quad (vec3-add p0 (vec3-add out lo)) (vec3-add p0 (vec3-add out hi)) (vec3-add p1 (vec3-add out hi)) (vec3-add p1 (vec3-add out lo)) n fpl-bark-color r
+
+  fpl-diamond : Integer, FplRun -> FplRun
+  fpl-diamond (color) (r) =
+    let t = r.fru-turtle
+    in let dir = quat-rotate-vec (t.ftu-rot) (vec3-new 0.0 1.0 0.0)
+    in let side = quat-rotate-vec (t.ftu-rot) (vec3-new 1.0 0.0 0.0)
+    in let front = quat-rotate-vec (t.ftu-rot) (vec3-new 0.0 0.0 1.0)
+    in let len = real-from-int (t.ftu-length) / 2.0
+    in let p = t.ftu-pos
+    in let mid = vec3-add p (vec3-scale dir (len / 2.0))
+    in fpl-quad p (vec3-add mid (vec3-scale side (len / 4.0))) (vec3-add p (vec3-scale dir len)) (vec3-add mid (vec3-scale side (0.0 - len / 4.0))) front color r
+
+  fpl-quad : Vec3, Vec3, Vec3, Vec3, Vec3, Integer, FplRun -> FplRun
+  fpl-quad (a) (b) (c) (d) (n) (color) (r) =
+    let base = list-length (r.fru-verts)
+    in let verts = list-push (list-push (list-push (list-push (r.fru-verts) (fpl-vertex a n color)) (fpl-vertex b n color)) (fpl-vertex c n color)) (fpl-vertex d n color)
+    in let indices = list-push (list-push (list-push (list-push (list-push (list-push (r.fru-indices) base) (base + 1)) (base + 2)) base) (base + 2)) (base + 3)
+    in FplRun { fru-turtle = r.fru-turtle, fru-stack = r.fru-stack, fru-depth = r.fru-depth, fru-verts = verts, fru-indices = indices }
+
+  fpl-vertex : Vec3, Vec3, Integer -> Vertex
+  fpl-vertex (p) (n) (color) = vertex (real-to-int (p.vx)) (real-to-int (p.vy)) (real-to-int (p.vz)) (real-to-int (n.vx * 1000.0)) (real-to-int (n.vy * 1000.0)) (real-to-int (n.vz * 1000.0)) 0 0 color
 
 Section: Formatting
 

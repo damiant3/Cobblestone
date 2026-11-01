@@ -14,8 +14,6 @@ Chapter: HttpFetch
   cites Foreword chapter Maybe
   cites Foreword chapter Result
 
- We say:
-
 Section: Network Configuration
 
   http-local-mac : List Integer = [82, 84, 0, 18, 52, 99]
@@ -95,7 +93,7 @@ Section: URL Parsing
   url-parse-int (s) (i) (len) (acc) (any) =
     if i >= len then (if any then acc else (-1))
     else let c = char-code (char-at s i)
-    in if http-is-digit c then url-parse-int s (i + 1) len (acc * 10 + http-digit-value c) True
+    in if http-is-digit c then (if acc > 65535 then -1 else url-parse-int s (i + 1) len (acc * 10 + http-digit-value c) True)
     else (if any then acc else (-1))
 
   url-path : Text -> Text
@@ -125,33 +123,92 @@ Section: Host Addresses
     if i >= len then (if any then list-push acc cur else acc)
     else let c = char-code (char-at h i)
     in if c == cce-dot then http-quad-parts h (i + 1) len 0 False (list-push acc cur)
-    else http-quad-parts h (i + 1) len (cur * 10 + http-digit-value c) True acc
+    else http-quad-parts h (i + 1) len (if cur > 255 then 256 else cur * 10 + http-digit-value c) True acc
 
 Section: DNS On The Wire
 
   http-dns-budget : Integer = 3000000
-  http-dns-tx-id : Integer = 4919
+
+ An off-path forger must guess both the 16-bit transaction id and the source
+ port (RFC 5452 section 9.2), so each query draws both. The port comes from the
+ dynamic range 49152-65535 (RFC 6335 section 6). The word is the hardware random
+ word net-isn uses; with none (0 or -1) the clock is the key, which is predictable.
+
+  HttpDnsQuery = record {
+    hq-id : Integer,
+    hq-port : Integer,
+    hq-question : List Integer
+  }
+
+  http-dns-draw : Integer -> HttpDnsQuery
+  http-dns-draw (w) =
+    let m = net-isn-mix (net-isn-mix w)
+    in HttpDnsQuery { hq-id = bit-and m 65535, hq-port = 49152 + bit-and (bit-shru m 16) 16383, hq-question = [] }
+
+ RFC 5452 section 9.1: a reply is ours only if its question is the one asked, QNAME, QTYPE A and QCLASS IN as sent.
+ A query with no question recorded matches no reply.
+
+  http-dns-asking : HttpDnsQuery, Text -> HttpDnsQuery
+  http-dns-asking (q) (host) =
+    HttpDnsQuery { hq-id = q.hq-id, hq-port = q.hq-port, hq-question = dns-encode-name host & write-be16 dns-type-a & write-be16 dns-class-in }
+
+  http-dns-question-ours : List Integer, HttpDnsQuery -> Boolean
+  http-dns-question-ours (p) (q) =
+    let n = list-length (q.hq-question)
+    in if n == 0 then False
+    else if list-length p < 12 + n then False
+    else if read-be16 p 4 /= 1 then False
+    else http-dns-same p 12 (q.hq-question) 0 n
+
+  http-dns-same : List Integer, Integer, List Integer, Integer, Integer -> Boolean
+  http-dns-same (p) (off) (want) (i) (n) =
+    if i >= n then True
+    else if list-at p (off + i) /= list-at want i then False
+    else http-dns-same p off want (i + 1) n
+
+  http-dns-fresh : Integer -> Maybe HttpDnsQuery
+  http-dns-fresh (salt) = http-dns-fresh-from __hardware-random-word salt
+
+  http-dns-fresh-from : Integer, Integer -> Maybe HttpDnsQuery
+  http-dns-fresh-from (w) (salt) =
+    when net-entropy-word w
+      is None -> None
+      is Just (key) -> Just (http-dns-draw (bit-xor key salt))
+
+  http-resolve-error : Text -> Text
+  http-resolve-error (host) =
+    if http-is-dotted-quad host == False & http-dns-fresh-none (http-dns-fresh 0) then "dns: " & net-isn-refusal
+    else "dns: cannot resolve " & host
+
+  http-dns-fresh-none : Maybe HttpDnsQuery -> Boolean
+  http-dns-fresh-none (m) = when m is None -> True is Just (q) -> False
 
   http-dns-query : Text -> [Network.Read, Network.Write] List Integer
   http-dns-query (host) =
-    let frame = udp-build-frame mac-broadcast http-local-mac http-local-ip http-dns-ip 1024 dns-port (dns-build-a-query http-dns-tx-id host)
+    when http-dns-fresh (text-length host)
+      is None -> []
+      is Just (q0) -> http-dns-send (http-dns-asking q0 host) host
+
+  http-dns-send : HttpDnsQuery, Text -> [Network.Read, Network.Write] List Integer
+  http-dns-send (q) (host) =
+    let frame = udp-build-frame mac-broadcast http-local-mac http-local-ip http-dns-ip (q.hq-port) dns-port (dns-build-a-query (q.hq-id) host)
     in act
      sent <- net-driver-send-frame frame
-     http-dns-await host 0
+     http-dns-await q host 0
     end
 
-  http-dns-await : Text, Integer -> [Network.Read] List Integer
-  http-dns-await (host) (tries) =
+  http-dns-await : HttpDnsQuery, Text, Integer -> [Network.Read] List Integer
+  http-dns-await (q) (host) (tries) =
     if tries > http-dns-budget then []
     else let hp = __heap-save
     in act
      frame <- net-driver-recv-frame
      if list-length frame == 0 then let restored = __heap-restore hp
-     in http-dns-await host (tries + 1)
-     else let addr = http-dns-extract frame
+     in http-dns-await q host (tries + 1)
+     else let addr = http-dns-extract frame q host
      in if list-length addr == 4 then addr
      else let restored2 = __heap-restore hp
-     in http-dns-await host (tries + 1)
+     in http-dns-await q host (tries + 1)
     end
 
  The reply is an ethernet frame carrying IP carrying UDP carrying the
@@ -159,21 +216,46 @@ Section: DNS On The Wire
  that is not ours must cost nothing, which is what the heap-restore
  above is for.
 
-  http-dns-extract : List Integer -> List Integer
-  http-dns-extract (frame) =
+  http-dns-extract : List Integer, HttpDnsQuery, Text -> List Integer
+  http-dns-extract (frame) (q) (host) =
     if eth-ethertype frame /= eth-type-ipv4 then []
     else let ip = eth-payload frame
-    in if ip-proto ip /= ip-proto-udp then []
-    else let dg = udp-parse (ip-payload ip)
-    in let resp = dns-parse-response (dg.payload)
-    in when dns-first-a-record resp
+    in if ip-length-valid ip == False then []
+    else if ip-header-valid ip == False then []
+    else if ip-proto ip /= ip-proto-udp then []
+    else if ip-equal (ip-src ip) http-dns-ip == False then []
+    else let udp = ip-payload ip
+    in if udp-checksum-valid udp (ip-src ip) (ip-dst ip) == False then []
+    else let dg = udp-parse udp
+    in if dg.src-port /= dns-port then []
+    else if dg.dst-port /= q.hq-port then []
+    else if http-dns-question-ours (dg.payload) q == False then []
+    else let resp = dns-parse-response (dg.payload)
+    in if http-dns-reply-ours resp q == False then []
+    else when dns-first-a-record resp host
      is Just (a) -> a
      is None -> []
 
+ QR is bit 15 of the DNS flags (set in a response) and RCODE bits 0-3
+ (0 is NOERROR), RFC 1035 section 4.1.1.
+
+  http-dns-reply-ours : DnsResponse, HttpDnsQuery -> Boolean
+  http-dns-reply-ours (resp) (q) =
+    if resp.tx-id /= q.hq-id then False
+    else if bit-and (resp.flags) 32768 == 0 then False
+    else bit-and (resp.flags) 15 == 0
+
   http-host-address : Text -> [Network.Read, Network.Write] List Integer
   http-host-address (host) =
-    if http-is-dotted-quad host then http-parse-quad host
+    if http-is-dotted-quad host then http-quad-checked (http-parse-quad host) 0
     else http-dns-query host
+
+  http-quad-checked : List Integer, Integer -> List Integer
+  http-quad-checked (q) (i) =
+    if list-length q /= 4 then []
+    else if i >= 4 then q
+    else if list-at q i > 255 then []
+    else http-quad-checked q (i + 1)
 
 Section: Response Framing
 
@@ -221,39 +303,51 @@ Section: Receive
     data : List Integer
   }
 
-  http-append : List Integer, List Integer, Integer, Integer -> List Integer
-  http-append (acc) (chunk) (i) (n) =
-    if i >= n then acc
-    else if list-length acc >= http-max-response then acc
-    else http-append (list-push acc (list-at chunk i)) chunk (i + 1) n
+  http-headers-end-buf : TcpTransportState, Integer, Integer -> Integer
+  http-headers-end-buf (ts) (i) (len) =
+    if i + 3 >= len then (-1)
+    else if recv-buf-byte ts i == 13 & recv-buf-byte ts (i + 1) == 10 & recv-buf-byte ts (i + 2) == 13 & recv-buf-byte ts (i + 3) == 10 then i + 4
+    else http-headers-end-buf ts (i + 1) len
 
-  http-recv : TcpTransportState, List Integer, Integer, Integer, Integer -> [Network.Read, Network.Write] HttpRecv
-  http-recv (ts) (acc) (head-end) (want) (tries) = http-recv-rx ts acc head-end want tries [] 0
+  http-feed-capped : TcpTransportState, NetResult -> TcpTransportState
+  http-feed-capped (ts) (r) =
+    let room = http-max-response - ts.recv-len
+    in let stop = if r.data-stop - r.data-off > room then r.data-off + room else r.data-stop
+    in if stop <= r.data-off then ts else transport-feed-range ts (ts.session) (r.data) (r.data-off) stop
 
-  http-recv-rx : TcpTransportState, List Integer, Integer, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] HttpRecv
-  http-recv-rx (ts) (acc) (head-end) (want) (tries) (rx) (mark) =
-    if tries > http-recv-budget then HttpRecv { transport = ts, data = acc }
-    else if http-have-all acc head-end want then HttpRecv { transport = ts, data = acc }
-    else if list-length acc >= http-max-response then HttpRecv { transport = ts, data = acc }
-    else if list-length rx == 0 & transport-stale ts then HttpRecv { transport = ts, data = acc }
+  http-recv-data : TcpTransportState -> List Integer
+  http-recv-data (ts) = __buf-read-bytes (ts.recv-base) 0 (ts.recv-len)
+
+  http-recv-done : TcpTransportState -> HttpRecv
+  http-recv-done (ts) = HttpRecv { transport = ts, data = http-recv-data ts }
+
+  http-recv : TcpTransportState, Integer, Integer, Integer -> [Network.Read, Network.Write] HttpRecv
+  http-recv (ts) (head-end) (want) (tries) = http-recv-rx ts head-end want tries [] 0
+
+  http-recv-rx : TcpTransportState, Integer, Integer, Integer, List Integer, Integer -> [Network.Read, Network.Write] HttpRecv
+  http-recv-rx (ts) (head-end) (want) (tries) (rx) (mark) =
+    if tries > http-recv-budget then http-recv-done ts
+    else if head-end >= 0 & want >= 0 & ts.recv-len - head-end >= want then http-recv-done ts
+    else if ts.recv-len >= http-max-response then http-recv-done ts
+    else if list-length rx == 0 & transport-stale ts then http-recv-done ts
     else if list-length rx == 0 then let ta = transport-arenas ts
     in let rx1 = net-io-rx rx
     in let m = __heap-save
-    in http-recv-rx ta acc head-end want tries rx1 m
+    in http-recv-rx ta head-end want tries rx1 m
     else let hp = __heap-save
     in act
      n <- net-driver-recv-into rx
      if n == 0 then let restored = __heap-restore hp
-     in http-recv-rx ts acc head-end want (tries + 1) rx mark
+     in http-recv-rx ts head-end want (tries + 1) rx mark
      else let r = net-process-frame-within (ts.session) rx n
      in act
        ts1 <- flush-transport-outbox (transport-set-session ts (r.session))
-       let acc2 = http-append acc (r.data) (r.data-off) (r.data-stop)
-       in let he = if head-end < 0 then http-headers-end acc2 0 (list-length acc2) else head-end
-       in let cl = if want < 0 then (if he < 0 then (-1) else http-content-length acc2 he) else want
-       in when (ts1.session).conn.state
-        is TcpEstablished -> http-recv-rx (transport-compact-past ts1 mark) acc2 he cl (tries + 1) rx mark
-        is otherwise -> HttpRecv { transport = ts1, data = acc2 }
+       let ts2 = http-feed-capped ts1 r
+       in let he = if head-end < 0 then http-headers-end-buf ts2 0 (ts2.recv-len) else head-end
+       in let cl = if want < 0 then (if he < 0 then (-1) else http-content-length (__buf-read-bytes (ts2.recv-base) 0 he) he) else want
+       in when (ts2.session).conn.state
+        is TcpEstablished -> http-recv-rx (transport-compact-past ts2 mark) he cl (tries + 1) rx mark
+        is otherwise -> http-recv-done ts2
      end
     end
 
@@ -309,7 +403,7 @@ Section: The Request
     in let port = url-port url
     in act
      addr <- http-host-address host
-     if list-length addr /= 4 then Err ("dns: cannot resolve " & host)
+     if list-length addr /= 4 then Err (http-resolve-error host)
      else let sess = net-session-new http-local-mac http-local-ip http-gateway-ip http-local-port port addr 1000
      in let req = if method == "POST" then
        http-post-request host path body
@@ -331,7 +425,7 @@ Section: The Request
       Err ("http: request truncated at " & show (s.ns-sent) & " of " & show (list-length bytes) & " bytes")
     end
     else act
-      r <- http-recv (s.ns-transport) (__list-with-capacity http-max-response) (-1) (-1) 0
+      r <- http-recv (s.ns-transport) (-1) (-1) 0
       ts3 <- net-io-close (r.transport)
       let resp = http-parse-response (r.data)
       in if resp.valid then Ok (resp.body) else Err "http: no response"
@@ -365,7 +459,7 @@ Section: HTTPS Over TLS 1.3
   fetch-tls-connect : Text, Text, Text, Integer, List Integer, List Integer, List X509Anchor, List Integer -> [Network.Read, Network.Write] Result Text Text
   fetch-tls-connect (url) (host) (path) (port) (client-priv) (random) (anchors) (cal-now) = act
     addr <- http-host-address host
-    if list-length addr /= 4 then Err ("dns: cannot resolve " & host)
+    if list-length addr /= 4 then Err (http-resolve-error host)
     else let sess = net-session-new http-local-mac http-local-ip http-gateway-ip http-local-port port addr 1000
     in act
       ts1 <- net-io-connect (transport-new sess)
@@ -530,7 +624,7 @@ Section: The Network Effect
   resolve-dns : Text -> [Network.Read, Network.Write] Result Text Text
   resolve-dns (host) = act
     addr <- http-host-address host
-    if list-length addr /= 4 then Err ("dns: cannot resolve " & host) else Ok (format-ip addr)
+    if list-length addr /= 4 then Err (http-resolve-error host) else Ok (format-ip addr)
   end
 
 Page 1

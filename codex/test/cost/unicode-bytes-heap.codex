@@ -1,0 +1,51 @@
+Chapter: UnicodeBytesHeapTest
+
+  cites Foreword chapter CCE
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+ The reference is the decoder before the sized list: encoded into a list that starts empty and grows by doubling.
+
+  reference : List Integer -> Text
+  reference (us) = raw-bytes-to-text (unicode-to-text-loop cce-to-unicode-table us 0 (list-length us) [])
+
+  points : Text, Integer, List Integer -> List Integer
+  points (s) (n) (acc) = if n <= 0 then acc else points s (n - 1) (acc & text-to-unicode-bytes s)
+
+  cost : List Integer -> Integer
+  cost (us) =
+    let a = __heap-save
+    in let t = unicode-bytes-to-text us
+    in let b = __heap-save
+    in (b - a) + text-length t - text-length t
+
+  reference-cost : List Integer -> Integer
+  reference-cost (us) =
+    let a = __heap-save
+    in let t = reference us
+    in let b = __heap-save
+    in (b - a) + text-length t - text-length t
+
+  control : List Integer -> Integer
+  control (us) =
+    let a = __heap-save
+    in let n = list-length us
+    in let b = __heap-save
+    in (b - a) + n - n
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let ascii = points "abcdefghij" 100 []
+    in let mixed = points "café € " 120 []
+    in let unmapped = [104, 105, 1114111, 33]
+    in act
+      print-line-uni ("the text is unchanged for an empty, an ASCII, a multi-byte and an unmapped input: " & show (unicode-bytes-to-text [] == reference [] & unicode-bytes-to-text ascii == reference ascii & unicode-bytes-to-text mixed == reference mixed & unicode-bytes-to-text unmapped == reference unmapped))
+      print-line-uni ("and the comparison refuses an input one point off: " & show (unicode-bytes-to-text (ascii & [33]) /= reference ascii))
+      print-line-uni ("the control window allocates nothing: " & show (control ascii == 0))
+      print-line-uni ("1,000 ASCII points cost at most 10 bytes each and no more than before: " & show (cost ascii <= 10 * list-length ascii & cost ascii <= reference-cost ascii))
+      print-line-uni ("a multi-byte input costs at most 10 bytes per encoded byte, where it cost at least 15: " & show (cost mixed <= 10 * text-length (reference mixed) & reference-cost mixed >= 15 * text-length (reference mixed)))
+    end
+
+Page 1

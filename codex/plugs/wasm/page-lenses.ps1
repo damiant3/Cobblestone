@@ -117,10 +117,10 @@ $PageModules = @(
     # for the IR compile (decks) -- without it that compile dies in __alloc at
     # about 542 MB, the same way the network build would without its -Decks 160.
     @{ plug = 'riscv'; file = 'riscv-stdio.wasm'; transport = 'irbytes'
-       chapters = 'HandlerLift,RiscVRuntime,RiscVCodeGen,RiscVCodeGen2,RiscVLir,RiscVCodeGen3,RiscVDisasm,RiscVElf,RiscVStdio'
+       chapters = 'ShortCircuit,HandlerLift,RiscVRuntime,RiscVCodeGen,RiscVCodeGen2,RiscVLir,RiscVCodeGen3,RiscVDisasm,RiscVElf,RiscVStdio'
        withLir = $true; common = 'PlugManifest'; compiler = 'IR\ConstShare'; decks = 160 }
     @{ plug = 'arm64'; file = 'arm64-stdio.wasm'; transport = 'irbytes'
-       chapters = 'HandlerLift,Arm64Runtime,Arm64CodeGen,Arm64CodeGen2,Arm64Lir,Arm64CodeGen3,Arm64Disasm,Arm64Elf,Arm64Stdio'
+       chapters = 'ShortCircuit,HandlerLift,Arm64Runtime,Arm64CodeGen,Arm64CodeGen2,Arm64Lir,Arm64CodeGen3,Arm64Disasm,Arm64Elf,Arm64Stdio'
        withLir = $true; common = 'PlugManifest'; compiler = 'IR\ConstShare'; decks = 160 }
 
     # -- plugs that carry their own wasm builder ------------------------------

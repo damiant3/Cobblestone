@@ -1,0 +1,37 @@
+Chapter: GossipProtocolTest
+  cites Net chapter GossipProtocol
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+  gpt-status : GossipState, Text -> Text
+  gpt-status (st) (id) = when gos-find-peer st id
+    is Just (p) -> p.gp-status & "/" & show (p.gp-generation)
+    is None -> "absent"
+
+  gpt-told : GossipState, Text, List GossipUpdate -> GossipState
+  gpt-told (st) (from) (updates) = gos-handle-ping st from 0 updates 50
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let st0 = gossip-new "a" "10.0.0.1"
+    in let st1 = gos-add-peer st0 (gossip-peer-new "b" "10.0.0.2")
+    in print-line-uni ("add keeps the caller's state: peers " & show (st0.gos-peer-count) & "/" & show (list-length (st0.gos-peers)) & ", queued " & show ((st0.gos-queue).uq-count) & "; new state peers " & show (st1.gos-peer-count) & ", queued " & show ((st1.gos-queue).uq-count))
+    let q0 = update-queue-new 6 3
+    in let q1 = uq-enqueue q0 (GuAlive "b" 2)
+    in print-line-uni ("enqueue keeps the caller's queue: " & show (q0.uq-count) & "/" & show (list-length (q0.uq-updates)) & ", new " & show (q1.uq-count))
+    let st2 = gos-add-peer (gossip-new "a" "10.0.0.1") (gossip-peer-new "b" "10.0.0.2")
+    in let st3 = gos-check-suspects st2 100
+    in print-line-uni ("suspicion keeps the caller's peer: before " & gpt-status st2 "b" & ", after " & gpt-status st3 "b")
+    let me = gpt-told (gossip-new "b" "10.0.0.2") "a" [GuJoin "b" "10.0.0.2" 1, GuJoin "c" "10.0.0.3" 1]
+    in print-line-uni ("a join about myself is not a peer: b " & gpt-status me "b" & ", c " & gpt-status me "c" & ", peers " & show (me.gos-peer-count))
+    let base = gos-add-peer (gossip-new "b" "10.0.0.2") (gossip-peer-new "c" "10.0.0.3")
+    in let s1 = gpt-told base "a" [GuSuspect "c" 1]
+    in let s2 = gpt-told s1 "a" [GuAlive "c" 1]
+    in let s3 = gpt-told s2 "a" [GuDead "c" 1]
+    in let s4 = gpt-told s3 "a" [GuAlive "c" 1]
+    in let s5 = gpt-told s4 "a" [GuAlive "c" 2]
+    in print-line-uni ("precedence: suspect@1 " & gpt-status s1 "c" & ", alive@1 " & gpt-status s2 "c" & ", dead@1 " & gpt-status s3 "c" & ", alive@1 " & gpt-status s4 "c" & ", alive@2 " & gpt-status s5 "c")
+  end

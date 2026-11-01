@@ -35,15 +35,16 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.expected` | Compile must succeed; runtime serial output must match. **Not byte-for-byte** -- see the section below the table |
 | `foo.failing` | Compile must fail with the listed CDX error codes |
 | `foo.message` | With `foo.failing`: each non-empty line must appear verbatim in the refusal's diagnostic output, so a note that carries a contract cannot be reworded away or dropped while the codes stay green. Graded by `check-errors` (codex/test/errors) and `test.ps1` |
-| `foo.diag` | Compile must succeed and emit each listed CDX code at any severity (warning/info/error). One code per line (bare number or `CDX`-prefixed). Combine with `foo.expected` to also check runtime output. This is how warnings and infos are regression-tested. |
+| `foo.diag` | Compile must succeed and emit each listed CDX code at any severity (warning/info/error). One code per line (bare number or `CDX`-prefixed). Combine with `foo.expected` to also check runtime output. This is how warnings and infos are regression-tested. Graded by `test.ps1` and `bvt.ps1` (so by `cite-gate.ps1`) with one rule, `(error|warning|info|hint|deprecated) (CDX)?0*<code>\b` on the compile log |
 | `foo.census` | Codegen cost ceilings: CDX6014 lines (`[CALLS] 'name' path=... insns=... push=... pop=... stack-stores=...`) from a compile under the `callcensus` mode flag. `build/cite-gate.ps1` grades every `.census` on any `codex/compiler` change: a pinned definition must keep its emit path (lir, then minimal, then standard) and must not grow in instructions, pushes, pops or stack stores; a fall is reported for re-pinning, a rise or a missing definition fails. Re-pin from a compile of the subject with `-RawFlags callcensus`, reading the delta first. `codex/test/ops/call-arity-twelve` is the first |
 | `foo.skip` | Skipped entirely; first line is the reason |
 | `foo.slow` | Skipped unless `-Slow`; first line is the reason |
 | `foo.fatal` | Skipped unless `-Fatal`; kills the VM at runtime |
 | `foo.wall` | Run budget in whole seconds above the 60 s `-run-list` default, 61..600 on the first line; any other first line is refused. `bvt.ps1` (and so the cite-gate) and `test.ps1`'s phase 2 run every such subject one at a time in an extra slot whose supervisor gets the largest budget; `test.ps1` under `CODEX_VM_HOST=qemu` does not read it. `codex/test/apps/t5-encoder-step` is the first |
 | `foo.renode` | The cross subject needs a Renode board model QEMU `virt` lacks (first line names it); `build/test-cross-batch.ps1` skips it unless `-Renode` |
-| `foo.cross-fatal` | With `foo.fatal`: `build/test-cross-batch.ps1` runs the test anyway and passes it only when the guest reports a fault (`!EXC=` on riscv, `!A64FAULT` on arm64); a run that ends without one fails. Needs no `.expected` |
-| `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs (`codex/test/apps/foreword-all-compile` cites all 416 foreword chapters and carries `decks=200`, re-measured 2026-09-02 off the file and not carried forward; without it the compile is `CDX9002: Deck overflow in LOWER`, run both ways 2026-07-22). Read by `build/test-compile-batch.ps1` and, since 2026-09-02, by `build/bvt.ps1`, so it applies to the battery and the BVT but **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches. **Until then the BVT could not have run a `.flags` subject at all**: it compiled every subject with bare switches, so a chapter needing `decks=200` failed COMPILE there while compiling fine in the battery, and the runner was measuring its own invocation rather than the test (L-SIDECAR). Nothing had noticed because no BVT subject carried a `.flags`; it surfaced the moment the gate's cited-test run phase pointed the same runner at `foreword-all-compile` |
+| `foo.qemuboard` | The arm64 cross subject boots another QEMU machine (first line names it; `raspi4b` is the one accepted): `build/test-cross-batch.ps1` routes it to `build/test-cross-disk.ps1`, which compiles with `compile-arm64.ps1 -Raspi4b` and boots `-M raspi4b`. `codex/test/arm64-pi4-tick` |
+| `foo.cross-fatal` | With `foo.fatal`: `build/test-cross-batch.ps1` runs the test anyway and passes it only when the guest reports a fault (`!EXC=` on riscv, `!A64FAULT` on arm64); a run that ends without one fails; `codex/plugs/wasm/hosted-wasm-test.ps1` grades it on wasm, where the fault is a wasm trap. Needs no `.expected` |
+| `foo.flags` | First line is appended to the test's **compile mode line**, so the test states its own compiler requirements. `prose` selects CPL; `passes=+name` adds an IR pass; `decks=N` scales every phase deck floor to N per cent, which is what a compilation unit larger than the floors were sized for needs; the symptom without it is `CDX9002: Deck overflow in <PHASE>`. Read by `build/test-compile-batch.ps1` and, since 2026-09-02, by `build/bvt.ps1`, so it applies to the battery and the BVT but **not** to a hand-run `build/compile.ps1`, which takes the same settings as switches. **Until then the BVT could not have run a `.flags` subject at all**: it compiled every subject with bare switches, so a chapter needing `decks=200` failed COMPILE there while compiling fine in the battery, and the runner was measuring its own invocation rather than the test (L-SIDECAR). Nothing had noticed because no BVT subject carried a `.flags`; it surfaced the moment the gate's cited-test run phase pointed the same runner at `foreword-all-compile` |
 | `foo.stdin` | Pumped to VM serial after boot (runtime input) |
 | `foo.keys` | Scancode timeline (`t:scancode` per line, t = ms since boot, `#` comments) handed to codex-vm as `-keys-file`. **Not interchangeable with `.stdin`** -- see below |
 | `foo.disk` | Attached as IDE disk image via codex-vm `-disk` flag (primary master) |
@@ -53,6 +54,8 @@ Each test `foo.codex` may have sidecars that control its behavior:
 | `foo.disk-src` | First line names ANOTHER test; that test's freshly compiled CDX is attached as this test's disk. `.disk` names a file and is therefore frozen, which is no use to a test pinning what the CURRENT compiler emits. `manifest-pin` is the case it was built for, and it had been skipped for want of it |
 | `foo.smp` | Core count. The test is booted with `-smp N`. This is how a test covers multi-core; without it every test boots single-core, which is why nothing exercised SMP for so long (`codex/test/smp-cores.codex` is the first) |
 | `foo.vmargs` | Extra codex-vm flags, whitespace-separated, `#` comments and blank lines ignored. For a test whose subject is the MACHINE rather than the program: a bus topology, an absent device. Before it existed, such a test could only be a `.skip` with the command in its prose -- an unrun test, which proves less than no test because it reads as coverage. `codex/test/apps/usb-kbd-hub` is the first, passing `-xhci-no-root-kbd` to unplug the root keyboard so the hub is the only route to one |
+| `foo.qemu-x86` | The test runs under QEMU x86-64 TCG instead of codex-vm, which emulates no virtio-pci device: one arm per line, `<name> <QEMU arguments>`, `{disk}` standing for one writable copy of the test's `.disk`/`.disk-mint` that every arm shares in order. `build/test-qemu-x86.ps1` boots each arm and the `.expected` holds every arm's output under its `ARM <name>` line. A line `inject <arm> <trigger> => <cmd>; <cmd>` gives that arm a QEMU monitor and sends the commands (`mouse_move dx dy`, `mouse_button n`), 300 ms apart, once a serial line equal to `<trigger>` appears; an inject whose trigger never appears fails the arm. `codex/test/apps/virtio-blk-qemu` and `virtio-net-qemu`; `codex/test/ps2-mouse-qemu` reads injected PS/2 packets; all carry `.no-cross` |
+| `foo.vm-guests` | The test boots as several codex-vm guests that share one `-ivshmem` file (`build/test-vm-guests.ps1`, routed by `test.ps1` and by `bvt.ps1`, and therefore by `cite-gate.ps1`): one guest per line, `<name> <start> <codex-vm arguments>`, where `<start>` is `+<ms>` after the previous guest started or `after` it exited, and `{shm}` is a fresh zeroed 1 MiB file per run. The output is `GUEST <name>` then that guest's filtered lines, in sidecar order. `ivshmem-live` runs two guests at once; `ivshmem-channel` runs three in turn and one with no device |
 | `foo.bare-metal` | The subject needs a bare-metal machine; the first line names what it reaches. The hosted selection rule (`codex/plugs/elf/hosted-elf-test.ps1`, shared by the hosted wasm arm) drops it, and both harnesses print every drop by reason. For a need that arrives through a cited chapter or a bed, which no source term can see: a subject naming a ring-0 builtin itself is dropped by the rule's term list without one |
 | `foo.hosted-refusal` | What the hosted targets do not serve (a kernel scheduler, the NIC), one reason line; a line `CDXnnnn` instead requires the hosted compile to be refused with that diagnostic. Read by `codex/plugs/elf/hosted-elf-test.ps1` only, NOT by the shared selection rule, so the wasm arm keeps the subject (`web-mux-heap` runs there); the harness prints the refused count and each subject with its reason |
 
@@ -173,28 +176,50 @@ hand diff (L-COUNT).
 in exactly one LF, and the comparison strips CR from the expected side only.
 
 **And that failure is LOUD, which is not the same as caught.** Three sidecars
-shipped in CL 15313 anyway (`gpt-hdr-crc-guard`, `gpt-array-crc-guard`,
+shipped anyway (`gpt-hdr-crc-guard`, `gpt-array-crc-guard`,
 `gpt-array-geom-guard`) and sat unpassable until root's release battery found
 them on 2026-08-16. The full battery is Damian's tool, so a test can land and
 never be run at all. `build/check-sidecars.ps1` refuses a sidecar with no
 final LF.
 
-### 181 of 425 foreword chapters are never asked whether they answer correctly
+### Library chapters no computing test reaches
 
-Measured 2026-07-27, once, by hand. For every chapter under `codex/foreword`,
-the question was whether any test anywhere in `codex/test` both cites it and
-computes something rather than printing a fixed string:
+`pwsh build/coverage-census.ps1 -Tree <dir> [-List]` answers it. A chapter is
+reached when a computing test (an `.expected` holding a digit or a `PASS` line, L-NAMED, and no
+`.skip`) cites it directly or through the cite closure. A chapter declaring
+`opening` is a program, which nothing can cite (L-UNCITABLE), so programs are
+counted apart, and so is a chapter declaring no definition, operation or type (an
+effect with no operations), which has nothing to compute. A cite of a quire
+registered in `build/host/windows/quire-map.ps1` resolves to that quire's
+directory, and a cite of the compiler's manifest quire to every file in
+`build/compiler-order.txt` but the entry chapter, as the compile does; any other
+cite resolves by name, and a name two
+chapters share outside a registered directory is left ungraded. Measured
+2026-10-31:
 
-| | |
-|---|---:|
-| foreword chapters | 425 |
-| cited by a test that computes | 244 |
-| **cited only by a compile smoke test** | **181** |
-| cited by no test at all | 0 |
+| tree | library chapters | reached | reached by nothing | names shared, ungraded |
+|---|---:|---:|---:|---:|
+| `codex/foreword` | 440, and 7 declarations only | 439 | 1, `gpu/BrowserKernels` (graded by hand, `gpu-backlog.md`) | 0 |
+| `codex/compiler` | 69 | 69 | 0 | 0 |
+| `codex/os` | 179 | 179 | 0 | 0 |
+| `apps` | 1760 | 811 | 859, and 90 more reached only by a GUI-driven program | 3 |
+
+`apps` also holds 342 programs with no `.expected`, 10 of them driven by a
+`.uiscript`. Each app with a gap has a row in its own backlog,
+except the six with no backlog: safari (47), diffusion (4), designer (4),
+fileshare (3), workflow (3) and site (1). `codex/test/apps/foreword-all-compile`
+cites all 451 foreword chapters and `codex/test/apps/os-uncited-compile` holds
+the 16 OS chapters nothing cites, so every foreword chapter and every compiling
+OS chapter is at least compiled.
+
+`-Diagnostics` answers the compiler's half: of 143 registered CDX codes, 122
+are pinned by a `.failing` or `.diag` and the other 21 are internal guards
+graded only by `build/guard-sabotage.ps1`, which no gate runs; 0 are ungraded
+(2026-10-31).
 
 **The compile tests are not the problem and are not being criticised.**
 `codex/test/forewords/` exists to prove each chapter still compiles, and it
-does that, and it fails when a chapter does not. The gap is that for 181
+does that, and it fails when a chapter does not. The gap is that for these
 chapters nothing else exists, so a chapter can compile forever while answering
 the wrong number.
 
@@ -203,16 +228,16 @@ printed `Foreword/ConsistentHash OK` while the ring sent 993 of 1000 keys to a
 single node. `Probability` was NOT in this set, which is why its negative CDF
 was at least visible behind a skip.
 
-**The method is a first-order proxy and overstates coverage in both
-directions.** A test that cites a chapter and calls `show` on something
-unrelated counts as covered, and a chapter exercised indirectly through another
-chapter's test counts as uncovered. Treat 181 as the right order of magnitude
-and not as a roster.
+**The census over-credits, and that is the direction to read it in.** A cite
+is not a call: a test that cites a chapter and exercises none of it still
+reaches the chapter, and so does everything that chapter cites. A chapter
+the census reports unreached is certainly untested; one it reports reached is
+only possibly tested. Read a chapter before writing its test.
 
-**This is a one-off census, deliberately, and no instrument was built for it.**
-Damian's 2026-07-27 ruling stands: the cost of discovery is lower than the cost
-of continuous maintenance, so a coverage gate is declined. Re-run it by hand if
-the number is ever wanted again.
+**The census is a script and never a gate.** Damian's 2026-07-27 ruling
+stands: a coverage gate is declined. `build/coverage-census.ps1` is run by
+hand, re-derives every roster (L-COUNT), and the coverage rows in the quire
+and app backlogs name it rather than carrying the lists.
 
 ### A `.skip` is a claim, and nothing re-tests it
 
@@ -226,7 +251,6 @@ were stale**:
 | `let-shadow-scope` | known-failing: a shadowed `let` emits 13, want 9 | **answers 9** -- a documented MISCOMPILE, fixed and left buried behind its own skip |
 | `linalg-test` | mat-mul GPFs at runtime | **passes** |
 | `rp2040-drivers` | the harness does not pass `-board-mmio` | **passes** with a one-line `.vmargs`; so do `stm32l4-drivers` and `pi4-drivers` |
-| `probability-test` | `normal-cdf 0` returns -253 | **still true** at that probe, and it is a negative probability. Fixed 2026-07-27; the skip is deleted and the test is in the `-Lib` battery |
 
 All five stale skips are deleted and those tests are in the battery. The board
 trio is the instructive one: the flag was read as a property of the BATTERY when
@@ -272,11 +296,8 @@ anything.
 | UNRUNNABLE | 0 | |
 | no `.expected` | 9 | nothing to compare against |
 
-**Two rows moved underneath this within the hour and the totals above are the
-run, not the present.** Main 10717 landed val's `probability-test` fix, which
-retires one REAL row and deletes that skip; fester's `bundled-agent-heap` adds
-one skip with no `.expected`. At submit time the inventory is **27 skips, 17
-judgeable**. Re-run before quoting either set.
+**The totals above are the run, not the present.** Re-run before quoting
+either set.
 
 **The seven TRIVIAL rows are the finding, and the first run of the script got
 them wrong.** It filed all nine passes as STALE under the heading "delete the
@@ -312,7 +333,7 @@ deleting anything; the verdict is evidence, not an instruction.**
 looks. A keyboard read -- `uefi-read-key`, and `poll-key` above it -- reads the
 **PS/2 key cell** instead, and no quantity of `.stdin` has ever reached it.
 
-**`.stdin` is ASCII only.** The ring carries the file's bytes one at a time
+**`.stdin` is slow.** The serial ring carries a byte at a time: a 155 KB `.stdin` (the tzdata rule text, 2026-11-01) did not arrive within `test-run.ps1`'s 300 s, so input of that size goes in as a generated chapter of Text literals (`build/gen-tz-source.ps1`) or a disk. **`.stdin` is ASCII only.** The ring carries the file's bytes one at a time
 and `read-line` takes each as a character, so a UTF-8 sequence arrives as
 unrelated characters: an em-dash (`E2 80 94`) reads back as code points 0,
 65533 and 51 (measured 2026-09-30, reek). A test whose input needs non-ASCII
@@ -380,25 +401,13 @@ blocker) -- so a wrong summary on a correctly-named, correctly-raised code
 still passes. What it stops is the structural rot: a code with no
 documentation, and a table that describes codes the compiler no longer emits.
 
-**It scanned column-2 PROSE as though it were code, and that is the false
-green referred to elsewhere in this document.** The raise-site scan was a
-`cdx-[a-z0-9-]+` regex over every line of every `.codex` under
-`codex/compiler`, and it did not distinguish code from prose. `opening.codex`
-carried a sentence reading *"held the compiler's ONLY raise of
-`cdx-missing-cite`, so the code read as"* -- so **the sentence reporting that
-the raise site had been deleted was counted as the raise site**, and it was the
-only mention of that constant outside the catalogue. The row stayed green for
-13 days over a diagnostic nothing could raise. Fixed main 12435: skip column-2
-prose, and also scan host scripts for `error <N>:`, since `compile.ps1` and
-`test-compile-batch.ps1` raise CDX3010 as a bare literal with no `CDX` prefix.
+**The raise-site scan skips column-2 prose**, so a sentence that names a constant is not counted as its raise site, and it also scans host scripts for `error <N>:`, since `compile.ps1` and `test-compile-batch.ps1` raise CDX3010 as a bare literal with no `CDX` prefix.
 
 **The consequence for anyone deleting prose under CLAUDE.md rule 12: deleting
 prose can turn a gate RED.** Not because prose reaches the binary -- it does
 not -- but because a text-scanning HOST checker may be counting it. Expect that
 class, and read the red as the check finally telling the truth rather than as
-your deletion breaking something. The near-miss is worth the same warning: the
-first instinct on seeing the row go dead is to delete the registry row, and
-that would have deleted a live diagnostic. A survey is a claim bounded by the
+your deletion breaking something. A survey is a claim bounded by the
 pattern you gave it; three spellings were searched and the code used a fourth.
 
 ## Current State (2026-07-13, seed 5A6B432B...)
@@ -412,22 +421,7 @@ you quote them. Never carry a count forward.**
 | Default | `build/test.ps1 -Jobs 4` | **342** | **328** | **0** | **14** |
 | Full | `build/test.ps1 -Apps -Jobs 4` | **598** | **498** | **9** | **91** |
 
-The default battery is green. **The catalogue of `-Apps` failures that used
-to sit here is gone, because every row in it was re-measured individually
-on 2026-07-20 and every one now passes**: `boot-stage-test`,
-`quaternion-test`, `spark-shapes-test`, `spark-mesh-test` and `wave3-test`
-compile and match their `.expected` with no change needed at all -- they
-had been fixed by other work and nobody re-measured. `erp-server-test`
-passed too and was `.skip`ped on a CDX2033 that no longer occurs; the skip
-is deleted. `historian-test-full` had no `.expected`, so nothing ran it;
-it has one now. `db-full-test` was the one row with real defects behind it
-and they are fixed (CL 9850).
-
-`nic-ping` was the ninth and was **fixed 2026-07-13** (val).
-`xhci-discover-test` was the eighth and is **gone entirely**: its runtime
-failure was a bounds contract, fixed, and the test then went with the kernel
-xHCI driver when that duplicate stack was retired (CL 9180, fester). That is one
-fewer entry, not a re-measurement.
+The default battery is green.
 
 **The header's `9` is therefore stale in the direction of pessimism, and it
 stays as written because the battery itself has not been re-run.** A count
@@ -435,7 +429,7 @@ in this document is only ever the number some run actually produced; per-test
 re-measurement retires the rows it covers and does not license editing a
 total nobody measured. Re-run before trusting any of these figures.
 
-`codex/test/errors/` holds **254** expected-failure tests (measured
+`codex/test/errors/` holds **275** expected-failure tests (measured
 2026-10-26).
 
 ## What the standing gate does not cover
@@ -447,10 +441,10 @@ pointed at.
 **The ai foreword chapters and the tests behind them: no gate phase compiles
 `codex/foreword/ai/`, and `codex/test/forewords/ai-*` run only in the battery.**
 Measured at the Release 46 battery (2026-08-17): `FluxPipeline.codex` had
-never cited `DiffusionPipeline` for `PipelineOutput`, CDX3008 (main 16241)
+never cited `DiffusionPipeline` for `PipelineOutput`, CDX3008
 refused it, `ai-flux-pipeline` and `ai-exp-approximations` went red, and four
-green gates including the release gate had run over that source. Fixed at
-main 16550 (one cite line). The class is any foreword no compiler chapter
+green gates including the release gate had run over that source. The fix was
+one cite line. The class is any foreword no compiler chapter
 reaches: the gate proves the compiler unit and whatever the BVT and the
 sweeps name, and a foreword outside those is proven by the battery alone.
 After touching a foreword the compiler does not cite, compile and run its
@@ -476,26 +470,15 @@ control does not exist and never has. Unowned. Until it is written, a green
 poison battery is evidence about the compiler ONLY if you separately believe
 the flag works.
 
-**Transpiler plugs: the `plug-smoke` phase is four plugs, one input, and a
-binary it may not have rebuilt.** It runs typescript, python, rust and ptx
-against `codex/plugs/test-input/hello.codex`, and it rebuilds a plug **only
-if that plug's CDX is missing**. `codex/plugs/*/build-output/*-plug.cdx` is
-not in the depot, so those binaries are as old as the last hand run of the
-plug's own `build.ps1`.
-
-Both halves of that were load-bearing on 2026-08-11. Forty-four plug
-binaries in one workspace dated 08-06 against a shared
-`codex/plugs/common/IRTextParser.codex` last changed 08-08; **37 of 38
-runnable plugs faulted with an invalid opcode in `parse-type-record` on IR
-containing a record construction, and 38 of 38 handled `hello.codex`
-perfectly.** `hello.codex` has no record in it, so the phase was green
-throughout. Rebuilding every plug took 150 s and made all 38 produce output.
-
-**A green `plug-smoke` therefore means four plugs, of whatever vintage, on
-one record-free program.** After touching anything in `codex/plugs/common`,
-rebuild the plugs yourself; the gate will not. And do not read "produces
-output" as "correct" -- of those 38 rebuilt plugs, 36 emit a field access as
-a division (`codex/plugs/plugs-backlog.md` 1.2) while exiting 0.
+**Transpiler plugs: no gate builds or runs one** (Damian, 2026-10-31).
+`codex/plugs/*/build-output/*-plug.cdx` is not in the depot, so a plug binary
+is as old as the last hand run of the plug's own `build.ps1`: after touching
+anything in `codex/plugs/common`, rebuild the plugs yourself. Measured
+2026-08-11: 37 of 38 stale plugs faulted in `parse-type-record` on IR with a
+record construction while handling `hello.codex` perfectly, so grade with a
+subject that reaches the change. And do not read "produces output" as
+"correct": of those 38 rebuilt plugs, 36 emitted a field access as a division
+(`codex/plugs/plugs-backlog.md` 1.2) while exiting 0.
 
 **Devices and MMIO.** The gate exercises no device model beyond what the
 compiler itself touches. After a change to a driver, a board or codex-vm,
@@ -506,7 +489,7 @@ three board-driver tests are in the battery via a `.vmargs` sidecar carrying
 `-board-mmio`, so a plain battery covers more than it once did, but the gate
 still does not.
 
-**Applications: the gate DOES cover these now, as of main 13855.**
+**Applications: the gate covers these.**
 `build/build.ps1`'s `app-sweep` phase runs
 `sweep-app-classes.ps1 -Check -Jobs 8` over every app entry chapter and
 fails the gate on a regression against `build/app-sweep-baseline.txt`. It
@@ -551,7 +534,7 @@ the battery and the BVT's own 75 reach any of it, and a test in neither is
 compiled by nothing.
 
 Measured 2026-08-20: `codex/test/lib/widget-tone` called `comp-draw-node` with
-the arity it had before a clip parameter was added at main 17846, so it had not
+the arity it had before a clip parameter was added, so it had not
 compiled for four days, across a release. What makes this worse than a red test
 is that a red test at least reports; this one is UNRUNNABLE and the usual
 instruments are all silent about it. `check-sidecars` passes, because the
@@ -587,9 +570,8 @@ missed the chapter one directory over.
 
 **That paragraph was written, published, and then the same file was missed
 again by the next signature change.** `comp-draw-node` gained a `GopFont`
-parameter when GopFont was threaded at main 18118; every production caller was
-updated, `codex/test/lib/widget-tone` was not, and it was red on main until
-18248. It is the SECOND time this exact chapter has been missed this way. A
+parameter when GopFont was threaded; every production caller was
+updated, `codex/test/lib/widget-tone` was not, and it went red on main. It is the SECOND time this exact chapter has been missed this way. A
 discipline that has now failed twice at the same site is not a discipline, it
 is an unenforced assertion (`LESSONS.md` preamble), which is what CurrentPlan
 18222 exists to fix.
@@ -714,10 +696,9 @@ byte-identical fixed point that boots, and **re-tests none of your work**. It
 is a true answer to a different question. This bites whenever a merge brings
 work in after your submit, and NOT only when that work is a seed. Measured the
 same day: a merge-down submitted before the gate carried fourteen new plug
-chapters from another lane, `p4 opened` was therefore empty, `tPlugs` was
-false, and `plug-binary`, `cross-smoke` and `plug-smoke` were all skipped. The
-run went green in 91 seconds having compiled no plug at all; the same tree
-gated with the files still open took 337.8 s and ran all three. A CodexType
+chapters from another lane, `p4 opened` was therefore empty, and every phase
+those chapters implicated was skipped. The run went green in 91 seconds; the
+same tree gated with the files still open took 337.8 s and ran them. A CodexType
 variant that made five plug emitters non-exhaustive reached main through that
 gap and was caught by another lane. Whatever class the merge brought, re-run
 the affected tests BY HAND -- the gate cannot see them any more. Read the
@@ -861,8 +842,7 @@ Consolidated 2026-08-08 out of the retired per-agent workplans.
   1280x800 screenshot is 3,072,054 bytes, and a negative control shorter
   than the write can only ever return what it returned.
 - **`print-line-raw` emits CCE; `print-line` (and `print-line-uni`) convert
-  at the I/O boundary** (main 14809, 2026-08-13; before it `print-line` was
-  the raw alias, and this bullet said so). A hand-written probe using
+  at the I/O boundary**. A hand-written probe using
   `print-line-raw` renders as garbage and looks exactly like a miscompile. The control that settles it is any
   existing `codex/test` unit through the same path.
 - **A hand-rolled compile-and-run harness must DELETE its artifacts
@@ -960,7 +940,7 @@ and why it is in the battery layout above despite not being a battery.
 
 **The instrument has to be able to fail** -- that much this document says
 twice already. It also has to be able to fail *at the thing that changed*,
-and a suite can be blind by construction rather than by accident. CL 8600
+and a suite can be blind by construction rather than by accident. One change
 taught the epilogue fall-through to skip blocks that emit nothing and, by
 naming a block one way and the layout another, made an arm emit a five-byte
 jump to the instruction underneath it. Nine benches were green. All nine are
@@ -1139,21 +1119,12 @@ parity"* -- and then went into `Done/`, which init does not read.
 421 of 1404 with one program gated, and RISC-V fails 119 of what it runs.**
 Do not write "parity" without naming the four benchmarks it refers to.
 
-### The cross bed compiles with the SEED, and did not until 2026-08-20
+### The cross bed compiles with the SEED
 
 `compile-arm64.ps1` and `compile-riscv.ps1` pass `-Kernel seed/Codex.cdx` to
-`compile.ps1` now. Before that they passed nothing, so Phase 1 used
-`compile.ps1`'s default of `build-output/bare-metal/Codex.cdx`, which holds
-whatever the last `build.ps1` left there. **A cross-lane result was therefore a
-property of the workspace, not of the depot**, and two agents measuring the
-same source could disagree without either being wrong: it is the same
-uncontrolled default that made every plug binary a workspace property until
-main 17516.
-
-It has already cost two investigations. It voided val's typescript red on
-2026-08-19 (a three-day-old kernel), and it is the whole of `plugs` 1.49, where
-a 2.1 s baseline and a 92.8 s failure were compared across workspaces holding
-different compilers and read as a regression. Nothing in a `history/` file
+`compile.ps1`, because its default, `build-output/bare-metal/Codex.cdx`, holds
+whatever the last `build.ps1` left there, and **a cross-lane result would then
+be a property of the workspace, not of the depot**. Nothing in a `history/` file
 records which kernel produced it, and `test-output-cross/` is p4-ignored, so
 the baseline never leaves the workspace that wrote it -- **do not compare a
 cross run against a history file another workspace produced.**
@@ -1232,7 +1203,7 @@ changes, or do not copy it.
 casualty MOVES between runs** (three runs, three different chapters, one
 workspace, one kernel, each chapter clean alone). The account with the control
 matrix is `OperatorsManual.md` "The compile batch asks for 12 GB of guest RAM,
-and a short box reports it as a CODEGEN failure" (blu, main 20370).
+and a short box reports it as a CODEGEN failure".
 
 ### A harness that can throw is a harness that can take itself down, and the fix was already in the file
 
@@ -1397,17 +1368,10 @@ queue for an afternoon that the work never needed.
 
 ### A load flake is retried before it is believed
 
-**The batch used to report contention as a test result, and it cost three
-sessions of re-diagnosis.** A compile is given a wall-clock budget while
-`-Jobs` of them run at once, so a large test can exceed it because the box is
-busy; the harness recorded that as `FAIL_COMPILE`, which reads exactly like a
-broken plug. `db-full-test`, `gpu-depth-tree` and `gpu-panel-border` flipped
-between `FAIL_COMPILE` and `FAIL_OUTPUT` from run to run on that alone, and
-the standing instruction *"always re-run a batch FAIL standalone before
-believing it"* was a manual step covering for the harness.
-
-The harness takes that step itself now. After each phase, the failures that
-are **contention-shaped** are retried once, alone:
+A compile is given a wall-clock budget while `-Jobs` of them run at once, so a
+large test can exceed it because the box is busy, and a `FAIL_COMPILE` from
+that reads exactly like a broken plug. After each phase the harness therefore
+retries the failures that are **contention-shaped** once, alone:
 
 | Phase | Retried | Not retried |
 |---|---|---|
@@ -1415,17 +1379,13 @@ are **contention-shaped** are retried once, alone:
 | Compile | a non-zero exit with **no** diagnostic | |
 | Run | `no uart output` | `FAIL_OUTPUT` -- a deterministic wrong answer |
 
-**The no-diagnostic class was added when `-Jobs` went to 8**, and it is the
-distinction that keeps "never re-run a real failure" true rather than merely
-stated. A compile that rejects a program always says so: a CDX-numbered error
-or `CODEGEN-HALTED` lands in the log. A compile whose VM was killed under load
-exits non-zero and says nothing. Before eight slots the second class was rare;
-on the first 8-job run `chapter-pages` hit it, reported `FAIL_COMPILE`, and
-passed standalone -- a phantom regression of exactly the kind the timeout retry
-exists to prevent. Both directions were fired rather than assumed: an injected
-one-shot no-diagnostic exit recovers (`compile 1/1 recovered`), and a
-deliberately broken source exits 3 **with** diagnostics and is not retried at
-all (`compile 0/0`).
+**The no-diagnostic class is the distinction that keeps "never re-run a real
+failure" true.** A compile that rejects a program always says so: a
+CDX-numbered error or `CODEGEN-HALTED` lands in the log. A compile whose VM was
+killed under load exits non-zero and says nothing. Both directions are
+measured: an injected one-shot no-diagnostic exit recovers (`compile 1/1
+recovered`), and a deliberately broken source exits 3 **with** diagnostics and
+is not retried at all (`compile 0/0`).
 
 **A wrong answer is never re-run.** Re-running one spends time and, worse,
 would let a genuine intermittent defect be dismissed as a flake. The
@@ -1449,6 +1409,7 @@ worth what no guard is worth:
   `-CompileTimeoutSec 1` the test times out alone too and stays
   `FAIL_COMPILE`, noted `still failing alone`. A deliberately broken source
   exits non-zero and is **not retried at all** (`0/0`).
+- **`still failing alone` means alone in the batch, not alone on the box.** On 2026-10-31 a riscv64 `-Jobs 16` run (other lanes' guests up) reported `cap-grant-emit`, `ir-passes-registry` and `check-empty-fidelity-lifetime` as `FAIL_COMPILE` timeouts `still failing alone`; each then passed with `-Jobs 1 -Filter <name>` on the same plug (42.7 s and 49.4 s against the 120 s ceiling, and the third refused as designed in 126.6 s against its 240 s budget). Rerun a compile timeout by itself before calling it a regression (L-WINDOW).
 - **Run retry recovers**: proven with a one-shot injected `no uart output`
   (fail first attempt, pass on retry) -- 1 of 1 recovered, the row noted
   `passed on serial retry`. Made persistent, the same injection gives 0 of 1
@@ -1498,8 +1459,8 @@ refusal red**, and re-run once.
 **`still silent alone` does NOT mean broken. The retry re-runs at the SAME
 ceiling, so a test that merely needs longer than the ceiling cannot pass it
 however many times it is retried.** The row is therefore two different
-findings wearing one sentence, and the doc used to say no test in the tree
-produced the class at all. Four do. Measured 2026-08-18 (blu), arm64:
+findings wearing one sentence. Four tests produce the class, measured
+2026-08-18 (blu), arm64:
 
 | test | at `-RenoTimeout 10` | at `-RenoTimeout 120` |
 |---|---|---|
@@ -1523,14 +1484,12 @@ at ceiling" and is honest; `FAIL_RUNTIME` with `no uart output` is the one
 that lies, because a run cut off before its first line looks the same as one
 that never had a first line.
 
-### The GATE leg learned the same lesson, two months later
+### The cross-smoke check learned the same lesson
 
-**`build/check-cross-smoke.ps1` had no retry, and it is the one that runs
-inside `build.ps1` every few minutes.** That is the wrong way round: the batch
-above is out-of-band and careful, while the leg in the standing gate took a
-single silent lane as proof that a backend had stopped executing. Renode gets
-a **3 second** budget there, several agents share one box, and a gate run is
-itself the heaviest thing on it.
+**`build/check-cross-smoke.ps1` had no retry.** It took a single silent lane
+as proof that a backend had stopped executing. Renode gets a **3 second**
+budget there and several agents share one box. No release phase runs it
+(Damian, 2026-10-31); it is a hand check.
 
 Observed 2026-07-28: a gate reported `check-cross-smoke: FAIL (2 of 2
 executed): arm64/factorial, riscv64/factorial`, both `no uart output`, on a CL
@@ -1579,9 +1538,9 @@ parallelise fine -- it is the builds, not the runs.
 undefined symbol, and the compile still reports OK.** Both plugs detect it
 and print `[WARN] unresolved call to '<name>'`, and nothing gates on that
 warning. An unresolved call also EXECUTES NOTHING, so a missing store is
-the larger half of the damage: before main 11864 every `Device.Mmio` store
-on both cross lanes silently did not happen, which is every board driver in
-`codex/boards`. The free instrument, and the first thing to reach for on
+the larger half of the damage: an unresolved `Device.Mmio` store on a cross
+lane silently does not happen, and every board driver in `codex/boards`
+makes those stores. The free instrument, and the first thing to reach for on
 any cross-lane wrong-value row:
 
 ```powershell
@@ -1649,39 +1608,18 @@ nothing; these fail single-core.
   core 0's `__start` issues PSCI `CPU_ON` (conduit HVC, id `0xC4000003`) to
   start core 1 at an AP stub that marks `0x60000000` and parks.
 
-### ARM64 (last full measurement 2026-06-27, CL 6173)
+### ARM64 and RISC-V on the full battery (measured 2026-07-28)
 
-> **Re-measured 2026-07-28 on the full current battery, and the old
-> dispute is retired by replacement: the 135-test lane it argued about
-> no longer exists.** The battery reorg tripled the cross-eligible set
-> to 492 (60 skipped, 432 run). ARM64 under the committed Renode
-> board: **358 PASS_EXPECTED, 7 PASS_COMPILE_ONLY, 17 PASS_REFUSED,
-> 50 FAIL** (49 wrong-output, 1 compile). Every one of the 50 also
-> fails on riscv64 -- there are ZERO arm64-only failures -- so the
-> arm64 plug is clean on everything the riscv plug can also do; the
-> shared set is machine-sidecar tests, heavy-compute budget
-> casualties under the emulator wall clock, and suspected shared
-> intrinsic gaps, all awaiting the cross-eligibility design
-> (BatteryReorg step 10). riscv64 the same day (QEMU lane):
-> **259 / 7 / 17 / 149**, where ~90 of the 149 are WRONG-VALUE
-> answers on coverage the old 153-test lane never ran (aesgcm256
-> ciphertext, bezier endpoints, bacnet lengths, acpi revision) and
-> every probed one PASSES on arm64 -- a differential that localizes
-> them to the riscv plug (routed to reek, red-workplan outbox
-> 2026-07-28). One run each; re-measure before quoting.
+One run each on the reorganised battery (492 cross-eligible, 60 skipped, 432 run); re-measure before quoting:
 
-The 2026-06-27 measurement, for reference:
+| lane | PASS_EXPECTED | PASS_COMPILE_ONLY | PASS_REFUSED | FAIL |
+|------|--------------:|------------------:|-------------:|-----:|
+| arm64 (Renode board) | 358 | 7 | 17 | 50 (49 wrong-output, 1 compile) |
+| riscv64 (QEMU) | 259 | 7 | 17 | 149 |
 
-| Category | Count |
-|----------|-------|
-| PASS_EXPECTED | 135 |
-| PASS_UNVERIFIED | 2 |
-| SKIPPED | 17 |
-| FAIL | 0 |
-| **Total** | **154** |
-Skips: 15 pre-existing (error tests, fatal tests, hardware-dependent)
-+ 2 slow (tls-test: X25519 DH exceeds Renode sim budget; ui-orchestrator-test:
-17-module dependency chain exceeds IR compile budget).
+Every arm64 failure also fails on riscv64, so there is no arm64-only failure: the shared set is machine-sidecar tests, casualties of the emulator wall clock, and suspected shared intrinsic gaps, all awaiting the cross-eligibility design (BatteryReorg step 10). About 90 of riscv64's 149 are wrong-value answers (aesgcm256 ciphertext, bezier endpoints, bacnet lengths, acpi revision) that pass on arm64, which localizes them to the riscv plug.
+
+### ARM64 codegen
 
 Codegen quality beats GCC -O0 on aggregate across four
 micro-benchmarks (static instruction count, AArch64):
@@ -1700,7 +1638,7 @@ Total: Codex 74 vs GCC -O0 78 -- Codex beats GCC -O0 aggregate.
 fact (13) beats GCC -O0 (17) by 4 and beats GCC -O2 (15) by 2.
 sum (17) beats GCC -O0 (20) by 3. fib (21) is 1 from GCC -O0 (20).
 
-Key optimizations (CLs 6141-6173): destination-driven emission,
+Key optimizations: destination-driven emission,
 direct arg emission, compact prologue with accurate local counting,
 TCO skip-save for stable-reg args, CMP-immediate for comparisons,
 peephole MOV eliminator with NOP compaction (branch + ADR offset
@@ -1709,19 +1647,7 @@ adjustment), STP-pre/LDP-post frame merge.
 Renode board: Cortex-A53, GICv3, PL011 UART, 1 GB RAM at 0x40000000.
 QEMU: `-M virt -cpu cortex-a53 -m 1G -kernel <elf>`.
 
-### RISC-V (2026-06-28, CL 6287)
-
-| Category | Count |
-|----------|-------|
-| PASS_EXPECTED | 135 |
-| SKIPPED | ~18 |
-| FAIL | 0 |
-| **Total** | **~153** |
-
-135/135 verified tests pass (100% parity with x86-64 battery).
-(Superseded 2026-07-28: on the tripled battery riscv64 is 259 pass /
-149 fail, ~90 of them riscv-plug wrong-value defects that pass on
-arm64. See the re-measure note in the ARM64 section above.)
+### RISC-V codegen
 
 Codegen quality on all eight micro-benchmarks (static instruction
 count, RV64). Four benchmarks beat GCC -Os:
@@ -1740,9 +1666,8 @@ count, RV64). Four benchmarks beat GCC -Os:
 *GCC -O2 fib transforms tree recursion into a 241-instruction
 iterative loop. GCC -Os is the fair comparison for recursive codegen.
 
-Two optimization campaigns (CLs 6159-6172, 6261-6287). Phase 1
-(8 CLs): deferred save-reg reduction, destination-driven emission,
-frameless TCO, inline builtins, compact prologue. Phase 2 (17 CLs):
+Two optimization phases. Phase 1: deferred save-reg reduction, destination-driven emission,
+frameless TCO, inline builtins, compact prologue. Phase 2:
 pow2 strength reduction (srai/andi/slli), NOP compaction with
 B/J-type offset fixup, direct TCO for 2-arg tail calls, dead-jump
 elimination, skip-save for simple binary operands, ra-skip for
@@ -1861,7 +1786,6 @@ tracked nowhere but here.
 | Test | Reason |
 |------|--------|
 | vmx-launch-test, vmx-serial-test | VMX requires CPL 0 + VT-x; no nested VMX under WHPX. They reach `vmwrite` / `vmlaunch`, which genuinely need VMX operation |
-| vga-terminal-demo | Requires display + keyboard (`run-vga-demo.ps1`). Compiled 2026-07-19: zero errors of any code, 41 CDX4010 infos and 5 CDX3005 warnings |
 | vga-shell-test | Skipped as "blocks waiting for keyboard input" -- **but it carries a `.stdin`, so somebody believed it reads serial.** Both cannot be true. Read `VgaShell`'s input path and drive it with whichever sidecar matches; it is one of the two candidates left in this table |
 | firstboot-lite | Needs RDRAND, which codex-vm does not supply (the cell reads zero; the stub only fills it on real hardware). **Its skip was orphaned a directory up and applied to nothing** -- the test compiles on every `-Apps` run and has no `.expected`, so it is PASS_UNVERIFIED, not skipped. The orphan is deleted; the compile coverage is deliberately kept |
 | first-boot-ceremony | Output depends on RDRAND (different pubkey each boot) |
@@ -1911,8 +1835,7 @@ properties of the cross-arch lane, which has its own harness and its own skip
 list. `pi4-drivers` is the sharpest, because its `.skip` was deleted on
 2026-07-27 as stale and the `.slow` underneath it went on suppressing the test
 anyway -- **un-skipping a test does not un-suppress it if a second sidecar is
-still there.** The other two carry fester's CL 2949 "redundant" wording, the
-text reek reverted for 41 other tests in CL 2984; these two survived that sweep.
+still there.** The other two carry a stale "redundant" `.slow` reason.
 
 The three `~127s` rows and `starvation-prevent` are **deliberately not
 measured**. There is no reason to think those claims are false, and running a
@@ -2024,6 +1947,28 @@ registry row**. The remaining 87 are raised through shapes that pattern does not
 reach. No instrument was built for them: there is no evidence of drift, and a
 permanent checker for a gap with a zero hit rate is the maintenance cost that
 outweighs the discovery.
+
+### Compiler-internal guards are graded by sabotage, not by sidecar
+
+A guard a correct front end never reaches cannot be pinned by a `.failing` or
+`.diag`, and the shipped compiler carries no fault-injection flag (root ruling,
+2026-10-29). `build/guard-sabotage.ps1` grades 22 codes (2000, 2042, 2091,
+3007, 4030, 6011, 6012, 6015, 9001 to 9003, 9005 to 9010, 9012 to 9016): it patches one line of a
+scratch concatenation per guard, builds that compiler, compiles an arm with it,
+requires the code, and requires the same arm compiled by the unpatched scratch
+compiler to lack it. Nothing it builds is a seed, and it is in no gate: run it
+by hand after a change near a guard (all 22 in 153 s, 2026-10-29). A
+`PATCH-MISS` row means the guard's text moved; update the row's anchor, never
+loosen the match. `coverage-census.ps1 -Diagnostics` reads sidecars only and
+still lists these codes as unpinned.
+
+**A row proves routing or detection, and the table says which.** A patch that
+forces the guard's condition proves the diagnostic and the halt are reached,
+not that the condition detects anything; that is 12 of the 22. 3007, 9007, 9008
+and 9015 corrupt the checked input instead (9007 and 9008 are the 2026-07-18
+fire tests in the LIR verifier section, rebuilt as rows) and the unmodified
+check finds it; 6011, 9002 and 9003 fire unpatched under their flags, and 4030,
+6015 and 9016 are reports shown reached. 9002 runs with growth refused, because a starved deck now grows and compiles.
 
 ### In `prose-anchor`, `prose-consistency` and `prose-smoke` the prose IS the fixture
 
@@ -2400,12 +2345,9 @@ disagreement and exits 1.
 
 **A disk test must attach a disk and demand a specific number.**
 `block-identify` needs no disk and asserts 0 sectors when none is
-attached -- which is true whether the sector count works or not. It
-therefore could not, and still cannot, catch a stuck counter, and
-`block-sector-count` reported 0 on every disk for months behind exactly
-that gap: the disks read perfectly and reported themselves empty. The
-test that found it (`codex/test/block-sector-count`) attaches a 64 KB
-fixture and demands **128**. A function that always answers the same
+attached -- which is true whether the sector count works or not, so it
+cannot catch a stuck counter. `codex/test/block-sector-count` attaches a
+64 KB fixture and demands **128**. A function that always answers the same
 thing looks exactly like one that works.
 
 ## A Kernel On The Actual Device (`codex/test/gpu-ptx`)
@@ -2506,10 +2448,9 @@ rely on the guest having demand-committed the page first.
 The boot stub asks the firmware for its display geometry AFTER it clears the
 screen, and that ORDER is the whole subject of this harness. On AMI Aptio V the
 first real ConOut use activates the GraphicsConsole, which sets its own graphics
-mode; until 2026-08-02 `build/cdx-to-pe.ps1` read GOP `Mode->Info` and cleared
-~200 bytes later, so every image it built published the splash mode's
-1920x1080/2048 for a scanout the firmware had switched to 1024 px/row. Every row
-the payload wrote spanned two scanlines. That is the ASUS display corruption:
+mode, so a stub that reads GOP `Mode->Info` before it clears publishes the
+splash mode's 1920x1080/2048 for a scanout the firmware has switched to
+1024 px/row, and every row the payload writes spans two scanlines: the ASUS display corruption,
 glyphs stretched, alternate lines black, long-line tails overpainting the row
 below.
 
@@ -2647,12 +2588,10 @@ B3's flight and Damian's sitting.
 
 ## The Scalar Operators Against the Host (`build/oracle-scalar.ps1`)
 
-**Real `<` `>` `<=` `>=` were emitted as a signed INTEGER compare of two
-IEEE-754 bit patterns from the initial import of 2026-04-17 until 2026-07-27.**
-That ordering is correct for two non-negatives and for mixed signs, because a
+**A signed INTEGER compare of two IEEE-754 bit patterns is not Real `<` `>`
+`<=` `>=`.** That ordering is correct for two non-negatives and for mixed signs, because a
 double's sign bit lands where the integer sign bit lands, and it REVERSES for
-two negatives. Every one of the four operators answered backwards on a quarter
-of the operand plane, for three months, on the original code path.
+two negatives. That is a quarter of the operand plane.
 
 Nothing in the tree could see it, and the reasons are worth stating because
 none of them is carelessness:
@@ -2796,8 +2735,7 @@ on the shipped artifact: `//Codex/main/seed/Codex.cdx#549` contains the wrong
 pattern **54 times and the correct one zero times**; the rebuilt seed inverts
 that exactly.
 
-Nothing visibly broke, which is the uncomfortable part and the reason this
-sat for months. A lower bound above every value it is tested against makes the
+Nothing visibly breaks. A lower bound above every value it is tested against makes the
 `n >= lo & n <= hi` fast paths in the checker simply fail, and the compiler
 falls through to the general path and gets the right answer for the wrong
 reason. A bound that is absurd rather than merely wrong is invisible.
@@ -3041,12 +2979,9 @@ sits BETWEEN the letters: 13..38 ASCII lowercase, 39..64 ASCII uppercase,
 127 -- calls every punctuation character a letter. The band has a hole in the
 middle and the test has to have one too.
 
-**The function that looked like corroborating evidence was the broken one.**
-This section previously cited `cce-is-letter-any`'s Tier 0 arm (`13..127`) as
-proof the chapter disagreed with itself about `is-letter`. It does disagree,
-and `cce-is-letter-any` is the one that is wrong: it calls all 32 punctuation
-code points letters. It has no caller anywhere in the tree, so it never bit. It
-delegates to `is-letter` now rather than keeping a second spelling of one band.
+**`cce-is-letter-any` delegates to `is-letter`**, so the chapter spells the
+band once: a Tier 0 arm of `13..127` calls all 32 punctuation code points
+letters.
 
 **`to-lower` and `to-upper` had to stop borrowing the predicates.** The plus and
 minus 26 is arithmetic between the two ASCII bands and is meaningless outside
@@ -3144,12 +3079,8 @@ prune, not the inliner.
 
 ## The Receive Checksum (`codex/test/tcp-checksum-refuse`)
 
-Until 2026-08-15 nothing in `codex/os/net` verified a checksum on the way IN.
-`tcp-with-checksum` and `ip-checksum` were build-only, so a corrupted segment
-reached the parser unchallenged, and that is why the PR 64 DMA truncation --
-one byte of the previous frame substituted into every odd-length receive --
-was silent rather than diagnosed. Two independent defects, and the missing
-checker is why the first was invisible.
+`codex/os/net` verifies the checksum on the way IN, so a corrupted segment
+does not reach the parser unchallenged.
 
 **The arm exists because a checker that accepts everything and a checker that
 works are indistinguishable on well-formed traffic.** It flips one bit of one
@@ -3801,9 +3732,8 @@ only they refuse.
 
 `tftp-receive-data` accepts only block `block-num + 1` and nothing after the
 last block, copies the block it is handed, and chains blocks for one join in
-`tftp-transfer-data`. It used to append whatever it was handed with `t.data &
-block-data`, copying the file per block; the sequence ablation reproduces the
-first half (a retransmitted block 1 makes a 515-byte file 1,027 bytes). Seven
+`tftp-transfer-data`. Without the sequence check, a retransmitted block 1
+makes a 515-byte file 1,027 bytes (the sequence ablation). Seven
 more arms predicted before the run, compiled by seed 0291C387; four guards
 ablated alone, each moving only its own arms: the sequence
 check (`dup`, `skip`, `block-0`), the completed check (`after-last`), the copy
@@ -3920,17 +3850,7 @@ transfers because the desk takes the same path: neither
 What has NOT been observed is the desk image itself painting at 1920x1080 on
 that board; it needs no sitting of its own, because it rides any desk boot.
 
-**The bed had to be made faithful first, and it found a host crash.**
-codex-vm's GOP advertised three fixed modes regardless of `-gop-width`, so
-the stub would have shrunk every 1600x900 desk run to 1024x768; the mode
-table now carries the CLI mode as mode 3 (`OperatorsManual`,
-`-gop-max-mode`). `QueryMode` also used to write the queried geometry over
-the CURRENT mode's info block, so an enumerate-then-read without a `SetMode`
-saw the last queried mode; it answers into a scratch block now. And the
-`SetMode` trap never committed the framebuffer for a runtime mode set:
-the default bed and `-gop-width 800` both crashed the HOST (`0xC0000005`
-inside the trap) at the stub's `SetMode 2` while a bed already at the target
-mode did not, the same class as the VBE mode set fixed at main 14494.
+**What the bed does for this arm.** codex-vm's GOP mode table carries the CLI mode as mode 3 (`OperatorsManual`, `-gop-max-mode`), so the stub keeps a 1600x900 desk run at 1600x900; `QueryMode` answers into a scratch block, so an enumerate-then-read without a `SetMode` sees the current mode; and the `SetMode` trap commits the framebuffer for a runtime mode set.
 
 Six arms, one PE, expected values written in the script before they run,
 read from codex-vm's own `GOP: SetMode` line and the BMP geometry at
@@ -4080,17 +4000,11 @@ failed the one arm whose phrase sits past column 74.
 still produce `.efi` files byte-identical to the pre-guard script.
 
 **The SCOPE of the hash, stated because "hash verified" reads as more than it
-is.** The content hash covers `[224, contentEnd)` and therefore **does not
-cover the 224-byte header**. Outside the magic and the four fields the guard
-validates, a header field is neither hashed nor checked. Measured 2026-08-15 by
-corrupting byte 140, inside `cap-off`: **accepted, and the emitted `.efi` is
-byte-identical to a clean build.** That is the right outcome here -- this tool
-never reads `cap-off`, so the corruption cannot reach its output, and the
-identical artifact is the proof rather than the excuse. But a reader who takes
-this section as whole-file integrity would be wrong, and a later tool that DOES
-read those fields would need its own check. The prompt for measuring it was
-reek's note that a guard can pass for the wrong reason; the answer here is that
-it passes for a reason worth writing down.
+is.** In CDX format version 2 the content hash is SHA-256 of header bytes
+`[0, 8)` and `[136, 224)` followed by the SHA-256 of `[224, contentEnd)`, so a
+corrupted section-table, entry, stack, heap or threshold field is a content hash
+mismatch. Bytes 40..135 (the author key and signature) are not hashed; the
+signature check owns them.
 
 ## The GPT Integrity Guard (`codex/test/apps/gpt-hdr-crc-guard`, `gpt-array-geom-guard`, `gpt-array-crc-guard`)
 
@@ -4576,7 +4490,7 @@ now be armed against a record a BOARD wrote rather than one the bench
 synthesised, which is the only evidence we have about what the parser refuses.
 Nothing in the tree reads those files yet.
 
-**`bed-identity` as first landed (main 17691) was not deterministic, and the
+**`bed-identity` as first landed was not deterministic, and the
 green that landed it certified one boot.** `wz-keygen` derives salt and iv
 from the device seed cell and the tick count, so the test pinned one run's
 random bytes and every re-run went red; the `.expected` and `BEDIDENT.DAT`
@@ -4752,6 +4666,86 @@ bytes, as a cross-linked chain does, and the size bounds it. `Fat16`'s read
 carries the same three guards (`codex/test/fat16-read-guard`, the same eight
 lines; on the old code `cycle-3-of-13` read cross-linked bytes and `short` a
 truncated file), and `AgentBundle`'s model window refuses on its `None`.
+
+**The directory walk (`codex/test/fat-dir-cluster-bound`).** A directory's
+cluster arrives from the BPB (the FAT32 root), a directory entry or a FAT
+slot, and every walker over one refuses a cluster outside `*-cluster-ok`:
+`fat16-find-in-cluster-dir`, `fat16-cluster-entries`,
+`fat16-find-name-slot-in-dir`, `fat16-find-run-in-dir`, `fat16-free-chain`,
+`fat32-find-in-dir`, `fat32-list-dir-cluster`, `fat32-find-run-in-dir` and
+`fat32-find-name-slot-in-dir`. Both `run-or-grow`s refuse before allocating,
+and `fat32-write-file-step` and `fat32-mkdir` refuse before claiming a
+cluster. The arm formats both volumes on one zeroed disk, plants a SECRET.TXT
+entry in the sector a BADDIR cluster past each volume maps to, and puts a
+marker in FAT16's second FAT where VICTIM.TXT's out-of-range cluster has its
+slot. On the old chapters every bad-cluster line moves: the foreign entry is
+listed and resolved, a create writes its entry into the foreign sector, and
+replacing VICTIM zeroes the marker. Each refuse-before-claim guard ablated
+alone moves only its own `clusters claimed` line; without `fat16-run-or-grow`'s
+guard the create answers yes after growing the foreign directory through a FAT
+slot past the FAT.
+
+**The FAT count (`codex/test/fat32-one-fat`, and `fat-table-bound`'s last six
+lines).** Both parsers answer the zero volume for a reserved-sector count of 0
+(the FAT on the BPB sector) or a FAT count of 0 (the FAT on the root directory
+or the data region), and `fat32-set-fat-entry` writes one copy per FAT the BPB
+declares, as `fat16-write-fat-entry` does. On the old chapters the four zero
+BPBs kept 4982, 4991, 38968 and 39968 clusters, and on a one-FAT volume a FAT
+write overwrote a marker in the first data sector, where the second copy would
+have been. A FAT16 BPB whose reserved sectors, FATs and root directory run
+past its own total sector count is refused too (`fat-table-bound`'s
+`total 40`; the old parser kept a 32-sector root there, and the root walkers
+are bounded by the entry count alone). Two fixtures moved with it:
+`fat32-parse`'s FAT16 BPB declared no total at all and now declares 20000, and
+`apps/gop-fat16-geom-guard`'s one change is a FAT count of 3, because its
+former reserved count of 0xFFFF on a 64-sector volume is now the foreword's
+refusal and never reached `gfat-geometry-ok`; with that guard's FAT-count
+clause removed the fixture mounts.
+
+**The zero volume (`codex/test/fat16-zero-root`).** Every refused BPB mounts
+as the zero volume, bytes per sector 0, and `fat16-root-sector-count` divided
+by that field: on the old chapter a root lookup on a zeroed disk died with
+`!EXC=00`. The count answers 0 there, and the two root walkers that computed
+it inline call it.
+
+**The free-cluster hint (`codex/test/fat32-fsinfo-hint`).** FSInfo's
+next-free is a hint from the medium, and `fat32-parse-bpb32` reads one outside
+2 to the last cluster as unknown (3, as `fat32-fsinfo-next-free-of` answers
+the specification's unknown value). On the old chapter a hint of 268435440
+started every allocation past its own limit, so a write on a free volume
+answered no.
+
+**A name written twice (`codex/test/fat32-rewrite`).** `fat32-write-file`
+replaces a file the directory already holds: the new chain is written, the
+short entry's cluster and size are patched in place (`fat32-entry-slot-in-dir`
+finds it under a long name too), and the old chain is freed last. A write
+under a directory's name and a repeated `fat32-mkdir` are refused. Before, both
+added a second entry after the first, which every reader answers first, so a
+re-install over an existing ESP read back the old image. The arm writes a short
+name, a long name and `EFI/Codex/codex.efi` twice each; with the free step
+removed only the three `old cluster free` lines move. The dual-boot install
+reports a failed `codex.efi` write instead of "Installed".
+
+**A write the volume cannot hold (`codex/test/fat-full-write`).** When the
+chain runs out of free clusters part way, `fat32-alloc-chain` frees what it
+claimed before answering 0, and `fat16-commit-entry` frees the written chain
+when the write answered 0. On the old chapters a refused write on a volume
+with 7 (FAT32) or 8 (FAT16) free clusters left none free, so a file that fit
+was refused next.
+
+**The chain's cost (`codex/test/fat32-alloc-cost`).** A write's heap delta
+counts its sectors, one 512-byte buffer each, so the second difference of the
+deltas for 16, 32 and 48 clusters, each on a fresh volume, is 0 when the cost
+is linear in the cluster count. `fat32-alloc-chain` carries the chain's last
+cluster; the old chapter walked the chain from its head for every cluster
+added, 131,072 bytes (256 sectors) of second difference. The fresh volume per
+size matters for that line. The second line runs the same files on one
+volume, where the old free-cluster search read one sector per cluster it
+skipped from a hint the volume never advances, 8,192 bytes of difference.
+`fat32-alloc-cluster` now scans 128 entries per sector read under a heap mark,
+as `fat16-find-free-from` does, and wraps to cluster 2 when nothing is free
+above the hint. Because the scan restores its mark, the candidate's 0 on that
+line shows the scan keeps nothing, not how many sectors it read.
 
 ## The Foreword Cluster Guard (`codex/test/fat16-cluster-guard`)
 
@@ -5200,14 +5194,8 @@ and the only one an off-by-one in `avail` would admit. Nothing covers content
 that CONTAINS the field delimiter either. Both were written and neither landed;
 whoever next touches the chapter should add them.
 
-**`sdw-decode` itself was made subtractive at main 15641** (this said 15614
-until 2026-08-16, a transposition that resolves to no changelist at all), and
-this is worth
-dating because for a day this section prescribed a fix the originating record
-did not yet have: the class was written up, `repo-has` was changed, and the
-site the class was found in still shipped the additive form. Its arm is arm 9
-of `source-def-wire-guard`. With it landed the untouched remainder below is 32
-rather than 33.
+**`sdw-decode` itself is subtractive.** Its arm is arm 9 of
+`source-def-wire-guard`. The untouched remainder below is 32.
 
 `repo-has` in `RepoProtocol` had the same shape and was made subtractive in the
 same pass. **No live path was demonstrated there and the section says so**: all
@@ -5272,6 +5260,14 @@ before it re-reads the entry LBA itself. Arms: `codex/test/apps/gpt-core-lba-wid
 `gpt-core-alt-wide` and `gpt-core-part-wide`, each red on the unfixed reader for
 its own reason (two traps at different fault sites, one acceptance), with
 `gpt-core-read` and `gpt-core-size-256` as the positive controls.
+`gpt-parts-ok` also refuses an entry starting before FirstUsableLBA
+(`gpt-core-part-low`, StartingLBA 1): the unfixed reader answered an ESP at
+LBA 1, the GPT header, which `dm-install-format-and-write` formats. It
+refuses an entry ending past LastUsableLBA (`gpt-core-part-high`), and the
+header check refuses a LastUsableLBA below FirstUsableLBA or past AlternateLBA
+(`gpt-core-last-high`); the unfixed reader accepted both. The gpt-core minter
+writes AlternateLBA and LastUsableLBA as the image's last LBA, which the
+`gop-fat16.disk` base leaves at 0 because only GopFat16's own reader reads it.
 
 **Cross-chapter census (blu, 2026-09-24).** Every call to a wide producer
 outside its defining file: `json-get-int` (126 calls, 11 files),
@@ -5392,17 +5388,10 @@ and the demand mapping under it together. The probe lives in `build/` beside
 `guard-page-probe.codex` for a sibling reason: it never exits on a healthy
 tree, so the battery's run-and-compare model cannot hold it.
 
-**The harness could not run at all until 2026-08-15, on any box where
-`QEMU_BIN` was unset.** `build/vm-config.ps1` used `$root` as a `foreach`
-variable in its QEMU side-load discovery, and a dot-source runs in the caller's
-scope, so it overwrote the caller's `$root` with `C:\` and the script died on
-`Cannot find path 'C:\build\guard-page-probe.codex'` before its first arm. Of
-the 19 build scripts that dot-source `vm-config.ps1`, this was the only one
-affected, because it is the only one that assigns `$root` BEFORE the dot-source
-and reads it after; `test-disk-compile.ps1` assigns after and overwrote the
-leaked value. Renamed to `$qroot`. The general shape is worth keeping: **a
-dot-sourced script shares the caller's scope, so every loop variable in one is
-part of its interface.**
+**A dot-sourced script shares the caller's scope, so every loop variable in
+one is part of its interface**: `build/vm-config.ps1`'s QEMU side-load
+discovery loops over `$qroot`, because a `$root` there would overwrite the
+caller's.
 
 ## The IoT Protocols Against Foreign Implementations
 
@@ -5657,10 +5646,9 @@ must emit at least one `OCC ` line. **Negative:** with no passes, zero `OCC `
 lines -- so the positive is the pass reporting, not a constant the emitter
 always prints. Both were run: the fix gives 30 OCC lines then 0; the pre-fix
 seed gives 0 then 0 and fails the positive, which is what makes the pin
-load-bearing rather than a comment. On-demand (boots VMs), not gated -- but
-the crash half is covered by every build regardless, because `cross-smoke`
-compiles through `compile-frontend-passes` in IR mode, so a regression of the
-spill cliff fails the gate there.
+load-bearing rather than a comment. On-demand (boots VMs), not gated, and no
+gate phase compiles through `compile-frontend-passes` in IR mode, so a
+regression of the spill cliff is seen only by running this pin.
 
 ## The LIR Dump Pin (`build/lir-dump-test.ps1`)
 
@@ -5737,11 +5725,8 @@ re-derived one**. A violation halts the build:
 | CDX9008 | allocation | a use whose assigned location holds a different value (clobbered by a call or division) |
 
 **All three have been observed to fire.** That matters more than it sounds: an
-unfired guard is worth exactly what no guard is worth, and `accum-at-capacity`
-sat uncalled for months while being counted as protection. CL 8867 proved only
-the *absence of false positives* (battery identical to
-baseline, fuzz clean). The fire tests were run separately, 2026-07-18, each by
-building a deliberately broken SUT and compiling with it:
+unfired guard is worth exactly what no guard is worth (L-UNCALLED). Each fire
+test (2026-07-18) built a deliberately broken SUT and compiled with it:
 
 - **CDX9008** -- `lir-scan-cross` changed to place a call-crossing value in a
   caller-saved register. Compiling `bench/codex/fib.codex` halts with
@@ -5765,7 +5750,7 @@ as a green that means nothing.**
 
 ## Expected-Failure Tests
 
-254 tests in `codex/test/errors/` verify that the compiler rejects
+275 tests in `codex/test/errors/` verify that the compiler rejects
 invalid programs with the correct diagnostic codes (counted 2026-10-26). Each has a
 `.failing` sidecar listing the expected CDX error codes. Examples:
 `apply-non-function` (CDX2001), `duplicate-def` (CDX3002),
@@ -5812,13 +5797,6 @@ logic are exercised. What it does not prove: peripheral behaviour. No silicon
 has been in the loop. Renode is where that lives.
 
 ## GUI Tests (`build/test-gui.ps1`)
-
-Every GOP application used to be untestable. The skip inventory says so in
-a dozen places -- "requires display", "requires keyboard", "blocks waiting
-for keyboard input" -- so the widget stack, the input path, and every app
-built on them had no regression coverage at all. The circuits mouse bug
-(a held button was legible for one poll, so no drag could ever be seen)
-lived through months of green batteries for exactly that reason.
 
 `build/test-gui.ps1` drives an app with scripted input and compares the
 resulting frame against a recorded image. It runs **headless**: codex-vm
@@ -5928,35 +5906,14 @@ and `b` as one identical bitmap, and `d`/`o`, `O`/`0` and `5`/`9` likewise.**
 `W` is a 3x6 solid stem. The value is not in the pixels to be read, so no
 decoder can recover it.
 
-Three cheaper designs were measured and rejected on the way, recorded so nobody
-re-derives them: fixed-cell slicing (the fallback font is proportional -- pitch
-measures 6.95, 7.07, 7.31 and 7.61 across four known strings), blank-column
-segmentation as a decoder (adjacent glyphs touch; four of nine known lines
-yield fewer runs than they have characters), and cropping a glyph to its lit
-rows (which makes `d` and `o` identical -- caught by the round trip, invisible
-to a run-count check).
-
 The UI library's GPU text path is a different and tractable case: `gr-emit-text`
 advances `x + i * 6`, a true fixed cell, and apps rendering through it are
 legible. A real `expect-text` is worth building against that font.
 
-**The diskless-GuiOS half of that sentence is now stale and is withdrawn.** It
-read "or against GuiOS once its font fallback is fixed -- which is a defect on
-its own merits, since a diskless GuiOS currently draws unreadable text to a
-real screen." The fallback was fixed after this section was written:
-`gui-load-fallback` (`apps/guios/GuiShell.codex`, a historical reference:
-that chapter was retired when the desk moved to `apps/works/GopDesk.codex`
-via GopBoot) set `fonts-loaded` to
-**0** rather than rasterizing `px-pixel-font` into all three roles, so a
-diskless boot dispatches through `Kernel chapter BitmapFont` -- an 8x16 bitmap
-of 128 glyphs compiled into the binary -- and the synthesized font this
-paragraph measured is no longer on that path at all. Verified 2026-07-28 by
-reading the source, not the prose beside it.
-
-What is NOT established is that the embedded bitmap font is legible; nobody has
-pointed a decoder at it. The correct statement of the remaining gap is that
-`expect-text` needs a font with a known fixed cell, and the measurement above
-of `px-pixel-font` no longer describes what a diskless GuiOS draws.
+A diskless boot draws through `Kernel chapter BitmapFont`, an 8x16 bitmap of
+128 glyphs compiled into the binary, not `px-pixel-font`. Its legibility is
+not established: nobody has pointed a decoder at it, and `expect-text` needs a
+font with a known fixed cell.
 
 The harness compiles this into two timelines (`t:x,y,btn` for the pointer,
 `t:scancode` for the keyboard) and hands them to codex-vm as `-mouse-file`
@@ -6004,34 +5961,6 @@ the thing it grabbed.
 |-----|------:|--------|
 | circuits | 15 (**15 pass**, measured 2026-07-28) | boot chrome; the four dropdowns and a menu item firing; the PCB / 3D / SIM tabs; hover properties; palette place; wire; marquee; drag; delete+undo |
 | spark | 8 | boot chrome (toolbar, viewport, outliner, camera panel, status bar); add cube/sphere/plane; wireframe; grid; orbit; zoom; a multi-command scene |
-| ~~guios~~ | ~~2~~ | **DELETED 2026-08-03 with their subject.** `desktop-chrome` and `dashboard` recorded the F3 and F1 views of `apps/guios/GuiShell.codex`, which is retired: GopDesk replaces it and the shell, its `build.ps1` and its `start.ps1` went in the same changelist. A golden of a program that no longer exists is not coverage, so the two `.uiscript` files and their goldens went with it rather than being left to fail. Both were good tests and their design is worth copying if the desktop ever wants one again -- `dashboard` in particular carried a measured 76x60 `mask` over the uptime and heap figures with an `expect-ink 350..900` inside it, so the masked rectangle was bounded rather than unchecked, and both fired their negative controls (drop `-rtc`, 285 pixels; drop the mask, 278). Note that GopDesk goldens are PARKED, above |
-
-**`circuits/tab-sim` was red from 2026-07-13 and is green as of
-2026-07-28. The golden was wrong, and the reading that diagnosed it was
-measuring something else.**
-
-The 2026-07-13 note recorded here said the SIM tab rendered an empty
-frame, 241001 pixels differing. An empty frame is real but it is the
-capture flake described below, not the failure: measured across eight
-back-to-back runs at the same deadline, seven produced a bit-identical
-frame differing from the golden by **1647 pixels** and one produced a
-wholly empty frame differing by 311515. Retrying absorbs the blank, and
-`tab-3d` hits the same one. The 241001 reading was a blank frame read as
-the diagnosis, which left the real 1647-pixel disagreement undescribed
-for fifteen days.
-
-That disagreement was confined to two 3-pixel bands, y 180..182 and
-y 460..462. `draw-sim-led-steps` alternates its 20 segments between
-`gy + gh / 4` and `gy + gh - 20` on `i / 2 * 2 == i`; with gh 400 and gy
-81 those are y 181 and y 461. The golden had LED1 as a solid line at 461
-across the whole plot, which is the parity test never firing, and the
-current frame alternates. `opening.codex` has not changed since the
-golden was minted at CL 9766 apart from one em-dash at CL 11522, so what
-moved is the compiler, and the current answer is the correct one: a
-probe against the depot seed answers 1,0,1,0,1,0 for i = 0..5 and
-181 / 461 / 181 for led-y. The VCC and NRST traces use no parity test
-and were byte-identical throughout, which is the control. Re-minted;
-the battery is now 15/15.
 
 The battery is also **flaky by one test under parallel load**:
 `menu-select-all` and `menu-file` each failed once across four full runs
@@ -6167,8 +6096,7 @@ command therefore cannot be read as the answer to this one.
 
 ## The Truncated Repository Frame (`codex/test/apps/repo-frame-truncated`)
 
-The caller half of blu's framing work, handed over after the clamp landed
-(main 15345). `frame-next-offset` clamps a decoder's next offset to
+The caller half of blu's framing work. `frame-next-offset` clamps a decoder's next offset to
 `list-length bs`, which makes it a valid SLICE BOUND and **not a valid index**.
 Two sites in `apps/works/RepoProtocol.codex` then indexed at exactly that
 offset with a raw `list-at`: `decode-annotation:323` and
@@ -6230,7 +6158,7 @@ than wire bytes, and `frame-read-le64` is built from `frame-read-le32`, so it
 inherited the fix.
 
 **The refusal channel is wired, and the two sweeps together are the claim.**
-`MessageFraming` gained `valid` on its result records (blu, main 15375), and
+`MessageFraming` carries `valid` on its result records, and
 every decode result in `RepoProtocol` now folds it. Two reads had no predicate
 to fold, because `frame-fits` answers for a length-prefixed field and these are
 raw spans: the annotation's single kind byte, and the eight bytes of a
@@ -6435,25 +6363,9 @@ and a plug answering a request over a half-closed socket is precisely that
 case. With that one arm made to build a segment like ESTABLISHED does, `wpf`
 delivers all 11,697 bytes WITH the half-close left in place.
 
-**Two hypotheses died on the way and both are worth recording, because each
-was plausible and each was wrong.** First: that the FIN made
-`net-io-conn-closed` true. It does not -- that predicate answers only on
-`TcpClosed`, and CLOSE_WAIT is a different state. Second: that CLOSE_WAIT's
-`ActNone` for `EvSegment` stopped acks draining the retransmit queue. It does
-not -- ack processing lives in `net-process-frame`
-(`NetworkStack.codex:408-413`) and runs regardless of TCP state, and
-ESTABLISHED answers `ActNone` to a bare ack too. The 11,200 is real but it is
-a CONSEQUENCE: it is how far the sender ran ahead before the drain first
-processed the FIN, and the sender runs ahead exactly to the queue capacity.
-Matching arithmetic is not a mechanism.
+`net-io-conn-closed` answers only on `TcpClosed`, and CLOSE_WAIT is a different state; ack processing lives in `net-process-frame` (`NetworkStack.codex`) and runs regardless of TCP state. The 11,200 is how far the sender ran ahead before the drain first processed the FIN, which is the queue capacity: matching arithmetic is not a mechanism.
 
-**And the channel shipped hours earlier did not catch this case.** It tested
-`net-rexmit-full` and `net-io-conn-closed`, and in CLOSE_WAIT neither is true,
-so a send into a half-closed connection passed both guards, dropped its bytes,
-and reported complete. The predicate that holds for every refusal is the
-outbox: `net-send` produces no frame whenever the state machine declines, so a
-non-empty chunk that produced no frame did not go. Enumerating states was the
-error; asking whether anything was actually queued is state-independent.
+**The refusal predicate is the outbox, not a list of states.** In CLOSE_WAIT neither `net-rexmit-full` nor `net-io-conn-closed` is true, so a guard on those two passes a send into a half-closed connection that drops its bytes and reports complete. `net-send` produces no frame whenever the state machine declines, so a non-empty chunk that produced no frame did not go.
 
 **The early stop is not the defect, and a fix that removed it would have
 passed a careless review.** `arm64-send-refusal` already pins the stop:
@@ -6598,7 +6510,7 @@ driver.
 ## The Framing Refusal Reaches Its Consumers (`crf-truncated`, `fact-sync-truncated`)
 
 Track B item 7, blu 2026-08-16. `MessageFraming` set a `valid` flag on every
-decoded field at main 15375 and nothing downstream read it. Not seed-affecting:
+decoded field and nothing downstream read it. Not seed-affecting:
 the compiler unit is `codex/compiler` plus cites resolved only within the
 `Foreword` and `Math` quires (`concat-codex-self.ps1` `$libQuireNames`), and
 Trust, Net and Replay are not in it. Confirmed against the depot seed after the
@@ -6700,8 +6612,7 @@ would have been persisted as is **Accept**, because `frame-byte-at` answers 0
 past the end and 0 is that tag.
 
 **Ablated** (the `FactSync` guard replaced by `if False`): `bad accepted=yes`,
-`bad recv=1`. The corrupted verdict is accepted and counted, which is what the
-tree did until 2026-08-15.
+`bad recv=1`. The corrupted verdict is accepted and counted.
 
 `good` is the acceptance control and a guard that refuses everything fails it.
 `FactSync` is the consumer the arm drives because its verdict path checks the
@@ -6783,9 +6694,7 @@ from expected files before comparing.
 ### Promoting a Slow Test
 
 If a `.slow` test now compiles in under 5 seconds, delete the
-`.slow` file. Fester marked 41 foreword tests "redundant" as `.slow`
-in CL 2949; reek promoted them all to regular in CL 2984 -- they
-run in 1-3 seconds each.
+`.slow` file. A foreword test runs in 1-3 seconds.
 
 ## Batch Compile Architecture
 
@@ -6906,7 +6815,7 @@ repairs, all in the generators:
   FAIL_OUTPUT hint; green runs never pay for it.
 
 **The lossy layer of the two historical events is unknowable now, and does not
-need to be: the NEXT one names itself.** Since main 21584 codex-vm's output
+need to be: the NEXT one names itself.** codex-vm's output
 writer checks its own write and reports a shortfall in the canonical
 `N guest serial byte(s) DROPPED ... is SHORT` wording with the CAUSE in
 parentheses, and there are five of them -- the output file could not be opened,
@@ -7209,7 +7118,7 @@ census-row the rest under L-UNCALLED). `lz77-test` round trips through it and
 | `off <= 0` | distance 0 after one literal | `!EXC=06`, `RSI=1` |
 | `mlen > lz77-max-match` | one token asking for 100000 | **no crash, `len=100001`** |
 
-**This chapter has the unbounded-count shape that `Lz4` turned out not to
+**This chapter has the unbounded-count shape that `Lz4` does not
 have, and the difference is worth stating because it is what decides whether
 a cap is worth writing.** In `Lz4` a long match is paid for one input byte
 per 255, so output is bounded at about 256 times the input by the format
@@ -7857,6 +7766,38 @@ and section extents and have no arm; `t3isa` has `gate.ps1`, which is
 machine-only (`D:\Toolchain-Ternary`) and would be a permanent skip. The tier
 takes a plug the moment somebody writes an assertion over its artifact.
 
+## The page lenses (`codex/plugs/wasm/page-lens-test.ps1`)
+
+No gate runs it (Damian, 2026-10-31). By hand: `build-page-modules.ps1`
+rebuilds every page module, then this harness runs four ways over each
+IR-transport lens's `<plug>-stdio.wasm` under wasmtime.
+
+- **Plain:** the accumulator-corpus IR; a lens passes when a quarter of the
+  subject's definition names reach its output. **`-Calibrate`:** input that is
+  not IR; every lens must fail. Neither runs what a lens emits: a javascript
+  module that printed no CCE helpers carried every name and passed (fixed main
+  50831).
+- **`-Lambda`:** every lens's lambda arm. The compiler lifts every lambda before
+  IR text, so no compiled subject reaches one. The harness compiles
+  `roc-closure-captures-list` with `-Passes text-plug`, writes its one lifted
+  `__lam_N` site back as `(lambda ...)` (REFUSE when the anchor moves), and runs
+  each lens on both IRs. REACHED is the lambda's parameter `ignored` occurring
+  more often than in the lifted output; a byte difference is not reach (wgsl
+  differs and reaches nothing). REFUSED is a refusal mark the lifted output
+  lacks: `!UNSUPPORTED: lambda` (ada, cobol, pascal), `CODEX_REFUSED_lambda_value`
+  (ptx), `no form for lambda-value` (wasm). Those five may only refuse, wgsl may
+  only stay UNREACHED (it refuses `opening` first), every other lens must reach,
+  and a STALE module fails. 2026-10-31: 41 REACHED, 5 REFUSED, 1 UNREACHED of 47.
+  **`-Lambda -Calibrate`** hands both sides the lifted IR, and every lens must be
+  UNREACHED.
+
+A plug's bare-metal transport is graded against its stdio module by hand: TCP
+through `build/plug-run.ps1 -Port <the port the plug dials>` for most plugs;
+csharp writes its output to the codex-vm output ring (`codex/plugs/csharp/run.ps1
+-Ir`); html, winforms, maui, ptx, wgsl and wasm take a file over serial
+(`Invoke-PlugVmFileSerial` behind an `IR-CCE` line). Each answers its stdio
+module's bytes, the stdio side carrying one extra final newline where it differs.
+
 ## The gpushow WGSL Sweep (`apps/gpushow/tools/validate-all.mjs`)
 
 **A census of `kernels/*.wgsl` measures about half the shaders gpushow ships,
@@ -7892,10 +7833,10 @@ each exit 1; the clean tree is 83 modules and 0 errors, exit 0. Note the broken
 kernel produced ONE module rather than two, because the page stops before
 building its render shader, so a module COUNT is not a coverage check.
 
-**The release gate runs it** in `build/build.ps1`'s `browser-checks` phase, with
-headless Edge as the Chromium (`--chrome <msedge.exe>`), beside ModBuilder's
-`test-emit.mjs` and `test-site.mjs` (Damian's GPUSHOW-1 ruling, 2026-09-29). No
-lane gate does. Run it when you touch a kernel, the WGSL plug, or a demo page.
+**No gate runs it** (Damian, 2026-10-31). Run it by hand, with headless Edge
+as the Chromium (`--chrome <msedge.exe>`), beside
+`codex/plugs/wgsl/arms/browser-kernels.mjs` and ModBuilder's `test-emit.mjs` and
+`test-site.mjs`, when you touch a kernel, the WGSL plug, or a demo page.
 
 Both tools ask the OS for a free CDP port rather than pinning one. The
 single-file `validate.mjs` pinned 9223, which on a shared box lets a peer's

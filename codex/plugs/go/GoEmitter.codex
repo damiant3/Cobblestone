@@ -7,10 +7,6 @@ Section: Sanitization
   go-sanitize (name) =
     text-replace (text-replace name "-" "_") "'" ""
 
- The IR spells a record field as `name/slot`. In a map-keyed target the
- slot lands INSIDE the key string, so the lookup misses silently rather
- than dividing; the key has to be the bare name.
-
   go-slash-pos : Text, Integer, Integer -> Integer
   go-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -125,9 +121,6 @@ Section: Expression Emission
      is IrError (msg) (ty) (sp) -> "func() interface{} { panic(\"" & go-escape msg & "\") }()"
 
 Section: Binary Operators
-
- `go-vec-ewise` takes operands that are ALREADY asserted, because it is handed
- emitted text and cannot see the node, so it cannot tell a literal from a name.
 
   go-vec-ewise : Text, Text, Text -> Text
   go-vec-ewise (lhs) (rhs) (opsym) =
@@ -292,12 +285,6 @@ Section: Apply and Helpers
       let func = emit-go-expr root arities indent
       in func & ".(func(" & emit-go-any-params (list-length args) 0 & ") interface{})(" & emit-go-apply-args args arities indent 0 & ")"
 
- The type assertion was built from the number of ARGUMENTS rather than the
- callee's arity, so a one-parameter definition applied to three asserted a
- three-parameter func type and panicked. The assertion is now built from the
- arity, the surplus is applied one argument at a time, and a definition
- applied to fewer arguments than it takes is eta-wrapped as nested closures.
-
   emit-go-call : Text, List IRExpr, List ArityEntry, Integer, Integer -> Text
   emit-go-call (func) (args) (arities) (indent) (n) =
     func & ".(func(" & emit-go-any-params n 0 & ") interface{})(" & emit-go-args-upto args arities indent 0 n & ")"
@@ -381,9 +368,6 @@ Section: Match
     in let binds = emit-go-pat-binds (b.pattern) "_s"
     in let body = emit-go-expr (b.body) arities indent
     in "if " & cond & " { " & binds & go-guarded-return (b.guard) body arities indent & " }; " & emit-go-branches branches arities indent (i + 1)
-
- The guard goes inside the `if` and after the binds, so it can read them and
- a failed guard falls through to the next arm's test on its own.
 
   go-guard-trivial : IRExpr -> Boolean
   go-guard-trivial (g) =

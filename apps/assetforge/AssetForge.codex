@@ -1,36 +1,34 @@
 Chapter: AssetForge
-  cites AI chapter DiffusionPipeline
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter ImageOut
+  cites AI chapter ClipBpe
   cites AI chapter ImageTo3d
   cites AI chapter ImageTensor
-  cites AI chapter SafeTensors
-  cites AI chapter TextEncoder
-  cites AI chapter UNet
-  cites AI chapter DiffusionScheduler
-  cites AI chapter Tokenizer
-  cites AI chapter NeuralNet
   cites Encode chapter Gltf
-  cites Encode chapter Png
-  cites Foreword chapter Console
-  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+  cites Game chapter Color
 
- We say:
+ The picture is apps/diffusion's SDXL text to image at Forge's DPM++ SDE
+ with its Automatic (Karras) schedule. After a saved PNG, Diffusion chapter
+ ImageOut holds the scanlines at io-raw: per row a filter byte 0, then R G B.
 
 Section: Types
   ForgeConfig = record {
-    fc-model-path : Text,
-    fc-recon-model-path : Text,
-    fc-output-dir : Text,
+    fc-ckpt : Text,
+    fc-negative : Text,
+    fc-out : Text,
     fc-width : Integer,
     fc-height : Integer,
     fc-steps : Integer,
-    fc-guidance : Integer,
+    fc-cfg : Real,
     fc-seed : Integer,
-    fc-generate-3d : Boolean,
-    fc-grid-res : Integer
+    fc-generate-3d : Boolean
   }
 
   ForgeResult = record {
-    fr-image-bytes : List Integer,
+    fr-status : Text,
+    fr-ok : Boolean,
+    fr-png : Text,
     fr-mesh-bytes : List Integer,
     fr-prompt : Text,
     fr-width : Integer,
@@ -41,101 +39,84 @@ Section: Types
 Section: Default Configuration
   forge-default-config : ForgeConfig
   forge-default-config = ForgeConfig {
-    fc-model-path = "models/sd15",
-    fc-recon-model-path = "models/triposr",
-    fc-output-dir = "output",
-    fc-width = 512,
-    fc-height = 512,
-    fc-steps = 20,
-    fc-guidance = 7500,
+    fc-ckpt = "dreamshaperXL_lightningDPMSDE.safetensors",
+    fc-negative = "",
+    fc-out = "assetforge.png",
+    fc-width = 1024,
+    fc-height = 1024,
+    fc-steps = 6,
+    fc-cfg = 2.0,
     fc-seed = 42,
-    fc-generate-3d = True,
-    fc-grid-res = 64
+    fc-generate-3d = True
   }
 
   forge-fast-config : ForgeConfig
   forge-fast-config = ForgeConfig {
-    fc-model-path = "models/sd15",
-    fc-recon-model-path = "models/triposr",
-    fc-output-dir = "output",
-    fc-width = 256,
-    fc-height = 256,
-    fc-steps = 10,
-    fc-guidance = 7500,
+    fc-ckpt = "dreamshaperXL_lightningDPMSDE.safetensors",
+    fc-negative = "",
+    fc-out = "assetforge.png",
+    fc-width = 512,
+    fc-height = 512,
+    fc-steps = 6,
+    fc-cfg = 2.0,
     fc-seed = 42,
-    fc-generate-3d = False,
-    fc-grid-res = 32
+    fc-generate-3d = False
+  }
+
+  forge-with-seed : ForgeConfig, Integer, Text -> ForgeConfig
+  forge-with-seed (c) (seed) (out) = ForgeConfig {
+    fc-ckpt = c.fc-ckpt,
+    fc-negative = c.fc-negative,
+    fc-out = out,
+    fc-width = c.fc-width,
+    fc-height = c.fc-height,
+    fc-steps = c.fc-steps,
+    fc-cfg = c.fc-cfg,
+    fc-seed = seed,
+    fc-generate-3d = c.fc-generate-3d
   }
 
 Section: Generation
-  forge-generate : Text, ForgeConfig, PipelineState, Recon3dState -> ForgeResult
-  forge-generate (prompt) (config) (pipe-state) (recon-state) =
-    let output = pipeline-generate prompt pipe-state
-    in let png = pipeline-to-png output
-    in if config.fc-generate-3d then
-      let img = forge-output-to-image output
-      in let glb = image-to-glb img recon-state
-      in ForgeResult { fr-image-bytes = png, fr-mesh-bytes = glb, fr-prompt = prompt, fr-width = config.fc-width, fr-height = config.fc-height, fr-has-mesh = True }
-    else ForgeResult { fr-image-bytes = png, fr-mesh-bytes = [], fr-prompt = prompt, fr-width = config.fc-width, fr-height = config.fc-height, fr-has-mesh = False }
+  forge-request : Text, ForgeConfig -> Txt2Img
+  forge-request (prompt) (c) =
+    let params = prompt & "\nNegative prompt: " & c.fc-negative & "\nSteps: " & show (c.fc-steps) & ", Sampler: DPM++ SDE, Schedule type: Karras, CFG scale: " & show (c.fc-cfg) & ", Seed: " & show (c.fc-seed) & ", Size: " & show (c.fc-width) & "x" & show (c.fc-height) & ", Model: " & c.fc-ckpt
+    in Txt2Img { ti-ckpt = c.fc-ckpt, ti-prompt = prompt, ti-negative = c.fc-negative, ti-sampler = ti-dpmpp-sde, ti-scheduler = 0, ti-steps = c.fc-steps, ti-cfg = c.fc-cfg, ti-seed = c.fc-seed, ti-width = c.fc-width, ti-height = c.fc-height, ti-out = c.fc-out, ti-params = params, ti-clip-skip = 1, ti-extras = ti-no-extras }
 
-  forge-output-to-image : PipelineOutput -> ImageData
-  forge-output-to-image (output) =
-    let pixels = forge-unpack-pixels (output.po-pixels) 0 (output.po-width * output.po-height) []
-    in image-new (output.po-width) (output.po-height) pixels
+  forge-generate : ClipBpe, Text, ForgeConfig, Recon3dState -> ForgeResult
+  forge-generate (bpe) (prompt) (c) (recon) =
+    let status = txt2img bpe (forge-request prompt c)
+    in let ok = text-starts-with status "png "
+    in let mesh = if ok & c.fc-generate-3d then image-to-glb (forge-saved-image (c.fc-width) (c.fc-height)) recon else []
+    in ForgeResult { fr-status = status, fr-ok = ok, fr-png = c.fc-out, fr-mesh-bytes = mesh, fr-prompt = prompt, fr-width = c.fc-width, fr-height = c.fc-height, fr-has-mesh = list-length mesh > 0 }
 
-  forge-unpack-pixels : List Integer, Integer, Integer, List Rgb -> List Rgb
-  forge-unpack-pixels (packed) (i) (n) (acc) =
-    if i >= n then acc
-    else let p = list-at packed i
-    in let r = bit-and (bit-shru p 16) 255
-    in let g = bit-and (bit-shru p 8) 255
-    in let b = bit-and p 255
-    in forge-unpack-pixels packed (i + 1) n (list-push acc (Rgb { cr = r, cg = g, cb = b }))
+  forge-saved-image : Integer, Integer -> ImageData
+  forge-saved-image (w) (h) = image-new w h (forge-scan-pixels w h 0 0 (__list-with-capacity (w * h)))
+
+  forge-scan-pixels : Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  forge-scan-pixels (w) (h) (y) (x) (acc) =
+    if y >= h then acc
+    else if x >= w then forge-scan-pixels w h (y + 1) 0 acc
+    else let at = io-raw + y * (1 + w * 3) + 1 + x * 3
+    in forge-scan-pixels w h y (x + 1) (list-push acc (rgb (peek-byte at 0) (peek-byte at 1) (peek-byte at 2)))
 
 Section: Batch Generation
-  forge-batch : List Text, ForgeConfig, PipelineState, Recon3dState -> List ForgeResult
-  forge-batch (prompts) (config) (pipe-state) (recon-state) =
-    forge-batch-loop prompts config pipe-state recon-state 0 (list-length prompts) []
+  forge-batch : ClipBpe, List Text, ForgeConfig, Recon3dState -> List ForgeResult
+  forge-batch (bpe) (prompts) (c) (recon) = forge-batch-loop bpe prompts c recon 0 []
 
-  forge-batch-loop : List Text, ForgeConfig, PipelineState, Recon3dState, Integer, Integer, List ForgeResult -> List ForgeResult
-  forge-batch-loop (prompts) (config) (pipe-state) (recon-state) (i) (n) (acc) =
-    if i >= n then acc
-    else let seed-config = forge-with-seed config ((config.fc-seed) + i * 7919)
-    in let pipe = forge-update-pipe-seed pipe-state (config.fc-seed + i * 7919)
-    in let result = forge-generate (list-at prompts i) seed-config pipe recon-state
-    in forge-batch-loop prompts config pipe-state recon-state (i + 1) n (list-push acc result)
-
-  forge-with-seed : ForgeConfig, Integer -> ForgeConfig
-  forge-with-seed (config) (seed) =
-    ForgeConfig { fc-model-path = config.fc-model-path, fc-recon-model-path = config.fc-recon-model-path, fc-output-dir = config.fc-output-dir, fc-width = config.fc-width, fc-height = config.fc-height, fc-steps = config.fc-steps, fc-guidance = config.fc-guidance, fc-seed = seed, fc-generate-3d = config.fc-generate-3d, fc-grid-res = config.fc-grid-res }
-
-  forge-update-pipe-seed : PipelineState, Integer -> PipelineState
-  forge-update-pipe-seed (state) (seed) =
-    PipelineState {
-      ps-config = PipelineConfig {
-        pc-width = (state.ps-config.pc-width),
-        pc-height = (state.ps-config.pc-height),
-        pc-num-steps = (state.ps-config.pc-num-steps),
-        pc-guidance-scale = (state.ps-config.pc-guidance-scale),
-        pc-seed = seed,
-        pc-latent-channels = (state.ps-config.pc-latent-channels),
-        pc-latent-scale = (state.ps-config.pc-latent-scale)
-      },
-      ps-text-encoder = state.ps-text-encoder,
-      ps-unet = state.ps-unet,
-      ps-scheduler = state.ps-scheduler,
-      ps-vae-decoder-w = state.ps-vae-decoder-w,
-      ps-vae-decoder-b = state.ps-vae-decoder-b,
-      ps-tokenizer = state.ps-tokenizer
-    }
+  forge-batch-loop : ClipBpe, List Text, ForgeConfig, Recon3dState, Integer, List ForgeResult -> List ForgeResult
+  forge-batch-loop (bpe) (prompts) (c) (recon) (i) (acc) =
+    if i >= list-length prompts then acc
+    else let ci = forge-with-seed c (c.fc-seed + i * 7919) (show i & "-" & c.fc-out)
+    in forge-batch-loop bpe prompts c recon (i + 1) (list-push acc (forge-generate bpe (list-at prompts i) ci recon))
 
 Section: Queries
   format-forge-config : ForgeConfig -> Text
   format-forge-config (cfg) =
-    show (cfg.fc-width) & "x" & show (cfg.fc-height) & " steps=" & show (cfg.fc-steps) & " cfg=" & show (cfg.fc-guidance) & " 3d=" & (if cfg.fc-generate-3d then "yes" else "no")
+    show (cfg.fc-width) & "x" & show (cfg.fc-height) & " steps=" & show (cfg.fc-steps) & " cfg=" & show (cfg.fc-cfg) & " 3d=" & (if cfg.fc-generate-3d then "yes" else "no")
 
   format-forge-result : ForgeResult -> Text
   format-forge-result (r) =
-    "\"" & r.fr-prompt & "\" " & show (r.fr-width) & "x" & show (r.fr-height) & " png=" & show (list-length (r.fr-image-bytes)) & "B" & (if r.fr-has-mesh then " glb=" & show (list-length (r.fr-mesh-bytes)) & "B" else "")
+    let mesh = if r.fr-has-mesh then " glb=" & show (list-length (r.fr-mesh-bytes)) & "B" else ""
+    in "\"" & r.fr-prompt & "\" " & r.fr-png & ": " & r.fr-status & mesh
 
 Page 1

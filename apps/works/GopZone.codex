@@ -1,8 +1,6 @@
 Chapter: GopZone
   cites Works chapter GopFat16
 
- We say:
-
 Section: Range
 
   zone-bias : Integer = 12
@@ -73,54 +71,141 @@ Section: The File
     in let w = zone-name-bytes b "TIMEZONEDAT" 0
     in b
 
+Section: The machine record
+
+  zone-ver-off : Integer = 5
+  zone-ver-named : Integer = 2
+  zone-rtc-off : Integer = 6
+  zone-name-len-off : Integer = 16
+  zone-name-off : Integer = 17
+  zone-name-max : Integer = 63
+  zone-buf-bytes : Integer = 96
+
+  ZoneMachine = record {
+    zm-name : Text,
+    zm-rtc-local : Boolean
+  }
+
+  zone-machine-default : ZoneMachine
+  zone-machine-default = ZoneMachine { zm-name = "", zm-rtc-local = False }
+
+  zone-name-ascii : Text, Integer -> Boolean
+  zone-name-ascii (s) (i) =
+    if i >= text-length s then True
+    else if to-unicode (char-code (char-at s i)) > 127 then False
+    else zone-name-ascii s (i + 1)
+
+  zone-name-fits : Text -> Boolean
+  zone-name-fits (s) = text-length s <= zone-name-max & zone-name-ascii s 0
+
+  zone-text-of : Integer, Integer, Integer, Text -> Text
+  zone-text-of (buf) (i) (stop) (acc) =
+    if i >= stop then acc
+    else zone-text-of buf (i + 1) stop (acc & char-to-text (code-to-char (from-unicode (peek-byte buf i))))
+
+Section: Packing
+
+  zone-head-ok : Integer, Integer -> Boolean
+  zone-head-ok (buf) (len) =
+    if len < zone-file-len then False
+    else if peek-byte buf 0 /= zone-magic0 then False
+    else if peek-byte buf 1 /= zone-magic1 then False
+    else if peek-byte buf 2 /= zone-magic2 then False
+    else peek-byte buf 3 == zone-magic3
+
+  zone-hours-at : Integer, Integer -> Integer
+  zone-hours-at (buf) (len) =
+    if zone-head-ok buf len then zone-clamp (peek-byte buf 4 - zone-bias) else 0
+
+  zone-rec-of : Integer, Integer -> ZoneRec
+  zone-rec-of (buf) (len) =
+    if zone-head-ok buf len == False then zone-rec-default
+    else if len < zone2-len then ZoneRec { zc-minutes = zone-hours-at buf len * 60, zc-id = 0, zc-clock = 0, zc-date = 0, zc-band = zone-band-default }
+    else
+      let mins = zone-clamp-minutes (peek-byte buf 8 + peek-byte buf 9 * 256 - zone2-bias)
+      in let bb = peek-byte buf 14
+      in ZoneRec {
+        zc-minutes = mins,
+        zc-id = peek-byte buf 10 + peek-byte buf 11 * 256,
+        zc-clock = peek-byte buf 12,
+        zc-date = peek-byte buf 13,
+        zc-band = if bb == 0 then zone-band-default else bit-and (bb - 1) zone-band-all
+      }
+
+  zone-machine-of : Integer, Integer -> ZoneMachine
+  zone-machine-of (buf) (len) =
+    if zone-head-ok buf len == False then zone-machine-default
+    else if len < zone-name-off then zone-machine-default
+    else if peek-byte buf zone-ver-off /= zone-ver-named then zone-machine-default
+    else
+      let n = peek-byte buf zone-name-len-off
+      in if n > zone-name-max | len < zone-name-off + n then zone-machine-default
+      else ZoneMachine { zm-name = zone-text-of buf zone-name-off (zone-name-off + n) "", zm-rtc-local = peek-byte buf zone-rtc-off == 1 }
+
+  zone-pack-head : Integer, ZoneRec -> Integer
+  zone-pack-head (buf) (r) =
+    let mins = zone-clamp-minutes (r.zc-minutes)
+    in let a = poke-byte buf 0 zone-magic0
+    in let b = poke-byte buf 1 zone-magic1
+    in let c = poke-byte buf 2 zone-magic2
+    in let d = poke-byte buf 3 zone-magic3
+    in let e = poke-byte buf 4 (zone-clamp (zone-hours-of mins) + zone-bias)
+    in let h = poke-byte buf 7 0
+    in let i = poke-byte buf 8 (int-mod (mins + zone2-bias) 256)
+    in let j = poke-byte buf 9 ((mins + zone2-bias) / 256)
+    in let k = poke-byte buf 10 (int-mod (r.zc-id) 256)
+    in let l = poke-byte buf 11 (r.zc-id / 256)
+    in let n = poke-byte buf 12 (r.zc-clock)
+    in let o = poke-byte buf 13 (r.zc-date)
+    in let p = poke-byte buf 14 (int-mod (bit-and (r.zc-band) zone-band-all + 1) 256)
+    in poke-byte buf 15 0
+
+  zone-pack : Integer, ZoneRec, ZoneMachine -> Integer
+  zone-pack (buf) (r) (zm) =
+    let name = if zone-name-fits (zm.zm-name) then zm.zm-name else ""
+    in let hd = zone-pack-head buf r
+    in let v = poke-byte buf zone-ver-off zone-ver-named
+    in let t = poke-byte buf zone-rtc-off (if zm.zm-rtc-local then 1 else 0)
+    in let n = poke-byte buf zone-name-len-off (text-length name)
+    in let w = zone-name-bytes (buf + zone-name-off) name 0
+    in zone-name-off + text-length name
+
+  zone-hours-rec : Integer -> ZoneRec
+  zone-hours-rec (z) = ZoneRec { zc-minutes = zone-clamp z * 60, zc-id = 0, zc-clock = 0, zc-date = 0, zc-band = zone-band-default }
+
 Section: Saving
 
-  zone-save : Integer -> [Device.Port] Boolean
-  zone-save (z) = act
+  zone-write : ZoneRec, ZoneMachine -> [Device.Port] Boolean
+  zone-write (r) (zm) = act
     m <- gfat-mount-esp
     if m.gm-ok == False then False
     else
       let buf = __heap-save
-      in let adv = __heap-advance 64
-      in let a = poke-byte buf 0 zone-magic0
-      in let b = poke-byte buf 1 zone-magic1
-      in let c = poke-byte buf 2 zone-magic2
-      in let d = poke-byte buf 3 zone-magic3
-      in let e = poke-byte buf 4 (zone-clamp z + zone-bias)
-      in let f = poke-byte buf 5 0
-      in let g = poke-byte buf 6 0
-      in let h = poke-byte buf 7 0
-      in gfat-write-small-file (m.gm-vol) zone-name buf zone-file-len
+      in let adv = __heap-advance zone-buf-bytes
+      in let len = zone-pack buf r zm
+      in gfat-write-small-file (m.gm-vol) zone-name buf len
   end
 
-Section: The wider record
+  zone-save : Integer -> [Device.Port] Boolean
+  zone-save (z) = act
+    zm <- zone-machine-load
+    zone-write (zone-hours-rec z) zm
+  end
 
   zone2-save : ZoneRec -> [Device.Port] Boolean
   zone2-save (r) = act
-    m <- gfat-mount-esp
-    if m.gm-ok == False then False
-    else
-      let mins = zone-clamp-minutes (r.zc-minutes)
-      in let buf = __heap-save
-      in let adv = __heap-advance 64
-      in let a = poke-byte buf 0 zone-magic0
-      in let b = poke-byte buf 1 zone-magic1
-      in let c = poke-byte buf 2 zone-magic2
-      in let d = poke-byte buf 3 zone-magic3
-      in let e = poke-byte buf 4 (zone-clamp (zone-hours-of mins) + zone-bias)
-      in let f = poke-byte buf 5 0
-      in let g = poke-byte buf 6 0
-      in let h = poke-byte buf 7 0
-      in let i = poke-byte buf 8 (int-mod (mins + zone2-bias) 256)
-      in let j = poke-byte buf 9 ((mins + zone2-bias) / 256)
-      in let k = poke-byte buf 10 (int-mod (r.zc-id) 256)
-      in let l = poke-byte buf 11 (r.zc-id / 256)
-      in let n = poke-byte buf 12 (r.zc-clock)
-      in let o = poke-byte buf 13 (r.zc-date)
-      in let p = poke-byte buf 14 (int-mod (bit-and (r.zc-band) zone-band-all + 1) 256)
-      in let q = poke-byte buf 15 0
-      in gfat-write-small-file (m.gm-vol) zone-name buf zone2-len
+    zm <- zone-machine-load
+    zone-write r zm
   end
+
+  zone-machine-save : ZoneMachine -> [Device.Port] Boolean
+  zone-machine-save (zm) = act
+    r <- zone2-load
+    if zone-name-fits (zm.zm-name) == False then False
+    else zone-write r zm
+  end
+
+Section: Loading
 
   zone2-load : [Device.Port] ZoneRec
   zone2-load = act
@@ -129,28 +214,20 @@ Section: The wider record
     else act
       f <- gfat-read-file (m.gm-vol) "TIMEZONE.DAT"
       if f.gf-ok == False then zone-rec-default
-      else if f.gf-len < zone-file-len then zone-rec-default
-      else if peek-byte (f.gf-buf) 0 /= zone-magic0 then zone-rec-default
-      else if peek-byte (f.gf-buf) 1 /= zone-magic1 then zone-rec-default
-      else if peek-byte (f.gf-buf) 2 /= zone-magic2 then zone-rec-default
-      else if peek-byte (f.gf-buf) 3 /= zone-magic3 then zone-rec-default
-      else
-        let hrs = zone-clamp (peek-byte (f.gf-buf) 4 - zone-bias)
-        in if f.gf-len < zone2-len then ZoneRec { zc-minutes = hrs * 60, zc-id = 0, zc-clock = 0, zc-date = 0, zc-band = zone-band-default }
-        else
-          let mins = zone-clamp-minutes (peek-byte (f.gf-buf) 8 + peek-byte (f.gf-buf) 9 * 256 - zone2-bias)
-          in let bb = peek-byte (f.gf-buf) 14
-          in ZoneRec {
-            zc-minutes = mins,
-            zc-id = peek-byte (f.gf-buf) 10 + peek-byte (f.gf-buf) 11 * 256,
-            zc-clock = peek-byte (f.gf-buf) 12,
-            zc-date = peek-byte (f.gf-buf) 13,
-            zc-band = if bb == 0 then zone-band-default else bit-and (bb - 1) zone-band-all
-          }
+      else zone-rec-of (f.gf-buf) (f.gf-len)
     end
   end
 
-Section: Loading
+  zone-machine-load : [Device.Port] ZoneMachine
+  zone-machine-load = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then zone-machine-default
+    else act
+      f <- gfat-read-file (m.gm-vol) "TIMEZONE.DAT"
+      if f.gf-ok == False then zone-machine-default
+      else zone-machine-of (f.gf-buf) (f.gf-len)
+    end
+  end
 
   zone-load : [Device.Port] Integer
   zone-load = act
@@ -159,12 +236,7 @@ Section: Loading
     else act
       f <- gfat-read-file (m.gm-vol) "TIMEZONE.DAT"
       if f.gf-ok == False then 0
-      else if f.gf-len < zone-file-len then 0
-      else if peek-byte (f.gf-buf) 0 /= zone-magic0 then 0
-      else if peek-byte (f.gf-buf) 1 /= zone-magic1 then 0
-      else if peek-byte (f.gf-buf) 2 /= zone-magic2 then 0
-      else if peek-byte (f.gf-buf) 3 /= zone-magic3 then 0
-      else zone-clamp (peek-byte (f.gf-buf) 4 - zone-bias)
+      else zone-hours-at (f.gf-buf) (f.gf-len)
     end
   end
 

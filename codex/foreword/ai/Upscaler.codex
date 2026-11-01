@@ -6,10 +6,9 @@ Chapter: Upscaler
   cites AI chapter SafeTensors
   cites AI chapter ImageTensor
   cites Foreword chapter Maybe
+  cites Math chapter Cordic
 
  Fixed-point (scale 1000).
-
- We say:
 
 Section: Types
   UpscaleMethod =
@@ -141,25 +140,21 @@ Section: Lanczos Approximation (4-tap)
     in Rgb { cr = up-clamp-byte r, cg = up-clamp-byte g, cb = up-clamp-byte b }
 
   up-lanczos-channel : ImageData, Integer, Integer, Integer, Integer, Integer -> Integer
-  up-lanczos-channel (img) (cx) (cy) (fx) (fy) (ch) =
-    let sum = up-lk-tap img (cx - 1) (cy - 1) ch fx fy (0 - 1) (0 - 1)
-            + up-lk-tap img cx (cy - 1) ch fx fy 0 (0 - 1)
-            + up-lk-tap img (cx + 1) (cy - 1) ch fx fy 1 (0 - 1)
-            + up-lk-tap img (cx - 1) cy ch fx fy (0 - 1) 0
-            + up-lk-tap img cx cy ch fx fy 0 0
-            + up-lk-tap img (cx + 1) cy ch fx fy 1 0
-            + up-lk-tap img (cx - 1) (cy + 1) ch fx fy (0 - 1) 1
-            + up-lk-tap img cx (cy + 1) ch fx fy 0 1
-            + up-lk-tap img (cx + 1) (cy + 1) ch fx fy 1 1
-    in sum / 1000
+  up-lanczos-channel (img) (cx) (cy) (fx) (fy) (ch) = up-lk-loop img cx cy fx fy ch 0 0 0
 
-  up-lk-tap : ImageData, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  up-lk-tap (img) (sx) (sy) (ch) (fx) (fy) (dx) (dy) =
-    let px = up-px-safe img sx sy
-    in let val = if ch == 0 then px.cr else if ch == 1 then px.cg else px.cb
-    in let wx = up-lanczos-weight (dx * 1000 - fx)
-    in let wy = up-lanczos-weight (dy * 1000 - fy)
-    in val * wx / 1000 * wy / 1000
+ Lanczos-2: four taps per axis (-1 .. 2), the weighted sum divided once by the sum
+ of the weights, so a flat image stays flat.
+
+  up-lk-loop : ImageData, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  up-lk-loop (img) (cx) (cy) (fx) (fy) (ch) (k) (sum) (wsum) =
+    if k >= 16 then (if wsum == 0 then up-lk-value (up-px-safe img cx cy) ch else sum / wsum)
+    else let dx = k - k / 4 * 4 - 1
+    in let dy = k / 4 - 1
+    in let wxy = up-lanczos-weight (dx * 1000 - fx) * up-lanczos-weight (dy * 1000 - fy)
+    in up-lk-loop img cx cy fx fy ch (k + 1) (sum + up-lk-value (up-px-safe img (cx + dx) (cy + dy)) ch * wxy) (wsum + wxy)
+
+  up-lk-value : Rgb, Integer -> Integer
+  up-lk-value (px) (ch) = if ch == 0 then px.cr else if ch == 1 then px.cg else px.cb
 
   up-lanczos-weight : Integer -> Integer
   up-lanczos-weight (d) =
@@ -167,15 +162,10 @@ Section: Lanczos Approximation (4-tap)
     in if ad < 10 then 1000
     else if ad >= 2000 then 0
     else let pi-d = ad * 3142 / 1000
-    in let sinc = up-sin-approx pi-d * 1000 / pi-d
+    in let sinc = cordic-sin pi-d * 1000 / pi-d
     in let pi-d2 = ad * 3142 / 2000
-    in let window = up-sin-approx pi-d2 * 1000 / pi-d2
+    in let window = cordic-sin pi-d2 * 1000 / pi-d2
     in sinc * window / 1000
-
-  up-sin-approx : Integer -> Integer
-  up-sin-approx (x) =
-    let x2 = x * x / 1000
-    in x - x * x2 / 6000 + x * x2 * x2 / 120000000
 
   up-px-safe : ImageData, Integer, Integer -> Rgb
   up-px-safe (img) (x) (y) =
@@ -194,11 +184,11 @@ Section: ESRGAN Model Forward
     in let feat = conv2d-forward conv-in-l tensor h w
     in let trunk = up-run-rrdb (model.ums-rrdb-blocks) feat h w 0 (model.ums-num-blocks)
     in let trunk-res = up-add-vecs feat trunk 0 (list-length feat) []
-    in let up1-input = up-pixel-shuffle trunk-res 64 h w 2
+    in let up1-input = up-nearest-upsample trunk-res 64 h w 2
     in let up1-p = conv2d-params 64 64 3 1 1
     in let up1-l = conv2d-layer up1-p (model.ums-upconv1-w) (model.ums-upconv1-b)
     in let up1 = up-leaky-relu (conv2d-forward up1-l up1-input (h * 2) (w * 2))
-    in let up2-input = up-pixel-shuffle up1 64 (h * 2) (w * 2) 2
+    in let up2-input = up-nearest-upsample up1 64 (h * 2) (w * 2) 2
     in let up2-p = conv2d-params 64 64 3 1 1
     in let up2-l = conv2d-layer up2-p (model.ums-upconv2-w) (model.ums-upconv2-b)
     in let up2 = up-leaky-relu (conv2d-forward up2-l up2-input (h * 4) (w * 4))
@@ -209,6 +199,19 @@ Section: ESRGAN Model Forward
     in let out-l = conv2d-layer out-p (model.ums-final-conv-w) (model.ums-final-conv-b)
     in let output = conv2d-forward out-l hr (h * 4) (w * 4)
     in tensor-to-image-unit output (w * 4) (h * 4)
+
+  up-nearest-upsample : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  up-nearest-upsample (t) (ch) (h) (w) (f) = up-nearest-loop t ch h w f 0 []
+
+  up-nearest-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  up-nearest-loop (t) (ch) (h) (w) (f) (i) (acc) =
+    if i >= ch * h * f * w * f then acc
+    else let plane = h * f * w * f
+    in let c = i / plane
+    in let r = i - c * plane
+    in let y = r / (w * f)
+    in let x = r - y * (w * f)
+    in up-nearest-loop t ch h w f (i + 1) (list-push acc (list-at t (c * h * w + y / f * w + x / f)))
 
 Section: RRDB Block Forward
   up-run-rrdb : List RRDBBlock, List Integer, Integer, Integer, Integer, Integer -> List Integer

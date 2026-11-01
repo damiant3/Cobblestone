@@ -210,6 +210,8 @@ Section: Function Application
     else let user-arity = lookup-x86-arity (st.user-arities) (flat.func-name)
     in if user-arity < 0 & is-builtin (st.builtin-names) (flat.func-name) then
       emit-builtin st (flat.func-name) (flat.args)
+    else if user-arity < 0 & lookup-local (st.locals) (flat.func-name) < 0 & find-effect-op-nullary (st.effect-op-addrs) (flat.func-name) 0 then
+      emit-indirect-call-value st (get-apply-root func-expr) (flat.args)
     else if user-arity > 0 & list-length (flat.args) > user-arity & lookup-local (st.locals) (flat.func-name) < 0 then
       emit-over-apply st (flat.func-name) (flat.args) user-arity
     else let resolved-result-ty = resolve-constructed-ty st result-ty
@@ -444,21 +446,6 @@ Section: Function Application
     else let loaded = load-local st (list-at temp-locals i)
     in let st1 = store-local (loaded.state) (list-at param-locals i) (loaded.reg)
     in copy-temps-to-params st1 temp-locals param-locals (i + 1)
-
- Tail-call argument shuffle, direct form. When an argument is a
- literal, a local name, or a two-operand integer binop over locals,
- its value is written straight into the parameter register -- no
- staging temp, no copy pass. The writes are ordered so that no
- parameter is overwritten while a later direct argument still needs
- its original value; an argument reading its own target parameter is
- fine because the read and the write are the same instruction.
- Arguments outside the direct shapes (calls, nested expressions)
- evaluate into their pre-allocated temps first, before any parameter
- is written, and are copied to their parameters after the direct
- writes. A cycle among the direct arguments (a parameter swap) falls
- back to the temp path for the whole site. The direct path allocates
- no locals: next-local, spill-count, and the frame layout are
- identical whether or not it fires.
 
   is-commutative-tco-op : IRBinaryOp -> Boolean
   is-commutative-tco-op (op) =
@@ -698,12 +685,6 @@ Section: Function Application
     else -((local - spill-base + 1) * 8 + 32)
     in let base-reg = if st.omit-frame-pointer then reg-rsp else reg-rbp
     in st-append-code st (mov-load target base-reg offset)
-
- When the parameter slot is a register, the complex result can be
- loaded directly into it -- mov param,[spill] -- instead of the
- load-local/store-local pair that stages through a scratch register
- (mov scratch,[spill]; mov param,scratch). A spilled parameter still
- needs the scratch hop because x86 has no memory-to-memory mov.
 
   copy-one-complex-temp : CodegenState, Integer, Integer -> CodegenState
   copy-one-complex-temp (st) (temp-local) (param-local) =
@@ -977,18 +958,6 @@ Section: Closures and Partial Application
     if i < lo then st
     else emit-over-push-extras (st-append-code st (push-r (list-at arg-regs i))) (i - 1) lo
 
- One block serves every surplus count. The block runs when the argument count
- in rax is greater than r and at most 6, which is the range the argument
- registers can carry; a count above 6 falls through to the exact path, as it
- did when each count had its own block.
-
- Registers on entry are fixed by the closure convention: rax is the argument
- count, r11 is the closure, and r10 is the heap pointer the called function
- allocates through, so none of the three is free. The surplus count is swapped
- into the count word's slot on the stack and popped back into rax, which the
- argument shifts and the capture loads leave alone; r11 is free once the
- captures are loaded.
-
  The loop keeps two words on the stack below the pushed arguments, the surplus
  count at offset 0 and the address of the next surplus argument at offset 8,
  because every register is clobbered across the applications. rsp is back at
@@ -1189,17 +1158,6 @@ Section: Record Emission
   round-up-to-8 : Integer -> Integer
   round-up-to-8 (n) = (n + 7) / 8 * 8
 
- A sum-constructor value is [tag : 8 bytes][fields]. Fields pack by
- declared width (1/2/4/8) instead of a flat 8-byte slot each, laid out
- widest-first exactly like a record (see accumulate-offset-width-sort):
- the 8-byte fields come first at aligned offsets, then 4/2/1, so every
- field lands at its natural alignment with no padding. A ctor whose
- fields are all 8-byte (pointers / plain Integer) lays out identically
- to the old 8 + i*8, so all-pointer variants are byte-identical. Every
- site that reads or writes a ctor field -- construction, pattern
- extraction, equality, print, and the pointer-map walk -- MUST derive
- the offset from sum-ctor-field-offset so writers and readers agree.
-
   sum-field-widths-total : List CodexType, Integer, Integer -> Integer
   sum-field-widths-total (tys) (i) (acc) =
     if i == list-length tys then acc
@@ -1294,9 +1252,8 @@ Section: Narrow-store with overflow-mode dispatch
  `sar` rounds toward negative infinity and `and` answers the non-negative
  residue, while `idiv` truncates toward zero and leaves a remainder with
  the sign of the dividend. For a non-negative dividend the two agree and
- the one-instruction form is exact; for a negative one they do not, and
- the shift silently answered -4 where -7 / 2 is -3 until 2026-07-21.
- Unproven means unsafe: the caller falls through to idiv, which is the
+ the one-instruction form is exact; for a negative one they do not
+ (the shift answers -4 where -7 / 2 is -3). Unproven means unsafe: the caller falls through to idiv, which is the
  semantics rather than an approximation of it.
 
   pow2-dividend-nonneg : List RangeBind, IRExpr -> Boolean
@@ -1538,19 +1495,6 @@ Section: Narrow-store with overflow-mode dispatch
 
 Section: Pointer-Map Walk
 
- Precise typed traversal of a live heap object graph, driven by the
- pointer-maps -- no per-object type tags needed: the static type says
- which slots are pointers (record map / ctor map), and a variant's tag
- already sits at offset 0 (emit-sum-ctor). This is the precise
- replacement for scan-deck-dangling: rather than scanning raw deck slots
- (which cannot tell a pointer from an integer -- the source of the SCOPE
- false positives), it follows only real pointer slots from a typed root
- and counts those landing in the dead range [lo, hi). Fuel-bounded for
- safety. Handles RecordTy, ListTy, and ConstructedTy (resolved by name
- against a TypeBinding table via lookup-type-binding). FunTy /
- LinkedListTy are leaves for now (cons-cell layout is a later
- refinement). The TypeBinding table must be sorted by name (bsearch).
-
   ptr-in-range : Integer, Integer, Integer -> Integer
   ptr-in-range (p) (lo) (hi) =
     if p >= lo then if p < hi then 1 else 0 else 0
@@ -1643,38 +1587,6 @@ Section: Pointer-Map Walk
     in let sub = hit + pmap-walk child elem defs lo hi (fuel - 1) q loc
     in pmap-walk-list-elems ptr elem defs (j + 1) count lo hi fuel (acc + sub) q loc
 
- Runtime conformance check for pmap-walk (gated by -EscapeCheck at the call
- site; fires a diagnostic only on failure). This guards the pointer-map
- walker -- the safety-critical machinery the escape check and copying
- compactor will drive -- against silent breakage from layout or codegen
- changes. `cap` = __heap-save captured just before the record's allocation
- is the record's address (a record's pointer is its alloc start -- no cap
- word, unlike lists); the record is forced (rec.tr-num) so it is materialized
- at cap, then pmap-walk over [h0, cap) counts the in-range pointers. PmTestRec
- has tr-ptr (Text), a scalar tr-num, and tr-inner (a ConstructedTy "PmInner"
- record whose in-ptr is another heap Text). Expected result: 3 (tr-ptr +
- tr-inner + inner.in-ptr; tr-num scalar skipped; ConstructedTy "PmInner"
- resolved against __self-type-defs). The root type PmTestRec is itself
- resolved from __self-type-defs by name, so this exercises the whole
- self-type-table: the emitted table carries the compiler's OWN types (baked
- in at the compiler's self-compile), and pmap-walk drives off it.
-
- The pointees MUST be runtime heap allocations: a bare string literal is
- emitted into rodata (emit-text-lit, X86_64.codex), so its pointer lands
- below the heap and would never fall in [h0, cap) -- a real pointer the
- escape check correctly ignores. `show N` forces a runtime heap string.
-
- An EMPTY self-type table answers -2, which the caller reports as skipped
- rather than failed. The table is baked in by the x86-64 backend, so a host
- built by a backend that emits no pointer map has none to bake and none to
- walk; the wasm plug says so by answering the empty list. -2 rather than the
- expected 3 on purpose: reporting a skip as a pass is how a check that has
- stopped asking becomes indistinguishable from one that asks and agrees
- (L-CAPABILITY-LOST), so the skip carries its own value and its own message.
- On x86-64 the table is never empty, which is why this arm cannot mask a
- real failure here: an empty table on THIS backend would itself be the
- defect the walk exists to catch, and it would have to be reached first.
-
   PmInner = record { in-ptr : Text }
 
   PmTestRec = record { tr-num : Integer, tr-ptr : Text, tr-inner : PmInner }
@@ -1712,32 +1624,12 @@ Section: Pointer-Map Walk
     let defs = __self-type-defs
     in pmap-walk root-addr (ListTy (ConstructedTy (Name { value = elem-name }) [])) defs lo hi pmap-escape-fuel 1 elem-name
 
- The control for every count above. The same root over a range that spans the
- whole address space, so every pointer the walk reaches is counted: a working
- traversal cannot answer zero, and a root that missed the self-type table
- cannot answer anything else. Report it beside an escape count and a zero
- becomes readable -- zero escapes with zero reach is a broken instrument,
- zero escapes with a non-zero reach is a clean phase. Quiet, so it prints
- nothing and allocates nothing.
-
   pmap-escape-reached : Integer, Text -> Integer
   pmap-escape-reached (root-addr) (type-name) =
     let defs = __self-type-defs
     in pmap-walk root-addr (lookup-type-binding defs type-name) defs 1 bare-metal-ram-size pmap-escape-fuel 1 type-name
 
 Section: Self-Type-Table Emission
-
- Emits the compiler's own type-defs (filtered to RecordTy/SumTy) into rodata
- as a live `List TypeBinding` graph in exact heap layout with ABSOLUTE
- addresses (data-vaddr is known at finalize, so no relocations needed).
- pmap-walk consumes it unchanged to resolve ConstructedTy at runtime. Layouts:
- List = [cap][len][elem@8+i*8] (pointer = len word); Sum box = [tag][field@8+
- i*8]; record fields width-sorted (all 8B here, so name-sorted at 8*k); Text =
- [len][bytes][pad8]. pmap-walk/is-pointer-type read only a descriptor's tag and
- the pointer slots they recurse on (ListTy.elem, RecordTy.fields, SumTy.ctors,
- ConstructedTy.name), so unused scalar/pointer slots are emitted as 0 -- EXCEPT
- IntegerTy's lo/hi bounds, which field-byte-width reads to compute a record's
- field widths (and hence offsets), so those are emitted faithfully.
 
   ConstEmit = record { len : Integer, off : Integer }
 
@@ -1786,34 +1678,6 @@ Section: Self-Type-Table Emission
   emit-const-name (buf) (len) (vaddr) (nm) =
     let t = emit-const-text buf len (nm.value)
     in ConstEmit { len = buf-write-i64 buf (t.len) (vaddr + t.off), off = t.len }
-
- NOTE (tag + packing fidelity): a const-emitted CodexType box must be
- byte-compatible with a runtime-constructed one, because the pmap /
- escape-check walk pattern-matches the table at runtime. Two past
- drift classes broke this silently: (1) hardcoded tag literals rotted
- when the CodexType constructor order changed (the table was written
- with an ordering that predates the Real* variants moving next to
- RealTy -- every tag from TextTy up was off, so lookup returned boxes
- that decoded as the wrong constructor and pmap-walk fell through to
- zero); (2) runtime variants pack fields by width
- (sum-ctor-field-offset, wider first, declaration order within a
- width) while const-box writes one 8-byte word per field -- identical
- for the all-8-byte descriptor payloads the walk reads, divergent for
- mixed-width ctors (ForAllTy's 4-byte id), whose slots are written in
- width order below. Tags are now read off LIVE values at emit time
- (live-type-tag, via the variant-tag builtin), so the tag class of
- drift is closed by construction. It used to read the tag with
- `peek-qword (address-of ty) 0`, which is the same load on bare metal
- but silently answers 0 on any target where `address-of` cannot be
- modelled: that cost the C# arm every tag in this table.
- The always-on pmap self-test (opening.codex) is the
- tripwire for the layout class ON RECORDS ONLY, and this line said
- "the layout class" without that qualification while a sum-ctor layout
- bug sat one function below it: PmTestRec is a record, so the self-test
- walked records and lists and never a constructor field. A slot-order
- error in `emit-const-sumctor` cost the walk every variant in the tree
- and the self-test passed throughout. If a descriptor's slot order is
- wrong for a shape the self-test does not contain, nothing here fires.
 
   live-type-tag : CodexType -> Integer
   live-type-tag (ty) = variant-tag ty
@@ -1913,17 +1777,6 @@ Section: Self-Type-Table Emission
     in let tv = emit-const-codextype buf (nm.len) vaddr (fld.type-val) fuel
     in let p1 = buf-write-i64 buf (tv.len) (vaddr + tv.off)
     in ConstEmit { len = buf-write-i64 buf p1 (vaddr + nm.off), off = tv.len }
-
- SumCtor has THREE pointer fields, not two, and this function wrote two. CCE
- orders letters by English frequency, so the name-sorted slot order is
- name(n=18), return-type(r=21), fields(f=28) -- `fields` is LAST, at offset
- 16. Writing [name][fields] put the fields list in the return-type slot and
- left `c.fields` reading one word past the end of the box, where it found a
- zero length. Every constructor in the table therefore looked nullary, which
- is a silent hole rather than a crash: `pmap-walk-sum` resolved the right
- constructor by tag, read its correct name, found no fields to follow, and
- returned 0. The whole expression graph went unwalked and the escape check
- reported clean on the spine it could still see.
 
   emit-const-sumctor : Integer, Integer, Integer, SumCtor, Integer -> ConstEmit
   emit-const-sumctor (buf) (len) (vaddr) (ct) (fuel) =
@@ -2061,15 +1914,6 @@ Section: Self-Type-Table Emission
     else if fuel <= 0 then seen
     else let seen2 = reach-names defs (list-at refs i) seen (fuel - 1)
     in reach-names-list defs refs (i + 1) n seen2 (fuel - 1)
-
- THIS LIST IS THE ESCAPE CHECK'S REACH, AND A NAME MISSING FROM IT FAILS
- SILENTLY. The table is filtered to what these roots reach, so a
- `pmap-escape-count` on a type that is not reachable from one of them gets
- `lookup-type-binding` miss, falls through `pmap-walk`'s `is otherwise ->
- 0`, and reports ZERO ESCAPES -- indistinguishable from a clean phase.
- CHECK and LOWER were exactly that: `precise-escape-bag` on
- `CompileChecked` and `IRChapter` answered 0 against a range covering the
- whole 32-bit address space, which no real traversal can do.
 
   emit-self-type-table : Integer, Integer, Integer, List TypeBinding -> ConstEmit
   emit-self-type-table (buf) (len) (vaddr) (type-defs) =
@@ -2290,9 +2134,130 @@ Section: Pattern Matching
      end-patches = []
   }
    in let branch-count = list-length branches
-   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 branch-count scrut-ty saved-tail
+   in let plan = jt-plan st1a branches branch-count
+   in let mbs-final = if plan.ok then emit-match-table mbs (scrut-loc.reg) (result-loc.reg) branches branch-count scrut-ty saved-tail plan
+   else emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 branch-count scrut-ty saved-tail
    in let st-end = patch-match-end-jumps (mbs-final.cg-state) (mbs-final.end-patches) 0
    in load-local st-end (result-loc.reg)
+
+Section: Jump Tables
+
+ The table thresholds (COMPILER-159): 4 literals at least, a range at most 1024
+ slots wide, so a table is at most 4 KiB of rel32, and at most 3 times the
+ literal count, so at least one slot in three names an arm. Literals are held
+ to 32 bits because the rebase and the bounds check take imm32.
+
+  JtPlan = record {
+   ok : Boolean,
+   lo : Integer,
+   span : Integer,
+   lits : Integer,
+   has-default : Boolean
+  }
+
+  jt-no : JtPlan
+  jt-no = JtPlan { ok = False, lo = 0, span = 0, lits = 0, has-default = False }
+
+  jt-unguarded : IRBranch -> Boolean
+  jt-unguarded (b) =
+    when b.guard
+     is IrBoolLit (v) (sp) -> v
+     is otherwise -> False
+
+  jt-is-default : IRBranch -> Boolean
+  jt-is-default (b) =
+    if jt-unguarded b == False then False
+    else when b.pattern
+     is IrWildPat (sp) -> True
+     is IrVarPat (name) (ty) (sp) -> True
+     is otherwise -> False
+
+  jt-lit-value : CodegenState, IRBranch -> Integer
+  jt-lit-value (st) (b) =
+    when b.pattern
+     is IrLitPat (value) (ty) (sp) -> jt-int-lit st value ty
+     is otherwise -> jt-none
+
+  jt-none : Integer
+  jt-none = 9223372036854775807
+
+  jt-int-lit : CodegenState, Text, CodexType -> Integer
+  jt-int-lit (st) (value) (ty) =
+    when strip-unit-ty (resolve-constructed-ty st ty)
+     is IntegerTy (lo) (hi) (mode) -> jt-in-range (pat-lit-to-integer value)
+     is otherwise -> jt-none
+
+  jt-in-range : Integer -> Integer
+  jt-in-range (v) = if v < -2147483648 | v > 2147483647 then jt-none else v
+
+  jt-lits-ok : CodegenState, List IRBranch, Integer, Integer, Integer, Integer -> JtPlan
+  jt-lits-ok (st) (branches) (i) (n) (lo) (hi) =
+    if i >= n then JtPlan { ok = True, lo = lo, span = hi - lo + 1, lits = n, has-default = False }
+    else let b = list-at branches i
+    in let v = jt-lit-value st b
+    in if v == jt-none | jt-unguarded b == False then jt-no
+    else jt-lits-ok st branches (i + 1) n (if v < lo then v else lo) (if v > hi then v else hi)
+
+  jt-plan : CodegenState, List IRBranch, Integer -> JtPlan
+  jt-plan (st) (branches) (n) =
+    if n < 4 then jt-no
+    else let has-def = jt-is-default (list-at branches (n - 1))
+    in let lits = if has-def then n - 1 else n
+    in if lits < 4 then jt-no
+    else let p = jt-lits-ok st branches 0 lits 2147483647 (-2147483648)
+    in if p.ok == False | p.span > 1024 | p.span > lits * 3 then jt-no
+    else JtPlan { ok = True, lo = p.lo, span = p.span, lits = lits, has-default = has-def }
+
+  jt-zeros : Integer, List Integer -> List Integer
+  jt-zeros (n) (acc) = if n <= 0 then acc else jt-zeros (n - 1) (list-push acc 0)
+
+  jt-unset : Integer, List Integer -> List Integer
+  jt-unset (n) (acc) = if n <= 0 then acc else jt-unset (n - 1) (list-push acc (-1))
+
+  jt-body-start : CodegenState -> CodegenState
+  jt-body-start (st) = __record-set (fc-flush st) "last-jmp-end" 0
+
+  emit-match-table : MatchBranchState, Integer, Integer, List IRBranch, Integer, CodexType, Boolean, JtPlan -> MatchBranchState
+  emit-match-table (mbs) (scrut-loc) (result-loc) (branches) (n) (scrut-ty) (tail) (plan) =
+    let ld = load-local (fc-flush (mbs.cg-state)) scrut-loc
+    in let t1 = alloc-temp (ld.state)
+    in let t2 = alloc-temp-avoiding (t1.state) (t1.reg)
+    in let rebase = if plan.lo == 0 then [] else sub-ri (t1.reg) (plan.lo)
+    in let st1 = st-append-code (t2.state) (mov-rr (t1.reg) (ld.reg) & rebase & cmp-ri (t1.reg) (plan.span - 1))
+    in let ja-pos = st1.code-len
+    in let st2 = st-append-code st1 (jcc cc-a 0)
+    in let lea-pos = st2.code-len
+    in let st3 = st-append-code st2 (lea-rip-rel (t2.reg) 0 & movsxd-idx4 (t1.reg) (t2.reg) (t1.reg) & add-rr (t1.reg) (t2.reg) & jmp-r (t1.reg))
+    in let table-at = st3.code-len
+    in let st4 = patch-lea-at (st-append-code st3 (jt-zeros (plan.span * 4) [])) lea-pos table-at
+    in let starts = jt-unset (plan.span) []
+    in let mb = emit-table-arms (MatchBranchState { cg-state = st4, end-patches = mbs.end-patches }) scrut-loc result-loc branches 0 (plan.lits) scrut-ty tail plan starts
+    in let def-at = mb.cg-state.code-len
+    in let st5 = patch-jcc-at (mb.cg-state) ja-pos def-at
+    in let mb2 = if plan.has-default then emit-one-match-branch (MatchBranchState { cg-state = jt-body-start st5, end-patches = mb.end-patches }) scrut-loc result-loc (list-at branches (n - 1)) False scrut-ty tail
+    else MatchBranchState { cg-state = st5, end-patches = mb.end-patches }
+    in MatchBranchState { cg-state = jt-write-table (mb2.cg-state) table-at starts def-at 0 (plan.span), end-patches = mb2.end-patches }
+
+  emit-table-arms : MatchBranchState, Integer, Integer, List IRBranch, Integer, Integer, CodexType, Boolean, JtPlan, List Integer -> MatchBranchState
+  emit-table-arms (mbs) (scrut-loc) (result-loc) (branches) (i) (lits) (scrut-ty) (tail) (plan) (starts) =
+    if i >= lits then mbs
+    else let b = list-at branches i
+    in let slot = jt-lit-value (mbs.cg-state) b - plan.lo
+    in if list-at starts slot >= 0 then emit-table-arms mbs scrut-loc result-loc branches (i + 1) lits scrut-ty tail plan starts
+    else let st0 = jt-body-start (mbs.cg-state)
+    in let mark = list-set-at starts slot (st0.code-len)
+    in let arm = IRBranch { pattern = IrWildPat (b.span), body = b.body, guard = b.guard, span = b.span, alt-group = b.alt-group }
+    in let mb1 = emit-one-match-branch (MatchBranchState { cg-state = st0, end-patches = mbs.end-patches }) scrut-loc result-loc arm True scrut-ty tail
+    in emit-table-arms mb1 scrut-loc result-loc branches (i + 1) lits scrut-ty tail plan starts
+
+  jt-write-table : CodegenState, Integer, List Integer, Integer, Integer, Integer -> CodegenState
+  jt-write-table (st) (table-at) (starts) (def-at) (i) (span) =
+    if i >= span then st
+    else let s = list-at starts i
+    in let target = if s >= 0 then s else def-at
+    in jt-write-table (st-add-deferred-patch st (make-i32-patch (table-at + i * 4) (target - table-at))) table-at starts def-at (i + 1) span
+
+Section: Match Arms
 
   emit-match-branch-loop : MatchBranchState, Integer, Integer, List IRBranch, Integer, Integer,
     CodexType, Boolean -> MatchBranchState
@@ -2372,28 +2337,6 @@ Section: Pattern Matching
    patch : Integer
   }
 
- One literal comparison, for a field or for a whole scrutinee. Text is
- the case that cannot be a `cmp` against an immediate: a Text value is a
- pointer, so the literal is materialised and the two are handed to
- __str_eq, exactly as `emit-eq-op` does for `==`. Comparing the pointer
- against `pat-lit-to-integer` of the spelling is what a top-level
- `is "sin" ->` used to do, and it never matched anything.
-
- Both operands are stored to locals before either is loaded. That is
- the ordering `emit-binary-standard` uses and it is not decoration:
- `emit-text-lit` evicts RAX, so materialising the literal while the
- field value is still live in a temp loses the field.
-
- The unit wrapper is stripped for the reason the paragraph above
- already gives, one indirection out. Without the strip a `unit Text`
- scrutinee misses the TextTy arm and falls to the otherwise arm, which
- cmps the register against `pat-lit-to-integer` of the spelling -- and
- the register holds a pointer, so the arm can NEVER match. Measured on
- seed 759D3E0F: `when (Name "sin") is "sin"` took the catchall, with a
- plain Text scrutinee matching correctly beside it. It is silent, which
- makes it worse than the same hole in `show`: nothing is printed
- oddly, the program simply takes the wrong branch.
-
   emit-pattern-lit-test : CodegenState, Integer, Text, CodexType -> LitTestResult
   emit-pattern-lit-test (st) (val-reg) (value) (ty) =
     when strip-unit-ty (resolve-constructed-ty st ty)
@@ -2419,13 +2362,6 @@ Section: Pattern Matching
        state = st-append-code st1 (jcc cc-ne 0),
        patch = patch-pos
       }
-
- The emitter never guesses a constructor tag. If the scrutinee does not
- resolve to a sum type, or the pattern names a constructor the sum does
- not have, there is no honest tag to compare against: emitting one
- anyway silently sends the arm to the wrong branch (tag 0 matches the
- first constructor) or to no branch at all. That guess is what turned a
- lowering defect into a miscompile once already. Refuse instead.
 
   check-pattern-tag : CodegenState, CodexType, Text, Integer, SourceSpan -> CodegenState
   check-pattern-tag (st) (resolve-ty) (name) (tag) (sp) =

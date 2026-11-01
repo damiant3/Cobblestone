@@ -1,0 +1,151 @@
+Chapter: DtlsDegenerateTest
+  cites Encode chapter Dtls
+  cites Encode chapter DtlsHandshake
+  cites Encode chapter Lorawan
+  cites Foreword chapter Cmac
+  cites Foreword chapter Maybe
+
+ The DTLS keys are codex/test/dtls-record's.
+
+Section: Fixtures
+
+  dt-keys : DtlsKeys =
+    DtlsKeys {
+      dk-key = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      dk-iv = [64, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+      dk-sn-key = [80, 28, 88, 187, 84, 51, 121, 140, 197, 215, 137, 202, 250, 188, 222, 109]
+    }
+
+  msg : List Integer = [104, 101, 108, 108, 111]
+
+  appkey : List Integer = [43, 126, 21, 22, 40, 174, 210, 166, 171, 247, 21, 136, 9, 207, 79, 60]
+
+  ja-body : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  set-at : List Integer, Integer, Integer -> List Integer
+  set-at (bs) (i) (v) = list-set-at (for b in bs -> b) i v
+
+  bump-at : List Integer, Integer -> List Integer
+  bump-at (bs) (i) = set-at bs i (if list-at bs i == 255 then 0 else list-at bs i + 1)
+
+  first-n : List Integer, Integer, Integer, List Integer -> List Integer
+  first-n (bs) (n) (i) (acc) =
+    if i >= n then acc
+    else first-n bs n (i + 1) (list-push acc (list-at bs i))
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0)
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+Section: Records
+
+  opened : Text, Maybe DtlsPlain -> Text
+  opened (label) (m) =
+    when m
+      is None -> "open " & label & " = refused"
+      is Just (p) -> "open " & label & " = type " & show (p.dp-type) & ", " & show (list-length (p.dp-content)) & " bytes"
+
+  open-lines : List Text
+  open-lines =
+    let w = dtls-seal dt-keys 3 77 msg 23
+    in let n = list-length w
+    in [
+      opened "genuine control" (dtls-open dt-keys 0 w),
+      opened "empty record" (dtls-open dt-keys 0 []),
+      opened "4-byte record" (dtls-open dt-keys 0 (first-n w 4 0 [])),
+      opened "record cut one byte short" (dtls-open dt-keys 0 (first-n w (n - 1) 0 [])),
+      opened "declared length 15" (dtls-open dt-keys 0 (set-at (set-at w 3 0) 4 15)),
+      opened "last tag byte changed" (dtls-open dt-keys 0 (bump-at w (n - 1))),
+      opened "all-zero tag" (dtls-open dt-keys 0 (first-n w (n - 16) 0 [] & zeros 16 [])),
+      opened "first ciphertext byte changed" (dtls-open dt-keys 0 (bump-at w 5)),
+      opened "sequence byte changed" (dtls-open dt-keys 0 (bump-at w 2)),
+      opened "header byte changed" (dtls-open dt-keys 0 (bump-at w 0)),
+      opened "wrong high sequence bits" (dtls-open dt-keys 65536 w),
+      opened "plaintext header byte" (dtls-open dt-keys 0 (set-at w 0 23)),
+      opened "all-zero inner (no content type)" (dtls-open dt-keys 0 (dtls-seal dt-keys 3 77 [] 0)),
+      opened "zero-padded inner" (dtls-open dt-keys 0 (dtls-seal dt-keys 3 77 (msg & [23, 0]) 0))
+    ]
+
+Section: Replay
+
+  rep : Text, DtlsWindow, Integer -> Text
+  rep (label) (w) (seq) = "replay " & label & " = " & yn (dtls-replay-ok w seq)
+
+  replay-lines : List Text
+  replay-lines =
+    let w0 = dtls-window-new
+    in let w1 = dtls-replay-accept (dtls-replay-accept w0 100) 37
+    in [
+      rep "fresh window, sequence 0 control" w0 0,
+      rep "fresh window, negative sequence" w0 (0 - 1),
+      rep "seen sequence 100 again" w1 100,
+      rep "seen sequence 37 again" w1 37,
+      rep "unseen sequence 38 control" w1 38,
+      rep "sequence 101 control" w1 101,
+      rep "sequence 36 at the window's far edge (right - 64)" w1 36,
+      rep "unseen sequence 99 control" w1 99,
+      rep "negative sequence after traffic" w1 (0 - 5)
+    ]
+
+Section: Amplification
+
+  amp : Text, Integer, Integer, Integer -> Text
+  amp (label) (r) (s) (want) = "amplification " & label & " = " & yn (dtls-amplification-ok r s want)
+
+  amp-lines : List Text
+  amp-lines = [
+      amp "three times received control" 100 0 300,
+      amp "one byte past three times" 100 0 301,
+      amp "already sent counts" 100 200 101,
+      amp "nothing received, one byte wanted" 0 0 1,
+      amp "negative received" (0 - 1) 0 0
+    ]
+
+Section: Join Accept
+
+  mic-of : List Integer, List Integer -> List Integer
+  mic-of (k) (body) = first-n (aes-cmac k ([32] & body)) 4 0 []
+
+  ja : Text, List Integer, List Integer -> Text
+  ja (label) (k) (dec) = "join-accept " & label & " = " & yn (lw-ja-verify k dec)
+
+  ja-lines : List Text
+  ja-lines =
+    let dec = ja-body & mic-of appkey ja-body
+    in [
+      ja "genuine control" appkey dec,
+      ja "first MIC byte changed" appkey (bump-at dec 12),
+      ja "second MIC byte changed" appkey (bump-at dec 13),
+      ja "third MIC byte changed" appkey (bump-at dec 14),
+      ja "fourth MIC byte changed" appkey (bump-at dec 15),
+      ja "all-zero MIC" appkey (ja-body & zeros 4 []),
+      ja "body byte changed" appkey (bump-at dec 0),
+      ja "another key" (bump-at appkey 0) dec,
+      ja "17 bytes, a trailing byte" appkey (dec & [0]),
+      ja "12 bytes, no MIC" appkey ja-body,
+      ja "empty join-accept" appkey [],
+      ja "empty key" [] dec
+    ]
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-all open-lines 0
+    print-all replay-lines 0
+    print-all amp-lines 0
+    print-all ja-lines 0
+  end

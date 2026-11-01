@@ -1,10 +1,9 @@
 Chapter: Easing
+  cites Math chapter Cordic
 
  Easing functions for animation. Input t is 0-1000 (fixed-point),
  output is 0-1000. Provides linear, quadratic, cubic, elastic,
  bounce, and back easing in ease-in, ease-out, ease-in-out forms.
-
- We say:
 
 Section: Linear
   ease-linear : Integer -> Integer
@@ -41,44 +40,59 @@ Section: Cubic
 Section: Sine Approximation
   ease-in-sine : Integer -> Integer
   ease-in-sine (t) =
-    let angle = t * 1571 / 1000
-    in 1000 - ease-cos-approx angle
+    if t <= 0 then 0
+    else if t >= 1000 then 1000
+    else 1000 - cordic-cos (t * 1571 / 1000)
 
   ease-out-sine : Integer -> Integer
   ease-out-sine (t) =
-    let angle = t * 1571 / 1000
-    in ease-sin-approx angle
-
-  ease-sin-approx : Integer -> Integer
-  ease-sin-approx (x) =
-    let x3 = x * x / 1000 * x / 1000
-    in x - x3 / 6
-
-  ease-cos-approx : Integer -> Integer
-  ease-cos-approx (x) =
-    let x2 = x * x / 1000
-    in let x4 = x2 * x2 / 1000
-    in 1000 - x2 / 2 + x4 / 24
+    if t <= 0 then 0
+    else if t >= 1000 then 1000
+    else cordic-sin (t * 1571 / 1000)
 
 Section: Elastic
+ 2^(-10t) * sin((10t - 0.75) * 2pi/3) + 1, t at scale 1000. 2094 is 2pi/3 at
+ scale 1000.
+
   ease-out-elastic : Integer -> Integer
   ease-out-elastic (t) =
     if t <= 0 then 0
     else if t >= 1000 then 1000
-    else let decay = 1000 - t * 3 / 10
-    in let osc = ease-sin-approx (t * 10472 / 1000)
-    in 1000 - decay * osc / 1000
+    else let decay = ease-exp2-neg (10 * t)
+    in let osc = cordic-sin ((10 * t - 750) * 2094 / 1000)
+    in 1000 + decay * osc / 1000
+
+ 1000 * 2^(-x / 1000): whole halvings, then e^(-f ln 2) for the fraction by
+ eight Taylor terms (693 is ln 2 at scale 1000, so the series argument stays
+ below 1).
+
+  ease-exp2-neg : Integer -> Integer
+  ease-exp2-neg (x) =
+    if x <= 0 then 1000
+    else if x >= 20000 then 0
+    else let frac = ease-exp-series ((x - x / 1000 * 1000) * 693 / 1000) 1 1000000 1000000
+    in ease-halve (frac / 1000) (x / 1000)
+
+  ease-halve : Integer, Integer -> Integer
+  ease-halve (v) (k) = if k <= 0 then v else ease-halve (v / 2) (k - 1)
+
+  ease-exp-series : Integer, Integer, Integer, Integer -> Integer
+  ease-exp-series (y) (n) (term) (sum) =
+    if n > 8 then sum
+    else let next = (0 - term) * y / (1000 * n)
+    in ease-exp-series y (n + 1) next (sum + next)
 
 Section: Bounce
   ease-out-bounce : Integer -> Integer
   ease-out-bounce (t) =
-    if t < 363 then 7563 * t / 1000 * t / 1000000
+    if t >= 1000 then 1000
+    else if t < 363 then 7563 * t / 1000 * t / 1000
     else if t < 727 then let f = t - 545
-    in 7563 * f / 1000 * f / 1000000 + 750
+    in 7563 * f / 1000 * f / 1000 + 750
     else if t < 909 then let f = t - 818
-    in 7563 * f / 1000 * f / 1000000 + 938
+    in 7563 * f / 1000 * f / 1000 + 938
     else let f = t - 955
-    in 7563 * f / 1000 * f / 1000000 + 984
+    in 7563 * f / 1000 * f / 1000 + 984
 
   ease-in-bounce : Integer -> Integer
   ease-in-bounce (t) = 1000 - ease-out-bounce (1000 - t)

@@ -15,8 +15,6 @@ Chapter: AesGcm
  mode, GHASH, the tag -- is identical for the two, so the choice
  is made once, in gcm-expand, and never again.
 
- We say:
-
 Section: Types
 
   AesGcmResult = record {
@@ -50,9 +48,6 @@ Section: Key Size Dispatch
 
 Section: Encrypt
 
- Successful GCM output always carries a 16-byte tag, including empty
- plaintext. An empty tag and ciphertext signal invalid key or nonce sizes.
-
   aesgcm-encrypt : List Integer, List Integer, List Integer, List Integer -> AesGcmResult
   aesgcm-encrypt (key) (nonce) (plaintext) (aad) =
     if gcm-params-ok key nonce == False then AesGcmResult { ciphertext = [], tag = [] }
@@ -62,17 +57,68 @@ Section: Encrypt
     in let tag = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ct
     in AesGcmResult { ciphertext = ct, tag = tag }
 
+ The ciphertext and then the tag are pushed onto out, whose capacity the caller reserves for both, so a record
+ header already in out is followed by its body with no copy. Refused parameters leave out as it was.
+
+  aesgcm-seal-into : List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
+  aesgcm-seal-into (key) (nonce) (plaintext) (aad) (out) =
+    if gcm-params-ok key nonce == False then out
+    else let ks = gcm-expand key
+    in let h = gcm-block (gcm-zeros 16 0 []) ks
+    in let off = list-length out
+    in let sealed = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) plaintext 0 (list-length plaintext) out
+    in gcm-append sealed (gcm-compute-tag-at ks h (gcm-make-j0 nonce) aad sealed off (list-length plaintext)) 0
+
+ A TLS 1.3 and DTLS 1.3 inner plaintext is the content followed by one content-type byte (RFC 8446 5.2). This
+ seals the n bytes of data from off, then ctype, onto out as aesgcm-seal-into does, without building content & [ctype]:
+ the type byte is the plaintext's byte n, so it takes keystream byte n mod 16 of counter block n / 16 (counting from
+ the first block after J0). Refused parameters or a range outside data leave out as it was.
+
+  aesgcm-seal-typed-into : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer, List Integer -> List Integer
+  aesgcm-seal-typed-into (key) (nonce) (data) (off) (n) (ctype) (aad) (out) =
+    if gcm-params-ok key nonce == False then out
+    else if off < 0 | n < 0 | off + n > list-length data then out
+    else let ks = gcm-expand key
+    in let h = gcm-block (gcm-zeros 16 0 []) ks
+    in let start = list-length out
+    in let body = gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) data off (off + n) out
+    in let sealed = list-push body (bit-xor ctype (gcm-keystream-byte ks (gcm-ctr-after (gcm-inc32 (gcm-make-j0 nonce)) (n / 16)) (n - (n / 16) * 16)))
+    in gcm-append sealed (gcm-compute-tag-at ks h (gcm-make-j0 nonce) aad sealed start (n + 1)) 0
+
+  gcm-ctr-after : List Integer, Integer -> List Integer
+  gcm-ctr-after (ctr) (k) = if k <= 0 then ctr else gcm-ctr-after (gcm-inc32 ctr) (k - 1)
+
+  gcm-keystream-byte : List Integer, List Integer, Integer -> Integer
+  gcm-keystream-byte (ks) (ctr) (i) =
+    let mark = __heap-save
+    in let b = list-at (gcm-block ctr ks) i
+    in let restored = __heap-restore mark
+    in b
+
+  gcm-append : List Integer, List Integer, Integer -> List Integer
+  gcm-append (out) (src) (i) =
+    if i >= list-length src then out
+    else gcm-append (list-push out (list-at src i)) src (i + 1)
+
 Section: Decrypt
 
   aesgcm-decrypt : List Integer, List Integer, List Integer, List Integer, List Integer -> Maybe (List Integer)
   aesgcm-decrypt (key) (nonce) (ciphertext) (aad) (tag) =
+    aesgcm-decrypt-at key nonce ciphertext 0 (list-length ciphertext) aad tag
+
+ The ciphertext is the n bytes of data from off, read in place: a caller holding a whole record passes it rather
+ than a sliced copy.
+
+  aesgcm-decrypt-at : List Integer, List Integer, List Integer, Integer, Integer, List Integer, List Integer -> Maybe (List Integer)
+  aesgcm-decrypt-at (key) (nonce) (data) (off) (n) (aad) (tag) =
     if gcm-params-ok key nonce == False then None
     else if list-length tag /= 16 then None
+    else if off < 0 | n < 0 | off + n > list-length data then None
     else let ks = gcm-expand key
     in let h = gcm-block (gcm-zeros 16 0 []) ks
-    in let expected = gcm-compute-tag ks h (gcm-make-j0 nonce) aad ciphertext
+    in let expected = gcm-compute-tag-at ks h (gcm-make-j0 nonce) aad data off n
     in if gcm-tags-equal expected tag then
-      Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) ciphertext 0 (list-length ciphertext) (__list-with-capacity (list-length ciphertext)))
+      Just (gcm-ctr-encrypt ks (gcm-inc32 (gcm-make-j0 nonce)) data off (off + n) (__list-with-capacity n))
     else None
 
 Section: CTR Mode
@@ -100,10 +146,13 @@ Section: CTR Mode
 Section: GHASH
 
   gcm-compute-tag : List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
-  gcm-compute-tag (ks) (h) (j0) (aad) (ct) =
+  gcm-compute-tag (ks) (h) (j0) (aad) (ct) = gcm-compute-tag-at ks h j0 aad ct 0 (list-length ct)
+
+  gcm-compute-tag-at : List Integer, List Integer, List Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  gcm-compute-tag-at (ks) (h) (j0) (aad) (data) (off) (n) =
     let aad-hash = gcm-ghash h aad 0 (list-length aad) (gcm-zeros 16 0 [])
-    in let ct-hash = gcm-ghash h ct 0 (list-length ct) aad-hash
-    in let len-block = gcm-len-block (list-length aad) (list-length ct)
+    in let ct-hash = gcm-ghash h data off (off + n) aad-hash
+    in let len-block = gcm-len-block (list-length aad) n
     in let ghash = gcm-ghash h len-block 0 16 ct-hash
     in let e-j0 = gcm-block j0 ks
     in gcm-xor-blocks ghash e-j0
@@ -116,7 +165,7 @@ Section: GHASH
   gcm-ghash-loop (h) (data) (i) (len) (y) =
     if i >= len then y
     else let mark = __heap-save
-    in let block = gcm-slice data i 16
+    in let block = gcm-slice-to data i 16 len
     in let xored = gcm-xor-blocks y block
     in let product = gcm-gf-mult xored h
     in let copied = gcm-copy-block product y 0
@@ -223,6 +272,19 @@ Section: Helpers
     else let idx = off + i
     in let val = if idx >= list-length bs then 0 else list-at bs idx
     in gcm-slice-loop bs off len (i + 1) (list-push acc val)
+
+ GHASH pads a final partial block with zeros past the END of its range, which inside a whole record is the tag, not
+ the end of the list.
+
+  gcm-slice-to : List Integer, Integer, Integer, Integer -> List Integer
+  gcm-slice-to (bs) (off) (len) (stop) = gcm-slice-to-loop bs off len stop 0 []
+
+  gcm-slice-to-loop : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gcm-slice-to-loop (bs) (off) (len) (stop) (i) (acc) =
+    if i >= len then acc
+    else let idx = off + i
+    in let val = if idx >= stop then 0 else list-at bs idx
+    in gcm-slice-to-loop bs off len stop (i + 1) (list-push acc val)
 
   gcm-zeros : Integer, Integer, List Integer -> List Integer
   gcm-zeros (n) (i) (acc) =

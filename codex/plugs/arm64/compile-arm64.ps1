@@ -28,7 +28,10 @@ param(
     [string]$Kernel = '',
     # Emit the PSCI CPU_ON sequence in __start (multi-core programs only).
     # Undefined on boards without PSCI -- see run.ps1.
-    [switch]$Smp
+    [switch]$Smp,
+    # Emit __start for a Raspberry Pi 4 (QEMU raspi4b) -- see run.ps1.
+    [switch]$Raspi4b,
+    [string]$RawFlags = ''
 )
 
 # Usage:
@@ -58,7 +61,7 @@ $LogFile = Join-Path $OutDir 'compile-ir.log'
 $compileScript = Join-Path $Repo 'build' 'compile.ps1'
 $KernelCdx = if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }
 Write-Host "[arm64-compile] Compiling $Src to IR..."
-& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx
+& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx @(if ($RawFlags) { '-RawFlags', $RawFlags })
 if ((-not ($LASTEXITCODE -eq 0))) {
     [Console]::Error.WriteLine("FAIL: IR compile step exited $LASTEXITCODE; see $LogFile")
     exit 3
@@ -72,6 +75,9 @@ Write-Host "[arm64-compile] Running ARM64 codegen plug..."
 $runArgs = @('-NoProfile','-File',$RunScript,'-IrInput',$IrFile,'-Out',$WireFile)
 if ($Smp) {
     $runArgs += '-Smp'
+}
+if ($Raspi4b) {
+    $runArgs += '-Raspi4b'
 }
 & pwsh @runArgs
 if ((-not ($LASTEXITCODE -eq 0))) {

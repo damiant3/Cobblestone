@@ -7,8 +7,11 @@ Chapter: Lwm2mFirmware
   cites Foreword chapter Sha256
   cites Foreword chapter Hkdf
   cites Foreword chapter Maybe
-
- We say:
+  cites Foreword chapter FactStore
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
 
 Section: Update Result Codes
 
@@ -41,8 +44,10 @@ Section: The Client
    fw-capacity : Integer,
    fw-written : Integer,
    fw-next-block : Integer,
+   fw-block-szx : Integer,
    fw-faults : Integer,
-   fw-result : Integer between 0 and 9
+   fw-result : Integer between 0 and 9,
+   fw-slot : BootSlot
   }
 
  `fw-capacity` is how many bytes the staging bank can hold from `fw-stage`.
@@ -57,8 +62,10 @@ Section: The Client
    fw-capacity = capacity,
    fw-written = 0,
    fw-next-block = 0,
+   fw-block-szx = fw-szx,
    fw-faults = 0,
-   fw-result = 0
+   fw-result = 0,
+   fw-slot = ota-inactive-slot boot
   }
 
   fw-set-result : Lwm2mFw, Integer -> Lwm2mFw
@@ -101,21 +108,23 @@ Section: Write /5/0/1 -- Package URI
      fw-ctx = ctx2,
      fw-written = 0,
      fw-next-block = 0,
+     fw-block-szx = fw-szx,
      fw-faults = 0,
      fw-result = 0
     }
 
 Section: The Download
 
- fw-next-request builds the CoAP GET for the block the client is waiting
- for. szx 6 is 1024-byte blocks, the largest RFC 7959 defines.
+ szx 6 is 1024-byte blocks, the largest RFC 7959 defines. A server may
+ answer with a smaller SZX, and the client then continues at that size
+ (RFC 7959 section 2.4).
 
   fw-szx : Integer = 6
 
   fw-next-request : Lwm2mFw, Integer, List Integer -> List Integer
   fw-next-request (c) (msg-id) (token) =
     let path = fw-package-uri c
-    in let blk = coap-block-option coap-opt-block2 (c.fw-next-block) 0 fw-szx
+    in let blk = coap-block-option coap-opt-block2 (c.fw-next-block) 0 (c.fw-block-szx)
     in let opts = coap-uri-path-options path & [blk]
     in coap-build-request CoapConfirmable CoapGet msg-id token opts []
 
@@ -149,14 +158,17 @@ Section: The Download
   fw-stage-block (brd) (c) (payload) (bv) =
     let num = coap-block-num bv
     in let more = coap-block-more bv
-    in if num /= c.fw-next-block then
+    in let szx = coap-block-szx bv
+    in if szx > 6 then
+      board-pair brd (fw-fail c fw-result-conn-lost "reserved block size")
+    else if num * coap-block-size szx /= c.fw-written then
       board-pair brd (fw-fail c fw-result-conn-lost "block out of order")
     else act
      w <- fw-write brd c payload
      when w
       is (brd1, c2) ->
-        if more == 1 then board-pair brd1 (c2 revised { fw-next-block = num + 1 })
-        else board-pair brd1 (fw-download-complete (c2 revised { fw-next-block = num + 1 }))
+        if more == 1 then board-pair brd1 (c2 revised { fw-next-block = num + 1, fw-block-szx = szx })
+        else board-pair brd1 (fw-download-complete (c2 revised { fw-next-block = num + 1, fw-block-szx = szx }))
      end
 
   fw-stage-last : linear Board, Lwm2mFw, List Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
@@ -241,9 +253,30 @@ Section: Gate A -- on what landed
 
 Section: Execute /5/0/2 -- Update
 
-  fw-execute-update : Lwm2mFw, GateBResult -> Lwm2mFw
-  fw-execute-update (c) (verdict) =
-    let ctx1 = ota-step (c.fw-ctx) (EvGateBResult verdict)
+ Gate B runs here, on the staged bank itself, so no verdict reached for
+ other bytes can activate these. The slot is the one the bank was staged for
+ (`fw-new`), and a boot config that has moved since refuses.
+
+  fw-gate-b-of : LoadDecision -> GateBResult
+  fw-gate-b-of (d) = when d
+    is LoadApproved (g) -> GateBPass
+    is LoadDenied (r) -> when r.phase
+      is PhaseIntegrity -> GateBFailIntegrity (r.reason)
+      is PhaseAuthor -> GateBFailAuthor (r.reason)
+      is PhaseCapabilities -> GateBFailCapability (r.reason)
+      is PhaseEffects -> GateBFailEffect (r.reason)
+      is PhaseProofs -> GateBFailProof (r.reason)
+
+  fw-gate-b : Lwm2mFw, TrustLattice, Policy, Integer, BareFactStore, Integer -> GateBResult
+  fw-gate-b (c) (lattice) (policy) (now) (store) (fuel) =
+    if boot-slot-name (ota-inactive-slot (c.fw-ctx.boot-config)) /= boot-slot-name (c.fw-slot) then
+      GateBFailIntegrity ("staged for slot " & boot-slot-name (c.fw-slot) & ", activation would target " & boot-slot-name (ota-inactive-slot (c.fw-ctx.boot-config)))
+    else fw-gate-b-of (evaluate-load-at (c.fw-stage) (c.fw-written) lattice policy now store fuel)
+
+  fw-execute-update : Lwm2mFw, TrustLattice, Policy, Integer, BareFactStore, Integer -> Lwm2mFw
+  fw-execute-update (c) (lattice) (policy) (now) (store) (fuel) =
+    let verdict = fw-gate-b c lattice policy now store fuel
+    in let ctx1 = ota-step (c.fw-ctx) (EvGateBResult verdict)
     in let ctx2 = ota-step ctx1 (EvGateBResult verdict)
     in when verdict
      is GateBPass -> c revised { fw-ctx = ctx2 }

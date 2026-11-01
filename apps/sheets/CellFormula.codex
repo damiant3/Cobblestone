@@ -17,25 +17,9 @@ Chapter: CellFormula
  A1 notation, the arithmetic precedence and the doubled-quote escape are
  conventions this chapter did not invent and must match.
 
- COMPARISON IS NON-ASSOCIATIVE and a chain is refused at the second
- relop. `A1 < B1 < C1` reads to a person as a range test and means
- `(A1 < B1) < C1` in every spreadsheet that accepts it, which compares a
- truth value against a quantity.
-
- A parse answers a FxParse whose `px-ok` is the discriminator: every caller
- reads `px-ok` before `px-expr`, and a refusal carries the message and
- the byte offset it stopped at. `px-expr` on a refusal is `ExNum 0` and
- means nothing.
-
- A reference carries its own SPELLING beside its row and column, because
- the typed refusal this app exists to give (`=A1+B1` where B1 holds text
- is an error naming B1) has to print the name the person wrote.
-
  The scan runs over UTF-8 BYTES rather than CCE code points, as CellCsv
  and Http.codex do: every byte of a multi-byte sequence has its high bit
  set, so no character outside ASCII can be mistaken for an operator.
-
- We say:
 
 Section: The Bytes That Matter
 
@@ -219,11 +203,6 @@ Section: Numbers And References
    is ExRef (r) -> r
    is otherwise -> CellRef { cr-row = 0, cr-col = 0, cr-name = "" }
 
- A range is two references around a colon. The colon is consumed only
- after the second reference parses, so `A1:` refuses at the colon rather
- than answering a reference and leaving the colon for the caller to
- fail on with a worse message.
-
   fx-range-from : List Integer, Integer, Integer, FxParse -> FxParse
   fx-range-from (bs) (n) (i) (a) =
     let b = fx-ref-at bs (a.px-at + 1) n
@@ -376,9 +355,6 @@ Section: The Precedence Ladder
     in if l.px-ok == False then l
     else fx-sum-more bs n l
 
- A relop is two bytes when the second is `=` or `>`, one otherwise, so
- the width is read from the pair rather than assumed.
-
   fx-rel-op : List Integer, Integer, Integer -> Integer
   fx-rel-op (bs) (i) (n) =
     if fx-at bs i n == fx-eq then fx-op-eq
@@ -430,10 +406,6 @@ Section: The Precedence Ladder
 
 Section: The Entry
 
- A formula must be consumed WHOLE. Stopping at the first thing the
- grammar cannot use would accept `=A1 B1` as `A1`, and a trailing
- operand nobody reads is the shape that makes a wrong total look right.
-
   fx-end : List Integer, Integer, FxParse -> FxParse
   fx-end (bs) (n) (e) =
     if e.px-ok == False then e
@@ -452,11 +424,6 @@ Section: The Entry
     in fx-body bs (list-length bs)
 
 Section: Rendering A Tree
-
- The printed form is fully parenthesised, so an arm reads the SHAPE the
- parser built rather than the text it was given. `=1+2*3` and
- `=(1+2)*3` print differently, which is the only way a precedence claim
- can fail.
 
   fx-args-show : List Expr, Integer, Integer, Text -> Text
   fx-args-show (args) (i) (n) (acc) =
@@ -478,10 +445,6 @@ Section: Rendering A Tree
    is ExCall (c) -> (c.cn-name) & "(" & fx-args-show (c.cn-args) 0 (list-length (c.cn-args)) "" & ")"
 
 Section: References In A Tree
-
- The evaluator's edge set. A range contributes its two corners here; the
- cells between them are the evaluator's to enumerate, because only the
- evaluator knows the sheet's bounds.
 
   fx-refs-args : List Expr, Integer, Integer, List CellRef -> List CellRef
   fx-refs-args (args) (i) (n) (acc) =

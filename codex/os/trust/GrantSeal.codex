@@ -1,0 +1,197 @@
+Chapter: GrantSeal
+  cites Trust chapter AgentProtocol
+  cites Net chapter MessageFraming
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter MathLib (int-widen)
+  cites Foreword chapter Maybe
+
+Section: Encoding
+
+  encode-capability : Capability -> List Integer
+  encode-capability (c) = frame-encode-text (c.name) & [int-widen (c.direction)] & frame-encode-text (c.scope)
+
+  encode-scope : Scope -> List Integer
+  encode-scope (s) = [int-widen (s.direction)] & frame-encode-text (s.path) & frame-le32 (s.duration)
+
+  encode-text-list : List Text -> List Integer
+  encode-text-list (xs) = frame-le32 (list-length xs) & encode-text-list-loop xs 0 []
+
+  encode-text-list-loop : List Text, Integer, List Integer -> List Integer
+  encode-text-list-loop (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else encode-text-list-loop xs (i + 1) (acc & frame-encode-text (list-at xs i))
+
+  encode-bytes-list : List (List Integer) -> List Integer
+  encode-bytes-list (xs) = frame-le32 (list-length xs) & encode-bytes-list-loop xs 0 []
+
+  encode-bytes-list-loop : List (List Integer), Integer, List Integer -> List Integer
+  encode-bytes-list-loop (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else encode-bytes-list-loop xs (i + 1) (acc & frame-encode-bytes (list-at xs i))
+
+  grant-unsigned-body : GrantMsg -> List Integer
+  grant-unsigned-body (g) =
+    frame-encode-bytes (g.id) & frame-encode-bytes (g.proposal) & frame-encode-bytes (g.from.public-key)
+      & frame-encode-bytes (g.grantor.public-key) & frame-encode-bytes (g.audience.public-key)
+      & encode-capability (g.capability) & encode-scope (g.scope)
+      & frame-le64 (g.not-before) & frame-le64 (g.expires) & frame-encode-bytes (g.policy-sha256)
+      & encode-text-list (g.flow-rules) & encode-text-list (g.gates) & encode-bytes-list (g.conditions)
+
+Section: Seal
+
+ The 15 bytes are the ASCII text codex-grant-v1 and a zero byte. A signature
+ over a grant therefore never verifies as a signature over any other message
+ kind, whose tag differs.
+
+  grant-seal-tag : List Integer = [99, 111, 100, 101, 120, 45, 103, 114, 97, 110, 116, 45, 118, 49, 0]
+
+  grant-digest : GrantMsg -> List Integer
+  grant-digest (g) = sha256-bytes (grant-seal-tag & grant-unsigned-body g)
+
+  grant-seal : GrantMsg, List Integer -> GrantMsg
+  grant-seal (g) (private-key) = GrantMsg {
+    id = g.id,
+    proposal = g.proposal,
+    from = g.from,
+    grantor = g.grantor,
+    audience = g.audience,
+    capability = g.capability,
+    scope = g.scope,
+    not-before = g.not-before,
+    expires = g.expires,
+    policy-sha256 = g.policy-sha256,
+    flow-rules = g.flow-rules,
+    gates = g.gates,
+    conditions = g.conditions,
+    signature = ed25519-sign private-key (g.grantor.public-key) (grant-digest g)
+  }
+
+  grant-verify : GrantMsg -> Boolean
+  grant-verify (g) = ed25519-verify (g.grantor.public-key) (grant-digest g) (g.signature)
+
+Section: Codec
+
+  encode-grant-body : GrantMsg -> List Integer
+  encode-grant-body (g) =
+    grant-unsigned-body g & frame-encode-bytes (g.signature)
+
+  amsg-bytes-equal : List Integer, List Integer -> Boolean
+  amsg-bytes-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else amsg-be-loop a b 0 (list-length a)
+
+  amsg-be-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  amsg-be-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else if list-at a i /= list-at b i then False
+    else amsg-be-loop a b (i + 1) n
+
+  decode-grant-body : List Integer -> GrantMsg
+  decode-grant-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let rg = frame-decode-bytes bs (r3.next-offset)
+    in let ra = frame-decode-bytes bs (rg.next-offset)
+    in let cr = decode-capability bs (ra.next-offset)
+    in let sr = decode-scope bs (cr.next-offset)
+    in let not-before = frame-read-le64 bs (sr.next-offset)
+    in let expires = frame-read-le64 bs (sr.next-offset + 8)
+    in let rp = frame-decode-bytes bs (sr.next-offset + 16)
+    in let fr = decode-text-list bs (rp.next-offset)
+    in let gr = decode-text-list bs (fr.next-offset)
+    in let cl = decode-bytes-list bs (gr.next-offset)
+    in let r4 = frame-decode-bytes bs (cl.next-offset)
+    in GrantMsg {
+      id = r1.value,
+      proposal = r2.value,
+      from = AgentIdentity { public-key = r3.value },
+      grantor = AgentIdentity { public-key = rg.value },
+      audience = AgentIdentity { public-key = ra.value },
+      capability = cr.cap,
+      scope = sr.scope,
+      not-before = not-before,
+      expires = expires,
+      policy-sha256 = rp.value,
+      flow-rules = fr.values,
+      gates = gr.values,
+      conditions = cl.values,
+      signature = r4.value
+    }
+
+  decode-grant-checked : List Integer -> Maybe GrantMsg
+  decode-grant-checked (bs) =
+    let g = decode-grant-body bs
+    in if amsg-bytes-equal (encode-grant-body g) bs then Just g else None
+
+ A list's count comes from the peer. Each element takes at least its 4 length
+ bytes, so a count above the bytes left over 4 cannot be the canonical encoding,
+ and the walk stops there rather than spin on clamped empty reads.
+
+  TextListDecodeResult = record {
+    values : List Text,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-text-list : List Integer, Integer -> TextListDecodeResult
+  decode-text-list (bs) (off) =
+    let n = frame-read-le32 bs off
+    in let room = (list-length bs - off - 4) / 4
+    in decode-text-list-loop bs (if n > room then room else n) (frame-next-offset bs (off + 4)) []
+
+  decode-text-list-loop : List Integer, Integer, Integer, List Text -> TextListDecodeResult
+  decode-text-list-loop (bs) (left) (off) (acc) =
+    if left <= 0 then TextListDecodeResult { values = acc, next-offset = __narrow off }
+    else let r = frame-decode-text bs off
+    in decode-text-list-loop bs (left - 1) (r.next-offset) (list-push acc (r.value))
+
+  BytesListDecodeResult = record {
+    values : List (List Integer),
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-bytes-list : List Integer, Integer -> BytesListDecodeResult
+  decode-bytes-list (bs) (off) =
+    let n = frame-read-le32 bs off
+    in let room = (list-length bs - off - 4) / 4
+    in decode-bytes-list-loop bs (if n > room then room else n) (frame-next-offset bs (off + 4)) []
+
+  decode-bytes-list-loop : List Integer, Integer, Integer, List (List Integer) -> BytesListDecodeResult
+  decode-bytes-list-loop (bs) (left) (off) (acc) =
+    if left <= 0 then BytesListDecodeResult { values = acc, next-offset = __narrow off }
+    else let r = frame-decode-bytes bs off
+    in decode-bytes-list-loop bs (left - 1) (r.next-offset) (list-push acc (r.value))
+
+  CapDecodeResult = record {
+    cap : Capability,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-capability : List Integer, Integer -> CapDecodeResult
+  decode-capability (bs) (off) =
+    let nr = frame-decode-text bs off
+    in let dir = frame-byte-at bs (nr.next-offset)
+    in let sr = frame-decode-text bs (nr.next-offset + 1)
+    in CapDecodeResult {
+      cap = Capability { name = nr.value, direction = __narrow dir, scope = sr.value },
+      next-offset = sr.next-offset
+    }
+
+  ScopeDecodeResult = record {
+    scope : Scope,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-scope : List Integer, Integer -> ScopeDecodeResult
+  decode-scope (bs) (off) =
+    let dir = frame-byte-at bs off
+    in let pr = frame-decode-text bs (off + 1)
+    in let dur = frame-read-le32 bs (pr.next-offset)
+    in ScopeDecodeResult {
+      scope = Scope { direction = __narrow dir, path = pr.value, duration = __narrow dur },
+      next-offset = __narrow (pr.next-offset + 4)
+    }
+
+
+Page 1

@@ -39,12 +39,18 @@ Section: Request Context
   }
 
   trace-finish : TraceContext, Integer, Integer -> TraceContext
-  trace-finish (t) (status) (now) =
-    __record-set (__record-set (__record-set t "tc-end-time" now) "tc-status" status) "tc-error" ""
+  trace-finish (t) (status) (now) = trace-done t status "" now
 
   trace-finish-error : TraceContext, Text, Integer -> TraceContext
-  trace-finish-error (t) (err) (now) =
-    __record-set (__record-set (__record-set (__record-set t "tc-end-time" now) "tc-status" 500) "tc-error" err) "tc-end-time" now
+  trace-finish-error (t) (err) (now) = trace-done t 500 err now
+
+  trace-done : TraceContext, Integer, Text, Integer -> TraceContext
+  trace-done (t) (status) (err) (now) = TraceContext {
+    tc-trace-id = t.tc-trace-id, tc-span-id = t.tc-span-id,
+    tc-parent-span = t.tc-parent-span, tc-service = t.tc-service,
+    tc-operation = t.tc-operation, tc-start-time = t.tc-start-time,
+    tc-end-time = now, tc-status = status, tc-error = err
+  }
 
   trace-duration-ms : TraceContext -> Integer
   trace-duration-ms (t) =
@@ -74,11 +80,14 @@ Section: Retry Policy
 
   retry-delay : RetryPolicy, Integer -> Integer
   retry-delay (policy) (attempt) =
-    let delay = policy.rp-base-delay-ms * rp-pow (policy.rp-backoff-multiplier) attempt
-    in if delay > policy.rp-max-delay-ms then policy.rp-max-delay-ms else delay
+    rp-capped (policy.rp-base-delay-ms) (policy.rp-backoff-multiplier) attempt (policy.rp-max-delay-ms)
 
-  rp-pow : Integer, Integer -> Integer
-  rp-pow (base) (exp) = if exp <= 0 then 1 else base * rp-pow base (exp - 1)
+  rp-capped : Integer, Integer, Integer, Integer -> Integer
+  rp-capped (delay) (mult) (n) (cap) =
+    if delay >= cap then cap
+    else if n <= 0 | mult <= 1 then delay
+    else if delay > cap / mult then cap
+    else rp-capped (delay * mult) mult (n - 1) cap
 
   rp-should-retry : RetryPolicy, Integer, Integer -> Boolean
   rp-should-retry (policy) (status) (attempt) =
@@ -160,7 +169,12 @@ Section: Network Policy
 
   pe-add-policy : PolicyEngine, NetworkPolicy -> PolicyEngine
   pe-add-policy (pe) (pol) =
-    __record-set (__record-set pe "pe-policies" (list-push (pe.pe-policies) pol)) "pe-count" (pe.pe-count + 1)
+    let pols = list-push (for x in pe.pe-policies -> x) pol
+    in PolicyEngine {
+      pe-policies = pols, pe-count = list-length pols,
+      pe-default-action = pe.pe-default-action,
+      pe-total-evaluated = pe.pe-total-evaluated, pe-total-denied = pe.pe-total-denied
+    }
 
   pe-evaluate : PolicyEngine, Text, Text -> PolicyAction
   pe-evaluate (pe) (from-svc) (to-svc) =
@@ -210,7 +224,18 @@ Section: Service Proxy State
 
   sp-add-pool : ServiceProxyState, BackendPool -> ServiceProxyState
   sp-add-pool (st) (pool) =
-    __record-set (__record-set st "sp-pools" (list-push (st.sp-pools) pool)) "sp-pool-count" (st.sp-pool-count + 1)
+    let pools = list-push (for x in st.sp-pools -> x) pool
+    in ServiceProxyState {
+      sp-service-name = st.sp-service-name,
+      sp-pools = pools, sp-pool-count = list-length pools,
+      sp-breakers = st.sp-breakers, sp-breaker-count = st.sp-breaker-count,
+      sp-retry-policy = st.sp-retry-policy,
+      sp-policy-engine = st.sp-policy-engine,
+      sp-traces = st.sp-traces, sp-trace-count = st.sp-trace-count, sp-max-traces = st.sp-max-traces,
+      sp-total-requests = st.sp-total-requests, sp-total-errors = st.sp-total-errors,
+      sp-total-retries = st.sp-total-retries, sp-total-denied = st.sp-total-denied,
+      sp-avg-latency = st.sp-avg-latency
+    }
 
   sp-find-pool : ServiceProxyState, Text -> Maybe BackendPool
   sp-find-pool (st) (name) = sp-pool-loop (st.sp-pools) name 0 (st.sp-pool-count)

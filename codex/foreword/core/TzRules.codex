@@ -1,0 +1,330 @@
+Chapter: TzRules
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Parse
+
+ The IANA time zone database's source format, as zic(8) reads it: Rule,
+ Zone and Link lines, a Zone's continuation lines indented beneath it,
+ fields separated by spaces (the generator turns tabs into spaces). Times
+ carry a suffix: w wall clock (the default), s local standard, u, g or z
+ universal. A day is a number, lastSun, Sun>=8 or Sun<=25. Weekdays are
+ 0 Sunday to 6 Saturday. Years run from tz-year-min to tz-year-max.
+
+Section: Records
+
+  tz-year-min : Integer = 0 - 9999
+  tz-year-max : Integer = 9999
+
+  tz-at-wall : Integer = 0
+  tz-at-std : Integer = 1
+  tz-at-utc : Integer = 2
+
+  tz-day-fixed : Integer = 0
+  tz-day-last : Integer = 1
+  tz-day-geq : Integer = 2
+  tz-day-leq : Integer = 3
+
+  TzDay = record { kind : Integer, num : Integer, weekday : Integer }
+
+  TzRule = record {
+    name : Text,
+    from : Integer,
+    to : Integer,
+    month : Integer,
+    day : TzDay,
+    at : Integer,
+    at-kind : Integer,
+    save : Integer,
+    save-dst : Boolean,
+    letter : Text
+  }
+
+  TzUntil = record { year : Integer, month : Integer, day : TzDay, at : Integer, at-kind : Integer }
+
+  tz-rules-none : Integer = 0
+  tz-rules-fixed : Integer = 1
+  tz-rules-named : Integer = 2
+
+  TzZoneLine = record {
+    stdoff : Integer,
+    rules-kind : Integer,
+    rules-name : Text,
+    rules-save : Integer,
+    format : Text,
+    has-until : Boolean,
+    until : TzUntil
+  }
+
+  TzZone = record { name : Text, lines : List TzZoneLine }
+
+  TzLink = record { target : Text, alias : Text }
+
+  TzDb = record {
+    rules : List TzRule,
+    zones : List TzZone,
+    links : List TzLink,
+    errors : List Text
+  }
+
+Section: Fields
+
+  tz-space : Text, Integer -> Boolean
+  tz-space (s) (i) = char-code-at s i == char-code-at " " 0
+
+  tz-fields : Text, Integer, Integer, List Text -> List Text
+  tz-fields (s) (i) (start) (acc) =
+    if i >= text-length s then
+      (if start >= 0 then list-push acc (substring s start (i - start)) else acc)
+    else if tz-space s i then
+      (if start >= 0 then tz-fields s (i + 1) (0 - 1) (list-push acc (substring s start (i - start)))
+      else tz-fields s (i + 1) (0 - 1) acc)
+    else tz-fields s (i + 1) (if start >= 0 then start else i) acc
+
+  tz-lines : Text, Integer, Integer, List Text -> List Text
+  tz-lines (s) (i) (start) (acc) =
+    if i >= text-length s then
+      (if i > start then list-push acc (substring s start (i - start)) else acc)
+    else if char-code-at s i == char-code-at "\n" 0 then
+      tz-lines s (i + 1) (i + 1) (list-push acc (substring s start (i - start)))
+    else tz-lines s (i + 1) start acc
+
+  tz-digit : Text, Integer -> Boolean
+  tz-digit (s) (i) =
+    i < text-length s & char-code-at s i >= char-code-at "0" 0 & char-code-at s i <= char-code-at "9" 0
+
+  tz-all-digits : Text, Integer -> Boolean
+  tz-all-digits (s) (i) =
+    if i >= text-length s then text-length s > 0
+    else if tz-digit s i then tz-all-digits s (i + 1)
+    else False
+
+Section: Values
+
+ A number answers -1 when the field is not one; every caller checks the
+ field's shape first, so -1 never stands for a value.
+
+  tz-number : Text -> Integer
+  tz-number (s) = if tz-all-digits s 0 then parse-decimal-full-or s (0 - 1) else 0 - 1
+
+  tz-month-names : List Text
+  tz-month-names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+
+  tz-weekday-names : List Text
+  tz-weekday-names = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+
+  tz-name-index : List Text, Text, Integer -> Integer
+  tz-name-index (names) (w) (i) =
+    if i >= list-length names then 0 - 1
+    else if text-length w >= 3 & text-starts-with (text-to-lower w) (list-at names i) then i
+    else tz-name-index names w (i + 1)
+
+  tz-month : Text -> Integer
+  tz-month (w) = let i = tz-name-index tz-month-names w 0 in if i < 0 then 0 - 1 else i + 1
+
+  tz-weekday : Text -> Integer
+  tz-weekday (w) = tz-name-index tz-weekday-names w 0
+
+  tz-year : Text, Integer -> Integer
+  tz-year (w) (from) =
+    if w == "min" | w == "minimum" then tz-year-min
+    else if w == "max" | w == "maximum" then tz-year-max
+    else if w == "only" then from
+    else tz-number w
+
+  TzTime = record { ok : Boolean, seconds : Integer, kind : Integer }
+
+  tz-time-bad : TzTime
+  tz-time-bad = TzTime { ok = False, seconds = 0, kind = 0 }
+
+  tz-suffix-kind : Text -> Integer
+  tz-suffix-kind (c) =
+    if c == "s" then tz-at-std
+    else if c == "u" | c == "g" | c == "z" then tz-at-utc
+    else if c == "w" then tz-at-wall
+    else 0 - 1
+
+  tz-time : Text -> TzTime
+  tz-time (raw) =
+    if raw == "-" then TzTime { ok = True, seconds = 0, kind = tz-at-wall }
+    else let neg = text-starts-with raw "-"
+    in let body0 = if neg then text-drop raw 1 else raw
+    in let n = text-length body0
+    in if n == 0 then tz-time-bad
+    else let last = substring body0 (n - 1) 1
+    in let kind = if tz-digit body0 (n - 1) then tz-at-wall else tz-suffix-kind last
+    in let body = if tz-digit body0 (n - 1) then body0 else text-take body0 (n - 1)
+    in if kind < 0 then tz-time-bad
+    else let secs = tz-hms (tz-split-colons body 0 0 []) 0 0
+    in if secs < 0 then tz-time-bad
+    else TzTime { ok = True, seconds = if neg then 0 - secs else secs, kind = kind }
+
+  tz-split-colons : Text, Integer, Integer, List Text -> List Text
+  tz-split-colons (s) (i) (start) (acc) =
+    if i >= text-length s then list-push acc (substring s start (i - start))
+    else if char-code-at s i == char-code-at ":" 0 then tz-split-colons s (i + 1) (i + 1) (list-push acc (substring s start (i - start)))
+    else tz-split-colons s (i + 1) start acc
+
+  tz-hms : List Text, Integer, Integer -> Integer
+  tz-hms (parts) (i) (acc) =
+    if list-length parts > 3 then 0 - 1
+    else if i >= list-length parts then acc * (if list-length parts == 1 then 3600 else if list-length parts == 2 then 60 else 1)
+    else let p = list-at parts i
+    in let v = tz-number (tz-strip-fraction p)
+    in if v < 0 then 0 - 1
+    else tz-hms parts (i + 1) (acc * 60 + v)
+
+  tz-strip-fraction : Text -> Text
+  tz-strip-fraction (p) = let k = text-index-of p "." in if k < 0 then p else text-take p k
+
+  tz-day-bad : TzDay
+  tz-day-bad = TzDay { kind = 0 - 1, num = 0, weekday = 0 }
+
+  tz-day : Text -> TzDay
+  tz-day (w) =
+    if tz-all-digits w 0 then TzDay { kind = tz-day-fixed, num = tz-number w, weekday = 0 }
+    else if text-starts-with w "last" then
+      (let wd = tz-weekday (text-drop w 4) in if wd < 0 then tz-day-bad else TzDay { kind = tz-day-last, num = 0, weekday = wd })
+    else let ge = text-index-of w ">="
+    in let le = text-index-of w "<="
+    in if ge > 0 then tz-day-rel w ge tz-day-geq
+    else if le > 0 then tz-day-rel w le tz-day-leq
+    else tz-day-bad
+
+  tz-day-rel : Text, Integer, Integer -> TzDay
+  tz-day-rel (w) (k) (kind) =
+    let wd = tz-weekday (text-take w k)
+    in let n = tz-number (text-drop w (k + 2))
+    in if wd < 0 | n < 1 then tz-day-bad else TzDay { kind = kind, num = n, weekday = wd }
+
+Section: Lines
+
+  tz-rule-of : List Text -> Maybe TzRule
+  tz-rule-of (f) =
+    if list-length f < 10 then None
+    else let from = tz-year (list-at f 2) 0
+    in let to = tz-year (list-at f 3) from
+    in let month = tz-month (list-at f 5)
+    in let day = tz-day (list-at f 6)
+    in let at = tz-time (list-at f 7)
+    in let sv = list-at f 8
+    in let save-dst-raw = text-ends-with sv "d"
+    in let save-std-raw = text-ends-with sv "s"
+    in let save = tz-time (if save-dst-raw | save-std-raw then text-take sv (text-length sv - 1) else sv)
+    in if from == 0 - 1 | to == 0 - 1 | month < 0 | day.kind < 0 | at.ok == False | save.ok == False then None
+    else Just (TzRule {
+      name = list-at f 1, from = from, to = to, month = month, day = day,
+      at = at.seconds, at-kind = at.kind, save = save.seconds,
+      save-dst = if save-dst-raw then True else if save-std-raw then False else save.seconds /= 0,
+      letter = if list-at f 9 == "-" then "" else list-at f 9
+    })
+
+ A Zone line's fields after the name, or a continuation line's fields:
+ STDOFF RULES FORMAT [UNTIL]. The UNTIL fields default to January 1 at
+ 00:00 wall time.
+
+  tz-zone-line-of : List Text, Integer -> Maybe TzZoneLine
+  tz-zone-line-of (f) (k) =
+    if list-length f < k + 3 then None
+    else let off = tz-time (list-at f k)
+    in let r = list-at f (k + 1)
+    in let fixed = r /= "-" & (tz-digit r 0 | (text-starts-with r "-" & tz-digit r 1))
+    in let rsave = if fixed then tz-time r else tz-time "-"
+    in let has-until = list-length f > k + 3
+    in let u = tz-until-of f (k + 3)
+    in if off.ok == False | rsave.ok == False | (has-until & u.year == 0 - 1) | (has-until & (u.month < 0 | u.day.kind < 0 | u.at-kind < 0)) then None
+    else Just (TzZoneLine {
+      stdoff = off.seconds,
+      rules-kind = if r == "-" then tz-rules-none else if fixed then tz-rules-fixed else tz-rules-named,
+      rules-name = if fixed | r == "-" then "" else r,
+      rules-save = rsave.seconds,
+      format = list-at f (k + 2),
+      has-until = has-until,
+      until = u
+    })
+
+  tz-until-of : List Text, Integer -> TzUntil
+  tz-until-of (f) (k) =
+    let n = list-length f
+    in let year = if n > k then tz-number (list-at f k) else 0
+    in let month = if n > k + 1 then tz-month (list-at f (k + 1)) else 1
+    in let day = if n > k + 2 then tz-day (list-at f (k + 2)) else TzDay { kind = tz-day-fixed, num = 1, weekday = 0 }
+    in let at = if n > k + 3 then tz-time (list-at f (k + 3)) else TzTime { ok = True, seconds = 0, kind = tz-at-wall }
+    in TzUntil { year = year, month = month, day = day, at = at.seconds, at-kind = if at.ok then at.kind else 0 - 1 }
+
+Section: The Database
+
+ Parsing walks the lines once, carrying the Zone being built; a
+ continuation line belongs to the most recent Zone, and only while that
+ Zone's last line had an UNTIL (zic's rule).
+
+  TzParse = record { db : TzDb, open : Boolean, zone-name : Text, zone-lines : List TzZoneLine }
+
+  tz-db-empty : TzDb
+  tz-db-empty = TzDb { rules = [], zones = [], links = [], errors = [] }
+
+  tz-parse : List Text -> TzDb
+  tz-parse (sources) = tz-parse-sources sources 0 (TzParse { db = tz-db-empty, open = False, zone-name = "", zone-lines = [] })
+
+  tz-parse-sources : List Text, Integer, TzParse -> TzDb
+  tz-parse-sources (sources) (i) (st) =
+    if i >= list-length sources then (tz-close st).db
+    else tz-parse-sources sources (i + 1) (tz-close (tz-parse-lines (tz-lines (list-at sources i) 0 0 []) 0 i st))
+
+  tz-close : TzParse -> TzParse
+  tz-close (st) =
+    if st.open == False then st
+    else let d = st.db
+    in TzParse {
+      db = TzDb { rules = d.rules, zones = list-push (d.zones) (TzZone { name = st.zone-name, lines = st.zone-lines }), links = d.links, errors = d.errors },
+      open = False, zone-name = "", zone-lines = []
+    }
+
+  tz-error : TzParse, Integer, Integer, Text -> TzParse
+  tz-error (st) (src) (line) (why) =
+    let d = st.db
+    in TzParse {
+      db = TzDb { rules = d.rules, zones = d.zones, links = d.links, errors = list-push (d.errors) ("source " & show src & " line " & show (line + 1) & ": " & why) },
+      open = st.open, zone-name = st.zone-name, zone-lines = st.zone-lines
+    }
+
+  tz-parse-lines : List Text, Integer, Integer, TzParse -> TzParse
+  tz-parse-lines (lines) (i) (src) (st) =
+    if i >= list-length lines then st
+    else tz-parse-lines lines (i + 1) src (tz-parse-line (list-at lines i) i src st)
+
+  tz-zone-continues : TzParse -> Boolean
+  tz-zone-continues (st) =
+    st.open & list-length (st.zone-lines) > 0 & (list-at (st.zone-lines) (list-length (st.zone-lines) - 1)).has-until
+
+  tz-parse-line : Text, Integer, Integer, TzParse -> TzParse
+  tz-parse-line (line) (i) (src) (st) =
+    let f = tz-fields line 0 (0 - 1) []
+    in if list-length f == 0 then st
+    else if tz-space line 0 then
+      (if tz-zone-continues st == False then tz-error st src i "continuation line with no open Zone"
+      else when tz-zone-line-of f 0
+        is None -> tz-error st src i "malformed Zone continuation"
+        is Just (zl) -> TzParse { db = st.db, open = True, zone-name = st.zone-name, zone-lines = list-push (st.zone-lines) zl })
+    else let st0 = tz-close st
+    in let kw = list-at f 0
+    in if kw == "Rule" then
+      (when tz-rule-of f
+        is None -> tz-error st0 src i "malformed Rule"
+        is Just (r) -> let d = st0.db in TzParse { db = TzDb { rules = list-push (d.rules) r, zones = d.zones, links = d.links, errors = d.errors }, open = False, zone-name = "", zone-lines = [] })
+    else if kw == "Zone" then
+      (if list-length f < 2 then tz-error st0 src i "Zone with no name"
+      else when tz-zone-line-of f 2
+        is None -> tz-error st0 src i "malformed Zone"
+        is Just (zl) -> TzParse { db = st0.db, open = True, zone-name = list-at f 1, zone-lines = [zl] })
+    else if kw == "Link" then
+      (if list-length f /= 3 then tz-error st0 src i "malformed Link"
+      else let d = st0.db in TzParse { db = TzDb { rules = d.rules, zones = d.zones, links = list-push (d.links) (TzLink { target = list-at f 1, alias = list-at f 2 }), errors = d.errors }, open = False, zone-name = "", zone-lines = [] })
+    else tz-error st0 src i ("unknown line kind " & kw)
+
+  tz-find-zone : TzDb, Text -> Maybe TzZone
+  tz-find-zone (db) (name) = tz-find-zone-loop (db.zones) name 0
+
+  tz-find-zone-loop : List TzZone, Text, Integer -> Maybe TzZone
+  tz-find-zone-loop (zs) (name) (i) =
+    if i >= list-length zs then None
+    else if (list-at zs i).name == name then Just (list-at zs i)
+    else tz-find-zone-loop zs name (i + 1)

@@ -1,23 +1,17 @@
 Chapter: GameCamera
+  cites Math chapter Cordic
 
- Game camera -- orthographic and perspective projection, follow
- target, camera shake, viewport bounds. Uses fixed-point scale-
+ Game camera -- orthographic projection with rotation (milliradians),
+ follow target, camera shake, viewport bounds. Uses fixed-point scale-
  1000 arithmetic for positions and zoom factors.
 
- We say:
-
 Section: Types
-
-  CameraMode =
-    | CamOrtho
-    | CamPerspective (Integer)
 
   GameCam = record {
     gc-x : Integer,
     gc-y : Integer,
     gc-zoom : Integer,
     gc-rotation : Integer,
-    gc-mode : CameraMode,
     gc-vp-width : Integer,
     gc-vp-height : Integer,
     gc-shake-x : Integer,
@@ -33,7 +27,6 @@ Section: Construction
     gc-y = y,
     gc-zoom = 1000,
     gc-rotation = 0,
-    gc-mode = CamOrtho,
     gc-vp-width = vp-w,
     gc-vp-height = vp-h,
     gc-shake-x = 0,
@@ -78,14 +71,18 @@ Section: Projection
   camera-world-to-screen (c) (wx) (wy) =
     let dx = wx - c.gc-x
     in let dy = wy - c.gc-y
-    in let sx = dx * c.gc-zoom / 1000 + c.gc-vp-width / 2 + c.gc-shake-x
-    in let sy = dy * c.gc-zoom / 1000 + c.gc-vp-height / 2 + c.gc-shake-y
+    in let rx = if c.gc-rotation == 0 then dx else (dx * cordic-cos (c.gc-rotation) + dy * cordic-sin (c.gc-rotation)) / 1000
+    in let ry = if c.gc-rotation == 0 then dy else (dy * cordic-cos (c.gc-rotation) - dx * cordic-sin (c.gc-rotation)) / 1000
+    in let sx = rx * c.gc-zoom / 1000 + c.gc-vp-width / 2 + c.gc-shake-x
+    in let sy = ry * c.gc-zoom / 1000 + c.gc-vp-height / 2 + c.gc-shake-y
     in CamScreenPos { csp-x = sx, csp-y = sy }
 
   camera-screen-to-world : GameCam, Integer, Integer -> CamWorldPos
   camera-screen-to-world (c) (sx) (sy) =
-    let dx = (sx - c.gc-vp-width / 2 - c.gc-shake-x) * 1000 / c.gc-zoom
-    in let dy = (sy - c.gc-vp-height / 2 - c.gc-shake-y) * 1000 / c.gc-zoom
+    let ox = (sx - c.gc-vp-width / 2 - c.gc-shake-x) * 1000 / c.gc-zoom
+    in let oy = (sy - c.gc-vp-height / 2 - c.gc-shake-y) * 1000 / c.gc-zoom
+    in let dx = if c.gc-rotation == 0 then ox else (ox * cordic-cos (c.gc-rotation) - oy * cordic-sin (c.gc-rotation)) / 1000
+    in let dy = if c.gc-rotation == 0 then oy else (ox * cordic-sin (c.gc-rotation) + oy * cordic-cos (c.gc-rotation)) / 1000
     in CamWorldPos { cwp-x = c.gc-x + dx, cwp-y = c.gc-y + dy }
 
   CamScreenPos = record {
@@ -102,8 +99,12 @@ Section: Bounds
 
   camera-visible-rect : GameCam -> CamRect
   camera-visible-rect (c) =
-    let half-w = c.gc-vp-width * 1000 / (2 * c.gc-zoom)
-    in let half-h = c.gc-vp-height * 1000 / (2 * c.gc-zoom)
+    let vw = c.gc-vp-width * 1000 / (2 * c.gc-zoom)
+    in let vh = c.gc-vp-height * 1000 / (2 * c.gc-zoom)
+    in let ac = cam-abs (cordic-cos (c.gc-rotation))
+    in let as = cam-abs (cordic-sin (c.gc-rotation))
+    in let half-w = if c.gc-rotation == 0 then vw else (vw * ac + vh * as) / 1000
+    in let half-h = if c.gc-rotation == 0 then vh else (vw * as + vh * ac) / 1000
     in CamRect {
       cr-x = c.gc-x - half-w,
       cr-y = c.gc-y - half-h,

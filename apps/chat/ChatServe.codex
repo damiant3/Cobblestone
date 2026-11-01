@@ -188,7 +188,13 @@ Section: The Chat Mux
       sent <- net-io-send-raw-checked ts chat-stream-head
       if sent.ns-complete then
         let settled = web-mux-settle (sent.ns-transport)
-        in ChatMux { cm-mux = chat-mux-set-conn m idx settled srv [] (m.served + 1), cm-state = cm.cm-state, cm-streams = list-push (cm.cm-streams) (chat-conn-key settled), cm-page = cm.cm-page, cm-changed = cm.cm-changed }
+        in ChatMux {
+          cm-mux = chat-mux-set-conn m idx settled srv [] (m.served + 1),
+          cm-state = cm.cm-state,
+          cm-streams = list-push (cm.cm-streams) (chat-conn-key settled),
+          cm-page = cm.cm-page,
+          cm-changed = cm.cm-changed
+        }
       else act
         closed <- flush-transport-outbox (transport-close (web-mux-settle (sent.ns-transport)))
         chat-mux-drop cm idx
@@ -219,14 +225,21 @@ Section: The Chat Mux
       chat-mux-reply cm idx ts srv rest (http-encode (answer.an-resp)) (answer.an-state) (chat-changes p) p
     end
 
-  chat-mux-reply : ChatMux, Integer, TcpTransportState, WebState, List Integer, List Integer, ChatState, Boolean, Text -> [Console, Network.Read, Network.Write, FileSystem.Read, FileSystem.Write] ChatMux
+  chat-mux-reply : ChatMux, Integer, TcpTransportState, WebState, List Integer, List Integer, ChatState, Boolean, Text ->
+      [Console, Network.Read, Network.Write, FileSystem.Read, FileSystem.Write] ChatMux
   chat-mux-reply (cm) (idx) (ts) (srv) (rest) (bytes) (st) (changed) (p) =
     let m = cm.cm-mux
     in act
       sent <- net-io-send-raw-checked ts bytes
       print-line-uni (p & " " & show (sent.ns-sent) & " bytes" & (if sent.ns-complete then "" else " (incomplete)"))
       ts2 <- if sent.ns-complete then sent.ns-transport else net-io-close (sent.ns-transport)
-      let cm2 = ChatMux { cm-mux = WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 }, cm-state = st, cm-streams = cm.cm-streams, cm-page = cm.cm-page, cm-changed = cm.cm-changed | changed }
+      let cm2 = ChatMux {
+        cm-mux = WebMux { listen = m.listen, conns = m.conns, served = m.served + 1 },
+        cm-state = st,
+        cm-streams = cm.cm-streams,
+        cm-page = cm.cm-page,
+        cm-changed = cm.cm-changed | changed
+      }
       in chat-mux-drain cm2 idx (web-mux-settle ts2) srv (rest & web-mux-fed ts2)
     end
 

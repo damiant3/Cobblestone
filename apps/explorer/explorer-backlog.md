@@ -1,7 +1,7 @@
 # Explorer -- open capabilities
 
-App-domain backlog. There is no platform-wide register any more:
-`docs/PM/BACKLOG.md` was deleted 2026-07-23 and must not be recreated.
+App-domain backlog. There is no platform-wide register:
+`docs/PM/BACKLOG.md` must not be recreated.
 `docs/PM/CurrentPlan.md` carries the shape and the priority order for
 the platform. Anything that is this application's own behaviour lives
 here.
@@ -21,3 +21,4 @@ Design: `apps/explorer/design/Active/`. The working server is
 | EXP-JSON-WORKFLOW | JSON workflow keys and values | `WorkflowExporter.codex:23`, `:26`, `:29`, `:32`, `:36` quote node IDs/classes, input keys, string values and references raw. Prompt/checkpoint values reach `input-str`; reference callers currently use fixed keys/IDs. |
 | EXP-5 | **`CardDesignerApp` is a card designer** | Routed at `/card`, and the page is a stub: `opening` prints `card-designer-app loaded` and nothing else. Its dimensions (model, sampler, steps, CFG, LoRA) are SD knobs, so the page needs `/api/config` to list the WebUI's models, samplers and LoRAs, which answers only `current_model` today. |
 | EXP-6 | **`VoiceStudio` and `WorkflowExporterMain` are pages** | Both `opening`s print a hand-written HTML and JS document as text, so the HTML plug renders the source, escaped, and no route serves them. Nothing answers VoiceStudio's `/api/tts/status` or `/api/tts/generate`. |
+| EXP-8 | **Test coverage: 13 of 14 library chapters are reached by no computing test** | `pwsh build/coverage-census.ps1 -Tree apps/explorer -List` names them (2026-10-26). Open: a computing test for each, or a deletion. |

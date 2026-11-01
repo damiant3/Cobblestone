@@ -1,0 +1,37 @@
+Chapter: RevocationSignedFieldsTest
+  cites Services chapter Revocation
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ Key a is RFC 8032 section 7.1 test vector 1.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  sk-a : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  fresh : Integer -> RevocationStore
+  fresh (unused) = RevocationStore { rs-records = [], rs-count = 0, rs-last-check = 0 }
+
+  rsf-copy : RevocationRecord, Text, Maybe (List Integer) -> RevocationRecord
+  rsf-copy (g) (reason) (sup) = RevocationRecord { rr-id = g.rr-id, rr-type = g.rr-type, rr-scope = g.rr-scope, rr-authority = g.rr-authority, rr-timestamp = g.rr-timestamp, rr-effective = g.rr-effective, rr-reason = reason, rr-signature = g.rr-signature, rr-supersedes = sup }
+
+Section: Body
+  opening : [Console] Nothing =
+    let pa = ed25519-public-key sk-a
+    in let genuine = sign-revocation (revoke-key-compromise pa pa 100 50 "routine rotation") sk-a
+    in let reworded = rsf-copy genuine "stolen by an attacker" (genuine.rr-supersedes)
+    in let unworded = rsf-copy genuine "" (genuine.rr-supersedes)
+    in let superseding = rsf-copy genuine (genuine.rr-reason) (Just (sha256 (text-to-bytes "another record")))
+    in let resigned = sign-revocation (revoke-key-compromise pa pa 100 50 "stolen by an attacker") sk-a
+    in act
+      print-line-uni ("control: genuine verifies " & show-bool (verify-revocation genuine) & ", stored " & show ((revocation-add (fresh 1) genuine).rs-count))
+      print-line-uni ("reason replaced, signature kept: verifies " & show-bool (verify-revocation reworded) & ", stored " & show ((revocation-add (fresh 2) reworded).rs-count))
+      print-line-uni ("reason emptied, signature kept: verifies " & show-bool (verify-revocation unworded))
+      print-line-uni ("supersedes added, signature kept: verifies " & show-bool (verify-revocation superseding) & ", stored " & show ((revocation-add (fresh 3) superseding).rs-count))
+      print-line-uni ("control: the new reason signed by its authority verifies " & show-bool (verify-revocation resigned) & ", stored " & show ((revocation-add (fresh 4) resigned).rs-count))
+    end
+
+Page 1

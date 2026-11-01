@@ -6,8 +6,6 @@ Chapter: HdaAudio
  stream descriptor 0: a Buffer Descriptor List (BDL) names PCM buffers,
  and setting the stream's RUN bit hands them to the codec's DAC.
 
- We say:
-
 Section: Registers
 
   hda-bar : Integer = #FE000000
@@ -105,6 +103,12 @@ Section: Capture (input stream 1, the microphone)
   hda-reg-sd1bdpl : Integer = 184
   hda-reg-sd1bdpu : Integer = 188
 
+ SD1STS is the byte at stream base + 3; IOC (bit 2) says the buffer
+ completed and is cleared by writing it back (HDA 1.0a, 3.3.38).
+
+  hda-reg-sd1sts : Integer = 163
+  hda-ioc-bit : Integer = 4
+
   hda-capture : Integer -> [Device.Mmio] Integer
   hda-capture (len) =
     let buf = alloc-bytes len
@@ -115,6 +119,7 @@ Section: Capture (input stream 1, the microphone)
     in let w3 = poke-32 bdl 12 1
     in act
       a <- mmio-write-32 (hda-bar + hda-reg-gctl) 1
+      z <- mmio-write-8 (hda-bar + hda-reg-sd1sts) hda-ioc-bit
       b <- mmio-write-32 (hda-bar + hda-reg-sd1bdpl) bdl
       c <- mmio-write-32 (hda-bar + hda-reg-sd1bdpu) 0
       d <- mmio-write-32 (hda-bar + hda-reg-sd1lvi) 0
@@ -122,14 +127,22 @@ Section: Capture (input stream 1, the microphone)
       f <- mmio-write-32 (hda-bar + hda-reg-sd1fmt) hda-fmt-48k-16-stereo
       g <- mmio-write-32 (hda-bar + hda-reg-sd1ctl) hda-run-bit
       done <- hda-wait-capture 200000
-      buf
+      sts <- mmio-read-8 (hda-bar + hda-reg-sd1sts)
+      if done == 1 & bit-and sts hda-ioc-bit /= 0 then buf
+      else hda-capture-refused
     end
+
+  hda-capture-refused : [Device.Mmio] Integer
+  hda-capture-refused = act
+    s <- mmio-write-32 (hda-bar + hda-reg-sd1ctl) 0
+    0
+  end
 
   hda-wait-capture : Integer -> [Device.Mmio] Integer
   hda-wait-capture (fuel) = act
     c <- mmio-read-32 (hda-bar + hda-reg-sd1ctl)
     if fuel <= 0 then 0
-    else if bit-and c 2 == 0 then 0
+    else if bit-and c 2 == 0 then 1
     else hda-wait-capture (fuel - 1)
   end
 

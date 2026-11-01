@@ -9,8 +9,6 @@ Chapter: CdxVerifier
   cites Foreword chapter Identity
   cites Verify chapter CdxBinary (bytes-equal)
 
- We say:
-
 Section: Verification Result
 
   VerifyPhase =
@@ -188,7 +186,8 @@ Section: Phase 3 -- Capabilities
       direction = c.direction,
       trust-score = __narrow trust,
       current-time = time,
-      agent-id = agent
+      agent-id = agent,
+      scope = c.scope
     }
     in let decision = eval-policy policy ctx
     in if decision.allowed then check-all-caps caps policy trust agent time (i + 1) len
@@ -269,7 +268,9 @@ Section: Phase 5 -- Proofs
     in if proof-off >= list-length binary then
       verify-reject PhaseProofs "proof section out of bounds"
     else let entries = decode-proof-section binary proof-off
-    in check-all-proofs entries store fuel 0 (list-length entries)
+    in if list-length entries /= cdx-read-le16 binary proof-off then
+      verify-reject PhaseProofs "proof section shorter than its count"
+    else check-all-proofs entries store fuel 0 (list-length entries)
 
   check-all-proofs : List CdxProofEntry, BareFactStore, Integer, Integer, Integer -> VerifyResult
   check-all-proofs (entries) (store) (fuel) (i) (len) =
@@ -280,7 +281,9 @@ Section: Phase 5 -- Proofs
     in let found = fact-load store hash-hex
     in when found
       is None -> verify-reject PhaseProofs ("proof not found: " & proof-kind-name (entry.kind))
-      is Just (f) -> if is-proof-fact (f.kind) then
+      is Just (f) -> if fact-content-hash (f.content) /= hash-hex then
+        verify-reject PhaseProofs ("proof content does not match its hash: " & proof-kind-name (entry.kind))
+      else if is-proof-fact (f.kind) then
         check-all-proofs entries store (fuel - 1) (i + 1) len
       else verify-reject PhaseProofs ("fact is not a proof: " & fact-kind-name (f.kind))
 
@@ -331,7 +334,9 @@ Section: Verification From An Address
     in let n = if content-end > cdx-header-fixed-size then
       content-end - cdx-header-fixed-size
     else 0
-    in let computed-bytes = cdxb-hash-words-to-bytes (sha256-buf addr cdx-header-fixed-size n)
+    in if read-le16 hdr 4 /= cdx-format-version then False
+    else let body-bytes = cdxb-hash-words-to-bytes (sha256-buf addr cdx-header-fixed-size n)
+    in let computed-bytes = cdxb-hash-words-to-bytes (cdx-bound-hash hdr body-bytes)
     in bytes-equal (cdx-read-content-hash hdr) computed-bytes 0 32
 
   verify-integrity-at : Integer, Integer, List Integer -> VerifyResult
@@ -361,8 +366,45 @@ Section: Verification From An Address
     else let proof-off = read-le64 hdr 184 + read-le64 hdr 192
     in if proof-off < 0 | proof-off >= len then
       verify-reject PhaseProofs "proof section out of bounds"
-    else let entries = decode-proof-section (cdx-at-read addr proof-off len []) 0
-    in check-all-proofs entries store fuel 0 (list-length entries)
+    else let section = cdx-at-read addr proof-off len []
+    in let entries = decode-proof-section section 0
+    in if list-length entries /= cdx-read-le16 section 0 then
+      verify-reject PhaseProofs "proof section shorter than its count"
+    else check-all-proofs entries store fuel 0 (list-length entries)
+
+Section: The Private Copy
+
+ An image at an address something else can write (an OTA staging bank, a
+ DMA target) is copied once, and the copy is what is hashed, granted and
+ run, so a write to the original after the copy changes nothing loaded.
+ The copy is refused, never attempted, when it would not fit: an x86-64
+ allocation past the heap's room faults to OUT OF MEMORY. The room is the
+ RAM size the boot records at 4072 less the boot stack's reserve, 32 pages
+ of 2 MiB plus its guard page (X86_64Boot, `demand-stack-reserve-pages`).
+
+  cdx-copy-reserve : Integer = 69206016
+
+  cdx-copy-fits : Integer -> Boolean
+  cdx-copy-fits (len) = peek-qword 4072 0 - cdx-copy-reserve - __heap-save > len + 4096
+
+  cdx-copy-qwords : Integer, Integer, Integer, Integer -> Integer
+  cdx-copy-qwords (src) (dst) (i) (n) =
+    if i + 8 > n then i
+    else let w = poke-qword dst i (peek-qword src i)
+    in cdx-copy-qwords src dst (i + 8) n
+
+  cdx-copy-tail : Integer, Integer, Integer, Integer -> Integer
+  cdx-copy-tail (src) (dst) (i) (n) =
+    if i >= n then dst
+    else let w = poke-byte dst i (peek-byte src i)
+    in cdx-copy-tail src dst (i + 1) n
+
+  cdx-private-copy : Integer, Integer -> Integer
+  cdx-private-copy (addr) (len) =
+    if len <= 0 then 0
+    else if cdx-copy-fits len == False then 0
+    else let dst = alloc-bytes len
+    in cdx-copy-tail addr dst (cdx-copy-qwords addr dst 0 len) len
 
   verify-cdx-full-at : Integer, Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> VerifyResult
   verify-cdx-full-at (addr) (len) (lattice) (policy) (current-time) (store) (fuel) =

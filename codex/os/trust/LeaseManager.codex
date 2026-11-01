@@ -1,8 +1,8 @@
 Chapter: LeaseManager
   cites Trust chapter AgentProtocol
+  cites Trust chapter PolicyEngine
+  cites Trust chapter Approval
   cites Foreword chapter Maybe
-
- We say:
 
 Section: Lease Records
 
@@ -13,7 +13,10 @@ Section: Lease Records
     scope : Scope,
     granted-at : Integer,
     expires : Integer,
-    audit-required : Boolean
+    audit-required : Boolean,
+    approval : List AgentIdentity,
+    approval-when : ApprovalCondition,
+    approval-zone : Text
   }
 
   LeaseStore = record {
@@ -50,13 +53,83 @@ Section: Store Operations
       scope = g.scope,
       granted-at = now,
       expires = g.expires,
-      audit-required = False
+      audit-required = False,
+      approval = [],
+      approval-when = CondAlways,
+      approval-zone = ""
     }
     in LeaseStore {
       leases = list-push (store.leases) l,
       count = store.count + 1,
       revoked-count = store.revoked-count
     }
+
+ A lease drawn under a policy rule carries the rule's approval. A denying
+ rule draws nothing, and an approval whose condition does not decode, or that
+ names no approver, refuses rather than drop the requirement.
+
+  LeaseDraw =
+    | LeaseDrawn (LeaseStore)
+    | LeaseDrawRefused (Text)
+
+  lease-draw : LeaseStore, GrantMsg, PolicyRule, Integer -> LeaseDraw
+  lease-draw (store) (g) (rule) (now) = when rule.outcome
+    is Deny (reason) -> LeaseDrawRefused ("rule denies: " & reason)
+    is AllowWithApproval (keys) (condition) (zone) -> lease-draw-approved store g now keys condition zone
+    is Allow -> LeaseDrawn (lease-grant store g now)
+    is AllowWithScope (s) -> LeaseDrawn (lease-grant store g now)
+    is AllowWithDuration (d) -> lease-draw-for store g now d
+    is AllowWithQuota (minutes) (period) (inner) -> lease-draw store g (PolicyRule { name = rule.name, condition = rule.condition, outcome = inner }) now
+
+  lease-draw-for : LeaseStore, GrantMsg, Integer, Integer -> LeaseDraw
+  lease-draw-for (store) (g) (now) (d) =
+    if d <= 0 then LeaseDrawRefused "duration is not positive"
+    else let l = Lease {
+      id = lease-bytes-to-hex (g.id),
+      holder = g.from,
+      capability = g.capability,
+      scope = g.scope,
+      granted-at = now,
+      expires = if d < g.expires - now then now + d else g.expires,
+      audit-required = False,
+      approval = [],
+      approval-when = CondAlways,
+      approval-zone = ""
+    }
+    in LeaseDrawn (LeaseStore {
+      leases = list-push (store.leases) l,
+      count = store.count + 1,
+      revoked-count = store.revoked-count
+    })
+
+  lease-draw-approved : LeaseStore, GrantMsg, Integer, List (List Integer), List Integer, Text -> LeaseDraw
+  lease-draw-approved (store) (g) (now) (keys) (condition) (zone) =
+    if list-length keys == 0 then LeaseDrawRefused "approval names no approver"
+    else when approval-condition-decode condition
+      is None -> LeaseDrawRefused "approval condition does not decode"
+      is Just (c) ->
+        let l = Lease {
+          id = lease-bytes-to-hex (g.id),
+          holder = g.from,
+          capability = g.capability,
+          scope = g.scope,
+          granted-at = now,
+          expires = g.expires,
+          audit-required = False,
+          approval = lease-identities keys 0 [],
+          approval-when = c,
+          approval-zone = zone
+        }
+        in LeaseDrawn (LeaseStore {
+          leases = list-push (store.leases) l,
+          count = store.count + 1,
+          revoked-count = store.revoked-count
+        })
+
+  lease-identities : List (List Integer), Integer, List AgentIdentity -> List AgentIdentity
+  lease-identities (keys) (i) (acc) =
+    if i >= list-length keys then acc
+    else lease-identities keys (i + 1) (acc & [AgentIdentity { public-key = list-at keys i }])
 
 Section: Handoff
 
@@ -102,10 +175,10 @@ Section: Handoff
       then HandoffRefused "handoff widens the scope path beyond the sender's lease"
     else if h.expires > src.expires
       then HandoffRefused "handoff outlives the sender's lease"
-    else HandoffAccepted (lease-handoff-commit store h now)
+    else HandoffAccepted (lease-handoff-commit store h now src)
 
-  lease-handoff-commit : LeaseStore, HandoffMsg, Integer -> LeaseStore
-  lease-handoff-commit (store) (h) (now) =
+  lease-handoff-commit : LeaseStore, HandoffMsg, Integer, Lease -> LeaseStore
+  lease-handoff-commit (store) (h) (now) (src) =
     let l = Lease {
       id = lease-bytes-to-hex (h.id),
       holder = h.to,
@@ -113,7 +186,10 @@ Section: Handoff
       scope = h.scope,
       granted-at = now,
       expires = h.expires,
-      audit-required = h.audit-required
+      audit-required = h.audit-required,
+      approval = src.approval,
+      approval-when = src.approval-when,
+      approval-zone = src.approval-zone
     }
     in let store1 = if h.revoke-from
       then lease-revoke-by-holder store (h.from) (h.capability).name now

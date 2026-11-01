@@ -3,14 +3,6 @@ Chapter: E1000ResetWedged
   cites Kernel chapter E1000e
   cites Kernel chapter Pci
 
- The second is that the refusal costs almost no heap. The reset is
- sequenced before the ring allocations precisely so a refused bring-up
- does not leak them, and on a bump allocator with no collector that leak
- would be permanent: about 66 KB per attempt, against the few dozen bytes
- the PciBar record costs. A band rather than an exact count, because the
- exact number moves with unrelated allocator work while the property
- being asserted does not.
-
 Section: Fixtures
 
   found-dev : PciScanResult -> Maybe PciDevice
@@ -21,15 +13,14 @@ Section: Judges
   yn : Boolean -> Text
   yn (b) = if b then "yes" else "no"
 
-  init-present : PciDevice -> Boolean
-  init-present (dev) = (e1000-init dev).e-present
+  InitSeen = record { present : Boolean, cost : Integer }
 
-  init-cost : PciDevice -> Integer
-  init-cost (dev) =
+  init-seen : PciDevice -> InitSeen
+  init-seen (dev) =
     let before = alloc-bytes 0
     in let d = e1000-init dev
     in let after = alloc-bytes 0
-    in after - before
+    in InitSeen { present = d.e-present, cost = after - before }
 
 Section: Entry
 
@@ -39,8 +30,11 @@ Section: Entry
       when found-dev scan
         is Just (dev) -> act
           print-line-uni ("candidate found : yes")
-          print-line-uni ("present         : " & yn (init-present dev))
-          print-line-uni ("refusal under 1K: " & yn (init-cost dev < 1024))
+          let seen = init-seen dev
+          in act
+            print-line-uni ("present         : " & yn (seen.present))
+            print-line-uni ("refusal under 1K: " & yn (seen.cost < 1024))
+          end
         end
         is None -> print-line-uni ("candidate found : no")
     end

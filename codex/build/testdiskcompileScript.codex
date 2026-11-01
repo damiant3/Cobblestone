@@ -7,33 +7,48 @@ Chapter: TestDiskCompileScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
- The sample has to be CITE-FREE. The image plug embeds it raw and the compiler
- reads it from the disk inside the VM, so nothing resolves a cites line on the
- way in; a sample with one compiles on the host in step 1a and then fails in
- step 2 for a reason the output does not name.
-
- An EMPTY DiskPath means "whatever name the sample lands under", derived below
- from SampleSrc. The default was the literal SOURCE.SRC while the img plug
- spelled every source's name that way; since the plug gives each source its own
- 8.3 name, a second literal here would name a file the image no longer holds,
- and would do it the moment anybody changed SampleSrc.
-
-  tdc-params : List ShellParam = [sh-param-default "DiskPath" SptString (SeLit ""), sh-param-default "SampleSrc" SptString (SeLit "codex\\test\\field-range-proven.codex"), sh-param-default "Expected" SptString (SeLit "12"), sh-param-default "PCore" SptInt (SeInt 1), sh-param-default "Kernel" SptString (SeLit "")]
+  tdc-params : List ShellParam =
+    [ sh-param-default "DiskPath" SptString (SeLit "")
+    , sh-param-default "SampleSrc" SptString (SeLit "codex\\test\\field-range-proven.codex")
+    , sh-param-default "Expected" SptString (SeLit "12")
+    , sh-param-default "PCore" SptInt (SeInt 1)
+    , sh-param-default "Kernel" SptString (SeLit "")
+    ]
 
 Section: S01 -- Preamble
 
-  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScRunDot (SeRaw "(Join-Path $PSScriptRoot 'vm-config.ps1')"), ScBlank, ScComment "The 8.3 name codex/plugs/img/run.ps1 folds a source to, so this test names", ScComment "the file the image actually carries whatever SampleSrc is.", ScRaw "if (-not $DiskPath) {", ScRaw "    $n83 = ([System.IO.Path]::GetFileNameWithoutExtension($SampleSrc)).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    $e83 = ([System.IO.Path]::GetExtension($SampleSrc).TrimStart('.')).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'", ScRaw "    if ($n83.Length -gt 8) { $n83 = $n83.Substring(0, 8) }", ScRaw "    if ($e83.Length -gt 3) { $e83 = $e83.Substring(0, 3) }", ScRaw "    $DiskPath = if ($e83) { \"$n83.$e83\" } else { $n83 }", ScRaw "}", ScBlank, ScAssign "root" (SeRaw "Split-Path $PSScriptRoot"), ScComment "The compiler under test, at both the host compile and the DISK guest:", ScComment "build-output\\bare-metal holds whichever compiler ran last.", ScIf (SeNot (SeVar "Kernel")) [ScAssign "Kernel" (SePathJoin (SeVar "root") (SeLit "seed\\Codex.cdx"))] [], ScAssign "outDir" (SeBare (SePathJoinN [SeVar "root", SeLit "build-output\\disk-compile-test"])), ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] [], ScAssign "compile" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "compile.ps1"])), ScAssign "runScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "test-run.ps1"])), ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True]
+  s01-body : List ShellCmd =
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScBlank
+    , ScRunDot (SePathJoin SeScriptRoot (SeLit "vm-config.ps1"))
+    , ScBlank
+    , ScComment "The 8.3 name codex/plugs/img/run.ps1 folds a source to, so this test names"
+    , ScComment "the file the image actually carries whatever SampleSrc is."
+    , ScIf (SeBare (SeNot (SeVar "DiskPath"))) disk-path-8dot3 []
+    , ScBlank
+    , ScAssign "root" (SeBare (SePathParent SeScriptRoot))
+    , ScComment "The compiler under test, at both the host compile and the DISK guest:"
+    , ScComment "build-output\\bare-metal holds whichever compiler ran last."
+    , ScIf (SeNot (SeVar "Kernel")) [ScAssign "Kernel" (SePathJoin (SeVar "root") (SeLit "seed\\Codex.cdx"))] []
+    , ScAssign "outDir" (SeBare (SePathJoinN [SeVar "root", SeLit "build-output\\disk-compile-test"]))
+    , ScIf (SeNot (SeDirExists (SeVar "outDir"))) [ScMkdir (SeVar "outDir")] []
+    , ScAssign "compile" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "compile.ps1"]))
+    , ScAssign "runScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "test-run.ps1"]))
+    , ScEchoStyled (SeLit "=== DISK compile test ===") ClBrightCyan True
+    ]
+
+  disk-path-8dot3 : List ShellCmd =
+    [ ScRaw "$n83 = ([System.IO.Path]::GetFileNameWithoutExtension($SampleSrc)).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'"
+    , ScRaw "$e83 = ([System.IO.Path]::GetExtension($SampleSrc).TrimStart('.')).ToUpperInvariant() -replace '[^A-Z0-9_\\-]', '_'"
+    , ScRaw "if ($n83.Length -gt 8) { $n83 = $n83.Substring(0, 8) }"
+    , ScRaw "if ($e83.Length -gt 3) { $e83 = $e83.Substring(0, 3) }"
+    , ScRaw "$DiskPath = if ($e83) { \"$n83.$e83\" } else { $n83 }"
+    ]
 
 Section: S01b -- FAT16 extraction helper
-
- DISK mode does not stream the compiled binary. `emit-binary-tail` prints the
- SIZE: line and then writes OUT.CDX to the volume, so the artifact comes back
- on the disk image and not on the wire, and the host reads it after the VM is
- closed.
 
  FAT16 is not our format, so the offsets are the spec's: BPB bytes-per-sector
  at 11, sectors-per-cluster at 13, reserved at 14, FAT count at 16, root
@@ -43,66 +58,133 @@ Section: S01b -- FAT16 extraction helper
  28. A chain ends at or above 0xFFF8. The partition is at LBA 2048, which the
  signature check refuses loudly rather than guessing at.
 
-  s01b-body : List ShellCmd = [ScBlank, ScRaw "function Read-Exact {\n    param($Stream, [byte[]]$Buffer, [int]$Offset, [int]$Length)\n    $n = 0\n    while ($n -lt $Length) {\n        $r = $Stream.Read($Buffer, ($Offset + $n), ($Length - $n))\n        if ($r -le 0) { break }\n        $n += $r\n    }\n    return $n\n}\n\n\nfunction Export-Fat16File {\n    param([string]$Image, [string]$Name, [string]$Out)\n    # Stop-VmGraceful's Stop-Process returns before the guest's handles are\n    # gone, so a plain OpenRead here loses a race that reads on the verdict\n    # line exactly like a DISK-mode failure. Retry, then say which it was.\n    $fs = $null\n    for ($try = 0; ($try -lt 40) -and ($null -eq $fs); $try++) {\n        try { $fs = [System.IO.File]::OpenRead($Image) } catch { Start-Sleep -Milliseconds 250 }\n    }\n    if ($null -eq $fs) { throw \"FAT16: $Image was still held 10s after the VM closed; the guest did not release it\" }\n    try {\n        $bpb = New-Object byte[] 512\n        $fs.Seek((2048 * 512), 'Begin') | Out-Null\n        if ((Read-Exact -Stream $fs -Buffer $bpb -Offset 0 -Length 512) -ne 512) { throw 'FAT16: cannot read the BPB at LBA 2048' }\n        if (($bpb[510] -ne 85) -or ($bpb[511] -ne 170)) { throw 'FAT16: no boot signature at LBA 2048' }\n        $bps = [BitConverter]::ToUInt16($bpb, 11)\n        $spc = $bpb[13]\n        $rsvd = [BitConverter]::ToUInt16($bpb, 14)\n        $nfat = $bpb[16]\n        $rent = [BitConverter]::ToUInt16($bpb, 17)\n        $spf = [BitConverter]::ToUInt16($bpb, 22)\n        if (($bps -le 0) -or ($spc -le 0) -or ($spf -le 0) -or ($nfat -le 0)) { throw \"FAT16: implausible BPB bps=$bps spc=$spc spf=$spf nfat=$nfat\" }\n        $fatSec = 2048 + $rsvd\n        $rootSec = $fatSec + ($nfat * $spf)\n        $rootSecs = [int][Math]::Ceiling(($rent * 32) / $bps)\n        $dataSec = $rootSec + $rootSecs\n        $rd = New-Object byte[] ($rootSecs * $bps)\n        $fs.Seek(($rootSec * $bps), 'Begin') | Out-Null\n        if ((Read-Exact -Stream $fs -Buffer $rd -Offset 0 -Length $rd.Length) -ne $rd.Length) { throw 'FAT16: short read of the root directory' }\n        $clus = 0\n        $size = 0\n        for ($e = 0; $e -lt $rent; $e++) {\n            $o = $e * 32\n            if ($rd[$o] -eq 0) { break }\n            if (($rd[$o] -eq 229) -or ($rd[$o + 11] -eq 15)) { continue }\n            if ([System.Text.Encoding]::ASCII.GetString($rd, $o, 11) -eq $Name) {\n                $clus = [BitConverter]::ToUInt16($rd, $o + 26)\n                $size = [BitConverter]::ToUInt32($rd, $o + 28)\n                break\n            }\n        }\n        if ($clus -lt 2) { throw \"FAT16: $Name is not in the root directory\" }\n        $fat = New-Object byte[] ($spf * $bps)\n        $fs.Seek(($fatSec * $bps), 'Begin') | Out-Null\n        if ((Read-Exact -Stream $fs -Buffer $fat -Offset 0 -Length $fat.Length) -ne $fat.Length) { throw 'FAT16: short read of the FAT' }\n        $bytes = New-Object byte[] $size\n        $got = 0\n        $cl = $clus\n        while ((($got -lt $size) -and ($cl -ge 2)) -and ($cl -lt 65528)) {\n            $take = [Math]::Min(($spc * $bps), ($size - $got))\n            $fs.Seek((($dataSec + ($cl - 2) * $spc) * $bps), 'Begin') | Out-Null\n            if ((Read-Exact -Stream $fs -Buffer $bytes -Offset $got -Length $take) -ne $take) { throw \"FAT16: short read in $Name at cluster $cl\" }\n            $got += $take\n            $cl = [BitConverter]::ToUInt16($fat, $cl * 2)\n        }\n        if ($got -ne $size) { throw \"FAT16: $Name chain yielded $got of $size bytes\" }\n        [System.IO.File]::WriteAllBytes($Out, $bytes)\n        return $size\n    } finally {\n        $fs.Close()\n    }\n}"]
+  s01b-body : List ShellCmd =
+    [ ScBlank
+    , ScRaw "function Read-Exact {\n    param($Stream, [byte[]]$Buffer, [int]$Offset, [int]$Length)\n    $n = 0\n    while ($n -lt $Length) {\n        $r = $Stream.Read($Buffer, ($Offset + $n), ($Length - $n))\n        if ($r -le 0) { break }\n        $n += $r\n    }\n    return $n\n}\n\n\nfunction Export-Fat16File {\n    param([string]$Image, [string]$Name, [string]$Out)\n    # Stop-VmGraceful's Stop-Process returns before the guest's handles are\n    # gone, so a plain OpenRead here loses a race that reads on the verdict\n    # line exactly like a DISK-mode failure. Retry, then say which it was.\n    $fs = $null\n    for ($try = 0; ($try -lt 40) -and ($null -eq $fs); $try++) {\n        try { $fs = [System.IO.File]::OpenRead($Image) } catch { Start-Sleep -Milliseconds 250 }\n    }\n    if ($null -eq $fs) { throw \"FAT16: $Image was still held 10s after the VM closed; the guest did not release it\" }\n    try {\n        $bpb = New-Object byte[] 512\n        $fs.Seek((2048 * 512), 'Begin') | Out-Null\n        if ((Read-Exact -Stream $fs -Buffer $bpb -Offset 0 -Length 512) -ne 512) { throw 'FAT16: cannot read the BPB at LBA 2048' }\n        if (($bpb[510] -ne 85) -or ($bpb[511] -ne 170)) { throw 'FAT16: no boot signature at LBA 2048' }\n        $bps = [BitConverter]::ToUInt16($bpb, 11)\n        $spc = $bpb[13]\n        $rsvd = [BitConverter]::ToUInt16($bpb, 14)\n        $nfat = $bpb[16]\n        $rent = [BitConverter]::ToUInt16($bpb, 17)\n        $spf = [BitConverter]::ToUInt16($bpb, 22)\n        if (($bps -le 0) -or ($spc -le 0) -or ($spf -le 0) -or ($nfat -le 0)) { throw \"FAT16: implausible BPB bps=$bps spc=$spc spf=$spf nfat=$nfat\" }\n        $fatSec = 2048 + $rsvd\n        $rootSec = $fatSec + ($nfat * $spf)\n        $rootSecs = [int][Math]::Ceiling(($rent * 32) / $bps)\n        $dataSec = $rootSec + $rootSecs\n        $rd = New-Object byte[] ($rootSecs * $bps)\n        $fs.Seek(($rootSec * $bps), 'Begin') | Out-Null\n        if ((Read-Exact -Stream $fs -Buffer $rd -Offset 0 -Length $rd.Length) -ne $rd.Length) { throw 'FAT16: short read of the root directory' }\n        $clus = 0\n        $size = 0\n        for ($e = 0; $e -lt $rent; $e++) {\n            $o = $e * 32\n            if ($rd[$o] -eq 0) { break }\n            if (($rd[$o] -eq 229) -or ($rd[$o + 11] -eq 15)) { continue }\n            if ([System.Text.Encoding]::ASCII.GetString($rd, $o, 11) -eq $Name) {\n                $clus = [BitConverter]::ToUInt16($rd, $o + 26)\n                $size = [BitConverter]::ToUInt32($rd, $o + 28)\n                break\n            }\n        }\n        if ($clus -lt 2) { throw \"FAT16: $Name is not in the root directory\" }\n        $fat = New-Object byte[] ($spf * $bps)\n        $fs.Seek(($fatSec * $bps), 'Begin') | Out-Null\n        if ((Read-Exact -Stream $fs -Buffer $fat -Offset 0 -Length $fat.Length) -ne $fat.Length) { throw 'FAT16: short read of the FAT' }\n        $bytes = New-Object byte[] $size\n        $got = 0\n        $cl = $clus\n        while ((($got -lt $size) -and ($cl -ge 2)) -and ($cl -lt 65528)) {\n            $take = [Math]::Min(($spc * $bps), ($size - $got))\n            $fs.Seek((($dataSec + ($cl - 2) * $spc) * $bps), 'Begin') | Out-Null\n            if ((Read-Exact -Stream $fs -Buffer $bytes -Offset $got -Length $take) -ne $take) { throw \"FAT16: short read in $Name at cluster $cl\" }\n            $got += $take\n            $cl = [BitConverter]::ToUInt16($fat, $cl * 2)\n        }\n        if ($got -ne $size) { throw \"FAT16: $Name chain yielded $got of $size bytes\" }\n        [System.IO.File]::WriteAllBytes($Out, $bytes)\n        return $size\n    } finally {\n        $fs.Close()\n    }\n}"
+    ]
 
 Section: S02 -- Step 1a: Compile source to CDX
 
   s02-body : List ShellCmd =
-    let fail-cdx = [ScEchoStyled (SeLit "FAIL: CDX compile failed") ClBrightRed True, ScIf (SeFileExists (SeVar "cdxLog")) [ScRaw "Get-Content $cdxLog | Write-Host"] [], ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 1a: Compile source to CDX..."), ScAssign "imgOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.img"])), ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.cdx"])), ScAssign "cdxLog" (SeBare (SePathJoinN [SeVar "outDir", SeLit "cdx-build.log"])), ScRaw "& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore -Kernel $Kernel", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "cdxOut")))) fail-cdx []]
+    [ ScBlank
+    , ScEcho (SeLit "Step 1a: Compile source to CDX...")
+    , ScAssign "imgOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.img"]))
+    , ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.cdx"]))
+    , ScAssign "cdxLog" (SeBare (SePathJoinN [SeVar "outDir", SeLit "cdx-build.log"]))
+    , ScRaw "& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore -Kernel $Kernel"
+    , ScIf (failed-or-missing "cdxOut") cdx-failed []
+    ]
+
+  failed-or-missing : Text -> ShellExpr
+  failed-or-missing (out) = SeOr (SeBare (SeStringNeq SeLastExit (SeInt 0))) (SeNot (SeFileExists (SeVar out)))
+
+  cdx-failed : List ShellCmd =
+    [ ScEchoStyled (SeLit "FAIL: CDX compile failed") ClBrightRed True
+    , ScIf (SeFileExists (SeVar "cdxLog")) [ScRaw "Get-Content $cdxLog | Write-Host"] []
+    , ScExit (SeInt 1)
+    ]
 
 Section: S03 -- Step 1b: CDX to PE via plug
 
   s03-body : List ShellCmd =
-    let fail-pe = [ScEcho (SeLit "FAIL: PE plug failed"), ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 1b: CDX -> PE via plug..."), ScAssign "peOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.efi"])), ScAssign "pePlug" (SeBare (SePathJoinN [SeVar "root", SeLit "codex\\plugs\\pe\\run.ps1"])), ScRaw "& pwsh -NoProfile -File $pePlug -CdxInput $cdxOut -Out $peOut", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "peOut")))) fail-pe []]
+    [ ScBlank
+    , ScEcho (SeLit "Step 1b: CDX -> PE via plug...")
+    , ScAssign "peOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-test.efi"]))
+    , ScAssign "pePlug" (SeBare (SePathJoinN [SeVar "root", SeLit "codex\\plugs\\pe\\run.ps1"]))
+    , ScRaw "& pwsh -NoProfile -File $pePlug -CdxInput $cdxOut -Out $peOut"
+    , ScIf (failed-or-missing "peOut") [ScEcho (SeLit "FAIL: PE plug failed"), ScExit (SeInt 1)] []
+    ]
 
 Section: S04 -- Step 1c: PE + CDX to FAT16 IMG via plug
 
   s04-body : List ShellCmd =
-    let fail-img = [ScEcho (SeLit "FAIL: IMG plug failed"), ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 1c: PE + CDX -> FAT16 IMG via plug..."), ScAssign "imgPlug" (SeBare (SePathJoinN [SeVar "root", SeLit "codex\\plugs\\img\\run.ps1"])), ScRaw "& pwsh -NoProfile -File $imgPlug -PeInput $peOut -CdxInput $cdxOut -Out $imgOut -Fat16 -Source $SampleSrc", ScIf (SeOr (SeRaw "$LASTEXITCODE -ne 0") (SeNot (SeFileExists (SeVar "imgOut")))) fail-img [], ScEcho (SeRaw "\"  IMG: $((Get-Item $imgOut).Length) bytes\"")]
+    [ ScBlank
+    , ScEcho (SeLit "Step 1c: PE + CDX -> FAT16 IMG via plug...")
+    , ScAssign "imgPlug" (SeBare (SePathJoinN [SeVar "root", SeLit "codex\\plugs\\img\\run.ps1"]))
+    , ScRaw "& pwsh -NoProfile -File $imgPlug -PeInput $peOut -CdxInput $cdxOut -Out $imgOut -Fat16 -Source $SampleSrc"
+    , ScIf (failed-or-missing "imgOut") [ScEcho (SeLit "FAIL: IMG plug failed"), ScExit (SeInt 1)] []
+    , ScEcho (SeText "  IMG: $((Get-Item $imgOut).Length) bytes")
+    ]
 
 Section: S05 -- Step 2: Boot compiler with IMG as IDE disk
 
   s05-body : List ShellCmd =
-    let fail-no-stage0 = [ScEcho (SeRaw "\"FAIL: no compiler CDX at $Stage0\""), ScExit (SeInt 1)]
-    in let fail-vm = [ScEcho (SeLit "FAIL: VM did not start"), ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 2: DISK compile..."), ScAssign "Stage0" (SeRaw "$Kernel"), ScIf (SeNot (SeFileExists (SeVar "Stage0"))) fail-no-stage0 [], ScRaw "$diskArgs = @('-drive', \"file=$imgOut,format=raw,if=ide,index=0\")", ScRaw "$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 3072 -PCore $PCore -ExtraArgs $diskArgs", ScIf (SeNot (SeVar "run")) fail-vm [], ScBlank]
+    [ ScBlank
+    , ScEcho (SeLit "Step 2: DISK compile...")
+    , ScAssign "Stage0" (SeVar "Kernel")
+    , ScIf (SeNot (SeFileExists (SeVar "Stage0"))) [ScEcho (SeText "FAIL: no compiler CDX at $Stage0"), ScExit (SeInt 1)] []
+    , ScAssign "diskArgs" (SeArrayLiteral [SeLit "-drive", SeText "file=$imgOut,format=raw,if=ide,index=0"])
+    , ScAssign "run" (SeBare (SeCallArgs "Start-VmRun" start-vm-args))
+    , ScIf (SeNot (SeVar "run")) [ScEcho (SeLit "FAIL: VM did not start"), ScExit (SeInt 1)] []
+    , ScBlank
+    ]
+
+  start-vm-args : List ShellArg =
+    [ SaNamed "Kernel" (SeVar "Stage0")
+    , SaNamed "ConnectTimeoutSec" (SeInt 10)
+    , SaNamed "MemMB" (SeInt 3072)
+    , SaNamed "PCore" (SeVar "PCore")
+    , SaNamed "ExtraArgs" (SeVar "diskArgs")
+    ]
 
 Section: S05b -- Inside the VM's lifetime
 
- The try opens only once $run holds a VM. Everything above it can exit, and
- the finally below dereferences $run.Conn, so anything that exits before the
- assignment would die in the cleanup under Set-StrictMode and take its own
- diagnostic with it.
-
   s05b-body : List ShellCmd =
-    let fail-ready = [ScEcho (SeLit "FAIL: no READY"), ScExit (SeInt 1)]
-    in [ScIf (SeNot (SeRaw "(Read-VmReady -Conn $run.Conn -TimeoutSec 30)")) fail-ready []]
+    [ ScIf (SeNot (SeCallArgs "Read-VmReady" [SaNamed "Conn" (SeProperty (SeVar "run") "Conn"), SaNamed "TimeoutSec" (SeInt 30)])) [ScEcho (SeLit "FAIL: no READY"), ScExit (SeInt 1)] []
+    ]
 
 Section: S06 -- Send DISK mode commands and read response
 
-  s06-body : List ShellCmd = [ScBlank, ScRaw "$stream = $run.Conn.Data.GetStream()", ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"DISK`n\")", ScRaw "$stream.Write($hdr, 0, $hdr.Length)", ScRaw "$path = [System.Text.Encoding]::UTF8.GetBytes($DiskPath + \"`n\")", ScRaw "$stream.Write($path, 0, $path.Length)", ScRaw "$stream.Flush()", ScAssign "binSize" (SeInt 0), ScAssign "status" (SeLit ""), ScRaw "$logLines = @()"]
+  s06-body : List ShellCmd =
+    [ ScBlank
+    , ScAssign "stream" (SeMethodCall (SeProperty (SeProperty (SeVar "run") "Conn") "Data") "GetStream" [])
+    , ScRaw "$hdr = [System.Text.Encoding]::UTF8.GetBytes(\"DISK`n\")"
+    , ScCallMethod (SeVar "stream") "Write" [SeVar "hdr", SeInt 0, SeProperty (SeVar "hdr") "Length"]
+    , ScRaw "$path = [System.Text.Encoding]::UTF8.GetBytes($DiskPath + \"`n\")"
+    , ScCallMethod (SeVar "stream") "Write" [SeVar "path", SeInt 0, SeProperty (SeVar "path") "Length"]
+    , ScCallMethod (SeVar "stream") "Flush" []
+    , ScAssign "binSize" (SeInt 0)
+    , ScAssign "status" (SeLit "")
+    , ScAssign "logLines" (SeArrayLiteral [])
+    ]
 
 Section: S07 -- Read lines until DISK-OUT: or CODEGEN-HALTED
 
- SIZE: no longer ends the read. In DISK mode it is followed by the write to
- the volume and then DISK-OUT:, which is the line that says the artifact
- exists, so the loop records the size and keeps going.
-
   s07-body : List ShellCmd =
-    let on-size = [ScIf (SeMatch (SeVar "line") "^\\D*(\\d+)") [ScAssign "binSize" (SeRaw "[int]$matches[1]")] [], ScAssign "status" (SeLit "size")]
-    in let on-disk-out = [ScAssign "status" (SeLit "disk-out"), ScBreak]
-    in let on-halt = [ScAssign "status" (SeLit "error"), ScBreak]
-    in let on-errs = [ScAssign "status" (SeLit "error")]
-    in [ScBlank, ScLabeledWhile "read_loop" (SeRaw "$true") [ScRaw "$line = Read-StreamLine -Stream $stream -TimeoutSec 120", ScIf (SeRaw "$null -eq $line") [ScBreak] [], ScRaw "$logLines += $line", ScIf (SeStartsWith (SeVar "line") (SeLit "SIZE:")) on-size [], ScIf (SeStartsWith (SeVar "line") (SeLit "DISK-OUT:")) on-disk-out [], ScIf (SeStartsWith (SeVar "line") (SeLit "CODEGEN-HALTED")) on-halt [], ScIf (SeStartsWith (SeVar "line") (SeLit "CODEGEN-ERRORS")) on-errs [], ScIf (SeRaw "$logLines.Count -ge 400") [ScBreak] []]]
+    [ ScBlank
+    , ScLabeledWhile "read_loop" (SeBool True) read-one-line
+    ]
+
+  read-one-line : List ShellCmd =
+    [ ScAssign "line" (SeBare (SeCallArgs "Read-StreamLine" [SaNamed "Stream" (SeVar "stream"), SaNamed "TimeoutSec" (SeInt 120)]))
+    , ScIf (SeBare (SeStringEq (SeVar "null") (SeVar "line"))) [ScBreak] []
+    , ScAppend "logLines" (SeVar "line")
+    , ScIf (SeStartsWith (SeVar "line") (SeLit "SIZE:")) on-size []
+    , ScIf (SeStartsWith (SeVar "line") (SeLit "DISK-OUT:")) [ScAssign "status" (SeLit "disk-out"), ScBreak] []
+    , ScIf (SeStartsWith (SeVar "line") (SeLit "CODEGEN-HALTED")) [ScAssign "status" (SeLit "error"), ScBreak] []
+    , ScIf (SeStartsWith (SeVar "line") (SeLit "CODEGEN-ERRORS")) [ScAssign "status" (SeLit "error")] []
+    , ScIf (SeBare (SeIntGe (SeProperty (SeVar "logLines") "Count") (SeInt 400))) [ScBreak] []
+    ]
+
+  on-size : List ShellCmd =
+    [ ScIf (SeMatch (SeVar "line") "^\\D*(\\d+)") [ScAssign "binSize" (SeCast "int" (SeIndex (SeVar "matches") (SeInt 1)))] []
+    , ScAssign "status" (SeLit "size")
+    ]
 
 Section: S08 -- Validate the compile
 
   s08-body : List ShellCmd =
-    let fail-compile = [ScEchoStyled (SeRaw "\"FAIL: DISK compile failed (status=$status)\"") ClBrightRed True, ScForEach "ll" (SeVar "logLines") [ScEcho (SeRaw "\"  $ll\"")], ScExit (SeInt 1)]
-    in [ScBlank, ScIf (SeOr (SeStringNeq (SeVar "status") (SeLit "disk-out")) (SeRaw "$binSize -le 0")) fail-compile [], ScEcho (SeRaw "\"  Compiled: $binSize bytes\""), ScForEach "ll" (SeVar "logLines") [ScIf (SeStartsWith (SeVar "ll") (SeLit "DISK-OUT:")) [ScEcho (SeRaw "\"  $ll\"")] []]]
+    [ ScBlank
+    , ScIf (SeOr (SeStringNeq (SeVar "status") (SeLit "disk-out")) (SeBare (SeIntLe (SeVar "binSize") (SeInt 0)))) disk-compile-failed []
+    , ScEcho (SeText "  Compiled: $binSize bytes")
+    , ScForEach "ll" (SeVar "logLines") [ScIf (SeStartsWith (SeVar "ll") (SeLit "DISK-OUT:")) [ScEcho (SeText "  $ll")] []]
+    ]
+
+  disk-compile-failed : List ShellCmd =
+    [ ScEchoStyled (SeText "FAIL: DISK compile failed (status=$status)") ClBrightRed True
+    , ScForEach "ll" (SeVar "logLines") [ScEcho (SeText "  $ll")]
+    , ScExit (SeInt 1)
+    ]
 
 Section: S09 -- Cleanup VM
 
@@ -110,22 +192,28 @@ Section: S09 -- Cleanup VM
 
 Section: S08b -- Step 2b: Extract OUT.CDX from the image
 
- Outside the try, because the image is only settled once the VM is closed.
- The guest's declared SIZE: is the oracle for the extraction: a file on the
- volume that disagrees with what the compiler said it wrote is a failure, not
- a rounding.
-
   s08b-body : List ShellCmd =
-    let fail-size = [ScEchoStyled (SeRaw "\"FAIL: OUT.CDX is $extracted bytes, the guest declared $binSize\"") ClBrightRed True, ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 2b: Extract OUT.CDX from the image..."), ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-compiled.cdx"])), ScAssign "extracted" (SeRaw "Export-Fat16File -Image $imgOut -Name 'OUT     CDX' -Out $cdxOut"), ScIf (SeRaw "$extracted -ne $binSize") fail-size [], ScEcho (SeRaw "\"  Written: $cdxOut ($extracted bytes)\"")]
+    [ ScBlank
+    , ScEcho (SeLit "Step 2b: Extract OUT.CDX from the image...")
+    , ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeLit "disk-compiled.cdx"]))
+    , ScAssign "extracted" (SeBare (SeCallArgs "Export-Fat16File" [SaNamed "Image" (SeVar "imgOut"), SaNamed "Name" (SeLit "OUT     CDX"), SaNamed "Out" (SeVar "cdxOut")]))
+    , ScIf (SeBare (SeStringNeq (SeVar "extracted") (SeVar "binSize"))) [ScEchoStyled (SeText "FAIL: OUT.CDX is $extracted bytes, the guest declared $binSize") ClBrightRed True, ScExit (SeInt 1)] []
+    , ScEcho (SeText "  Written: $cdxOut ($extracted bytes)")
+    ]
 
 Section: S10 -- Step 3: Boot compiled CDX and check output
 
   s10-body : List ShellCmd =
-    let fail-run = [ScEcho (SeLit "FAIL: runtime failed"), ScExit (SeInt 1)]
-    in let pass = [ScEchoStyled (SeLit "PASS: DISK compile mode works") ClBrightGreen True]
-    in let fail-mismatch = [ScEchoStyled (SeLit "FAIL: output mismatch") ClBrightRed True, ScExit (SeInt 1)]
-    in [ScBlank, ScEcho (SeLit "Step 3: Run compiled CDX..."), ScAssign "actual" (SeBare (SePathJoinN [SeVar "outDir", SeLit "runtime.actual"])), ScRaw "& pwsh -NoProfile -File $runScript -Kernel $cdxOut -OutFile $actual -PCore $PCore", ScIf (SeRaw "$LASTEXITCODE -ne 0") fail-run [], ScRaw "$output = if (Test-Path $actual) { (Get-Content -Raw $actual).TrimEnd() } else { '' }", ScEcho (SeRaw "\"  Output: '$output'\""), ScEcho (SeRaw "\"  Expected: '$Expected'\""), ScIf (SeStringEq (SeVar "output") (SeVar "Expected")) pass fail-mismatch]
+    [ ScBlank
+    , ScEcho (SeLit "Step 3: Run compiled CDX...")
+    , ScAssign "actual" (SeBare (SePathJoinN [SeVar "outDir", SeLit "runtime.actual"]))
+    , ScRaw "& pwsh -NoProfile -File $runScript -Kernel $cdxOut -OutFile $actual -PCore $PCore"
+    , ScIf (SeBare (SeStringNeq SeLastExit (SeInt 0))) [ScEcho (SeLit "FAIL: runtime failed"), ScExit (SeInt 1)] []
+    , ScRaw "$output = if (Test-Path $actual) { (Get-Content -Raw $actual).TrimEnd() } else { '' }"
+    , ScEcho (SeText "  Output: '$output'")
+    , ScEcho (SeText "  Expected: '$Expected'")
+    , ScIf (SeStringEq (SeVar "output") (SeVar "Expected")) [ScEchoStyled (SeLit "PASS: DISK compile mode works") ClBrightGreen True] [ScEchoStyled (SeLit "FAIL: output mismatch") ClBrightRed True, ScExit (SeInt 1)]
+    ]
 
 Section: Assembly
 

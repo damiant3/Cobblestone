@@ -1,0 +1,44 @@
+Chapter: HttpResponseHeapTest
+
+  cites Net chapter HttpClient
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+
+Section: Fixtures
+
+ The reference is the body as http-parse-response built it before: one Text per byte, then concatenated.
+
+  every-byte : Integer, List Integer -> List Integer
+  every-byte (i) (acc) = if i >= 256 then acc else every-byte (i + 1) (list-push acc i)
+
+  letters : Integer, List Integer -> List Integer
+  letters (n) (acc) = if n <= 0 then acc else letters (n - 1) (list-push acc (97 + n - (n / 26) * 26))
+
+  response : List Integer -> List Integer
+  response (body) = text-to-unicode-bytes "HTTP/1.1 200 OK" & [13, 10] & text-to-unicode-bytes ("Content-Length: " & show (list-length body)) & [13, 10, 13, 10] & body
+
+  reference-body : List Integer -> Text
+  reference-body (body) = text-concat-list (read-body-from-bytes body 0 (list-length body) [])
+
+  agrees : List Integer -> Boolean
+  agrees (body) = (http-parse-response (response body)).body == reference-body body
+
+  cost : List Integer -> Integer
+  cost (bs) =
+    let a = __heap-save
+    in let r = http-parse-response bs
+    in let b = __heap-save
+    in (b - a) + text-length (r.body) - text-length (r.body)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let ascii = letters 1000 []
+    in act
+      print-line-uni ("the body is the same Text as the per-byte build for every byte value 0 to 255 and for 1,000 letters: " & show (agrees (every-byte 0 []) & agrees ascii))
+      print-line-uni ("and the comparison refuses a body one byte off: " & show ((http-parse-response (response ascii)).body /= reference-body (list-push (letters 999 []) 120)))
+      print-line-uni ("a 1,000-byte response parses in less than 16,000 bytes, where the per-byte build cost 26,856: " & show (cost (response ascii) < 16000))
+    end
+  end
+
+Page 1

@@ -1,0 +1,124 @@
+Chapter: Tls13DegenerateTest
+  cites Foreword chapter Tls
+  cites Foreword chapter AesGcm
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  key : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+  iv : List Integer = [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+  base : List Integer =
+    [41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56,
+     57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72]
+  th : List Integer =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+     17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+  msg : List Integer = [104, 101, 108, 108, 111]
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  set-at : List Integer, Integer, Integer -> List Integer
+  set-at (bs) (i) (v) = list-set-at (for b in bs -> b) i v
+
+  bump-at : List Integer, Integer -> List Integer
+  bump-at (bs) (i) = set-at bs i (if list-at bs i == 255 then 0 else list-at bs i + 1)
+
+  first-n : List Integer, Integer, Integer, List Integer -> List Integer
+  first-n (bs) (n) (i) (acc) =
+    if i >= n then acc
+    else first-n bs n (i + 1) (list-push acc (list-at bs i))
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0)
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+Section: Equality
+
+  eq : Text, List Integer, List Integer -> Text
+  eq (label) (a) (b) = "ct-equal " & label & " = " & yn (tls13-ct-equal a b)
+
+  eq-lines : List Text
+  eq-lines = [
+      eq "equal control" th th,
+      eq "different length" th (first-n th 31 0 []),
+      eq "longer second" th (th & [0]),
+      eq "empty against 32 bytes" [] th,
+      eq "first byte differs" th (bump-at th 0),
+      eq "last byte differs" th (bump-at th 31),
+      eq "an element 256 above" th (set-at th 5 (list-at th 5 + 256)),
+      eq "a negated element" th (set-at th 5 (0 - list-at th 5))
+    ]
+
+Section: Finished
+
+  fin : Text, List Integer, List Integer, List Integer -> Text
+  fin (label) (b) (h) (offered) = "finished " & label & " = " & yn (tls13-finished-ok b h offered)
+
+  fin-lines : List Text
+  fin-lines =
+    let good = tls13-verify-data base th
+    in [
+      fin "genuine control" base th good,
+      fin "empty offered" base th [],
+      fin "31 bytes offered" base th (first-n good 31 0 []),
+      fin "33 bytes offered" base th (good & [0]),
+      fin "last byte changed" base th (bump-at good 31),
+      fin "all-zero offered" base th (zeros 32 []),
+      fin "another transcript hash" base (bump-at th 0) good,
+      fin "empty transcript hash" base [] good,
+      fin "another base secret" (bump-at base 0) th good,
+      fin "empty base secret" [] th good
+    ]
+
+Section: Records
+
+  dec : Text, Maybe TlsInner -> Text
+  dec (label) (m) =
+    when m
+      is None -> "record " & label & " = refused"
+      is Just (r) -> "record " & label & " = type " & show (r.ti-type) & ", " & show (list-length (r.ti-data)) & " bytes"
+
+  rec-lines : List Text
+  rec-lines =
+    let w = tls13-record-encrypt key iv 7 23 msg
+    in let n = list-length w
+    in [
+      dec "genuine control" (tls13-record-decrypt key iv 7 w),
+      dec "empty wire" (tls13-record-decrypt key iv 7 []),
+      dec "5-byte header only" (tls13-record-decrypt key iv 7 (first-n w 5 0 [])),
+      dec "declared length 16 (tag only)" (tls13-record-decrypt key iv 7 (set-at (set-at w 3 0) 4 16)),
+      dec "declared length past the wire" (tls13-record-decrypt key iv 7 (set-at w 4 (list-at w 4 + 1))),
+      dec "wire cut one byte short" (tls13-record-decrypt key iv 7 (first-n w (n - 1) 0 [])),
+      dec "last tag byte changed" (tls13-record-decrypt key iv 7 (bump-at w (n - 1))),
+      dec "first tag byte changed" (tls13-record-decrypt key iv 7 (bump-at w (n - 16))),
+      dec "all-zero tag" (tls13-record-decrypt key iv 7 (first-n w (n - 16) 0 [] & zeros 16 [])),
+      dec "first ciphertext byte changed" (tls13-record-decrypt key iv 7 (bump-at w 5)),
+      dec "outer type changed to 22" (tls13-record-decrypt key iv 7 (set-at w 0 22)),
+      dec "version byte changed" (tls13-record-decrypt key iv 7 (bump-at w 2)),
+      dec "sequence number off by one" (tls13-record-decrypt key iv 8 w),
+      dec "another key" (tls13-record-decrypt (bump-at key 0) iv 7 w),
+      dec "another iv" (tls13-record-decrypt key (bump-at iv 11) 7 w),
+      dec "empty key" (tls13-record-decrypt [] iv 7 w),
+      dec "empty iv" (tls13-record-decrypt key [] 7 w),
+      dec "all-zero inner (no content type)" (tls13-record-decrypt key iv 7 (tls13-record-encrypt key iv 7 0 []))
+    ]
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-all eq-lines 0
+    print-all fin-lines 0
+    print-all rec-lines 0
+  end

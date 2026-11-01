@@ -135,6 +135,13 @@ try {
     Assert 'check reports nonambient effect' ($r.status -eq 'ok' -and $r.outside_ambient -contains 'Network.Read')
     $r=Ask $service @{op='run';source=$network}
     Assert 'network refused before lens and assembly' ($r.status -eq 'refused' -and $r.needs -contains 'Network.Read' -and $r.ms.lens -eq 0 -and $r.ms.assemble -eq 0)
+    $expiredLease='02000000070100000000200000003d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c20000000d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a20000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4100000003611170d2d1e130e0d1a413515110e0d010f00000051230f220d5114101a0d1b10152251010f00000051230f220d5114101a0d1b10152251000000008403000000000000dc05000000000000200000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200000000000000000000000004000000099ea6c15c5bca2a0a0bc6369b7b2da0056eb3c14892093f3dc694c4977c1603f818fc6520ab8060ebc2731c29e575e3904725b5b46ff93bd5f506932551e280b'
+    $r=Ask $service @{op='run';source=$network;lease=$expiredLease}
+    Assert 'a lease on an unbound instance is refused' ($r.status -eq 'refused' -and $r.stage -eq 'admission' -and $r.reason -match 'not bound to a requester') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='check';source=$network;lease=$expiredLease}
+    Assert 'a lease on check is refused at the request' ($r.status -eq 'refused' -and $r.stage -eq 'request' -and $r.reason -match 'only valid for run') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='run';source=$pure;lease=$expiredLease}
+    Assert 'a lease on an ambient-only run is refused' ($r.status -eq 'refused' -and $r.reason -match 'needs none') ($r|ConvertTo-Json -Compress)
     $bad=Source "  hidden : Integer -> Integer`n  hidden (x) = net-status`n  opening : [Console] Nothing = act`n    print-line-uni (show (hidden 0))`n  end"
     $r=Ask $service @{op='run';source=$bad}
     Assert 'undeclared network use is CDX2031' ($r.status -eq 'diagnostics' -and (($r.diagnostics -join ' ') -match 'CDX2031')) ($r|ConvertTo-Json -Compress)
@@ -150,6 +157,25 @@ try {
     Assert 'source NUL refused' ($r.status -eq 'refused' -and $r.ms.compile -eq 0)
     $r=Ask $service @{op='unknown';id='refusal-id'}
     Assert 'request refusal preserves a valid id' ($r.status -eq 'refused' -and $r.id -eq 'refusal-id')
+    $r=Ask $service @{op='challenge'}
+    Assert 'a challenge on an instance without request binding is refused' ($r.status -eq 'refused' -and $r.reason -match 'request-bound') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='run';source=$pure;requester=('ab'*32)}
+    Assert 'request authentication fields without request binding are refused' ($r.status -eq 'refused' -and $r.stage -eq 'request' -and $r.reason -match 'only valid on a request-bound instance') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='describe';nonce=('ab'*32)}
+    Assert 'a signed describe is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'describe is not signed') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='policy';question='dead-rules'}
+    Assert 'a policy question on an unbound instance is refused' ($r.status -eq 'refused' -and $r.stage -eq 'policy' -and $r.reason -match 'not bound to a grantor set') ($r|ConvertTo-Json -Compress)
+    foreach($case in @(
+        @(@{op='policy';question='prove'},'question must be'),
+        @(@{op='policy';question='dead-rules';source=$pure},'policy takes no program'),
+        @(@{op='policy';question='can-allow'},'label is required'),
+        @(@{op='policy';question='dead-rules';label='Network.Read'},'label is required'),
+        @(@{op='policy';question='widens'},'policy is required'),
+        @(@{op='check';source=$pure;question='dead-rules'},'only valid for the policy op')
+    )){
+        $r=Ask $service $case[0]
+        Assert "policy request refusal: $($case[1])" ($r.status -eq 'refused' -and $r.stage -eq 'request' -and $r.reason -match $case[1]) ($r|ConvertTo-Json -Compress)
+    }
     $r=AskRaw $service '{"\u006fp":"describe","op":"run"}'
     Assert 'escaped duplicate property refused' ($r.status -eq 'refused')
     $r=Ask $service @{op='run';source=('x'*65537)}
@@ -267,6 +293,159 @@ try {
     $tamperError=$service.errors.GetAwaiter().GetResult()
     Assert 'artifact tampering fails digest validation' ($service.process.ExitCode -ne 0 -and $tamperError -match 'digest mismatch') $tamperError
     $service.process.Dispose();$service=$null
+
+    $requesterKey='3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c';$grantorA='d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a';$grantorB='c3'*32;$identityKey='d4'*32
+    $boundJournal=Join-Path $work 'bound.jsonl'
+    $service=Launch (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',$boundJournal,'-Requester',$requesterKey,'-Grantors',"$grantorB,$grantorA",'-Identity',$identityKey,'-MaxLeaseSeconds','900')
+    $d=Ask $service @{op='describe'}
+    $grantorHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes((@($grantorA,$grantorB)|Sort-Object -CaseSensitive) -join ','))).ToLowerInvariant()
+    Assert 'describe reports the instance binding' ($d.binding.transport -ceq 'stdio' -and $d.binding.requester -ceq $requesterKey -and $d.binding.identity -ceq $identityKey -and $d.binding.grantors_sha256 -ceq $grantorHash -and $d.binding.grantor_count -eq 2 -and $d.binding.max_lease_seconds -eq 900) ($d.binding|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='run';source=$network;lease=$expiredLease}
+    Assert 'a signed lease outside its window reaches the window check' ($r.status -eq 'refused' -and $r.stage -eq 'admission' -and $r.reason -ceq 'lease is not current' -and $r.lease.lease_id -ceq '0701' -and $r.lease.grantor -ceq $grantorA -and $r.lease.holder -ceq $requesterKey -and $r.needs -contains 'Network.Read') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='run';source=$network;lease='zz'}
+    Assert 'a lease that is not hex is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'lease is not lowercase hex') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='run';source=$network;lease='00'}
+    Assert 'a lease that is not a grant encoding is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'lease is not a canonical grant encoding') ($r|ConvertTo-Json -Compress)
+    $boundErr=Finish $service 'bound';$service=$null
+    $boundFacts=@([IO.File]::ReadLines($boundJournal)|ForEach-Object {($_|ConvertFrom-Json).record})
+    $boundFact=$boundFacts[0]
+    Assert 'the fact records the bound requester' ($boundFact.binding.requester -ceq $requesterKey -and $boundFact.binding.grantors_sha256 -ceq $grantorHash)
+    Assert 'the fact records the presented lease' ($boundFacts[1].grant.lease.lease_id -ceq '0701' -and $boundFacts[1].grant.lease.grantor -ceq $grantorA -and $boundFacts[1].reason -ceq 'lease is not current') ($boundFacts[1]|ConvertTo-Json -Compress -Depth 6)
+    $leases=(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-lease.ps1') -Work $work -Kernel $Kernel | Select-Object -Last 1) | ConvertFrom-Json
+    if($LASTEXITCODE -ne 0 -or -not $leases.allow){throw 'Lease mint failed'}
+    $allowPolicy=$leases.allow_policy;$denyPolicy=$leases.deny_policy;$allowHash=$leases.allow_sha256;$bookFile=$leases.name_book;$minted=@{allow=$leases.allow;deny=$leases.deny;flow=$leases.flow;quota=$leases.quota};$quotaPolicy=$leases.quota_policy
+    foreach($held in @(@('allow',$allowPolicy),@('deny',$denyPolicy))){
+        $heldJournal=Join-Path $work ($held[0]+'-policy.jsonl')
+        $service=Launch (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',$heldJournal,'-Requester',$requesterKey,'-Grantors',"$grantorB,$grantorA",'-Identity',$identityKey,'-MaxLeaseSeconds','900','-Policy',$held[1],'-NameBook',$bookFile)
+        $r=Ask $service @{op='run';source=$network;lease=$minted[$held[0]]}
+        if($held[0] -eq 'allow'){
+            Assert 'a current lease under a policy that allows passes admission' ($r.stage -ne 'admission' -and $r.lease.lease_id -ceq '0702' -and $r.lease.policy_sha256 -ceq $allowHash) ($r|ConvertTo-Json -Compress)
+            $r=Ask $service @{op='policy';question='can-allow';label='Network.Read'}
+            Assert 'the held policy can allow Network.Read, witnessed for the agent its book names' ($r.status -eq 'ok' -and $r.holds -eq $true -and $r.witness.capability -ceq 'Network.Read' -and $r.witness.agent_id -ceq $requesterKey -and $r.policy_sha256 -ceq $allowHash) ($r|ConvertTo-Json -Compress)
+            $r=Ask $service @{op='policy';question='can-allow';label='Network.Write'}
+            Assert 'the held policy can never allow Network.Write' ($r.status -eq 'ok' -and $r.holds -eq $false -and $null -eq $r.witness -and $r.evaluations -gt 0) ($r|ConvertTo-Json -Compress)
+            $r=Ask $service @{op='policy';question='dead-rules'}
+            Assert 'the allowing policy has no dead rule' ($r.status -eq 'ok' -and @($r.dead).Count -eq 0 -and $r.evaluations -gt 0) ($r|ConvertTo-Json -Compress)
+            $wider=([IO.File]::ReadAllText($held[1])).TrimEnd()+"`n`"Jake's agent`" is permitted to use Network.Write."
+            $r=Ask $service @{op='policy';question='widens';policy=$wider}
+            Assert 'a proposed policy adding Network.Write widens the held one' ($r.status -eq 'ok' -and $r.holds -eq $true -and $r.witness.capability -ceq 'Network.Write') ($r|ConvertTo-Json -Compress)
+            $r=Ask $service @{op='policy';question='widens';policy=[IO.File]::ReadAllText($denyPolicy)}
+            Assert 'a proposed policy that denies does not widen the held one' ($r.status -eq 'ok' -and $r.holds -eq $false) ($r|ConvertTo-Json -Compress)
+        } else {
+            Assert 'a current lease under a policy that denies is refused with the policy reason' ($r.status -eq 'refused' -and $r.stage -eq 'admission' -and $r.reason -ceq 'the held policy does not allow Network.Read now: denied by policy') ($r|ConvertTo-Json -Compress)
+            $r=Ask $service @{op='policy';question='dead-rules'}
+            Assert 'the denying policy reports its shadowed grant as dead' ($r.status -eq 'ok' -and @($r.dead).Count -eq 1) ($r|ConvertTo-Json -Compress)
+        }
+        $heldErr=Finish $service ($held[0]+'-policy');$service=$null
+        $heldFact=(@([IO.File]::ReadLines($heldJournal))[0]|ConvertFrom-Json).record
+        Assert "the $($held[0]) fact records the lease and the held policy" ($heldFact.grant.lease.lease_id -ceq '0702' -and $heldFact.binding.policy_sha256.Length -eq 64)
+    }
+    $flowJournal=Join-Path $work 'flow-policy.jsonl'
+    $service=Launch (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',$flowJournal,'-Requester',$requesterKey,'-Grantors',"$grantorB,$grantorA",'-Identity',$identityKey,'-MaxLeaseSeconds','900','-Policy',$allowPolicy,'-NameBook',$bookFile)
+    $r=Ask $service @{op='run';source=$network;lease=$minted.flow}
+    Assert 'a lease forbidding a flow the row holds both ends of is refused at stage flow' ($r.status -eq 'refused' -and $r.stage -eq 'flow' -and @($r.flow).Count -eq 1 -and $r.flow[0].source -ceq 'Network.Read' -and $r.flow[0].sink -ceq 'Console' -and $r.lease.lease_id -ceq '0702') ($r|ConvertTo-Json -Compress -Depth 6)
+    Assert 'the flow refusal carries both analyses, each finding the path, for a program printing what it read' ($r.analysis.verdict -ceq 'path' -and @($r.analysis.reach).Count -eq 1 -and $r.analysis.reach[0].sink -ceq 'Console.Write' -and $r.analysis_second -ceq 'path: 0') ($r|ConvertTo-Json -Compress -Depth 6)
+    $r=Ask $service @{op='run';source=(Source "  opening : [Console, Network.Read] Nothing = act`n    value <- net-status`n    print-line-uni `"constant`"`n  end");lease=$minted.flow}
+    Assert 'a program holding both ends with no path in both analyses passes the flow stage, carrying both verdicts' ($r.stage -ne 'flow' -and $r.status -ne 'refused' -and $r.analysis.verdict -ceq 'no path' -and $r.analysis_second -ceq 'no path' -and $r.lease.lease_id -ceq '0702') ($r|ConvertTo-Json -Compress -Depth 6)
+    $r=Ask $service @{op='run';source=(Source "  pass : Integer -> Integer`n  pass (n) = if n < 0 then pass (n + 1) else n`n  opening : [Console, Network.Read] Nothing = act`n    value <- net-status`n    let a = pass value`n    in print-line-uni (show (pass 3))`n  end");lease=$minted.flow}
+    Assert 'a program the two analyses disagree on (first path, second no path) stays refused at stage flow naming both' ($r.status -eq 'refused' -and $r.stage -eq 'flow' -and $r.analysis.verdict -ceq 'path' -and $r.analysis_second -ceq 'no path') ($r|ConvertTo-Json -Compress -Depth 6)
+    $flowErr=Finish $service 'flow-policy';$service=$null
+    $flowFact=(@([IO.File]::ReadLines($flowJournal))[0]|ConvertFrom-Json).record
+    Assert 'the flow fact records the stage and the forbidden pair' ($flowFact.stage -ceq 'flow' -and @($flowFact.flow).Count -eq 1 -and $flowFact.flow[0].sink -ceq 'Console' -and $flowFact.analysis.verdict -ceq 'path') ($flowFact|ConvertTo-Json -Compress -Depth 6)
+    $rawJournal=Join-Path $work 'flow-raw.jsonl'
+    $service=Launch (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',$rawJournal,'-Requester',$requesterKey,'-Grantors',"$grantorB,$grantorA",'-Identity',$identityKey,'-MaxLeaseSeconds','900','-Policy',$allowPolicy,'-NameBook',$bookFile)
+    $r=Ask $service @{op='run';source=(Source "  opening : [Network.Read] Integer = act`n    value <- net-status`n    peek-byte (alloc-bytes 8) value`n  end");lease=$minted.flow}
+    Assert 'a program naming raw memory under a flow rule is refused at stage flow' ($r.status -eq 'refused' -and $r.stage -eq 'flow' -and @($r.needs) -contains 'no raw memory under a flow rule' -and @($r.raw).Count -eq 1 -and $r.raw[0] -ceq 'peek-byte' -and $r.lease.lease_id -ceq '0702') ($r|ConvertTo-Json -Compress -Depth 6)
+    $r=Ask $service @{op='run';source=(Source "  opening : [Network.Read] Integer = act`n    value <- net-status`n    value`n  end");lease=$minted.flow}
+    Assert 'the same program without raw memory passes the flow stage' ($r.stage -ne 'flow' -and $r.lease.lease_id -ceq '0702') ($r|ConvertTo-Json -Compress -Depth 6)
+    $rawErr=Finish $service 'flow-raw';$service=$null
+    $rawFact=(@([IO.File]::ReadLines($rawJournal))[0]|ConvertFrom-Json).record
+    Assert 'the raw-memory fact records the stage and the named builtin' ($rawFact.stage -ceq 'flow' -and @($rawFact.raw).Count -eq 1 -and $rawFact.raw[0] -ceq 'peek-byte') ($rawFact|ConvertTo-Json -Compress -Depth 6)
+    $spin=Source "  spin : Integer -> Integer`n  spin (n) = if n == 0 then 0 else spin (n + 1)`n  opening : [Console, Network.Read] Nothing = act`n    print-line-uni (show (spin 1))`n  end"
+    $quotaArgs=@('-Requester',$requesterKey,'-Grantors',"$grantorB,$grantorA",'-Identity',$identityKey,'-MaxLeaseSeconds','900','-Policy',$quotaPolicy,'-NameBook',$bookFile)
+    $today=[DateTime]::Now.ToString('yyyy-MM-dd')
+    $ledgerLine={param($ms)(([ordered]@{grantor=$grantorA;holder=$requesterKey;rule='grant:Network.Read';period_key=$today;ms=$ms})|ConvertTo-Json -Compress)+"`n"}
+    $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work 'quota-noledger.jsonl'))+$quotaArgs)
+    $r=Ask $service @{op='run';source=$network;lease=$minted.quota}
+    Assert 'a quota without a usage ledger is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'the held policy carries a quota and this instance keeps no usage ledger') ($r|ConvertTo-Json -Compress)
+    $null=Finish $service 'quota-noledger';$service=$null
+    $spentLedger=Join-Path $work 'spent.ledger';[IO.File]::WriteAllText($spentLedger,(& $ledgerLine 3600000),$utf8)
+    $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work 'quota-spent.jsonl'),'-UsageLedger',$spentLedger)+$quotaArgs)
+    $r=Ask $service @{op='run';source=$network;lease=$minted.quota}
+    Assert 'a spent quota is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'quota of 60 minutes per day is spent') ($r|ConvertTo-Json -Compress)
+    $null=Finish $service 'quota-spent';$service=$null
+    $nearLedger=Join-Path $work 'near.ledger';[IO.File]::WriteAllText($nearLedger,(& $ledgerLine 3599000),$utf8)
+    $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work 'quota-near.jsonl'),'-UsageLedger',$nearLedger)+$quotaArgs)
+    $r=Ask $service @{op='run';source=$spin;lease=$minted.quota;limits=@{ms=10000}}
+    $charges=@([IO.File]::ReadAllLines($nearLedger)|Where-Object{$_}|ForEach-Object{$_|ConvertFrom-Json})
+    Assert 'a quota one second short admits, caps execution at the remainder and charges it' ($r.stage -eq 'run' -and $r.quota.spent_ms_before -eq 3599000 -and $charges.Count -eq 2 -and $charges[1].ms -ge 900 -and $charges[1].ms -le 3000 -and $r.ms.run -le 3000) ("charged $($charges[-1].ms); "+($r|ConvertTo-Json -Compress))
+    $null=Finish $service 'quota-near';$service=$null
+    $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work 'quota-restart.jsonl'),'-UsageLedger',$nearLedger)+$quotaArgs)
+    $r=Ask $service @{op='run';source=$network;lease=$minted.quota}
+    Assert 'a restarted instance keeps the count' ($r.status -eq 'refused' -and $r.reason -ceq 'quota of 60 minutes per day is spent') ($r|ConvertTo-Json -Compress)
+    $null=Finish $service 'quota-restart';$service=$null
+    foreach($case in @(
+        @('a policy without its name book refuses to start',@('-Requester',$requesterKey,'-Grantors',$grantorA,'-Identity',$identityKey,'-Policy',$allowPolicy),'needs both'),
+        @('a requester inside the grantor set refuses to start',@('-Requester',$requesterKey,'-Grantors',"$grantorA,$requesterKey",'-Identity',$identityKey),'self-granted'),
+        @('an identity equal to the requester refuses to start',@('-Requester',$requesterKey,'-Grantors',$grantorA,'-Identity',$requesterKey),'must differ'),
+        @('a malformed key refuses to start',@('-Requester',$requesterKey.ToUpperInvariant(),'-Grantors',$grantorA,'-Identity',$identityKey),'64 lowercase hex'),
+        @('a request-bound instance naming a requester refuses to start',@('-RequestBinding','-Requester',$requesterKey,'-Grantors',$grantorA,'-Identity',$identityKey),'takes no -Requester')
+    )){
+        $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work ([Guid]::NewGuid().ToString('N')+'.jsonl')))+$case[1])
+        if(-not $service.process.WaitForExit(10000)){throw "Binding refusal hung: $($case[0])"}
+        $why=$service.errors.GetAwaiter().GetResult()
+        Assert $case[0] ($service.process.ExitCode -ne 0 -and $why -match $case[2]) $why
+        $service.process.Dispose();$service=$null
+    }
+
+    $leases=(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'mint-test-lease.ps1') -Work $work -Kernel $Kernel | Select-Object -Last 1) | ConvertFrom-Json
+    if($LASTEXITCODE -ne 0 -or -not $leases.allow){throw 'Lease mint failed'}
+    $minted.allow=$leases.allow;$allowPolicy=$leases.allow_policy;$bookFile=$leases.name_book
+    $unit=Launch $probe @()
+    $fresh={param($Request,[long]$Skew=0)$Request.requester=$requesterKey;$Request.nonce=[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant();$Request.issued_at=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+$Skew;$Request}
+    $signed={param($Request)$text=$Request|ConvertTo-Json -Depth 10 -Compress;$sig=Ask $unit @{op='sign';text=$text};$text.Substring(0,$text.Length-1)+',"signature":"'+$sig+'"}'}
+    $requestArgs=@('-RequestBinding','-Grantors',"$grantorB,$grantorA",'-Identity',$identityKey,'-MaxLeaseSeconds','900','-Policy',$allowPolicy,'-NameBook',$bookFile)
+    $requestJournal=Join-Path $work 'request-bound.jsonl'
+    $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',$requestJournal)+$requestArgs)
+    $d=Ask $service @{op='describe'}
+    Assert 'describe reports request binding' ($d.binding.transport -ceq 'request' -and $d.binding.requester -ceq '' -and $d.binding.identity -ceq $identityKey) ($d.binding|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='run';source=$pure}
+    Assert 'an unsigned run on a request-bound instance is refused' ($r.status -eq 'refused' -and $r.stage -eq 'authentication' -and $r.reason -match 'requester must be') ($r|ConvertTo-Json -Compress)
+    $line=& $signed (& $fresh @{op='run';source=$pure})
+    $r=AskRaw $service $line
+    Assert 'a signed ambient run is admitted as its requester' ($r.status -eq 'ok' -and $r.stdout -ceq "42`n" -and $r.requester -ceq $requesterKey) ($r|ConvertTo-Json -Compress)
+    $r=AskRaw $service $line
+    Assert 'a replayed signed request is refused' ($r.status -eq 'refused' -and $r.stage -eq 'authentication' -and $r.reason -ceq 'nonce was seen inside the window') ($r|ConvertTo-Json -Compress)
+    foreach($skew in @(-120,120)){
+        $r=AskRaw $service (& $signed (& $fresh @{op='run';source=$pure} $skew))
+        Assert "a request issued $skew s from the clock is refused" ($r.status -eq 'refused' -and $r.reason -ceq "issued_at is more than 60 seconds from this conduit's clock") ($r|ConvertTo-Json -Compress)
+    }
+    $r=AskRaw $service ((& $signed (& $fresh @{op='run';source=$pure})).Replace('= 42','= 43'))
+    Assert 'a request changed after signing is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'request signature does not verify') ($r|ConvertTo-Json -Compress)
+    $r=AskRaw $service (& $signed (& $fresh @{op='run';source=$network;lease=$minted.allow}))
+    Assert 'a leased run on a nonce this instance never issued is refused' ($r.status -eq 'refused' -and $r.stage -eq 'admission' -and $r.reason -match 'must be a challenge this instance issued') ($r|ConvertTo-Json -Compress)
+    $r=Ask $service @{op='policy';question='dead-rules'}
+    Assert 'an unsigned policy question on a request-bound instance is refused' ($r.status -eq 'refused' -and $r.stage -eq 'authentication') ($r|ConvertTo-Json -Compress)
+    $r=AskRaw $service (& $signed (& $fresh @{op='policy';question='can-allow';label='Network.Read'}))
+    Assert 'a signed policy question on a request-bound instance is answered' ($r.status -eq 'ok' -and $r.holds -eq $true -and $r.requester -ceq $requesterKey) ($r|ConvertTo-Json -Compress)
+    $c=Ask $service @{op='challenge'}
+    Assert 'a challenge issues a nonce' ($c.status -eq 'ok' -and $c.nonce -cmatch '^[0-9a-f]{64}$' -and $c.expires_in -eq 60) ($c|ConvertTo-Json -Compress)
+    $challenged=& $fresh @{op='run';source=$network;lease=$minted.allow};$challenged.nonce=$c.nonce
+    $line=& $signed $challenged
+    $r=AskRaw $service $line
+    Assert 'a leased run on an issued challenge passes admission as its requester' ($r.stage -ne 'admission' -and $r.stage -ne 'authentication' -and $r.lease.lease_id -ceq '0702' -and $r.lease.holder -ceq $requesterKey -and $r.requester -ceq $requesterKey) ($r|ConvertTo-Json -Compress)
+    $r=AskRaw $service $line
+    Assert 'a replayed challenged run is refused' ($r.status -eq 'refused' -and $r.reason -ceq 'nonce was seen inside the window') ($r|ConvertTo-Json -Compress)
+    $c=Ask $service @{op='challenge'}
+    $null=Finish $service 'request-bound';$service=$null
+    $requestFacts=@([IO.File]::ReadLines($requestJournal)|ForEach-Object {($_|ConvertFrom-Json).record})
+    Assert 'the signed run fact records the requester' ($requestFacts[2].grant.requester -ceq $requesterKey -and $requestFacts[2].binding.transport -ceq 'request') ($requestFacts[2]|ConvertTo-Json -Compress -Depth 6)
+    $service=Launch (Get-Command pwsh).Source (@('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work 'request-restart.jsonl'))+$requestArgs)
+    $restarted=& $fresh @{op='run';source=$network;lease=$minted.allow};$restarted.nonce=$c.nonce
+    $r=AskRaw $service (& $signed $restarted)
+    Assert 'a challenge issued before a restart is refused after it' ($r.status -eq 'refused' -and $r.stage -eq 'admission' -and $r.reason -match 'must be a challenge this instance issued') ($r|ConvertTo-Json -Compress)
+    $null=Finish $service 'request-restart';$service=$null
+    $null=Finish $unit 'signer';$unit=$null
 
     $service=Launch (Get-Command pwsh).Source @('-NoProfile','-File',(Join-Path $PSScriptRoot 'serve.ps1'),'-Journal',(Join-Path $work 'cancel.jsonl'))
     $d=Ask $service @{op='describe'}

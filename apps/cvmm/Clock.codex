@@ -2,6 +2,10 @@ Chapter: Clock
   cites Cvmm chapter CvmmTypes
   cites UI chapter Widget
   cites UI chapter Layout
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone
+  cites Dev chapter DateTimeSettings
 
 Section: Time Display
 
@@ -23,9 +27,14 @@ Section: Time Display
     in h & ":" & m & period
 
   epoch-to-tod : Integer, Integer -> TimeOfDay
-  epoch-to-tod (epoch) (utc-offset-hours) =
-    let adjusted = epoch + utc-offset-hours * 3600
-    in let day-secs = adjusted - (adjusted / 86400) * 86400
+  epoch-to-tod (epoch) (utc-offset-hours) = tod-of-local (epoch + utc-offset-hours * 3600)
+
+  epoch-to-tod-in : Zone, Integer -> TimeOfDay
+  epoch-to-tod-in (z) (epoch) = tod-of-local (utc-to-local z epoch)
+
+  tod-of-local : Integer -> TimeOfDay
+  tod-of-local (adjusted) =
+    let day-secs = tz-mod adjusted 86400
     in TimeOfDay {
       tod-hour = day-secs / 3600,
       tod-minute = (day-secs - (day-secs / 3600) * 3600) / 60,
@@ -183,7 +192,7 @@ Section: Clock State
 
   ClockState = record {
     clk-epoch : Integer,
-    clk-utc-offset : Integer,
+    clk-zone : Zone,
     clk-use-24h : Boolean,
     clk-tab : ClockTab,
     clk-timers : List TimerEntry,
@@ -196,7 +205,7 @@ Section: Clock State
   clock-new : ClockState
   clock-new = ClockState {
     clk-epoch = 0,
-    clk-utc-offset = 0,
+    clk-zone = dt-zone-utc,
     clk-use-24h = True,
     clk-tab = ClockTabClock,
     clk-timers = [],
@@ -210,7 +219,13 @@ Section: Clock State
   clk-set-tab (st) (tab) = __record-set st "clk-tab" tab
 
   clk-current-time : ClockState -> TimeOfDay
-  clk-current-time (st) = epoch-to-tod (st.clk-epoch) (st.clk-utc-offset)
+  clk-current-time (st) = epoch-to-tod-in (st.clk-zone) (st.clk-epoch)
+
+  clk-set-zone : ClockState, Zone -> ClockState
+  clk-set-zone (st) (z) = __record-set st "clk-zone" z
+
+  clk-zone-label : ClockState -> Text
+  clk-zone-label (st) = (st.clk-zone).name & " (" & (zone-type-at (zone-cover (st.clk-zone) (st.clk-epoch)) (st.clk-epoch)).abbr & ")"
 
   clk-format-current : ClockState -> Text
   clk-format-current (st) =
@@ -233,7 +248,7 @@ Section: Widget Building
     in let body = when st.clk-tab
       is ClockTabClock -> widget-panel "clk-face" DirColumn 8 [
         widget-label "clk-time" (clk-format-current st),
-        widget-label "clk-utc" ("UTC" & (if st.clk-utc-offset >= 0 then "+" else "") & show (st.clk-utc-offset)),
+        widget-label "clk-zone" (clk-zone-label st),
         widget-button "clk-toggle-fmt" (if st.clk-use-24h then "Switch to 12h" else "Switch to 24h")
       ]
       is ClockTabTimers -> let rows = clk-timer-rows (st.clk-timers) 0 (st.clk-timer-count) []

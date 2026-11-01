@@ -17,8 +17,6 @@ Chapter: TextEncoderXL
 
  Fixed-point (scale 1000).
 
- We say:
-
 Section: Types
   DualEncoderState = record {
     de-encoder1 : TextEncoderState,
@@ -55,7 +53,7 @@ Section: Dual Encode
     in let seq-len = list-length tokens
     in let hidden1 = dual-encode-penultimate tokens (state.de-encoder1) (state.de-config1)
     in let hidden2 = dual-encode-penultimate tokens (state.de-encoder2) (state.de-config2)
-    in let pooled = dual-extract-pooled hidden2 seq-len (state.de-config2.te-d-model)
+    in let pooled = dual-extract-pooled hidden2 tokens (state.de-config2.te-d-model)
     in let context = dual-concat-hidden hidden1 hidden2 seq-len (state.de-config1.te-d-model) (state.de-config2.te-d-model)
     in DualEncoderOutput {
       deo-context = context,
@@ -78,11 +76,16 @@ Section: Penultimate Layer Output
     in te-run-layers embedded (state.tes-layers) tf-cfg 0 (cfg.te-num-layers - 1)
 
 Section: Pooled Output (EOS token hidden state)
-  dual-extract-pooled : List Integer, Integer, Integer -> List Integer
-  dual-extract-pooled (hidden) (seq-len) (dim) =
-    let eos-pos = seq-len - 1
-    in let start = eos-pos * dim
-    in dual-extract-vec hidden start dim 0 []
+  dual-extract-pooled : List Integer, List Integer, Integer -> List Integer
+  dual-extract-pooled (hidden) (tokens) (dim) =
+    let eos-pos = dual-first-eos tokens 0 (list-length tokens)
+    in dual-extract-vec hidden (eos-pos * dim) dim 0 []
+
+  dual-first-eos : List Integer, Integer, Integer -> Integer
+  dual-first-eos (tokens) (i) (n) =
+    if i >= n then n - 1
+    else if list-at tokens i == clip-eos-token then i
+    else dual-first-eos tokens (i + 1) n
 
   dual-extract-vec : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   dual-extract-vec (data) (start) (dim) (i) (acc) =

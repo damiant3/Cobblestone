@@ -12,7 +12,8 @@ $PlugCdx = Join-Path $PSScriptRoot 'build-output\ptx-plug.cdx'
 # their IR and their log (plugs 2.26).
 $RunTag  = if ($Out) { [System.IO.Path]::GetFileNameWithoutExtension($Out) } else { $PID }
 $LogFile = Join-Path $PSScriptRoot "build-output\run-$RunTag.log"
-if (-not (Test-Path $PlugCdx)) { [Console]::Error.WriteLine("MISSING: $PlugCdx"); exit 2 }
+. (Join-Path $PSScriptRoot '..' 'common' 'plug-fresh.ps1')
+Update-StalePlug -PlugDir $PSScriptRoot -PlugCdx $PlugCdx
 
 # Phase 1: source -> IR-CCE
 $IrFile = Join-Path $PSScriptRoot "build-output\last-run-$RunTag.ir"

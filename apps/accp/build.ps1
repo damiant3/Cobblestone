@@ -7,12 +7,14 @@ if (-not $Kernel) { $Kernel = Join-Path $repo 'seed/Codex.cdx' }
 if (-not $OutDir) { $OutDir = Join-Path $PSScriptRoot 'build-output' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
+& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'raw-memory-census.ps1') -Repo $repo
+if($LASTEXITCODE -ne 0){throw 'Raw-memory census failed: classify every builtin in apps/accp/raw-memory-census.json or AccpFlow.codex afl-raw-memory'}
 $runtimeArgs=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'build-runtime.ps1'),'-Kernel',$Kernel,'-OutDir',$OutDir)
 if($ReuseRuntime){$runtimeArgs+='-Reuse'}
 & pwsh @runtimeArgs
 if($LASTEXITCODE -ne 0){throw 'ACCP runtime build failed'}
 . (Join-Path $repo 'build/quire-map.ps1')
-foreach ($library in @(@('math','AccpMath'),@('physics','AccpPhysics'),@('experiment','AccpExperiment'))) {
+foreach ($library in @(@('math','AccpMath'),@('physics','AccpPhysics'),@('experiment','AccpExperiment'),@('exact','AccpExact'))) {
     $ordered = Resolve-CiteOrder -RootLines @("  cites Accp chapter $($library[1])") -Repo $repo
     $source = (Format-CiteChapters -Ordered $ordered) -join "`n"
     $bytes = [Text.Encoding]::UTF8.GetBytes($source)
@@ -34,7 +36,7 @@ foreach($entry in $entries){
     if ($LASTEXITCODE -ne 0) { throw 'Console packaging failed' }
 }
 $manifest = [ordered]@{ version = 2; seed = (Get-FileHash $Kernel).Hash.ToLowerInvariant(); files = [ordered]@{} }
-$artifacts=@('codex-compiler.wasm','wasm-stdio.wasm','runtime.json','math.codex','physics.codex','experiment.codex')
+$artifacts=@('codex-compiler.wasm','wasm-stdio.wasm','runtime.json','math.codex','physics.codex','experiment.codex','exact.codex')
 foreach($entry in $entries){$artifacts+=@("$entry.cdx","$entry.exe")}
 foreach ($name in $artifacts) {
     $hash = (Get-FileHash (Join-Path $OutDir $name)).Hash.ToLowerInvariant()

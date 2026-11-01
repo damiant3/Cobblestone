@@ -1,0 +1,198 @@
+Chapter: AccpLeasePolicy
+  cites Accp chapter AccpGrant
+  cites Trust chapter AgentProtocol
+  cites Trust chapter GrantSeal
+  cites Trust chapter NameBook
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+ The grantor and holder secrets are RFC 8032 section 7.1 TEST 1 and TEST 2;
+ the third is TEST 3, a key this instance does not trust.
+
+  grantor-secret : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  holder-secret : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  other-secret : List Integer = [197, 170, 141, 244, 63, 159, 131, 123, 237, 183, 68, 47, 49, 220, 183, 177, 102, 211, 133, 53, 7, 111, 9, 75, 133, 206, 58, 46, 11, 68, 88, 247]
+
+  identity-key : List Integer = [212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212]
+
+  policy : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  grantor-pub : List Integer
+  grantor-pub = ed25519-public-key grantor-secret
+
+  holder-pub : List Integer
+  holder-pub = ed25519-public-key holder-secret
+
+  other-pub : List Integer
+  other-pub = ed25519-public-key other-secret
+
+  binding-held : Text -> AccpBinding
+  binding-held (policy-hex) = AccpBinding {
+    bound = True,
+    requester = ag-hex holder-pub,
+    identity = ag-hex identity-key,
+    grantors = ag-hex grantor-pub,
+    max-seconds = 900,
+    policy-sha256 = policy-hex
+  }
+
+  LeaseSpec = record {
+    holder : List Integer,
+    grantor : List Integer,
+    audience : List Integer,
+    name : Text,
+    direction : Integer between 0 and 255,
+    scope : Text,
+    path : Text,
+    not-before : Integer,
+    expires : Integer,
+    flows : List Text,
+    gates : List Text,
+    conditions : List (List Integer)
+  }
+
+  base : LeaseSpec
+  base = LeaseSpec {
+    holder = holder-pub,
+    grantor = grantor-pub,
+    audience = identity-key,
+    name = "FileSystem.Write",
+    direction = 1,
+    scope = "/jake/homework/",
+    path = "/jake/homework/",
+    not-before = 900,
+    expires = 1500,
+    flows = [],
+    gates = [],
+    conditions = []
+  }
+
+  grant-of : LeaseSpec -> GrantMsg
+  grant-of (s) = GrantMsg {
+    id = [7, 1],
+    proposal = [],
+    from = AgentIdentity { public-key = s.holder },
+    grantor = AgentIdentity { public-key = s.grantor },
+    audience = AgentIdentity { public-key = s.audience },
+    capability = Capability { name = s.name, direction = s.direction, scope = s.scope },
+    scope = Scope { direction = s.direction, path = s.path, duration = 0 },
+    not-before = s.not-before,
+    expires = s.expires,
+    policy-sha256 = policy,
+    flow-rules = s.flows,
+    gates = s.gates,
+    conditions = s.conditions,
+    signature = []
+  }
+
+  flipped : GrantMsg -> GrantMsg
+  flipped (g) = GrantMsg {
+    id = g.id,
+    proposal = g.proposal,
+    from = g.from,
+    grantor = g.grantor,
+    audience = g.audience,
+    capability = g.capability,
+    scope = g.scope,
+    not-before = g.not-before,
+    expires = g.expires,
+    policy-sha256 = g.policy-sha256,
+    flow-rules = g.flow-rules,
+    gates = g.gates,
+    conditions = g.conditions,
+    signature = flip-first (g.signature) 0 []
+  }
+
+  flip-first : List Integer, Integer, List Integer -> List Integer
+  flip-first (s) (i) (acc) =
+    if i >= list-length s then acc
+    else let b = list-at s i
+    in flip-first s (i + 1) (list-push acc (if i == 0 then (if b == 255 then 0 else b + 1) else b))
+
+  jake : Text
+  jake = "We say:\n\"Jake's agent\" is permitted to use FileSystem.Write on weekdays between 15:00 and 18:00, for no more than 1 hour per day."
+
+  jake-denied : Text
+  jake-denied = "We say:\n\"Jake's agent\" is permitted to use FileSystem.Write on weekdays between 15:00 and 18:00.\n\"Jake's agent\" is never permitted to use FileSystem.Write."
+
+  book-of : List Integer, List Integer, List Integer -> NameBook
+  book-of (secret) (pub) (who) = name-book-sign secret pub [NameEntry { name = "Jake's agent", key = who }]
+
+  jake-approved : Text
+  jake-approved = "We say:\n\"Jake's agent\" is permitted to use FileSystem.Write with approval from Mum."
+
+  book-with-mum : NameBook
+  book-with-mum = name-book-sign grantor-secret grantor-pub [NameEntry { name = "Jake's agent", key = holder-pub }, NameEntry { name = "Mum", key = other-pub }]
+
+  jake-book : NameBook
+  jake-book = book-of grantor-secret grantor-pub holder-pub
+
+  family : LeaseSpec
+  family = LeaseSpec {
+    holder = holder-pub,
+    grantor = grantor-pub,
+    audience = identity-key,
+    name = "FileSystem",
+    direction = 2,
+    scope = "/jake/homework/",
+    path = "/jake/homework/",
+    not-before = 900,
+    expires = 1500,
+    flows = [],
+    gates = [],
+    conditions = []
+  }
+
+  sealed : LeaseSpec, List Integer -> GrantMsg
+  sealed (s) (secret) = grant-seal (grant-of s) secret
+
+  held : Text
+  held = ag-hex policy
+
+  at : Integer, Integer, Integer -> Integer
+  at (day) (hour) (minute) = day * 1440 + hour * 60 + minute
+
+  check : Text, Text, NameBook, LeaseSpec, Integer, List Text, List Text -> Text
+  check (label) (text) (book) (spec) (week-minute) (r) (s) =
+    let why = ag-admit (binding-held held) (sealed spec grantor-secret) 1000 week-minute (ag-held-policy text book grantor-pub) r s
+    in label & ": " & (if why == "" then "admitted" else why)
+
+  check-held : Text, Text, Integer -> Text
+  check-held (label) (text) (week-minute) =
+    let why = ag-admit-held (binding-held held) (sealed base grantor-secret) 1000 week-minute (ag-held-policy text jake-book grantor-pub) (ag-policy-unread text) row scopes
+    in label & ": " & (if why == "" then "admitted" else why)
+
+  row : List Text
+  row = ["Console", "FileSystem.Write"]
+
+  scopes : List Text
+  scopes = ["", "/jake/homework/"]
+
+  opening : [Console] Nothing = act
+    print-line-uni (check "Monday 16:00" jake jake-book base (at 0 16 0) row scopes)
+    print-line-uni (check "Monday 15:00" jake jake-book base (at 0 15 0) row scopes)
+    print-line-uni (check "Monday 18:00" jake jake-book base (at 0 18 0) row scopes)
+    print-line-uni (check "Monday 18:01" jake jake-book base (at 0 18 1) row scopes)
+    print-line-uni (check "Monday 14:59" jake jake-book base (at 0 14 59) row scopes)
+    print-line-uni (check "Saturday 16:00" jake jake-book base (at 5 16 0) row scopes)
+    print-line-uni (check "Friday 17:00" jake jake-book base (at 4 17 0) row scopes)
+    print-line-uni (check "read label, write-only grant" jake jake-book family (at 0 16 0) ["FileSystem.Read"] ["/jake/homework/"])
+    print-line-uni (check "book by another grantor" jake (book-of other-secret other-pub holder-pub) base (at 0 16 0) row scopes)
+    print-line-uni (check "book binds Jake to another key" jake (book-of grantor-secret grantor-pub other-pub) base (at 0 16 0) row scopes)
+    print-line-uni (check "denial line" jake-denied jake-book base (at 0 16 0) row scopes)
+    print-line-uni (check "scope outside the lease, in the window" jake jake-book base (at 0 16 0) ["FileSystem.Write"] ["/"])
+    print-line-uni (check "approval-gated grant" jake-approved book-with-mum base (at 0 16 0) row scopes)
+    print-line-uni (check-held "held policy reads" jake (at 0 16 0))
+    print-line-uni (check-held "held policy with a pronoun" "We say:\n\"Jake's agent\" is permitted to use it on weekdays." (at 0 16 0))
+    print-line-uni (check-held "held policy in the old verb" "We say:\n\"Jake's agent\" may use FileSystem.Write." (at 0 16 0))
+    print-line-uni (check-held "held policy with no rule block" "\"Jake's agent\" is permitted to use FileSystem.Write." (at 0 16 0))
+    print-line-uni (check-held "held policy, second line unread" "We say:\n\"Jake's agent\" is permitted to use FileSystem.Write.\n\"Jake's agent\" is permitted to use Email.Send for no more than an hour a day." (at 0 16 0))
+  end
+
+Page 1

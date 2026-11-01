@@ -55,18 +55,19 @@ Section: Match
   rv-emit-match-branches (st) (branches) (scrut-reg) (result-reg) (i) =
     if i >= list-length branches then st
     else let branch = list-at branches i
+    in let tail-in = st.tco.in-tail-pos
     in when (branch.pattern)
      is IrWildPat (s) ->
       let guard-r = rv-emit-match-guard st (branch.guard)
       in if guard-r.guard-patch < 0 then
-        let br = rv-emit-expr (guard-r.state) (branch.body)
+        let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
         in rv-store-local (br.state) result-reg (br.reg)
-      else let br = rv-emit-expr (guard-r.state) (branch.body)
+      else let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
       in let st1 = rv-store-local (br.state) result-reg (br.reg)
       in let jmp-end-index = st1.insn-count
       in let st2 = rv-emit st1 rv-nop
       in let next-start = st2.insn-count
-      in let st3 = rv-emit-match-branches st2 branches scrut-reg result-reg (i + 1)
+      in let st3 = rv-emit-match-branches (rv-set-tail-pos st2 tail-in) branches scrut-reg result-reg (i + 1)
       in let end-index = st3.insn-count
       in let st4 = rv-patch-guard st3 guard-r next-start
       in rv-patch-insn st4 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
@@ -77,14 +78,14 @@ Section: Match
       in let st2 = rv-bind-local st1 name (loc.reg)
       in let guard-r = rv-emit-match-guard st2 (branch.guard)
       in if guard-r.guard-patch < 0 then
-        let br = rv-emit-expr (guard-r.state) (branch.body)
+        let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
         in rv-store-local (br.state) result-reg (br.reg)
-      else let br = rv-emit-expr (guard-r.state) (branch.body)
+      else let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
       in let st3 = rv-store-local (br.state) result-reg (br.reg)
       in let jmp-end-index = st3.insn-count
       in let st4 = rv-emit st3 rv-nop
       in let next-start = st4.insn-count
-      in let st5 = rv-emit-match-branches st4 branches scrut-reg result-reg (i + 1)
+      in let st5 = rv-emit-match-branches (rv-set-tail-pos st4 tail-in) branches scrut-reg result-reg (i + 1)
       in let end-index = st5.insn-count
       in let st6 = rv-patch-guard st5 guard-r next-start
       in rv-patch-insn st6 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
@@ -99,12 +100,12 @@ Section: Match
       in let st3 = rv-emit st2 rv-nop
       in let fields = rv-bind-ctor-fields st3 sub-pats scrut-reg 0 []
       in let guard-r = rv-emit-match-guard (fields.state) (branch.guard)
-      in let br = rv-emit-expr (guard-r.state) (branch.body)
+      in let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
       in let st5 = rv-store-local (br.state) result-reg (br.reg)
       in let jmp-end-index = st5.insn-count
       in let st6 = rv-emit st5 rv-nop
       in let next-start = st6.insn-count
-      in let st7 = rv-emit-match-branches st6 branches scrut-reg result-reg (i + 1)
+      in let st7 = rv-emit-match-branches (rv-set-tail-pos st6 tail-in) branches scrut-reg result-reg (i + 1)
       in let end-index = st7.insn-count
       in let st8 = rv-patch-insn st7 bne-index (rv-bne (tag-r.reg) (exp-r.reg) ((next-start - bne-index) * 4))
       in let st8b = rv-patch-pat-checks st8 (fields.checks) next-start 0
@@ -114,14 +115,14 @@ Section: Match
       let lr = rv-load-local st scrut-reg
       in let chk = rv-emit-pat-lit-test (lr.state) (lr.reg) value ty
       in let guard-r = rv-emit-match-guard (chk.state) (branch.guard)
-      in let br = rv-emit-expr (guard-r.state) (branch.body)
+      in let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
       in let st3 = rv-store-local (br.state) result-reg (br.reg)
       in let jmp-end-index = st3.insn-count
       in let st4 = rv-emit st3 (rv-j 0)
       in let next-start = st4.insn-count
       in let st5 = rv-patch-pat-checks st4 (chk.checks) next-start 0
       in let st5a = rv-patch-guard st5 guard-r next-start
-      in let st6 = rv-emit-match-branches st5a branches scrut-reg result-reg (i + 1)
+      in let st6 = rv-emit-match-branches (rv-set-tail-pos st5a tail-in) branches scrut-reg result-reg (i + 1)
       in let end-index = st6.insn-count
       in rv-patch-insn st6 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
      is IrVecPat (lane-pats) (vecty) (s) ->
@@ -132,14 +133,14 @@ Section: Match
       in let bne-index = st1.insn-count
       in let st2 = rv-emit st1 (rv-bne rv-a3 rv-zero 0)
       in let guard-r = rv-emit-match-guard st2 (branch.guard)
-      in let br = rv-emit-expr (guard-r.state) (branch.body)
+      in let br = rv-emit-expr (rv-set-tail-pos (guard-r.state) tail-in) (branch.body)
       in let st3 = rv-store-local (br.state) result-reg (br.reg)
       in let jmp-end-index = st3.insn-count
       in let st4 = rv-emit st3 (rv-j 0)
       in let next-start = st4.insn-count
       in let st5 = rv-patch-insn st4 bne-index (rv-bne rv-a3 rv-zero ((next-start - bne-index) * 4))
       in let st5a = rv-patch-guard st5 guard-r next-start
-      in let st6 = rv-emit-match-branches st5a branches scrut-reg result-reg (i + 1)
+      in let st6 = rv-emit-match-branches (rv-set-tail-pos st5a tail-in) branches scrut-reg result-reg (i + 1)
       in let end-index = st6.insn-count
       in rv-patch-insn st6 jmp-end-index (rv-j ((end-index - jmp-end-index) * 4))
 
@@ -361,11 +362,6 @@ Section: Match
     in let st3 = rv-emit st2 (rv-addi rv-heap-reg rv-heap-reg 8)
     in RvEmitResult { state = st3, reg = r.reg }
 
- `read-line` is typed `Maybe Text`, so a lane with no stdin pump answers
- the honest EOF: a None cell, tag 1, the same cell x86-64's `__read_line`
- stores at end of input. An empty TEXT here decodes through a `when` on
- Maybe as `Just <garbage>` -- the tag word is 0, which is Just's tag.
-
   rv-emit-maybe-none : RvState -> RvEmitResult
   rv-emit-maybe-none (st) =
     let r = rv-alloc-temp st
@@ -437,7 +433,7 @@ Section: Match
 
   rv-emit-unsupported-arm64 : RvState, Text -> RvEmitResult
   rv-emit-unsupported-arm64 (st) (name) =
-    let msg = "[UNSUPPORTED] " & name & ": the arm64 generic-timer system registers do not exist on this target (refused by design)"
+    let msg = "[UNSUPPORTED] " & name & ": the arm64 system registers do not exist on this target (refused by design)"
     in rv-emit-int-lit (__record-set st "wcet-reports" (list-push (st.wcet-reports) msg)) 0
 
   rv-emit-unsupported-list : RvState, Text -> RvEmitResult
@@ -478,9 +474,6 @@ Section: Match
     in let st5 = rv-store-local (ptr-loc.state) (ptr-loc.reg) (ptr-r.reg)
     in let st6 = rv-store-closure-captures st5 (saved.locals) (ptr-loc.reg) 8 0
     in rv-load-local st6 (ptr-loc.reg)
-
- rv-bne encodes both of its registers, so unlike ARM64 an index alone cannot
- be patched later -- each check carries the pair it must be re-emitted with.
 
   RvPatCheck = record { pc-idx : Integer, pc-rs1 : Integer, pc-rs2 : Integer }
   RvPatChecks = record { state : RvState, checks : List RvPatCheck }
@@ -616,6 +609,44 @@ Section: Tail Call Optimization
      is IrName (n) (t) (sp) -> n == func-name
      is otherwise -> False
 
+  rv-apply-depth : IRExpr, Integer -> Integer
+  rv-apply-depth (e) (k) =
+    when e
+     is IrApply (f) (a) (t) (sp) -> rv-apply-depth f (k + 1)
+     is otherwise -> k
+
+  rv-self-misapplied : IRExpr, Text, Integer -> Boolean
+  rv-self-misapplied (e) (fname) (arity) =
+    when e
+     is IrApply (f) (a) (t) (sp) ->
+      if rv-is-self-call e fname then (if rv-apply-depth e 0 /= arity then True else rv-self-misapplied-args e fname arity)
+      else rv-self-misapplied f fname arity | rv-self-misapplied a fname arity
+     is IrIf (c) (th) (el) (t) (sp) ->
+      rv-self-misapplied c fname arity | rv-self-misapplied th fname arity | rv-self-misapplied el fname arity
+     is IrLet (n) (t) (v) (b) (sp) -> rv-self-misapplied v fname arity | rv-self-misapplied b fname arity
+     is IrMatch (s) (bs) (t) (sp) -> rv-self-misapplied s fname arity | rv-self-misapplied-branches bs fname arity 0
+     is IrAct (stmts) (t) (sp) -> rv-self-misapplied-stmts stmts fname arity 0
+     is IrLambda (ps) (b) (t) (sp) -> rv-self-misapplied b fname arity
+     is IrBinary (op) (l) (r) (t) (sp) -> rv-self-misapplied l fname arity | rv-self-misapplied r fname arity
+     is otherwise -> False
+
+  rv-self-misapplied-args : IRExpr, Text, Integer -> Boolean
+  rv-self-misapplied-args (e) (fname) (arity) =
+    when e
+     is IrApply (f) (a) (t) (sp) -> rv-self-misapplied a fname arity | rv-self-misapplied-args f fname arity
+     is otherwise -> False
+
+  rv-self-misapplied-branches : List IRBranch, Text, Integer, Integer -> Boolean
+  rv-self-misapplied-branches (bs) (fname) (arity) (i) =
+    if i >= list-length bs then False
+    else if rv-self-misapplied ((list-at bs i).body) fname arity then True
+    else rv-self-misapplied-branches bs fname arity (i + 1)
+
+  rv-self-misapplied-stmts : List IRActStmt, Text, Integer, Integer -> Boolean
+  rv-self-misapplied-stmts (ss) (fname) (arity) (i) =
+    if i >= list-length ss then False
+    else if rv-self-misapplied (ir-act-stmt-expr (list-at ss i)) fname arity then True
+    else rv-self-misapplied-stmts ss fname arity (i + 1)
   rv-has-tail-call : IRExpr, Text -> Boolean
   rv-has-tail-call (expr) (func-name) =
     when expr
@@ -644,16 +675,10 @@ Section: Tail Call Optimization
 
   rv-should-tco : IRDef -> Boolean
   rv-should-tco (def) =
-    if list-length (def.params) > 0 then rv-has-tail-call (def.body) (def.name)
+    if list-length (def.params) > 0 then
+      let arity = list-length (def.params) + list-length (rv-unwrap-lambda-params [] (def.body))
+      in rv-has-tail-call (def.body) (def.name) & (rv-self-misapplied (def.body) (def.name) arity) == False
     else False
-
- A frameless function emits no prologue, so it saves no callee-saved
- register. `rv-alloc-local` hands out s2 upward, and in a frameless
- function every one of those belongs to the caller. `rv-emit-let`
- knows this and binds the value's own register instead of allocating;
- `rv-emit-match` does not, and takes a local for the scrutinee
- unconditionally. So a match inside a frameless function writes over
- whatever the caller was keeping in s2.
 
   rv-body-has-match : IRExpr -> Boolean
   rv-body-has-match (expr) =
@@ -708,24 +733,40 @@ Section: Tail Call Optimization
     if n == "bit-not" then True
     else False
 
- A direct call to one of these builtins with the matching arity is
- lowered inline (`rv-and`, `rv-srl`, ...) by `rv-emit-direct-call`, and
- the frameless analysis (`rv-has-any-call`, `rv-arg-has-call`) treats it
- as call-free on the strength of these same two lists. But every bitwise
- op also has an 8-byte runtime helper for its first-class use, and
- `rv-emit-direct-call` looked up that helper by name BEFORE reaching the
- inline arm, so a direct `bit-and x 1` emitted a `jal` to the helper.
- In a frameless function that `jal` clobbers `ra`, the argument registers
- and the parameters, and the function looped back into itself on return --
- every `bit-and crc 1` in an `if` condition hung. Skipping the helper for
- an inline builtin at its own arity is what makes the emission agree with
- the analysis. First-class references (arity zero here) still find it.
-
   rv-is-inline-here : Text, Integer -> Boolean
   rv-is-inline-here (name) (nargs) =
     if nargs == 2 then rv-is-inline-2arg name
     else if nargs == 1 then rv-is-inline-1arg name
     else False
+
+  rv-user-shadows-inline : RvState, Text -> Boolean
+  rv-user-shadows-inline (st) (name) =
+    if rv-is-inline-2arg name | rv-is-inline-1arg name then
+      rv-defs-have (st.ir-defs) name 0 (list-length (st.ir-defs))
+    else False
+
+  rv-body-calls-shadowed-inline : RvState, IRExpr -> Boolean
+  rv-body-calls-shadowed-inline (st) (e) =
+    when e
+     is IrApply (f) (a) (t) (s) ->
+      let head = when f
+       is IrName (n) (ft) (fs) -> rv-user-shadows-inline st n
+       is IrApply (f2) (a2) (t2) (s2) ->
+        when f2
+         is IrName (n2) (ft2) (fs2) -> rv-user-shadows-inline st n2
+         is _ -> False
+       is _ -> False
+      in if head then True
+      else rv-body-calls-shadowed-inline st f | rv-body-calls-shadowed-inline st a
+     is IrIf (c) (th) (el) (t) (s) ->
+      rv-body-calls-shadowed-inline st c | rv-body-calls-shadowed-inline st th | rv-body-calls-shadowed-inline st el
+     is IrLet (n) (t) (v) (b) (s) ->
+      rv-body-calls-shadowed-inline st v | rv-body-calls-shadowed-inline st b
+     is IrBinary (op) (l) (r) (t) (s) ->
+      rv-body-calls-shadowed-inline st l | rv-body-calls-shadowed-inline st r
+     is IrNegate (x) (nty) (s) -> rv-body-calls-shadowed-inline st x
+     is IrLambda (p) (b) (t) (s) -> rv-body-calls-shadowed-inline st b
+     is otherwise -> False
 
   rv-arg-has-call : IRExpr -> Boolean
   rv-arg-has-call (e) =
@@ -865,6 +906,14 @@ Section: Tail Call Optimization
     else rv-xor (rd.reg) (lr.reg) (rr.reg)
     in RvEmitResult { state = rv-emit (rd.state) ins, reg = rd.reg }
 
+  rv-emit-frameless-checked : RvState, IRBinaryOp, IRExpr, IRExpr -> RvEmitResult
+  rv-emit-frameless-checked (st) (op) (left) (right) =
+    let mask = st.temp-reserved
+    in let lr = rv-emit-frameless-arg st left
+    in let rr = rv-emit-frameless-arg (rv-reserve-temp (lr.state) (lr.reg)) right
+    in let rd = rv-alloc-temp (rv-restore-reserved (rr.state) mask)
+    in RvEmitResult { state = rv-emit-checked-op (rd.state) op (rd.reg) (lr.reg) (rr.reg), reg = rd.reg }
+
   rv-emit-frameless-arg : RvState, IRExpr -> RvEmitResult
   rv-emit-frameless-arg (st) (e) =
     when e
@@ -873,7 +922,8 @@ Section: Tail Call Optimization
       in RvEmitResult { state = rv-emit-li (tr.state) (tr.reg) v, reg = tr.reg }
      is IrName (n) (t) (s) -> rv-emit-name st n t
      is IrBinary (op) (l) (r) (t) (s) ->
-      let imm-val = rv-small-imm r
+      if rv-int-checked op t then rv-emit-frameless-checked st op l r
+      else let imm-val = rv-small-imm r
       in if imm-val > 0 then
         if rv-is-imm-eligible op then
           let lr = rv-emit-frameless-arg st l
@@ -938,16 +988,6 @@ Section: Tail Call Optimization
          is _ -> rv-emit-expr st e
        is _ -> rv-emit-expr st e
      is otherwise -> rv-emit-expr st e
-
- The two-argument case used to ask whether each argument read the OTHER
- parameter and choose from three emissions. The both-read path computed
- into temporaries and placed them with `rv-parallel-assign-2`; the two
- asymmetric paths pointed `result-dest` at a parameter register and
- called `rv-emit-expr`. Only `rv-emit-frameless-arg` lowers `bit-and`,
- `bit-or`, `bit-shl`, `bit-shru`, `bit-xor` and `bit-shr` inline, since
- those arrive as an IrApply chain and not an IrBinary. The general
- emitter lowers them the ordinary way, and the ordinary way uses a0 and
- a1, which in a frameless function ARE the parameters.
 
   rv-emit-frameless-tail-call : RvState, RvTcoState, List IRExpr -> RvEmitResult
   rv-emit-frameless-tail-call (st) (tco) (args) =
@@ -1027,15 +1067,6 @@ Section: Tail Call Optimization
        is IrApply (f2) (a2) (t2) (s2) -> rv-tail-reads-reg a reg st | rv-tail-reads-reg a2 reg st
        is _ -> True
      is otherwise -> False
-
- `rv-set-result-dest` is a REQUEST and not a guarantee. An expression is
- free to ignore it and hand back whatever register it happened to build in:
- `rv-emit-nullary-ctor` does exactly that, and so does a bare name already
- living somewhere else. This path used to set the destination, emit the
- argument, and jump, with nothing checking that the value arrived. When it
- did not, the parameter kept its OLD value and the loop re-entered on a
- stale scrutinee -- a wrong answer where the body has a guard, and no
- termination where it does not.
 
   rv-emit-tail-call-direct : RvState, RvTcoState, List IRExpr -> RvEmitResult
   rv-emit-tail-call-direct (st) (tco) (args) =
@@ -1416,7 +1447,7 @@ Section: Module Emission
     if rv-has-bounded-boundary def then rv-emit-function-framed st def
     else let lt = rv-lir-emit-try st def
     in if lt.handled then lt.state
-    else if rv-is-frameless-tco def & rv-body-is-frameless (def.body) (def.name) then
+    else if rv-is-frameless-tco def & rv-body-is-frameless (def.body) (def.name) & (rv-body-calls-shadowed-inline st (def.body)) == False then
       rv-emit-function-frameless st def
     else if rv-is-pure-leaf def then rv-emit-function-leaf st def
     else rv-emit-function-framed st def
@@ -1453,17 +1484,6 @@ Section: Module Emission
     else rv-collect-arg-locals params (i + 1) (list-push acc (rv-a0 + i))
 
   rv-memo-max-slots : Integer = 64
-
- ONLY A SCALAR RESULT MAY BE MEMOISED, because the memo caches the returned
- REGISTER and `list-set-at` writes through the pointer it is given rather than
- copying (`rv-rt-list-set-at`, and arm64's is the same). A memoised list is
- therefore one object shared by every caller: the first caller's update is
- permanent and every later caller starts from the mutated value. `sha256`
- answered correctly ONCE per program and differently wrong on each call after,
- because `sha256-h0` is a zero-parameter pure def returning a list and the
- compression loop sets its eight words. arm64 has no memo and so never shares.
- That made `real-cert` verify its first signature and refuse its second
- (plugs-backlog 1.100).
 
   rv-memo-safe-type : CodexType -> Boolean
   rv-memo-safe-type (ty) =
@@ -1558,18 +1578,11 @@ Section: Module Emission
     in let st5 = rv-emit-return-guard st5 def
     in let st5 = if def.name == "opening" then
       if rv-opening-returns-int (def.type-val) then
-        let st5a = rv-add-call-patch st5 "__itoa"
-        in let st5b = rv-emit st5a rv-nop
-        in let st5c = rv-add-call-patch st5b "print-line-uni"
-        in rv-emit st5c rv-nop
+        rv-emit-call-to (rv-emit-call-to st5 "__itoa") "print-line-uni"
       else if rv-opening-returns-real (def.type-val) then
-        let st5a = rv-add-call-patch st5 "__real_to_text"
-        in let st5b = rv-emit st5a rv-nop
-        in let st5c = rv-add-call-patch st5b "print-line-uni"
-        in rv-emit st5c rv-nop
+        rv-emit-call-to (rv-emit-call-to st5 "__real_to_text") "print-line-uni"
       else if rv-opening-returns-text (def.type-val) then
-        let st5a = rv-add-call-patch st5 "print-line-uni"
-        in rv-emit st5a rv-nop
+        rv-emit-call-to st5 "print-line-uni"
       else st5
     else st5
     in let st5m = if use-memo then rv-emit st5 (rv-sd rv-s0 rv-a0 (memo-slot * 8)) else st5
@@ -1680,14 +1693,6 @@ Section: Module Emission
    "suggested-vector-width",
    "mask-any", "mask-all", "mask-none", "mask-count"]
 
- The twin of the ARM64 check, and the same repair. The subjects are the
- names emitted AFTER the runtime and the set they are checked against is
- what the runtime itself recorded; both are `func-names`, split at
- `runtime-funcs`, which this chapter already stores. A helper added to
- `RiscVRuntime` is covered the day it is added, and no hand list can drift
- away from it. Scanning from 0 instead reported the runtime's own 109
- registrations as user code.
-
   rv-name-in-prefix : List Text, Integer, Integer, Text -> Integer
   rv-name-in-prefix (names) (i) (limit) (want) =
     if i >= limit then 0
@@ -1734,7 +1739,7 @@ Section: Module Emission
 
   rv-emit-module : RvState, IRChapter, List ATypeDef, List Text -> RvState
   rv-emit-module (st) (chapter) (tdefs) (eff-ops) =
-    let lifted = wh-lift-defs (chapter.defs) 0 [] [] []
+    let lifted = wh-lift-defs (sc-defs (chapter.defs) 0 []) 0 [] [] []
     in let defs = rv-drop-def (lifted.defs) wh-resume-id 0 []
     in let st1 = __record-set st "type-defs" tdefs
     in let st1 = rv-pre-learn-type-defs st1 tdefs 0
@@ -1832,9 +1837,6 @@ Section: Effect Handler Emission
   rv-op-handled : RvState, Text -> Boolean
   rv-op-handled (st) (name) = wh-op-arity (st.handled-ops) name 0 >= 0
 
- The slot after the last operation's holds the closure `resume` is bound to.
- The table ends where the memo area begins (`rv-memo-addr`).
-
   rv-effect-op-table-base : Integer = rv-fixed-base + #80000
   rv-effect-op-slots : Integer = 64
 
@@ -1921,29 +1923,12 @@ Section: Effect Handler Emission
     else let patch = list-at patches i
     in let target-offset = rv-find-func-offset (st.func-names) (st.func-offsets) (patch.target) (st.runtime-funcs)
     in if target-offset >= 0
-     then let rel = (target-offset - patch.insn-index) * 4
-     in let st1 = rv-patch-insn st (patch.insn-index) (rv-jal rv-ra rel)
-     in rv-patch-calls-loop st1 patches (i + 1)
+     then let hl = rv-split-hi20-lo12 ((target-offset - patch.insn-index) * 4)
+     in let st1 = rv-patch-insn st (patch.insn-index) (rv-auipc rv-ra (hl.hi))
+     in let st2 = rv-patch-insn st1 (patch.insn-index + 1) (rv-jalr rv-ra rv-ra (hl.lo))
+     in rv-patch-calls-loop st2 patches (i + 1)
     else
       rv-patch-calls-loop (__record-set st "wcet-reports" (list-push (st.wcet-reports) (rv-unresolved-report (patch.target)))) patches (i + 1)
-
- A block builtin with no driver behind it is REFUSED, not warned about, and
- the two answers differ in whether the build survives: `[UNSUPPORTED]` makes
- `run.ps1` exit 6. The plug emits `block-read-sector` and its siblings only
- when the program carries the driver, so an unresolved `block-` name means
- the program asked for a disk it has no way to reach.
-
- Measured 2026-08-18, which is why this is a refusal: `sector-read-list-growth`
- PASSED on the riscv lane with `block-read-sector` unresolved, its disk call
- doing nothing at all, and `block-sector-count` answered 0 where the fixture
- is 128 sectors. A false green and a wrong number, from the same defect.
-
- Every OTHER unresolved name is refused too, and for the same reason: the
- branch is left as emitted, so reaching it reads a stale a0 and the program
- answers whatever the register held. Measured over a full cross battery on
- both lanes before this became a refusal, 486 tests each: four names on
- arm64 and three on riscv64, none of them unresolved by design, so there is
- no allow-list.
 
   rv-unresolved-report : Text -> Text
   rv-unresolved-report (target) =

@@ -4,6 +4,9 @@ Chapter: TaskScheduler
   cites UI chapter Widget
   cites UI chapter Layout
   cites Foreword chapter Maybe
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone
 
 Section: Schedule Expression
 
@@ -25,13 +28,85 @@ Section: Schedule Expression
   sched-pad-min : Integer -> Text
   sched-pad-min (m) = if m < 10 then "0" & show m else show m
 
+ A daily or weekly schedule runs at a local time in a zone. The next run is
+ the first instant after now at which that local time occurs, on a day that
+ matches (weekday 0 Sunday to 6 Saturday for a weekly one); at a transition
+ the caller's choice decides (AfterGap is ruling T5's default), and Refuse
+ passes that night by rather than guessing. sched-next-run is the same over
+ UTC.
+
+  sched-utc-zone : Zone
+  sched-utc-zone = Zone {
+    name = "UTC", initial = TzType { utoff = 0, dst = False, abbr = "UTC" }, trans = [],
+    footer = TzFooter { stdoff = 0, format = "UTC", rules = [] }
+  }
+
   sched-next-run : ScheduleExpr, Integer -> Integer
-  sched-next-run (expr) (now) = when expr
-    is SchedOnce (at) -> at
-    is SchedInterval (secs) -> now + secs
-    is SchedDaily (hour) (minute) -> now + 86400
-    is SchedWeekly (day) (hour) (minute) -> now + 604800
-    is SchedCron (e) -> now + 3600
+  sched-next-run (expr) (now) = sched-next-run-in sched-utc-zone AfterGap expr now
+
+  SchedNext = record { sn-at : Integer, sn-note : Text }
+
+  sched-next-run-in : Zone, LocalChoice, ScheduleExpr, Integer -> Integer
+  sched-next-run-in (z) (choice) (expr) (now) = (sched-next-in z choice expr now).sn-at
+
+  sched-next-in : Zone, LocalChoice, ScheduleExpr, Integer -> SchedNext
+  sched-next-in (z) (choice) (expr) (now) = when expr
+    is SchedOnce (at) -> SchedNext { sn-at = at, sn-note = "" }
+    is SchedInterval (secs) -> SchedNext { sn-at = now + secs, sn-note = "" }
+    is SchedDaily (hour) (minute) -> sched-next-local z choice (0 - 1) (hour * 3600 + minute * 60) now (sched-local-day z now) 0 ""
+    is SchedWeekly (day) (hour) (minute) -> sched-next-local z choice day (hour * 3600 + minute * 60) now (sched-local-day z now) 0 ""
+    is SchedCron (e) -> SchedNext { sn-at = now + 3600, sn-note = "" }
+
+  sched-local-day : Zone, Integer -> Integer
+  sched-local-day (z) (now) = tz-floor-div (utc-to-local z now) 86400
+
+  sched-choice-label : LocalChoice -> Text
+  sched-choice-label (c) = when c
+    is Earlier -> "earlier"
+    is Later -> "later"
+    is AfterGap -> "after the gap"
+    is Refuse -> "refused"
+
+  sched-outcome : Text, LocalChoice -> Text
+  sched-outcome (kind) (c) =
+    if kind == "repeated hour" then (when c
+      is Later -> "ran at the second of the two"
+      is otherwise -> "ran at the first of the two")
+    else (when c
+      is AfterGap -> "ran at the first instant after the gap"
+      is Earlier -> "ran at the earlier of the two readings"
+      is otherwise -> "ran at the later of the two readings")
+
+  sched-kind-label : LocalResolution -> Text
+  sched-kind-label (r) = when r
+    is Exact (u) -> ""
+    is Ambiguous (a) (b) -> "repeated hour"
+    is Skipped (a) (b) -> "skipped hour"
+
+  sched-day-label : Integer -> Text
+  sched-day-label (day) =
+    let z = day + 719468
+    in let era = tz-floor-div z 146097
+    in let doe = z - era * 146097
+    in let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    in let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    in let mp = (5 * doy + 2) / 153
+    in let d = doy - (153 * mp + 2) / 5 + 1
+    in let m = if mp < 10 then mp + 3 else mp - 9
+    in let y = yoe + era * 400 + (if m <= 2 then 1 else 0)
+    in show y & "-" & sched-pad-min m & "-" & sched-pad-min d
+
+  sched-next-local : Zone, LocalChoice, Integer, Integer, Integer, Integer, Integer, Text -> SchedNext
+  sched-next-local (z) (choice) (weekday) (secs) (now) (day) (tries) (note) =
+    if tries > 16 then SchedNext { sn-at = now + 86400, sn-note = note }
+    else if weekday >= 0 & tz-mod (day + 4) 7 /= weekday then sched-next-local z choice weekday secs now (day + 1) (tries + 1) note
+    else
+      let kind = sched-kind-label (local-to-utc z (day * 86400 + secs))
+      in when local-to-utc-choosing z (day * 86400 + secs) choice
+        is None -> sched-next-local z choice weekday secs now (day + 1) (tries + 1) (note & sched-day-label day & " passed (" & kind & ", refused); ")
+        is Just (u) ->
+          if u > now then SchedNext { sn-at = u, sn-note = note & (if kind == "" then "" else sched-day-label day & " " & kind & ", " & sched-outcome kind choice) }
+          else sched-next-local z choice weekday secs now (day + 1) (tries + 1) note
 
 Section: Task Action
 
@@ -75,7 +150,8 @@ Section: Run History
     tr-id : Integer,
     tr-started : Integer,
     tr-result : TaskRunResult,
-    tr-output : Text
+    tr-output : Text,
+    tr-note : Text
   }
 
 Section: Scheduled Task
@@ -96,7 +172,10 @@ Section: Scheduled Task
     st-max-history : Integer,
     st-timeout-ms : Integer,
     st-retry-count : Integer,
-    st-retry-delay-ms : Integer
+    st-retry-delay-ms : Integer,
+    st-zone : Zone,
+    st-choice : LocalChoice,
+    st-next-note : Text
   }
 
   sched-task-new : Text, Text, ScheduleExpr, TaskAction -> ScheduledTask
@@ -116,15 +195,24 @@ Section: Scheduled Task
     st-max-history = 50,
     st-timeout-ms = 30000,
     st-retry-count = 0,
-    st-retry-delay-ms = 5000
+    st-retry-delay-ms = 5000,
+    st-zone = sched-utc-zone,
+    st-choice = AfterGap,
+    st-next-note = ""
   }
+
+  sched-task-zoned : ScheduledTask, Zone, LocalChoice, Integer -> ScheduledTask
+  sched-task-zoned (t) (z) (choice) (now) =
+    let n = sched-next-in z choice (t.st-schedule) now
+    in __record-set (__record-set (__record-set (__record-set t "st-zone" z) "st-choice" choice) "st-next-run" (n.sn-at)) "st-next-note" (n.sn-note)
 
   sched-task-toggle : ScheduledTask -> ScheduledTask
   sched-task-toggle (t) = __record-set t "st-enabled" (if t.st-enabled then False else True)
 
   sched-task-record-run : ScheduledTask, Integer, TaskRunResult, Text -> ScheduledTask
   sched-task-record-run (t) (started) (result) (output) =
-    let run = TaskRun { tr-id = t.st-run-count + 1, tr-started = started, tr-result = result, tr-output = output }
+    let run = TaskRun { tr-id = t.st-run-count + 1, tr-started = started, tr-result = result, tr-output = output, tr-note = t.st-next-note }
+    in let next = sched-next-in (t.st-zone) (t.st-choice) (t.st-schedule) started
     in let new-hist = if t.st-history-count >= t.st-max-history then
       list-push (sched-drop-oldest (t.st-history) (t.st-history-count)) run
     else list-push (t.st-history) run
@@ -135,7 +223,7 @@ Section: Scheduled Task
     in ScheduledTask {
       st-id = t.st-id, st-name = t.st-name, st-description = t.st-description,
       st-schedule = t.st-schedule, st-action = t.st-action, st-enabled = t.st-enabled,
-      st-next-run = sched-next-run (t.st-schedule) started,
+      st-next-run = next.sn-at,
       st-last-run = started,
       st-run-count = t.st-run-count + 1,
       st-fail-count = t.st-fail-count + fail-delta,
@@ -144,7 +232,10 @@ Section: Scheduled Task
       st-max-history = t.st-max-history,
       st-timeout-ms = t.st-timeout-ms,
       st-retry-count = t.st-retry-count,
-      st-retry-delay-ms = t.st-retry-delay-ms
+      st-retry-delay-ms = t.st-retry-delay-ms,
+      st-zone = t.st-zone,
+      st-choice = t.st-choice,
+      st-next-note = next.sn-note
     }
 
   sched-drop-oldest : List TaskRun, Integer -> List TaskRun
@@ -236,7 +327,7 @@ Section: Widget Building
   scs-task-row : ScheduledTask -> WidgetNode
   scs-task-row (t) =
     let name = widget-label (t.st-id & "-name") (t.st-name)
-    in let sched = widget-label (t.st-id & "-sched") (sched-expr-label (t.st-schedule))
+    in let sched = widget-label (t.st-id & "-sched") (sched-expr-label (t.st-schedule) & " in " & t.st-zone.name & ", " & sched-choice-label (t.st-choice))
     in let action = widget-label (t.st-id & "-action") (task-action-label (t.st-action))
     in let enabled = widget-label (t.st-id & "-enabled") (if t.st-enabled then "enabled" else "disabled")
     in let runs = widget-label (t.st-id & "-runs") (show (t.st-run-count) & " runs")

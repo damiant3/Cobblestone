@@ -1,0 +1,60 @@
+Chapter: IrOccurrence
+  cites Codex chapter Occurrence
+  cites Codex chapter IR Chapter
+  cites Codex chapter Codex Types
+  cites Codex chapter Name
+  cites Codex chapter Source Text
+  cites Foreword chapter Console
+
+Section: Builders
+  sp : SourceSpan = synthetic-span
+
+  int : CodexType = int-ty-default
+
+  nm : Text -> IRExpr
+  nm (n) = IrName n int sp
+
+  lit : Integer -> IRExpr
+  lit (v) = IrIntLit v sp
+
+  add : IRExpr, IRExpr -> IRExpr
+  add (a) (b) = IrBinary IrAddInt a b int sp
+
+  let-in : Text, IRExpr, IRExpr -> IRExpr
+  let-in (n) (v) (b) = IrLet n int v b sp
+
+  param : Text -> IRParam
+  param (n) = IRParam { name = n, type-val = int, span = sp }
+
+  def : Text, List IRParam, IRExpr -> IRDef
+  def (n) (ps) (b) = IRDef { name = n, params = ps, type-val = int, body = b, chapter-slug = "t", is-punctual = False, wcet-budget = 0, unique-params = [], span = sp }
+
+Section: Cases
+  defs : List IRDef
+  defs = [
+    def "params" [param "a", param "b", param "c"] (add (nm "a") (add (nm "a") (nm "b"))),
+    def "let-once" [] (let-in "x" (lit 1) (nm "x")),
+    def "let-dead" [] (let-in "y" (lit 1) (lit 2)),
+    def "let-thrice" [] (let-in "z" (lit 1) (add (add (nm "z") (nm "z")) (nm "z"))),
+    def "shadow" [] (let-in "x" (lit 1) (let-in "x" (lit 2) (nm "x"))),
+    def "lambda-shadow" [param "q"] (IrLambda [param "q"] (add (nm "q") (nm "q")) int sp),
+    def "if-arms" [param "n"] (IrIf (nm "n") (nm "n") (lit 0) int sp),
+    def "value-uses-outer" [param "w"] (let-in "v" (nm "w") (nm "v"))
+  ]
+
+  ch : IRChapter = IRChapter { name = make-name "T", defs = defs, effect-op-names = [], span = sp }
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (vs) (i) =
+    if i >= list-length vs then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at vs i)
+      print-all vs (i + 1)
+    end
+
+  opening : [Console] Nothing = act
+    print-all (occ-report-chapter ch) 0
+    print-line-uni ("bump: " & occ-count-name (occ-bump OccDead) & " " & occ-count-name (occ-bump OccOnce) & " " & occ-count-name (occ-bump OccMany))
+  end

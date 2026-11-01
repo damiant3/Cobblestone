@@ -1,0 +1,53 @@
+Chapter: AcpiBoundsTest
+  cites Works chapter GopAcpi
+
+ Firmware lengths the ACPI parser must refuse. A MADT (signature APIC) whose
+ length is 50 holds an I/O APIC entry (type 1, length 12) at 44 that runs past
+ it; a MADT of length 64 holds one of length 6. A revision 0 RSDP (RSD PTR,
+ checksum over 20 bytes) points at a root table claiming 2 GB.
+
+Section: Fixtures
+
+  wr32 : Integer, Integer, Integer -> Integer
+  wr32 (a) (o) (v) =
+    let p0 = poke-byte a o (int-mod v 256)
+    in let p1 = poke-byte a (o + 1) (int-mod (bit-shru v 8) 256)
+    in let p2 = poke-byte a (o + 2) (int-mod (bit-shru v 16) 256)
+    in poke-byte a (o + 3) (int-mod (bit-shru v 24) 256)
+
+  madt : Integer, Integer -> Integer
+  madt (len) (elen) =
+    let m = alloc-bytes 128
+    in let s = wr32 m 0 1128878145
+    in let l = wr32 m 4 len
+    in let t = poke-byte m 44 1
+    in let e = poke-byte m 45 elen
+    in let a = wr32 m 48 4273995776
+    in m
+
+  sum : Integer, Integer, Integer, Integer -> Integer
+  sum (a) (i) (n) (acc) = if i >= n then acc else sum a (i + 1) n (acc + peek-byte a i)
+
+  rsdp-to-huge-root : Integer
+  rsdp-to-huge-root =
+    let root = alloc-bytes 64
+    in let rs = wr32 root 0 1413763922
+    in let rl = wr32 root 4 2147483647
+    in let r = alloc-bytes 32
+    in let s0 = wr32 r 0 541348946
+    in let s1 = wr32 r 4 542266448
+    in let z0 = wr32 r 8 0
+    in let z1 = wr32 r 12 0
+    in let p = wr32 r 16 root
+    in let c = poke-byte r 8 (int-mod (256 - int-mod (sum r 0 20 0) 256) 256)
+    in r
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("entry past the MADT: ioapic=" & show (madt-ioapic (madt 50 12)))
+    print-line-uni ("short entry: ioapic=" & show (madt-ioapic (madt 64 6)))
+    print-line-uni ("whole entry: ioapic=" & show (madt-ioapic (madt 64 12)))
+    print-line-uni ("2 GB table: " & show (acpi-len-ok (madt 2147483647 12) 36))
+    print-line-uni ("root of 2 GB: ok=" & show ((acpi-parse rsdp-to-huge-root).ai-ok))
+  end

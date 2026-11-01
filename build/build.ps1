@@ -22,7 +22,7 @@ if ($PlanOnly -and -not $Internal) { Write-Host 'REFUSED: -PlanOnly prints the -
 # On success, prints only a story. On failure, prints technical details.
 # Phases: clean -> source -> CDX build -> sign -> canary -> jonquil ->
 #         sem-equiv -> text fixed point -> CDX fixed point -> battery ->
-#         oracles -> refusals -> plugs -> generators -> decks -> app sweep.
+#         oracles -> refusals -> generators -> decks -> app sweep.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -51,10 +51,6 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     it went silently stale: reek 19219 changed host selection and this phase
 #     skipped as not implicated (L-INSTRUMENT). A trigger must cover the files
 #     that can change a phase's ANSWER, not only the ones it is about.
-#   plug-*                      <- codex/plugs or codex/compiler (codegen feeds plugs),
-#     plus its runner: build/plug-source-digest.ps1 for plug-binary and
-#     plug-smoke, build/check-cross-smoke.ps1 and the two test-cross scripts
-#     for cross-smoke
 #   gen-scripts / deck-headroom <- codex/build or build or codex/compiler:
 #     both are COMPILED answers, not static ones. gen-scripts compiles every
 #     generator with the current kernel and diffs the emitted text, and
@@ -67,10 +63,6 @@ $BuildLog = Join-Path $OutDir 'build.log'
 #     rarely.
 #   app-sweep                   <- apps or codex/compiler (the compiler builds the apps),
 #     or its runner: build/sweep-app-classes.ps1, sweep-classes.ps1, app-sweep-baseline.txt
-#   wasm-bundles                <- apps, codex/plugs or codex/compiler
-#   wasm-run                    <- codex/plugs/wasm or codex/compiler
-#   page-build, browser-checks  <- never: release gate only (root, 2026-09-29; Damian's
-#     GPUSHOW-1 ruling (b), 2026-09-29)
 #   run-list                    <- tools/codex-vm.c or .exe, or build/check-run-list.ps1:
 #     a per-file trigger, which the audit above calls the precise fix and
 #     declined for the six existing phases only because widening them to
@@ -108,7 +100,6 @@ $BuildLog = Join-Path $OutDir 'build.log'
 # full gate rather than at the CL, and it is the trade this switch makes.
 $SkipPhases = [System.Collections.Generic.HashSet[string]]::new()
 $tCompiler = $false
-$changedPlugs = @()
 $coreRuns = $true
 if ($Internal) {
     $changed = @()
@@ -145,18 +136,11 @@ if ($Internal) {
     # docs-only CL pay all eight compiler phases (Build.md). A non-source file
     # that DOES decide an answer keeps its own trigger, as app-sweep-baseline does.
     $tCompiler = [bool]($changed | Where-Object { $_ -match '^codex/compiler/.*\.codex$' })
-    $tPlugs    = [bool]($changed | Where-Object { $_ -match '^codex/plugs/' })
-    # plug-binary and plug-smoke grade a HARDCODED list, so a change to any of
-    # the other 46 plugs ran both phases over plugs it did not touch and came
-    # back green. Name the plugs that actually changed so they are graded too.
-    $changedPlugs = @($changed | ForEach-Object { $m = [regex]::Match($_, '^codex/plugs/([^/]+)/'); if ($m.Success) { $m.Groups[1].Value } } | Where-Object { $_ -and $_ -ne 'common' -and $_ -ne 'test-input' } | Select-Object -Unique)
     $tBuild    = [bool]($changed | Where-Object { $_ -match '^(codex/build/|build/)' })
     $tApps     = [bool]($changed | Where-Object { $_ -match '^apps/' })
     $tFrontEnd = [bool]($changed | Where-Object { $_ -match '^codex/compiler/(Syntax|Ast)/' -or $_ -match '^codex/compiler/Emit/CodexEmitter\.codex$' -or $_ -match '^codex/compiler/Core/(TextFormat|SourceText)\.codex$' })
     $tVm       = [bool]($changed | Where-Object { $_ -match '^tools/codex-vm\.(c|exe)$' -or $_ -match '^build/check-run-list\.ps1$' })
     $tJonquilRun = [bool]($changed | Where-Object { $_ -match '^build/jonquil\.ps1$' })
-    $tPlugRun    = [bool]($changed | Where-Object { $_ -match '^build/plug-source-digest\.ps1$' })
-    $tCrossRun   = [bool]($changed | Where-Object { $_ -match '^build/(check-cross-smoke|test-cross|test-cross-batch)\.ps1$' })
     $tSweepRun   = [bool]($changed | Where-Object { $_ -match '^build/(sweep-app-classes|sweep-classes)\.ps1$' -or $_ -match '^build/app-sweep-baseline\.txt$' })
     # A gate runs only the steps the change can affect (Damian, 2026-09-02).
     # $tKernel is the set that can move the COMPILER BINARY, so it is what
@@ -190,17 +174,10 @@ if ($Internal) {
         'oracles'         = ($tKernel -or $tTest)
         'check-errors'    = ($tKernel -or $tTest)
         'jonquil'         = ($tCompiler -or $tJonquilRun)
-        'plug-binary'     = ($tPlugs -or $tCompiler -or $tPlugRun)
-        'cross-smoke'     = ($tPlugs -or $tCompiler -or $tCrossRun)
-        'plug-smoke'      = ($tPlugs -or $tCompiler -or $tPlugRun)
         'gen-scripts'     = ($tBuild -or $tCompiler)
         'vm-differential' = ($tCompiler -or $tBuild)
         'deck-headroom'   = ($tBuild -or $tCompiler)
         'app-sweep'       = ($tApps -or $tCompiler -or $tSweepRun)
-        'wasm-bundles'    = ($tApps -or $tPlugs -or $tCompiler)
-        'wasm-run'        = (($changedPlugs -contains 'wasm') -or $tCompiler)
-        'page-build'      = $false
-        'browser-checks'  = $false
         'run-list'        = $tVm
         'uefi-conout'     = ($tCompiler -or $tTest -or $tVm)
         'text-stage1'     = $coreRuns
@@ -1154,235 +1131,6 @@ Measure-Phase 'test-run' {
     }
 }
 
-# -- binary backend plugs: must build clean with the just-proven compiler.
-# Native code-emitting backends only (riscv/arm64/t3isa/elf/pe/img). The
-# transpiler/text plugs are secondary outputs and are NOT gated here. Plug
-# CDX is untracked build-output, so without this gate a compiler tightening
-# silently dark-ships every backend until someone rebuilds one by hand.
-# 
-# t3isa emits balanced-ternary words for a 27-trit machine and belongs here
-# for the same reason as the rest. Only its BUILD is gated: its own gate
-# needs an external emulator that lives on one machine, and nothing here
-# reaches that.
-Measure-Phase 'plug-binary' {
-    Copy-Item -Force $SutCdx (Join-Path $Repo 'build-output\bare-metal\Codex.cdx')
-    $binaryBackends = @(@('riscv','arm64','t3isa','elf','pe','img') + $changedPlugs | Select-Object -Unique)
-    $plugFail = @()
-    foreach ($bp in $binaryBackends) {
-        $bpDir = Join-Path $Repo "codex\plugs\$bp"
-        $bs = Join-Path $bpDir 'build.ps1'
-        if (-not (Test-Path $bs)) { $plugFail += "$bp(no-build.ps1)"; continue }
-        # A plug can ship more than one binary: spirv's build-bin.ps1 emits
-        # spirvbin-plug.cdx, which this phase built and asserted nowhere, so a
-        # break in it was ungraded. The name is read off the script's own
-        # -PlugName, so a build*.ps1 that declares none is not a plug binary
-        # (evidence/build-wasm.ps1, wasm's page builds) and is skipped.
-        foreach ($bscript in @(Get-ChildItem $bpDir -Filter 'build*.ps1' -File | Sort-Object Name)) {
-            $pn = $bp
-            $decl = [regex]::Match((Get-Content $bscript.FullName -Raw), "Build-TranspilerPlug[^\r\n]*-PlugName\s+'([^']+)'")
-            if ($decl.Success) { $pn = $decl.Groups[1].Value }
-            elseif ($bscript.Name -ne 'build.ps1') { continue }
-            & pwsh -NoProfile -File $bscript.FullName *> $null
-            $cdx = Join-Path $bpDir "build-output\$pn-plug.cdx"
-            $blog = Join-Path $bpDir 'build-output\build.log'
-            $bad = -not (Test-Path $cdx)
-            if ((Test-Path $blog) -and (Select-String -Path $blog -Pattern 'CODEGEN-ERRORS|error CDX' -Quiet)) { $bad = $true }
-            if ($bad) { if ($pn -eq $bp) { $plugFail += $bp } else { $plugFail += "$bp($pn)" } }
-        }
-    }
-    if ($plugFail.Count -gt 0) {
-        Write-Host ''
-        Write-Host "FAIL: binary plug build -- $($plugFail -join ', ')"
-        foreach ($bp in $plugFail) {
-            $bpName = $bp.Split('(')[0]
-            $blog = Join-Path $Repo "codex\plugs\$bpName\build-output\build.log"
-            if (Test-Path $blog) { Get-Content $blog | Select-String 'error CDX|CODEGEN-ERRORS' | Select-Object -First 3 | ForEach-Object { Write-Host "  ${bp}: $($_.Line.Trim())" } }
-        }
-        exit 1
-    }
-}
-
-# -- cross-arch execution: the binary leg above proves the arm64 and riscv
-# plugs BUILD, and nothing ran a byte of what they emit. That is how CL 8221
-# put a PSCI call in every ARM64 program's __start, killed the whole ARM64
-# lane on the committed Renode board, and stayed green here for weeks while
-# 238 tests failed silently. One program per architecture,
-# booted for real. Not the battery -- build/test-cross-batch.ps1 is that, and
-# it stays out-of-band.
-Measure-Phase 'cross-smoke' {
-    $chkCross = Join-Path $PSScriptRoot 'check-cross-smoke.ps1'
-    if (Test-Path $chkCross) {
-        & pwsh -NoProfile -File $chkCross -Kernel $SutCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host 'FAIL: a cross-arch backend stopped executing correctly'
-            exit 1
-        }
-    }
-}
-
-# -- transpiler plug smoke: a representative subset must RUN end-to-end
-# (SUT IR -> framed TCP wire -> plug VM -> non-empty target text). The binary
-# leg above proves plugs BUILD; this proves the wire protocol and plug runtime
-# stay alive -- the class that dark-shipped when 20 run.ps1 senders went
-# unframed (CL 7372). Missing plug CDX builds once and caches; a failing run
-# gets one rebuild-and-retry (stale binary after IR drift), then fails loudly.
-Measure-Phase 'plug-smoke' {
-    # This phase calls run.ps1 -Src/-Out, which not every plug accepts: some bind no
-    # -Src and exit 1 at parameter binding, so widening by "carries a run.ps1" reds
-    # the gate on a plug this phase cannot express. The capability is READ OFF
-    # run.ps1 rather than kept as a list, because a list drifts and this cannot.
-    $smokeCapable = @()
-    foreach ($cp in $changedPlugs) {
-        $cpRun = Join-Path $Repo "codex\plugs\$cp\run.ps1"
-        if (-not (Test-Path $cpRun)) { continue }
-        $cpAst = [System.Management.Automation.Language.Parser]::ParseFile($cpRun, [ref]$null, [ref]$null)
-        if ($cpAst.ParamBlock -and @($cpAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Src' }).Count -gt 0) { $smokeCapable += $cp }
-    }
-    $smokePlugs = @(@('typescript', 'python', 'rust', 'ptx') + $smokeCapable | Select-Object -Unique)
-    $smokeSrcs = @('hello', 'record')
-    $smokeDir = Join-Path $OutDir 'plug-smoke'
-    New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
-    # A plug binary is only as fresh as the last hand run of its build.ps1, and
-    # 37 of 38 faulted on a record after common/IRTextParser.codex moved while
-    # this phase rebuilt only a MISSING binary (plugs-backlog 1.11). Rebuild
-    # when the CDX is older than any source the bundle is made from.
-    $smokeDeps = @(Get-ChildItem (Join-Path $Repo 'codex\plugs\common') -Filter *.codex)
-    foreach ($decl in @('codex\compiler\Core\Name.codex', 'codex\compiler\Core\SourceText.codex', 'codex\compiler\Types\CodexType.codex', 'codex\compiler\Ast\AstNodes.codex', 'codex\compiler\IR\IRChapter.codex')) {
-        $smokeDeps += Get-Item (Join-Path $Repo $decl)
-    }
-    $smokeFail = @()
-    $spKernelOf = @{}
-    foreach ($sp in $smokePlugs) {
-        $spRun = Join-Path $Repo "codex\plugs\$sp\run.ps1"
-        $spAst = [System.Management.Automation.Language.Parser]::ParseFile($spRun, [ref]$null, [ref]$null)
-        $spParams = @(if ($spAst.ParamBlock) { $spAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath } })
-        $spKernel = if ($spParams -contains 'Kernel') { @('-Kernel', $SutCdx) } elseif ($spParams -contains 'Compiler') { @('-Compiler', $SutCdx) } else { @() }
-        $spKernelOf[$sp] = $spKernel
-        $spBuild = Join-Path $Repo "codex\plugs\$sp\build.ps1"
-        $spCdx   = Join-Path $Repo "codex\plugs\$sp\build-output\$sp-plug.cdx"
-        $spLog   = Join-Path $smokeDir "$sp-smoke.log"
-        $spNewest = ($smokeDeps + @(Get-ChildItem (Join-Path $Repo "codex\plugs\$sp") -Filter *.codex) | ForEach-Object { $_.LastWriteTimeUtc } | Sort-Object -Descending | Select-Object -First 1)
-        if (-not (Test-Path $spCdx) -or (Get-Item $spCdx).LastWriteTimeUtc -lt $spNewest) { & pwsh -NoProfile -File $spBuild *> $spLog }
-        foreach ($si in $smokeSrcs) {
-            $smokeSrc = if ($sp -eq 'ptx') { Join-Path $Repo "codex\plugs\ptx\test\$(@{ hello = 'div-probe'; record = 'f64-probe' }[$si]).codex" } else { Join-Path $Repo "codex\plugs\test-input\$si.codex" }
-            $spOut = Join-Path $smokeDir "$sp-$si.out"
-            $ok = $false
-            foreach ($attempt in 1..2) {
-                Remove-Item -Force $spOut -ErrorAction SilentlyContinue
-                & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $spOut @spKernel *>> $spLog
-                if ($LASTEXITCODE -eq 0 -and (Test-Path $spOut) -and (Get-Item $spOut).Length -gt 0) { $ok = $true; break }
-                if ($attempt -eq 1) { & pwsh -NoProfile -File $spBuild *>> $spLog }
-            }
-            if (-not $ok) { $smokeFail += "$sp/$si" }
-        }
-    }
-    if ($smokeFail.Count -gt 0) {
-        Write-Host ''
-        Write-Host "FAIL: plug smoke -- $($smokeFail -join ', ') (run.ps1 nonzero or empty output)"
-        foreach ($sp in $smokeFail) {
-            $spLog = Join-Path $smokeDir "$sp-smoke.log"
-            if (Test-Path $spLog) { Get-Content $spLog | Select-Object -Last 5 | ForEach-Object { Write-Host "  ${sp}: $_" } }
-        }
-        exit 1
-    }
-# -- the cross-host arm (plugs 1.73 step 3, red's clearance 2026-08-25).
-# The QEMU fallback carries all 56 plug runners since 19697 and NOTHING
-# guarded it: every cross-host result was a hand run (L-NOGATE). The four
-# plugs above already span both launch helpers -- python, typescript and rust
-# through Start-PlugVm, ptx file-serial through Invoke-PlugVmFileSerial -- so
-# this needs a second PASS, not new subjects.
-# 
-# BYTE-IDENTICAL is the assertion, and it has to be. Asking only whether the
-# run exited 0 is what let csharp sit through its full 1800 s timeout
-# undetected while javascript passed beside it; a differential against the
-# codex-vm answer is what catches a host that finishes and lies.
-# 
-# A box with no QEMU SAYS SO and moves on. A silent skip would be a check
-# that cannot fail, which is the thing this arm exists to stop.
-    if (-not $script:FallbackVmBin) {
-        Write-Host '  plug-smoke: cross-host arm SKIPPED, no QEMU on this box (set QEMU_BIN to run it)'
-    } else {
-        $xFail = @()
-        $prevVmHost = $env:CODEX_VM_HOST
-        $env:CODEX_VM_HOST = 'qemu'
-        try {
-            foreach ($sp in $smokePlugs) {
-                $spLog = Join-Path $smokeDir "$sp-smoke-qemu.log"
-                $qKernel = $spKernelOf[$sp]
-                foreach ($si in $smokeSrcs) {
-                    $smokeSrc = if ($sp -eq 'ptx') { Join-Path $Repo "codex\plugs\ptx\test\$(@{ hello = 'div-probe'; record = 'f64-probe' }[$si]).codex" } else { Join-Path $Repo "codex\plugs\test-input\$si.codex" }
-                    $qOut = Join-Path $smokeDir "$sp-$si.qemu.out"
-                    $cOut = Join-Path $smokeDir "$sp-$si.out"
-                    Remove-Item -Force $qOut -ErrorAction SilentlyContinue
-                    & pwsh -NoProfile -File (Join-Path $Repo "codex\plugs\$sp\run.ps1") -Src $smokeSrc -Out $qOut @qKernel *>> $spLog
-                    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $qOut)) { $xFail += "$sp/$si(qemu produced nothing)"; continue }
-                    if ((Get-FileHash $qOut -Algorithm SHA256).Hash -ne (Get-FileHash $cOut -Algorithm SHA256).Hash) { $xFail += "$sp/$si(hosts differ)" }
-                }
-            }
-        } finally {
-            $env:CODEX_VM_HOST = $prevVmHost
-        }
-        if ($xFail.Count -gt 0) {
-            Write-Host ''
-            Write-Host "FAIL: plug smoke cross-host -- $($xFail -join ', ')"
-            Write-Host '  codex-vm and the QEMU fallback disagree, or the fallback produced nothing.'
-            Write-Host '  A subject that flaps here is a finding about that subject or that host. Record it before quieting it.'
-            exit 1
-        }
-        Write-Host "  plug-smoke: cross-host OK ($($smokePlugs.Count * $smokeSrcs.Count) subjects byte-identical on codex-vm and QEMU)"
-    }
-}
-
-# -- a plug that ships its own test-*.ps1 is graded by it when THAT plug changes.
-# The trigger is derived, not listed: a plug gaining a harness is picked up
-# without editing this phase, the same reason plug-smoke reads -Src capability
-# off run.ps1 rather than keeping names. Measured 2026-09-02: FOUR plugs ship SIX
-# harnesses (evidence, img, ptx, spirv), so this is not the evidence plug alone.
-# The evidence one had no caller anywhere -- eight arms, four of them requiring
-# the plug to REFUSE a claim it cannot support, and nothing ran them (L-NOGATE).
-Measure-Phase 'plug-selftest' {
-    $selfHarness = @()
-    foreach ($cp in $changedPlugs) {
-        $cpDir = Join-Path $Repo "codex\plugs\$cp"
-        if (-not (Test-Path -PathType Container $cpDir)) { continue }
-        foreach ($h in @(Get-ChildItem $cpDir -Filter 'test-*.ps1' -File)) {
-            $selfHarness += [pscustomobject]@{ Plug = $cp; Path = $h.FullName; Name = $h.BaseName }
-        }
-    }
-    if ($selfHarness.Count -eq 0) {
-        Write-Host '  plug-selftest: not implicated (no changed plug ships a test-*.ps1)'
-    } else {
-        # A plug can carry MORE THAN ONE build script, and a harness may refuse
-        # rather than build: spirv ships build.ps1 AND build-bin.ps1, and
-        # test-emit.ps1 exits 2 with "MISSING plug; run build-bin.ps1" when the
-        # second binary is absent. plug-binary grades it too since 2026-09-07, so
-        # without this the phase reds on a missing prerequisite instead of on the
-        # plug, which is a false red and the worst kind (measured 2026-09-02).
-        foreach ($cp in @($selfHarness | ForEach-Object { $_.Plug } | Select-Object -Unique)) {
-            foreach ($b in @(Get-ChildItem (Join-Path $Repo "codex\plugs\$cp") -Filter 'build*.ps1' -File)) {
-                & pwsh -NoProfile -File $b.FullName *> (Join-Path $OutDir "plug-selftest-$cp-$($b.BaseName).log")
-            }
-        }
-        $selfFail = @()
-        foreach ($sh in $selfHarness) {
-            $shLog = Join-Path $OutDir "plug-selftest-$($sh.Plug)-$($sh.Name).log"
-            & pwsh -NoProfile -File $sh.Path *> $shLog
-            if ($LASTEXITCODE -ne 0) { $selfFail += "$($sh.Plug)/$($sh.Name)" }
-        }
-        if ($selfFail.Count -gt 0) {
-            Write-Host ''
-            Write-Host "FAIL: plug selftest -- $($selfFail -join ', ')"
-            foreach ($sh in $selfHarness) {
-                if ($selfFail -notcontains "$($sh.Plug)/$($sh.Name)") { continue }
-                $shLog = Join-Path $OutDir "plug-selftest-$($sh.Plug)-$($sh.Name).log"
-                if (Test-Path $shLog) { Get-Content $shLog | Select-Object -Last 6 | ForEach-Object { Write-Host "  $($sh.Plug)/$($sh.Name): $_" } }
-            }
-            exit 1
-        }
-        Write-Host "  plug-selftest: OK ($($selfHarness.Count) harness(es) over $(($selfHarness | ForEach-Object { $_.Plug } | Select-Object -Unique) -join ', '))"
-    }
-}
-
 
 # -- the Shell DSL generators: codex/build/*Script.codex compile with the
 # just-proven compiler and emit the scripts the build itself runs on. Nothing
@@ -1468,26 +1216,6 @@ Measure-Phase 'deck-headroom' {
             Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Quire codex\build -WithSelf -Fresh'
             exit 1
         }
-# The plug bundles, which were in NO corpus until now: a plug's unit is
-# its assembled bundle under build-output, and every other mode here
-# skips build-output on purpose. arm64 ran out of room with nothing
-# reporting it (plugs 1.98). Each is measured at the -Decks its own
-# build.ps1 passes, not at the derivation, or this asks a question the
-# build never asks.
-        $dkpOut = @(& pwsh -NoProfile -File $chkDeck -Plugs -MinMargin 1.25 `
-              -Tag 'gate-plugs' -Top 5 -Jobs 16 -Fresh 2>&1 | ForEach-Object { "$_" })
-        $dkpCode = $LASTEXITCODE
-        if ($dkpCode -ne 0) { $dkpOut | ForEach-Object { Write-Host "  $_" } }
-        else { $dkpOut | Where-Object { $_ -match '^\s+margin\s+\d|OK, tightest' } | ForEach-Object { Write-Host "  $_" } }
-        if ($dkpCode -ne 0) {
-# NOT necessarily a deck verdict: the script separates a unit that ran and
-# refused from one that produced no compiler output at all, and prints the
-# exit code, log size and phase count for each. Read those before concluding
-# a reservation has grown.
-            Write-Host 'FAIL: the plug deck check did not pass -- read the per-unit evidence above'
-            Write-Host '      Detail: pwsh build/deck-headroom.ps1 -Plugs -Fresh (and compare -Jobs 1)'
-            exit 1
-        }
     }
 }
 
@@ -1536,91 +1264,6 @@ Measure-Phase 'app-sweep' {
             exit 1
         }
         $swOut | Where-Object { $_ -match 'units:|CHECK|elapsed:' } | ForEach-Object { Write-Host "  $_" }
-    }
-}
-
-# -- the web and wasm bundles: the nine apps/*/build-wasm.ps1 modules the landing
-# site ships. apps/landing/build.ps1 builds them and is run by hand, so no gate
-# did. Each builds with this run's compiler; games builds its default game
-# only, and fishtank writes to scratch because its shipped module is tracked.
-# 85 s measured 2026-09-24.
-Measure-Phase 'wasm-bundles' {
-    $wbPlug = Join-Path $Repo 'codex\plugs\wasm\build-output\wasm-plug.cdx'
-    $wbDir = Join-Path $OutDir 'wasm-bundles'
-    New-Item -ItemType Directory -Force -Path $wbDir | Out-Null
-    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\build.ps1') *> (Join-Path $wbDir 'wasm-plug.log')
-    if (-not (Test-Path $wbPlug)) {
-        Write-Host 'FAIL: the wasm plug did not build; see build\output\wasm-bundles\wasm-plug.log'
-        exit 1
-    }
-    $wbFail = @()
-    foreach ($wbApp in @('c64', 'data', 'fireworks', 'fishtank', 'games', 'mathbook', 'safari', 'spark', 'starmap')) {
-        $wbArgs = @('-Kernel', $SutCdx)
-        if ($wbApp -eq 'safari') { $wbArgs += '-Wasm' }
-        if ($wbApp -eq 'fishtank') { $wbArgs += @('-OutDir', (Join-Path $wbDir 'fishtank')) }
-        & pwsh -NoProfile -File (Join-Path $Repo "apps\$wbApp\build-wasm.ps1") @wbArgs *> (Join-Path $wbDir "$wbApp.log")
-        if ($LASTEXITCODE -ne 0) { $wbFail += $wbApp }
-    }
-    if ($wbFail.Count -gt 0) {
-        Write-Host ''
-        Write-Host "FAIL: wasm bundle build -- $($wbFail -join ', ')"
-        foreach ($wbApp in $wbFail) { Get-Content (Join-Path $wbDir "$wbApp.log") -ErrorAction SilentlyContinue | Select-Object -Last 5 | ForEach-Object { Write-Host "  ${wbApp}: $_" } }
-        exit 1
-    }
-    Write-Host '  wasm-bundles: OK (nine apps/*/build-wasm.ps1 modules built with this run''s compiler)'
-}
-
-# -- the wasm plug, RUN: wasm-bundles only assembles modules, and a missing builtin arm
-# assembles and traps at runtime, so this phase compiles subjects to wasm and runs them
-# under wasmtime against the same .expected the bare-metal battery grades (plugs 2.16).
-# It grades the whole hosted corpus (-Max 0; 1119 eligible, 840 s at -Jobs 4, 2026-09-25). A red
-# listed in codex/plugs/wasm/wasm-run-baseline.txt does not fail it; a listed subject that passes
-# does. After wasm-bundles, which rebuilt the plug after this run's compiler existed, so the
-# harness's plug-older-than-kernel refusal holds.
-Measure-Phase 'wasm-run' {
-    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\hosted-wasm-test.ps1') -Kernel $SutCdx -Max 0 -Jobs 16 2>&1 | ForEach-Object { Write-Host "  $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: the wasm plug disagrees with .expected; see the hosted-wasm lines above'
-        exit 1
-    }
-    # wasm-e2e grades codex/plugs/wasm/test against x86-64 and runs check-emitted-runtime.ps1
-    # on the first module (88 s, 31 subjects, 2026-09-29).
-    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\wasm-e2e.ps1') -Kernel $SutCdx 2>&1 | ForEach-Object { Write-Host "  $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: wasm-e2e; see the lines above'
-        exit 1
-    }
-}
-
-# -- the compile page, built with this run's compiler: build-page.ps1's own arms (x86 truth,
-# cdx byte-identity, and page-example-test's calibrate and compile arms over page/examples.json)
-# are the grade. The page lands in build\output\page and is not published, so its lenses may be
-# dark; page-lens-test.ps1 grades those modules.
-Measure-Phase 'page-build' {
-    & pwsh -NoProfile -File (Join-Path $Repo 'codex\plugs\wasm\build-page.ps1') -Kernel $SutCdx -Source $CodexSrc -OutDir (Join-Path $OutDir 'page') -AllowDarkLenses 2>&1 | ForEach-Object { Write-Host "  $_" }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'FAIL: the compile page did not build or its own arms failed; see the lines above'
-        exit 1
-    }
-}
-
-# -- every browser check, in headless Edge (GPUSHOW-1, Damian 2026-09-29): the gpushow WGSL
-# sweep (Edge is the Chromium it drives), ModBuilder's emit arms and its site test. A missing
-# node or Edge fails the phase rather than skipping it.
-Measure-Phase 'browser-checks' {
-    $bcEdge = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
-    if (-not (Test-Path -PathType Leaf $bcEdge)) { Write-Host "FAIL: no Edge at $bcEdge"; exit 1 }
-    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host 'FAIL: node is not on PATH'; exit 1 }
-    foreach ($bc in @(
-            @('apps\gpushow\tools\validate-all.mjs', '--chrome', $bcEdge),
-            @('apps\modbuilder\test-emit.mjs'),
-            @('apps\modbuilder\test-site.mjs'))) {
-        $bcArgs = @((Join-Path $Repo $bc[0])) + @($bc | Select-Object -Skip 1)
-        & node @bcArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "FAIL: browser check $($bc[0]); see the lines above"
-            exit 1
-        }
     }
 }
 

@@ -7,8 +7,6 @@ Chapter: PlugBuildLibScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: S01 -- Preamble and registry
 
   s01-body : List ShellCmd =
@@ -31,239 +29,303 @@ Section: S01 -- Preamble and registry
      ScComment "differ. A plug citing one of those got MISSING and exit 3 for a chapter",
      ScComment "that is registered and present.",
      ScRaw ". (Join-Path $script:PlugBuildRepo 'build' 'quire-map.ps1')",
-     ScRaw "$script:QuireDirs = $QuireDirs",
-     ScRaw "$script:CitePat = $StrictCitePat",
+     ScAssign "script:QuireDirs" (SeVar "QuireDirs"),
+     ScAssign "script:CitePat" (SeVar "StrictCitePat"),
      ScComment "Every file the assembler reads, so Bundle-PlugSource can record them.",
      ScRaw "$script:PlugInputs = [System.Collections.Generic.List[string]]::new()"]
 
 Section: S02 -- Add-PlugChapter
 
   s02-body : List ShellCmd =
-    [ScBlank, ScRaw "function Add-PlugChapter {",
-     ScRaw "    param(",
-     ScRaw "        [System.Collections.Generic.List[string]]$Lines,",
-     ScRaw "        [string]$Path,",
-     ScRaw "        [string[]]$StripCites = @(),",
-     ScRaw "        [string]$Quire = '',",
-     ScRaw "        [string[]]$DropSections = @()",
-     ScRaw "    )",
-     ScIndent [ScComment "DropSections lets a compiler chapter be bundled for its DECLARATIONS while"],
-     ScIndent [ScComment "leaving behind a section the plug cannot compile. Only one section needs it"],
-     ScIndent [ScComment "today: AST Nodes' \"Deck Copies\", whose leaf copiers (copy-sx-text and"],
-     ScIndent [ScComment "friends) live in SyntaxNodes, a chapter of 66 CST declarations the plug"],
-     ScIndent [ScComment "never touches. Dropping that one section is what keeps SyntaxNodes out of"],
-     ScIndent [ScComment "the bundle. A renamed section fails the build loudly (the declarations it"],
-     ScIndent [ScComment "guarded go missing); it cannot rot silently."],
-     ScIndent [ScComment "Prefix the chapter name with the plug's quire (e.g. Riscv--RiscVPlug)."],
-     ScIndent [ScComment "Mirrors Resolve-PlugForewords' prefixing."],
-     ScRaw "    $renamed = $false",
-     ScRaw "    $dropping = $false",
-     ScRaw "    $script:PlugInputs.Add($Path)",
-     ScRaw "    foreach ($l in [System.IO.File]::ReadAllLines($Path)) {",
-     ScRaw "        if ($l -match '^Section:\\s*(.+?)\\s*$') {",
-     ScRaw "            $dropping = $DropSections -contains $matches[1]",
-     ScRaw "        }",
-     ScRaw "        if ($dropping) { continue }",
-     ScRaw "        $skip = $false",
-     ScRaw "        foreach ($sc in $StripCites) { if ($l -match \"cites.*$sc\") { $skip = $true } }",
-     ScRaw "        if ($skip) { continue }",
-     ScRaw "        if ($Quire -and (-not $renamed) -and $l -match '^Chapter:\\s*(.+?)\\s*$') {",
-     ScRaw "            $Lines.Add(\"Chapter: $Quire--$($matches[1])\")",
-     ScRaw "            $renamed = $true",
-     ScRaw "        } else {",
-     ScRaw "            $Lines.Add($l)",
-     ScRaw "        }",
-     ScRaw "    }",
-     ScRaw "    $Lines.Add(''); $Lines.Add('')",
-     ScRaw "}"]
+    [ ScBlank
+    , ScFunctionBlock "Add-PlugChapter" s02-add-plug-chapter
+    ]
+
+  s02-add-plug-chapter : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [System.Collections.Generic.List[string]]$Lines,"
+    , ScRaw "    [string]$Path,"
+    , ScRaw "    [string[]]$StripCites = @(),"
+    , ScRaw "    [string]$Quire = '',"
+    , ScRaw "    [string[]]$DropSections = @()"
+    , ScRaw ")"
+    , ScComment "DropSections lets a compiler chapter be bundled for its DECLARATIONS while"
+    , ScComment "leaving behind a section the plug cannot compile. Only one section needs it"
+    , ScComment "today: AST Nodes' \"Deck Copies\", whose leaf copiers (copy-sx-text and"
+    , ScComment "friends) live in SyntaxNodes, a chapter of 66 CST declarations the plug"
+    , ScComment "never touches. Dropping that one section is what keeps SyntaxNodes out of"
+    , ScComment "the bundle. A renamed section fails the build loudly (the declarations it"
+    , ScComment "guarded go missing); it cannot rot silently."
+    , ScComment "Prefix the chapter name with the plug's quire (e.g. Riscv--RiscVPlug)."
+    , ScComment "Mirrors Resolve-PlugForewords' prefixing."
+    , ScAssign "renamed" (SeVar "false")
+    , ScAssign "dropping" (SeVar "false")
+    , ScRaw "$script:PlugInputs.Add($Path)"
+    , ScRaw "foreach ($l in [System.IO.File]::ReadAllLines($Path)) {"
+    , ScIndent s02-l-system-io-file
+    , ScRaw "}"
+    , ScRaw "$Lines.Add(''); $Lines.Add('')"
+    ]
+
+  s02-l-system-io-file : List ShellCmd =
+    [ ScIf (SeBare (SeMatch (SeVar "l") "^Section:\\s*(.+?)\\s*$")) [ScRaw "$dropping = $DropSections -contains $matches[1]"] []
+    , ScRaw "if ($dropping) { continue }"
+    , ScAssign "skip" (SeVar "false")
+    , ScRaw "foreach ($sc in $StripCites) { if ($l -match \"cites.*$sc\") { $skip = $true } }"
+    , ScRaw "if ($skip) { continue }"
+    , ScIf (SeBare (SeAnd (SeBare (SeAnd (SeVar "Quire") (SeNot (SeVar "renamed")))) (SeBare (SeMatch (SeVar "l") "^Chapter:\\s*(.+?)\\s*$")))) s02-quire-not-renamed-l [ScRaw "$Lines.Add($l)"]
+    ]
+
+  s02-quire-not-renamed-l : List ShellCmd =
+    [ ScRaw "$Lines.Add(\"Chapter: $Quire--$($matches[1])\")"
+    , ScAssign "renamed" (SeVar "true")
+    ]
 
 Section: S03 -- Resolve-PlugForewords
 
   s03-body : List ShellCmd =
-    [ScBlank, ScRaw "function Resolve-PlugForewords {",
-     ScRaw "    param([System.Collections.Generic.List[string]]$Lines)",
-     ScRaw "    $visiting = @{}",
-     ScRaw "    $visited  = @{}",
-     ScRaw "    $ordered  = [System.Collections.Generic.List[hashtable]]::new()",
-     ScIndent [ScComment "A cite is satisfied two ways, and the second one is why the strict"],
-     ScIndent [ScComment "pattern needs this: the chapter is RESOLVED through the registry, or it"],
-     ScIndent [ScComment "is already PRESENT because Add-PlugChapter bundled it. Every plug"],
-     ScIndent [ScComment "codegen chapter says `cites Plug chapter Plug Types`, and there is no"],
-     ScIndent [ScComment "quire named Plug -- PlugTypes.codex is added directly. The old lenient"],
-     ScIndent [ScComment "pattern was built from a derived key list that had no Plug either, so"],
-     ScIndent [ScComment "that cite never matched and was skipped by accident rather than by"],
-     ScIndent [ScComment "rule. Same rule as Resolve-CiteOrder's, same helper."],
-     ScRaw "    $present = Get-PresentChapterNames -Lines $Lines",
-     ScRaw "    function Resolve-PlugCite([string]$quire, [string]$name) {",
-     ScRaw "        $key = \"${quire}::${name}\"",
-     ScRaw "        if ($visited[$key]) { return }",
-     ScRaw "        if ($visiting[$key]) { return }",
-     ScRaw "        $visiting[$key] = $true",
-     ScIndent [ScIndent [ScComment "Presence is asked FIRST: asked only after the registry fails, a chapter"]],
-     ScIndent [ScIndent [ScComment "both present and resolvable is bundled twice (CDX3006 per definition)."]],
-     ScRaw "        if ($present[(Get-CiteKey $name)]) { [void]$visiting.Remove($key); $visited[$key] = $true; return }",
-     ScRaw "        $dir = $script:QuireDirs[$quire]",
-     ScRaw "        $fwPath = if ($dir) { Join-Path $script:PlugBuildRepo (Join-Path $dir \"$name.codex\") } else { $null }",
-     ScRaw "        if ((-not $fwPath) -or (-not (Test-Path -PathType Leaf $fwPath))) {",
-     ScRaw "            [void]$visiting.Remove($key)",
-     ScRaw "            $why = if ($dir) { \"expected $fwPath\" } else { \"quire '$quire' is not registered in build/quire-map.ps1, and no chapter '$name' is present in the unit\" }",
-     ScRaw "            [Console]::Error.WriteLine(\"MISSING: cited $quire chapter '$name' ($why)\")",
-     ScRaw "            exit 3",
-     ScRaw "        }",
-     ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($fwPath)) {",
-     ScRaw "            if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }",
-     ScRaw "        }",
-     ScRaw "        [void]$visiting.Remove($key)",
-     ScRaw "        $visited[$key] = $true",
-     ScRaw "        [void]$ordered.Add(@{ Quire = $quire; Name = $name; Path = $fwPath })",
-     ScRaw "    }"]
+    [ ScBlank
+    , ScRaw "function Resolve-PlugForewords {"
+    , ScRaw "    param([System.Collections.Generic.List[string]]$Lines)"
+    , ScRaw "    $visiting = @{}"
+    , ScRaw "    $visited  = @{}"
+    , ScRaw "    $ordered  = [System.Collections.Generic.List[hashtable]]::new()"
+    , ScIndent [ScComment "A cite is satisfied two ways, and the second one is why the strict"]
+    , ScIndent [ScComment "pattern needs this: the chapter is RESOLVED through the registry, or it"]
+    , ScIndent [ScComment "is already PRESENT because Add-PlugChapter bundled it. Every plug"]
+    , ScIndent [ScComment "codegen chapter says `cites Plug chapter Plug Types`, and there is no"]
+    , ScIndent [ScComment "quire named Plug -- PlugTypes.codex is added directly. The old lenient"]
+    , ScIndent [ScComment "pattern was built from a derived key list that had no Plug either, so"]
+    , ScIndent [ScComment "that cite never matched and was skipped by accident rather than by"]
+    , ScIndent [ScComment "rule. Same rule as Resolve-CiteOrder's, same helper."]
+    , ScRaw "    $present = Get-PresentChapterNames -Lines $Lines"
+    , ScIndent [ScFunction "Resolve-PlugCite" [sh-param "quire" SptString, sh-param "name" SptString] s03-resolve-plug-cite-string]
+    ]
+
+  s03-resolve-plug-cite-string : List ShellCmd =
+    [ ScRaw "$key = \"${quire}::${name}\""
+    , ScRaw "if ($visited[$key]) { return }"
+    , ScRaw "if ($visiting[$key]) { return }"
+    , ScRaw "$visiting[$key] = $true"
+    , ScComment "Presence is asked FIRST: asked only after the registry fails, a chapter"
+    , ScComment "both present and resolvable is bundled twice (CDX3006 per definition)."
+    , ScRaw "if ($present[(Get-CiteKey $name)]) { [void]$visiting.Remove($key); $visited[$key] = $true; return }"
+    , ScRaw "$dir = $script:QuireDirs[$quire]"
+    , ScRaw "$fwPath = if ($dir) { Join-Path $script:PlugBuildRepo (Join-Path $dir \"$name.codex\") } else { $null }"
+    , ScIf (SeBare (SeOr (SeNot (SeVar "fwPath")) (SeNot (SeFileExists (SeVar "fwPath"))))) s03-not-fw-test-type []
+    , ScRaw "foreach ($l in [System.IO.File]::ReadAllLines($fwPath)) {"
+    , ScIndent s03-l-system-io-file
+    , ScRaw "}"
+    , ScRaw "[void]$visiting.Remove($key)"
+    , ScRaw "$visited[$key] = $true"
+    , ScRaw "[void]$ordered.Add(@{ Quire = $quire; Name = $name; Path = $fwPath })"
+    ]
+
+  s03-not-fw-test-type : List ShellCmd =
+    [ ScRaw "[void]$visiting.Remove($key)"
+    , ScRaw "$why = if ($dir) { \"expected $fwPath\" } else { \"quire '$quire' is not registered in build/quire-map.ps1, and no chapter '$name' is present in the unit\" }"
+    , ScWriteError (SeText "MISSING: cited $quire chapter '$name' ($why)")
+    , ScExit (SeInt 3)
+    ]
+
+  s03-l-system-io-file : List ShellCmd =
+    [ ScRaw "if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }"
+    ]
 
   s03b-body : List ShellCmd =
-    [ScRaw "    foreach ($l in $Lines) {",
-     ScRaw "        if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }",
-     ScRaw "    }",
-     ScRaw "    $preLines = [System.Collections.Generic.List[string]]::new()",
-     ScRaw "    foreach ($entry in $ordered) {",
-     ScRaw "        $script:PlugInputs.Add($entry.Path)",
-     ScRaw "        $renamed = $false",
-     ScRaw "        foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {",
-     ScRaw "            if ((-not $renamed) -and $l -match '^Chapter:\\s*(.+?)\\s*$') {",
-     ScRaw "                [void]$preLines.Add(\"Chapter: $($entry.Quire)--$($matches[1])\")",
-     ScRaw "                $renamed = $true",
-     ScRaw "            } else { [void]$preLines.Add($l) }",
-     ScRaw "        }",
-     ScRaw "        [void]$preLines.Add(''); [void]$preLines.Add('')",
-     ScRaw "    }",
-     ScRaw "    return ,$preLines",
-     ScRaw "}"]
+    [ ScIndent [ScForEach "l" (SeVar "Lines") s03b-each-lines]
+    , ScRaw "    $preLines = [System.Collections.Generic.List[string]]::new()"
+    , ScIndent [ScForEach "entry" (SeVar "ordered") s03b-each-ordered]
+    , ScRaw "    return ,$preLines"
+    , ScRaw "}"
+    ]
+
+  s03b-each-lines : List ShellCmd =
+    [ ScRaw "if ($l -match $script:CitePat) { Resolve-PlugCite $matches[1] $matches[2] }"
+    ]
+
+  s03b-each-ordered : List ShellCmd =
+    [ ScRaw "$script:PlugInputs.Add($entry.Path)"
+    , ScAssign "renamed" (SeVar "false")
+    , ScRaw "foreach ($l in [System.IO.File]::ReadAllLines($entry.Path)) {"
+    , ScIndent s03b-l-system-io-file
+    , ScRaw "}"
+    , ScRaw "[void]$preLines.Add(''); [void]$preLines.Add('')"
+    ]
+
+  s03b-l-system-io-file : List ShellCmd =
+    [ ScRaw "if ((-not $renamed) -and $l -match '^Chapter:\\s*(.+?)\\s*$') {"
+    , ScIndent s03b-not-renamed-l
+    , ScRaw "} else { [void]$preLines.Add($l) }"
+    ]
+
+  s03b-not-renamed-l : List ShellCmd =
+    [ ScRaw "[void]$preLines.Add(\"Chapter: $($entry.Quire)--$($matches[1])\")"
+    , ScAssign "renamed" (SeVar "true")
+    ]
 
 Section: S04 -- Bundle-PlugSource
 
   s04-body : List ShellCmd =
-    [ScBlank, ScRaw "function Bundle-PlugSource {", ScRaw "    param(", ScRaw "        [System.Collections.Generic.List[string]]$PreLines,", ScRaw "        [System.Collections.Generic.List[string]]$Lines,", ScRaw "        [string]$BundleSrc,", ScRaw "        [string]$PlugName", ScRaw "    )", ScRaw "    $body = (($PreLines + $Lines) -join \"`n\") + \"`n\"", ScRaw "    [System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))", ScIndent [ScComment "The manifest of every source this bundle was assembled from. deck-headroom"], ScIndent [ScComment "re-hashes it to tell a stale bundle from a restamped one; mtime cannot,"], ScIndent [ScComment "because p4 sync -f touches every tracked file."], ScRaw "    $plugDir = Split-Path (Split-Path $BundleSrc -Parent) -Parent", ScRaw "    Write-PlugSourceManifest -BundleSrc $BundleSrc -PlugDir $plugDir -Inputs $script:PlugInputs.ToArray()", ScRaw "    $script:PlugInputs.Clear()", ScRaw "    Write-Host \"[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes\"", ScRaw "}"]
+    [ ScBlank
+    , ScFunctionBlock "Bundle-PlugSource" s04-bundle-plug-source
+    ]
+
+  s04-bundle-plug-source : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [System.Collections.Generic.List[string]]$PreLines,"
+    , ScRaw "    [System.Collections.Generic.List[string]]$Lines,"
+    , ScRaw "    [string]$BundleSrc,"
+    , ScRaw "    [string]$PlugName"
+    , ScRaw ")"
+    , ScRaw "$body = (($PreLines + $Lines) -join \"`n\") + \"`n\""
+    , ScRaw "[System.IO.File]::WriteAllText($BundleSrc, $body, [System.Text.UTF8Encoding]::new($false))"
+    , ScComment "The manifest of every source this bundle was assembled from. deck-headroom"
+    , ScComment "re-hashes it to tell a stale bundle from a restamped one; mtime cannot,"
+    , ScComment "because p4 sync -f touches every tracked file."
+    , ScRaw "$plugDir = Split-Path (Split-Path $BundleSrc -Parent) -Parent"
+    , ScRaw "Write-PlugSourceManifest -BundleSrc $BundleSrc -PlugDir $plugDir -Inputs $script:PlugInputs.ToArray()"
+    , ScRaw "$script:PlugInputs.Clear()"
+    , ScEcho (SeText "[$PlugName] bundled $($PreLines.Count + $Lines.Count) lines, $($body.Length) bytes")
+    ]
 
 Section: S05 -- Build-PlugCdx
 
   s05-body : List ShellCmd =
-    [ScBlank, ScRaw "function Build-PlugCdx {",
-     ScRaw "    param(",
-     ScRaw "        [string]$BundleSrc,",
-     ScRaw "        [string]$OutFile,",
-     ScRaw "        [string]$LogFile,",
-     ScRaw "        [string]$PlugName,",
-     ScRaw "        [string]$Survey = '',",
-     ScIndent [ScIndent [ScComment "Deck scale for this bundle; 0 leaves the length derivation alone."]],
-     ScIndent [ScIndent [ScComment "scaled-floor is linear in source length and CHECK is not, so a"]],
-     ScIndent [ScIndent [ScComment "dense bundle can sit at zero margin and refuse the next definition"]],
-     ScIndent [ScIndent [ScComment "added to it with CDX9002. Deck scale is a reservation and not an"]],
-     ScIndent [ScIndent [ScComment "input to codegen: measured 2026-08-27 the arm64 plug is"]],
-     ScIndent [ScIndent [ScComment "byte-identical at -Decks 120 and 140, so raising it cannot move"]],
-     ScIndent [ScIndent [ScComment "the artifact it produces."]],
-     ScRaw "        [int]$Decks = 0",
-     ScRaw "    )",
-     ScRaw "    $compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'",
-     ScRaw "    $compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile, '-Kernel', (Join-Path $script:PlugBuildRepo 'seed' 'Codex.cdx'))",
-     ScRaw "    if ($Decks -ne 0) { $compileArgs += @('-Decks', $Decks) }",
-     ScRaw "    & pwsh @compileArgs 2>&1 | Out-Null",
-     ScRaw "    if ($LASTEXITCODE -ne 0) {",
-     ScRaw "        [Console]::Error.WriteLine(\"FAIL: compile errors; see $LogFile\")",
-     ScRaw "        Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { [Console]::Error.WriteLine(\"  $_\") }",
-     ScRaw "        exit 5",
-     ScRaw "    }",
-     ScRaw "    $sz = (Get-Item $OutFile).Length",
-     ScRaw "    Write-Host \"[$PlugName] OK: $OutFile ($sz bytes)\"",
-     ScRaw "}"]
+    [ ScBlank
+    , ScFunctionBlock "Build-PlugCdx" s05-build-plug-cdx
+    ]
+
+  s05-build-plug-cdx : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [string]$BundleSrc,"
+    , ScRaw "    [string]$OutFile,"
+    , ScRaw "    [string]$LogFile,"
+    , ScRaw "    [string]$PlugName,"
+    , ScRaw "    [string]$Survey = '',"
+    , ScIndent [ScComment "Deck scale for this bundle; 0 leaves the length derivation alone."]
+    , ScIndent [ScComment "scaled-floor is linear in source length and CHECK is not, so a"]
+    , ScIndent [ScComment "dense bundle can sit at zero margin and refuse the next definition"]
+    , ScIndent [ScComment "added to it with CDX9002. Deck scale is a reservation and not an"]
+    , ScIndent [ScComment "input to codegen: measured 2026-08-27 the arm64 plug is"]
+    , ScIndent [ScComment "byte-identical at -Decks 120 and 140, so raising it cannot move"]
+    , ScIndent [ScComment "the artifact it produces."]
+    , ScRaw "    [int]$Decks = 0"
+    , ScRaw ")"
+    , ScRaw "$compileScript = Join-Path $script:PlugBuildRepo 'build' 'compile.ps1'"
+    , ScRaw "$compileArgs = @('-NoProfile', '-File', $compileScript, '-Src', $BundleSrc, '-Out', $OutFile, '-Log', $LogFile, '-Kernel', (Join-Path $script:PlugBuildRepo 'seed' 'Codex.cdx'))"
+    , ScRaw "if ($Decks -ne 0) { $compileArgs += @('-Decks', $Decks) }"
+    , ScRaw "& pwsh @compileArgs 2>&1 | Out-Null"
+    , ScIf (SeBare (SeStringNeq (SeVar "LASTEXITCODE") (SeInt 0))) s05-if-lastexitcode []
+    , ScRaw "$sz = (Get-Item $OutFile).Length"
+    , ScEcho (SeText "[$PlugName] OK: $OutFile ($sz bytes)")
+    ]
+
+  s05-if-lastexitcode : List ShellCmd =
+    [ ScWriteError (SeText "FAIL: compile errors; see $LogFile")
+    , ScRaw "Get-Content $LogFile -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { [Console]::Error.WriteLine(\"  $_\") }"
+    , ScExit (SeInt 5)
+    ]
 
 Section: S06 -- Build-TranspilerPlug
 
   s06-body : List ShellCmd =
-    [ScBlank, ScRaw "function Build-TranspilerPlug {",
-     ScRaw "    param(",
-     ScRaw "        [string]$PlugDir,",
-     ScRaw "        [string]$PlugName,",
-     ScRaw "        [string[]]$Chapters,",
-     ScRaw "        [string]$Survey = '',",
-     ScIndent [ScIndent [ScComment "Bundle the compiler's LIR so a native backend can lower to it plug-side"]],
-     ScIndent [ScIndent [ScComment "(the retarget's Route A). Off by default: the transpiler plugs emit"]],
-     ScIndent [ScIndent [ScComment "high-level source and have no use for registers, so they should not"]],
-     ScIndent [ScIndent [ScComment "carry 147 KB of allocator. Lir cites Build Settings and IR Chapter and"]],
-     ScIndent [ScIndent [ScComment "LirTargets cites Lir; all three end up in this one unit, so those cites"]],
-     ScIndent [ScIndent [ScComment "are stripped rather than resolved."]],
-     ScRaw "        [switch]$WithLir,",
-     ScIndent [ScIndent [ScComment "Chapters under codex/plugs/common bundled AFTER IRTextParser and"]],
-     ScIndent [ScIndent [ScComment "BEFORE the plug's own: shared helpers a lane opts into by name"]],
-     ScIndent [ScIndent [ScComment "(PlugManifest for the boot grant), so a second native lane picks"]],
-     ScIndent [ScIndent [ScComment "up the same derivation instead of a copy."]],
-     ScRaw "        [string[]]$CommonChapters = @(),",
-     ScIndent [ScIndent [ScComment "Compiler chapters under codex/compiler bundled after the IR"]],
-     ScIndent [ScIndent [ScComment "declarations, for a plug that runs a compiler analysis over its own"]],
-     ScIndent [ScIndent [ScComment "IRDefs (the zig plug takes IR\\ConstShare, COMPILER-86 stage 3). Each"]],
-     ScIndent [ScIndent [ScComment "must cite nothing outside the declaration chapters above."]],
-     ScRaw "        [string[]]$CompilerChapters = @(),",
-     ScRaw "        [int]$Decks = 0",
-     ScRaw "    )",
-     ScRaw "    $outDir    = Join-Path $PlugDir 'build-output'",
-     ScRaw "    $outFile   = Join-Path $outDir \"$PlugName-plug.cdx\"",
-     ScRaw "    $bundleSrc = Join-Path $outDir 'plug-source.codex'",
-     ScRaw "    $logFile   = Join-Path $outDir 'build.log'",
-     ScRaw "    New-Item -ItemType Directory -Force -Path $outDir | Out-Null",
-     ScBlank,
-     ScIndent [ScComment "Namespace every chapter in the bundle under the plug's own quire."],
-     ScRaw "    $plugQuire = $PlugName.Substring(0,1).ToUpper() + $PlugName.Substring(1)",
-     ScBlank,
-     ScIndent [ScComment "The plug reads the compiler's own declaration chapters. There is one"],
-     ScIndent [ScComment "declaration of Name, SourceSpan, CodexType, the AST nodes and the IR"],
-     ScIndent [ScComment "nodes in the tree, and this is it -- the plug used to carry a second,"],
-     ScIndent [ScComment "hand-maintained copy that nothing checked and no compile could see,"],
-     ScIndent [ScComment "because the two never meet in one unit. Four bundle whole; AST Nodes"],
-     ScIndent [ScComment "drops Deck Copies (see Add-PlugChapter)."],
-     ScRaw "    $lines = [System.Collections.Generic.List[string]]::new()",
-     ScRaw "    foreach ($decl in @('codex\\compiler\\Core\\Name.codex',",
-     ScRaw "                        'codex\\compiler\\Core\\SourceText.codex',",
-     ScRaw "                        'codex\\compiler\\Types\\CodexType.codex',",
-     ScRaw "                        'codex\\compiler\\Ast\\AstNodes.codex',",
-     ScRaw "                        'codex\\compiler\\IR\\IRChapter.codex')) {",
-     ScRaw "        $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }",
-     ScIndent [ScIndent [ScComment "Plug Types supplies the deck-record these chapters cite Phase Allocator"]],
-     ScIndent [ScIndent [ScComment "for, and Deck Copies is the only section of AST Nodes that uses Syntax"]],
-     ScIndent [ScIndent [ScComment "Nodes. The cite lines leave the bundle, or compile.ps1's re-resolve"]],
-     ScIndent [ScIndent [ScComment "pulls the whole compiler in for them."]],
-     ScRaw "        $strip = @('Phase Allocator')",
-     ScRaw "        if ($decl -like '*AstNodes.codex') { $strip += 'Syntax Nodes' }",
-     ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop -StripCites $strip",
-     ScRaw "    }"]
+    [ ScBlank
+    , ScRaw "function Build-TranspilerPlug {"
+    , ScRaw "    param("
+    , ScRaw "        [string]$PlugDir,"
+    , ScRaw "        [string]$PlugName,"
+    , ScRaw "        [string[]]$Chapters,"
+    , ScRaw "        [string]$Survey = '',"
+    , ScIndent [ScIndent [ScComment "Bundle the compiler's LIR so a native backend can lower to it plug-side"]]
+    , ScIndent [ScIndent [ScComment "(the retarget's Route A). Off by default: the transpiler plugs emit"]]
+    , ScIndent [ScIndent [ScComment "high-level source and have no use for registers, so they should not"]]
+    , ScIndent [ScIndent [ScComment "carry 147 KB of allocator. Lir cites Build Settings and IR Chapter and"]]
+    , ScIndent [ScIndent [ScComment "LirTargets cites Lir; all three end up in this one unit, so those cites"]]
+    , ScIndent [ScIndent [ScComment "are stripped rather than resolved."]]
+    , ScRaw "        [switch]$WithLir,"
+    , ScIndent [ScIndent [ScComment "Chapters under codex/plugs/common bundled AFTER IRTextParser and"]]
+    , ScIndent [ScIndent [ScComment "BEFORE the plug's own: shared helpers a lane opts into by name"]]
+    , ScIndent [ScIndent [ScComment "(PlugManifest for the boot grant), so a second native lane picks"]]
+    , ScIndent [ScIndent [ScComment "up the same derivation instead of a copy."]]
+    , ScRaw "        [string[]]$CommonChapters = @(),"
+    , ScIndent [ScIndent [ScComment "Compiler chapters under codex/compiler bundled after the IR"]]
+    , ScIndent [ScIndent [ScComment "declarations, for a plug that runs a compiler analysis over its own"]]
+    , ScIndent [ScIndent [ScComment "IRDefs (the zig plug takes IR\\ConstShare, COMPILER-86 stage 3). Each"]]
+    , ScIndent [ScIndent [ScComment "must cite nothing outside the declaration chapters above."]]
+    , ScRaw "        [string[]]$CompilerChapters = @(),"
+    , ScRaw "        [int]$Decks = 0"
+    , ScRaw "    )"
+    , ScRaw "    $outDir    = Join-Path $PlugDir 'build-output'"
+    , ScRaw "    $outFile   = Join-Path $outDir \"$PlugName-plug.cdx\""
+    , ScIndent [ScAssign "bundleSrc" (SeBare (SePathJoinN [SeVar "outDir", SeLit "plug-source.codex"]))]
+    , ScRaw "    $logFile   = Join-Path $outDir 'build.log'"
+    , ScRaw "    New-Item -ItemType Directory -Force -Path $outDir | Out-Null"
+    , ScBlank
+    , ScIndent [ScComment "Namespace every chapter in the bundle under the plug's own quire."]
+    , ScRaw "    $plugQuire = $PlugName.Substring(0,1).ToUpper() + $PlugName.Substring(1)"
+    , ScBlank
+    , ScIndent [ScComment "The plug reads the compiler's own declaration chapters. There is one"]
+    , ScIndent [ScComment "declaration of Name, SourceSpan, CodexType, the AST nodes and the IR"]
+    , ScIndent [ScComment "nodes in the tree, and this is it -- the plug used to carry a second,"]
+    , ScIndent [ScComment "hand-maintained copy that nothing checked and no compile could see,"]
+    , ScIndent [ScComment "because the two never meet in one unit. Four bundle whole; AST Nodes"]
+    , ScIndent [ScComment "drops Deck Copies (see Add-PlugChapter)."]
+    , ScRaw "    $lines = [System.Collections.Generic.List[string]]::new()"
+    , ScRaw "    foreach ($decl in @('codex\\compiler\\Core\\Name.codex',"
+    , ScRaw "                        'codex\\compiler\\Core\\SourceText.codex',"
+    , ScRaw "                        'codex\\compiler\\Types\\CodexType.codex',"
+    , ScRaw "                        'codex\\compiler\\Ast\\AstNodes.codex',"
+    , ScRaw "                        'codex\\compiler\\IR\\IRChapter.codex')) {"
+    , ScRaw "        $drop = if ($decl -like '*AstNodes.codex') { @('Deck Copies') } else { @() }"
+    , ScIndent [ScIndent [ScComment "Plug Types supplies the deck-record these chapters cite Phase Allocator"]]
+    , ScIndent [ScIndent [ScComment "for, and Deck Copies is the only section of AST Nodes that uses Syntax"]]
+    , ScIndent [ScIndent [ScComment "Nodes. The cite lines leave the bundle, or compile.ps1's re-resolve"]]
+    , ScIndent [ScIndent [ScComment "pulls the whole compiler in for them."]]
+    , ScRaw "        $strip = @('Phase Allocator')"
+    , ScRaw "        if ($decl -like '*AstNodes.codex') { $strip += 'Syntax Nodes' }"
+    , ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $decl) -Quire $plugQuire -DropSections $drop -StripCites $strip"
+    , ScRaw "    }"
+    ]
 
   s06b-body : List ShellCmd =
-    [ScRaw "    if ($WithLir) {",
-     ScIndent [ScIndent [ScComment "CodexTypeHelpers owns hw-width-bytes / -signed / bounds-to-hw-width and"]],
-     ScIndent [ScIndent [ScComment "Token owns pat-lit-to-integer; the lowering calls all four. Both cite"]],
-     ScIndent [ScIndent [ScComment "nothing beyond the declaration chapters, which is what makes Route A"]],
-     ScIndent [ScIndent [ScComment "affordable -- they come in as leaves rather than dragging the Types or"]],
-     ScIndent [ScIndent [ScComment "Syntax quire behind them."]],
-     ScRaw "        foreach ($lir in @('codex\\compiler\\Core\\BuildSettings.codex',",
-     ScRaw "                           'codex\\compiler\\Types\\CodexTypeHelpers.codex',",
-     ScRaw "                           'codex\\compiler\\Syntax\\Token.codex',",
-     ScRaw "                           'codex\\compiler\\IR\\Lir.codex',",
-     ScRaw "                           'codex\\compiler\\IR\\LirTargets.codex')) {",
-     ScRaw "            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir', 'Phase Allocator')",
-     ScRaw "        }",
-     ScRaw "    }",
-     ScRaw "    foreach ($cc in $CompilerChapters) {",
-     ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo \"codex\\compiler\\$cc.codex\") -Quire $plugQuire",
-     ScRaw "    }",
-     ScRaw "    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\\plugs\\common\\PlugTypes.codex') -Quire $plugQuire",
-     ScRaw "    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\\plugs\\common\\IRTextParser.codex') -Quire $plugQuire",
-     ScRaw "    foreach ($cc in $CommonChapters) {",
-     ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo \"codex\\plugs\\common\\$cc.codex\") -Quire $plugQuire",
-     ScRaw "    }",
-     ScRaw "    foreach ($ch in $Chapters) {",
-     ScRaw "        Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir \"$ch.codex\") -Quire $plugQuire",
-     ScRaw "    }",
-     ScBlank,
-     ScRaw "    $preLines = Resolve-PlugForewords $lines",
-     ScRaw "    Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName \"$PlugName-plug\"",
-     ScRaw "    Build-PlugCdx -BundleSrc $bundleSrc -OutFile $outFile -LogFile $logFile -PlugName \"$PlugName-plug\" -Survey $Survey -Decks $Decks",
-     ScRaw "}"]
+    [ ScRaw "    if ($WithLir) {"
+    , ScIndent [ScIndent [ScComment "CodexTypeHelpers owns hw-width-bytes / -signed / bounds-to-hw-width and"]]
+    , ScIndent [ScIndent [ScComment "Token owns pat-lit-to-integer; the lowering calls all four. Both cite"]]
+    , ScIndent [ScIndent [ScComment "nothing beyond the declaration chapters, which is what makes Route A"]]
+    , ScIndent [ScIndent [ScComment "affordable -- they come in as leaves rather than dragging the Types or"]]
+    , ScIndent [ScIndent [ScComment "Syntax quire behind them."]]
+    , ScRaw "        foreach ($lir in @('codex\\compiler\\Core\\BuildSettings.codex',"
+    , ScRaw "                           'codex\\compiler\\Types\\CodexTypeHelpers.codex',"
+    , ScRaw "                           'codex\\compiler\\Syntax\\Token.codex',"
+    , ScRaw "                           'codex\\compiler\\IR\\Lir.codex',"
+    , ScRaw "                           'codex\\compiler\\IR\\LirTargets.codex')) {"
+    , ScRaw "            Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo $lir) -Quire $plugQuire -StripCites @('Build Settings', 'IR Chapter', 'chapter Lir', 'Phase Allocator')"
+    , ScRaw "        }"
+    , ScRaw "    }"
+    , ScIndent [ScForEach "cc" (SeVar "CompilerChapters") s06b-each-compiler-chapters]
+    , ScRaw "    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\\plugs\\common\\PlugTypes.codex') -Quire $plugQuire"
+    , ScRaw "    Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo 'codex\\plugs\\common\\IRTextParser.codex') -Quire $plugQuire"
+    , ScIndent [ScForEach "cc" (SeVar "CommonChapters") s06b-each-common-chapters]
+    , ScIndent [ScForEach "ch" (SeVar "Chapters") s06b-each-chapters]
+    , ScBlank
+    , ScRaw "    $preLines = Resolve-PlugForewords $lines"
+    , ScRaw "    Bundle-PlugSource -PreLines $preLines -Lines $lines -BundleSrc $bundleSrc -PlugName \"$PlugName-plug\""
+    , ScRaw "    Build-PlugCdx -BundleSrc $bundleSrc -OutFile $outFile -LogFile $logFile -PlugName \"$PlugName-plug\" -Survey $Survey -Decks $Decks"
+    , ScRaw "}"
+    ]
+
+  s06b-each-compiler-chapters : List ShellCmd =
+    [ ScRaw "Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo \"codex\\compiler\\$cc.codex\") -Quire $plugQuire"
+    ]
+
+  s06b-each-common-chapters : List ShellCmd =
+    [ ScRaw "Add-PlugChapter -Lines $lines -Path (Join-Path $script:PlugBuildRepo \"codex\\plugs\\common\\$cc.codex\") -Quire $plugQuire"
+    ]
+
+  s06b-each-chapters : List ShellCmd =
+    [ ScRaw "Add-PlugChapter -Lines $lines -Path (Join-Path $PlugDir \"$ch.codex\") -Quire $plugQuire"
+    ]
 
 Section: Assembly
 

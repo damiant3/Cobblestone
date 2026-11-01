@@ -1,8 +1,5 @@
 Chapter: T3ISA Emitter
 
- Lowers the Codex typed IR to T3ISA assembly text, the balanced-ternary
- 27-trit machine defined by the external maniT project.
-
  T3ISA is designed and specified by Manish Jagdish Thatte. This emitter is
  an independent implementation written from the published specification
  alone, docs/t3isa-reference.md at tag t3isa-spec-v1.3 in
@@ -65,11 +62,6 @@ Section: Emitter Configuration
  and 49,151 all store and load back, through the direct and the offset form
  alike.
 
- The earlier revision of the reference gave the initial stack pointer as
- 65,535 and their allocator base as "about 50,000", and this chapter was
- built on those numbers. Both were corrected in v1.3. The region chosen here
- is clear under either reading, which is why the correction moved no code.
-
   t3-heap-base : Integer
   t3-heap-base = 32768
 
@@ -122,12 +114,6 @@ Section: Context
      type-defs = tds
     }
 
- Every expression emitter leaves exactly one word on the stack, so sp-delta
- moves by a statically known amount at every point and a local's address is
- always sp-delta plus its frame index. That invariant is what lets a pure
- recursive walk address locals correctly under arbitrary nesting; break it
- in one arm and every load in the enclosing function reads the wrong word.
-
   t3-push-delta : T3Ctx -> T3Ctx
   t3-push-delta (c) =
     T3Ctx { env = c.env, next-slot = c.next-slot, sp-delta = c.sp-delta + 1,
@@ -178,9 +164,6 @@ Section: Environment Lookup
   t3-slot-of : List T3Slot, Text -> Integer
   t3-slot-of (env) (n) = t3-slot-of-loop env n (list-length env - 1)
 
- Scanned newest-first so an inner let shadows an outer binding of the same
- name, which is what the source language means and what the IR preserves.
-
   t3-slot-of-loop : List T3Slot, Text, Integer -> Integer
   t3-slot-of-loop (env) (n) (i) =
     if i < 0 then -1
@@ -216,9 +199,6 @@ Section: Instruction Helpers
 
   t3-fresh-label : T3Ctx -> Text
   t3-fresh-label (c) = c.fn-tag & "_L" & show (c.label-n)
-
- A stack push is two instructions and it is the only thing that moves the
- stack pointer during a body, so sp-delta and this pair must stay in step.
 
   t3-push : Text -> Text
   t3-push (r) = t3-line "TSUB  R26, R26, #1" & t3-line ("STORE " & r & ", [R26+#0]")
@@ -272,10 +252,6 @@ Section: Allocation
  syscalls that hand back opaque handles rather than addresses a LOAD can use.
  The cell is the only representation that survives a call.
 
- R22 carries the object address out of this sequence and every field store
- below reads it, so nothing between the allocation and the last store may
- write R22.
-
   t3-alloc-code : Integer, Text -> Text
   t3-alloc-code (n) (lbl) =
     t3-const-into "R21" t3-heap-cell
@@ -291,16 +267,6 @@ Section: Allocation
     & t3-label-line (lbl & "_hok")
     & t3-const-into "R21" t3-heap-cell
     & t3-line "STORE R24, [R21+#0]"
-
- Exhaustion traps rather than running on. The heap grows toward the stack, so
- an unguarded bump would overwrite live frames and answer with corrupted data
- instead of failing, which is the shape of wrongness this backend exists to
- refuse. Division by zero is the fault used because it is the only one this
- machine is measured to raise.
-
- The cell address is re-materialised before the store rather than assumed to
- have survived in R21, because a wide constant would have used R21 as its own
- scratch. Two words to remove an invariant nothing would have checked.
 
   t3-heap-init : Text
   t3-heap-init =
@@ -326,13 +292,6 @@ Section: Allocation
 
 Section: Aggregate Layout
 
- A record is its fields in DECLARED order, one word each. A variant is a tag
- word followed by the constructor's fields, the tag being the constructor's
- position in the type's own list. Both indices come from the type definitions
- the IR carries beside the chapter, never from the order a literal happened to
- write its fields in, so a record built with its fields out of order reads back
- correctly.
-
   t3-find-field : List RecordField, Text, Integer -> Integer
   t3-find-field (fs) (n) (i) =
     if i >= list-length fs then 0 - 1
@@ -354,10 +313,6 @@ Section: Aggregate Layout
      is EffectfulTy (es) (ss) (inner) -> t3-type-name inner
      is otherwise -> ""
 
- A type carries its own fields when it is a RecordTy and only names them when
- it is a ConstructedTy, so both roads are tried before the field is given up
- on.
-
   t3-record-fields : List ATypeDef, CodexType -> List RecordField
   t3-record-fields (tds) (ty) =
     when ty
@@ -378,10 +333,6 @@ Section: Aggregate Layout
   t3-ctor-index : List ATypeDef, CodexType, Text -> Integer
   t3-ctor-index (tds) (ty) (name) = t3-find-ctor (t3-sum-ctors tds ty) name 0
 
- The declared type of a field or of a constructor's argument, which is where a
- narrow in that position finds its band. The design's own table names three
- positions a band can be held in and this is the third of them.
-
   t3-field-type : List ATypeDef, CodexType, Text -> CodexType
   t3-field-type (tds) (ty) (fname) =
     let fs = t3-record-fields tds ty
@@ -396,10 +347,6 @@ Section: Aggregate Layout
     else let flds = (list-at cs ci).fields
     in if i >= list-length flds then ErrorTy else list-at flds i
 
- The type of a subexpression, needed only so a field access can name the
- record it is reaching into. A field-access node carries the FIELD's type, not
- the record's, so the record type has to come from the receiver.
-
   t3-expr-type : IRExpr -> CodexType
   t3-expr-type (e) =
     when e
@@ -413,12 +360,6 @@ Section: Aggregate Layout
      is otherwise -> ErrorTy
 
 Section: Record Construction
-
- Fields are evaluated in the order written, onto the stack, and only then is
- the object allocated and the values popped back into their declared slots.
- Allocating first would leave the object pointer live across the evaluation of
- every remaining field, and a nested construction inside one of them would
- take R22 away.
 
   t3-emit-record : T3Ctx, List IRFieldVal, CodexType, Integer -> T3Res
   t3-emit-record (c) (fs) (ty) (depth) =
@@ -459,8 +400,6 @@ Section: Record Construction
     in let s = t3-emit-expr-expecting c (fv.value) (depth + 1) want
     in t3-emit-field-vals (s.ctx) fs ty (i + 1) depth (acc & s.code)
 
- Popped in reverse, because the last value written is the one on top.
-
   t3-store-fields : List Integer, Integer, Text -> Text
   t3-store-fields (order) (i) (acc) =
     if i < 0 then acc
@@ -492,20 +431,6 @@ Section: Variant Construction
     else t3-store-ctor-fields (i - 1) (acc & t3-pop "R9" & t3-store-obj "R9" (i + 1))
 
 Section: Field Access
-
- THE IR ALREADY CARRIES THE RESOLVED FIELD INDEX, AND ONLY AT THE ACCESS.
- A field-access node names its field `px/0`, name and declared index joined
- by a slash, while the field-val nodes of a record literal name theirs plainly
- as `px`. So the two halves of the same record are described differently: the
- reader is handed the answer and the writer is not. Measured 2026-08-10 on the
- IR text for this plug's own aggregates program.
-
- The suffix is used when it is there, because it is the compiler's own
- resolution and cannot drift from it. The lookup through the type definitions
- is kept and CROSS-CHECKED against it rather than being merely a fallback: the
- two roads to a field's offset should never disagree, so a disagreement is a
- refusal and not a preference. It costs one comparison and cannot fire on a
- well-formed chapter.
 
   t3-field-base-name : Text -> Text
   t3-field-base-name (n) = list-at (text-split n "/") 0
@@ -539,12 +464,6 @@ Section: Field Access
 
 Section: Refusal
 
- A refusal is a line in the output AND an entry in the context, so a
- malformed program cannot produce an artifact that merely looks short. The
- runner greps for the marker and fails; emitting something plausible for a
- construct this backend cannot express is the one outcome that would make
- the whole experiment worthless.
-
   t3-refuse : T3Ctx, Text -> T3Res
   t3-refuse (c) (why) =
     let c2 = t3-refuse-ctx c why
@@ -554,19 +473,11 @@ Section: Refusal
       ctx = c3
     }
 
- The statement-context refusal leaves the stack alone. An expression
- refusal must still push, because every expression arm pushes and an
- unbalanced one would corrupt every frame offset above it.
-
   t3-refuse-void : T3Ctx, Text -> T3Res
   t3-refuse-void (c) (why) =
     T3Res { code = t3-line ("; !UNSUPPORTED: " & why), ctx = t3-refuse-ctx c why }
 
 Section: Integer Range Check
-
- A Codex integer band wider than a 27-trit word cannot be represented, and
- the failure would be a wrong answer rather than a crash, so it is refused
- at the type rather than at the value.
 
   t3-int-ty-fits : CodexType -> Boolean
   t3-int-ty-fits (ty) =
@@ -620,9 +531,6 @@ Section: Binary Operators
      is IrGtEq -> True
      is otherwise -> False
 
- Given s = sign(l - r) in the scratch register, gt is max(s, 0) and lt is
- the negation of min(s, 0). Everything else is one subtraction away.
-
   t3-cmp-recover : IRBinaryOp -> Text
   t3-cmp-recover (op) =
     when op
@@ -640,9 +548,6 @@ Section: Binary Operators
   t3-cmp-lt : Text
   t3-cmp-lt = t3-line "TMIN  R9, R9, R0" & t3-line "TNEG  R9, R9"
 
- Nonzero either way is not-equal: max(s,0) plus negated min(s,0) is one
- exactly when the sign is nonzero, and zero when the operands are equal.
-
   t3-cmp-ne : Text
   t3-cmp-ne =
     t3-line "TMAX  R10, R9, R0"
@@ -654,10 +559,6 @@ Section: Binary Operators
   t3-cmp-invert = t3-line "TLIT  R10, #1" & t3-line "TSUB  R9, R10, R9"
 
 Section: Expression Emission
-
- Every arm leaves exactly one word on the stack. Depth is fuelled because
- a malformed IR tree would otherwise recurse without bound on a machine
- with no stack guard.
 
   t3-emit-expr : T3Ctx, IRExpr -> T3Res
   t3-emit-expr (c) (e) = t3-emit-expr-at c e 0
@@ -716,14 +617,6 @@ Section: Materialising a Constant
  immediate form is kept here because a shift amount known at compile time
  costs an instruction to put in a register and buys nothing.
 
- Measured 2026-08-09 against the previous emulator the register form
- answered 1 rather than 1594323, a silent multiply by 3^0 that did not
- fault. That behaviour changed in v1.3, and the guards this chapter and
- the encoder carried against it are gone. Recorded
- because it is the one place where trusting the reference over a
- measurement would have been right and the measurement was the thing that
- aged.
-
   t3-const-into : Text, Integer -> Text
   t3-const-into (r) (n) =
     if n <= t3-wide-max then
@@ -751,18 +644,12 @@ Section: Materialising a Constant
     let c2 = t3-push-delta c
     in T3Res { code = t3-const-into "R9" n & t3-push "R9", ctx = c2 }
 
- A literal outside the word range is refused for the same reason a wide
- integer type is: the alternative is a saturated value that reads as data.
-
   t3-emit-int-lit : T3Ctx, Integer -> T3Res
   t3-emit-int-lit (c) (n) =
     if n > t3-word-max then t3-refuse c ("integer literal exceeds the 27-trit word: " & show n)
     else if n < 0 - t3-word-max then
       t3-refuse c ("integer literal below the 27-trit word: " & show n)
     else t3-emit-const c n
-
- A text literal becomes a .data entry. Its address is resolved by the
- assembler, so the emitter only has to name it consistently.
 
   t3-emit-text-lit : T3Ctx, Text -> T3Res
   t3-emit-text-lit (c) (s) =
@@ -796,12 +683,6 @@ Section: Materialising a Constant
     in T3Res { code = s.code & t3-pop "R9" & t3-line "TNEG  R9, R9" & t3-push "R9", ctx = c3 }
 
 Section: Binary Emission
-
- Left then right, both on the stack, then popped in reverse so the right
- operand lands in the scratch B register and the left in scratch A. Doing
- it through the stack rather than through registers is what makes
- arbitrary nesting correct on a machine where every register is
- caller-save and a nested call would otherwise clobber a held operand.
 
   t3-emit-binary : T3Ctx, IRBinaryOp, IRExpr, IRExpr, CodexType, Integer -> T3Res
   t3-emit-binary (c) (op) (l) (r) (ty) (depth) =
@@ -843,11 +724,6 @@ Section: Binary Emission
     when op
      is IrAppendText -> t3-refuse c "text append outside a print: fmt::concat is not among the fmt natives the T3 backend implements, so it fails at assemble time, and strings are not addressable"
      is otherwise -> t3-refuse c (t3-other-op-reason op)
-
- A real operation is named as such rather than lumped in with the rest,
- because it is the sharpest of the failures predicted in advance and the
- whole point is to report WHICH assumption the IR carried, not that
- something went wrong.
 
   t3-other-op-reason : IRBinaryOp -> Text
   t3-other-op-reason (op) =
@@ -921,9 +797,6 @@ Section: Control Flow
     in let es = t3-emit-expr-at c-else el (depth + 1)
     in T3Res { code = t3-if-code cond-code lbl (ts.code) (es.code), ctx = es.ctx }
 
- Both arms leave one word, so the merge point is balanced and sp-delta
- after the whole form is the same whichever arm ran.
-
   t3-if-code : Text, Text, Text, Text -> Text
   t3-if-code (cond-code) (lbl) (then-code) (else-code) =
     cond-code
@@ -935,10 +808,6 @@ Section: Control Flow
     & t3-label-line (lbl & "_else")
     & else-code
     & t3-label-line (lbl & "_end")
-
- A let evaluates its value, stores it into a fresh frame slot, and then
- emits the body with the name bound. The slot is never reused, so the
- frame pre-pass counting lets is what sizes the frame.
 
   t3-emit-let : T3Ctx, Text, IRExpr, IRExpr, Integer -> T3Res
   t3-emit-let (c) (n) (v) (body) (depth) =
@@ -952,19 +821,6 @@ Section: Control Flow
 
 Section: Match
 
- The scrutinee is evaluated once into a frame slot, because every branch has
- to read it and the branches run at different stack depths. Each branch is a
- test that jumps to the NEXT branch's label on failure, then its bindings,
- then its guard, then its body, then a jump to the end. Branch i's failure
- label is branch i+1's entry, so the chain needs no patching pass, which is
- what makes a single forward walk enough on a machine whose assembler resolves
- labels for us.
-
- A match that falls off the end traps. The type checker proves exhaustiveness
- before the IR is written, so this is unreachable in a well-formed program;
- emitting nothing there would leave the stack short by one word and every
- offset above it wrong, which is a corrupted answer rather than a failure.
-
   t3-emit-match : T3Ctx, IRExpr, List IRBranch, Integer -> T3Res
   t3-emit-match (c) (scrut) (bs) (depth) =
     let ss = t3-emit-expr-at c scrut (depth + 1)
@@ -975,9 +831,6 @@ Section: Match
     in let store = t3-pop "R9" & t3-store-slot c1 "R9" slot
     in let br = t3-emit-branches c2 bs slot mlbl 0 depth
     in T3Res { code = ss.code & store & br.code, ctx = t3-push-delta (br.ctx) }
-
- Each branch is emitted from the SAME stack depth, so the depth is wound back
- between them rather than accumulating: only one branch runs.
 
   t3-emit-branches : T3Ctx, List IRBranch, Integer, Text, Integer, Integer -> T3Res
   t3-emit-branches (c) (bs) (slot) (mlbl) (i) (depth) =
@@ -1005,9 +858,6 @@ Section: Match
       ctx = b.ctx
     }
 
- A guard that is the literal True is the shape every unguarded branch parses
- to, and it emits nothing.
-
   t3-emit-guard : T3Ctx, IRExpr, Text, Text, Integer, Integer -> T3Res
   t3-emit-guard (c) (g) (next) (mlbl) (i) (depth) =
     when g
@@ -1028,9 +878,6 @@ Section: Match
 
 Section: Patterns
 
- A pattern emits its test and its bindings together, because a constructor
- pattern's bindings are only valid once its tag has matched.
-
   t3-emit-pattern : T3Ctx, IRPat, Integer, Text, Text, Integer -> T3Res
   t3-emit-pattern (c) (p) (slot) (next) (mlbl) (i) =
     when p
@@ -1045,9 +892,6 @@ Section: Patterns
     let c1 = t3-bind-slot c n
     in let dst = t3-slot-of (c1.env) n
     in T3Res { code = t3-load-slot c "R9" slot & t3-store-slot c "R9" dst, ctx = c1 }
-
- A boolean pattern spells its value as a name, which is why the two are
- written out here rather than parsed as numbers.
 
   t3-pat-lit-value : Text -> Integer
   t3-pat-lit-value (t) =
@@ -1064,16 +908,8 @@ Section: Patterns
       ctx = c
     }
 
- The equal case is the ZERO arm of the three-way branch, so the label it needs
- is derived from the failure label rather than taking another counter.
-
   t3-lit-ok : Text -> Text
   t3-lit-ok (next) = next & "_eq"
-
- The tag is at offset zero and the constructor's fields follow it. Only a name
- or a wildcard is accepted underneath, because a nested pattern would need a
- test tree this walk does not build, and matching it loosely would accept
- values the source rejects.
 
   t3-emit-ctor-pattern : T3Ctx, Text, List IRPat, CodexType, Integer, Text -> T3Res
   t3-emit-ctor-pattern (c) (n) (subs) (ty) (slot) (next) =
@@ -1103,9 +939,6 @@ Section: Patterns
     in let b = t3-bind-ctor-fields c subs 0 ""
     in T3Res { code = ld & test & b.code, ctx = b.ctx }
 
- R22 still holds the scrutinee here, which is why the binds read through
- t3-load-obj and nothing between the tag test and the last bind may write it.
-
   t3-bind-ctor-fields : T3Ctx, List IRPat, Integer, Text -> T3Res
   t3-bind-ctor-fields (c) (subs) (i) (acc) =
     if i >= list-length subs then T3Res { code = acc, ctx = c }
@@ -1117,11 +950,6 @@ Section: Patterns
      is otherwise -> t3-bind-ctor-fields c subs (i + 1) acc
 
 Section: Application
-
- An application is flattened to a root and its arguments. Only a direct
- call of a known definition, a recognised console or format builtin, is
- supported; a call through a value would need an indirect CALLR and a
- closure representation this backend does not have.
 
   t3-emit-apply : T3Ctx, IRExpr, Integer -> T3Res
   t3-emit-apply (c) (e) (depth) =
@@ -1150,30 +978,7 @@ Section: Application
 
 Section: Checked Narrow
 
- __narrow asserts at runtime that a value lies in a declared band. THE NODE
- DOES NOT CARRY THE BAND: it is typed
-
    (apply (name "__narrow" (fn int-default int-default)) <arg> int-default)
-
- default to default, whatever band was asserted. The band is in the IR, but
- it is held by the ENCLOSING CONTEXT, and which context depends on where the
- narrow sits. Measured 2026-08-09 across three positions: at a def's return
- it is the def's own type `(fn int-default (int 0 100 ov-error))`; at a call
- argument it is the callee's parameter type
- `(name "takes-small" (fn (int 0 100 ov-error) ...))`; at a record field it
- is the field's declaration in the type-defs.
-
- So the check IS emittable, and this emitter takes the band from the
- position rather than from the node. A narrow anywhere else is refused,
- because a weaker check that looks like the real one is the failure this
- backend exists to avoid: emitting a word-range test where the source asked
- for `0 and 100` would pass two million and read as an enforced bound.
-
- This paragraph described the band as ABSENT until it was measured properly.
- It was not absent; the instrument was a look at the node, which cannot show
- a band the context holds. The lesson is L-ERASED's inverse and worth as
- much: before reporting that an artifact has lost something, look at what
- encloses it.
 
  The trap is a deliberate division by zero, which is the only fault this
  machine is known to raise. The published reference says division by zero
@@ -1193,9 +998,6 @@ Section: Checked Narrow
      is IrName (n) (ty) (sp) -> n == "__narrow"
      is otherwise -> False
 
- Emit a subexpression whose expected type is known from its position. Only
- __narrow cares; everything else ignores the band and goes the usual way.
-
   t3-emit-expr-expecting : T3Ctx, IRExpr, Integer, CodexType -> T3Res
   t3-emit-expr-expecting (c) (e) (depth) (expected) =
     if t3-is-narrow-apply e then t3-emit-narrow-banded c e depth expected
@@ -1214,9 +1016,6 @@ Section: Checked Narrow
     if hi > t3-word-max then t3-refuse c "__narrow band wider than a 27-trit word"
     else if lo < 0 - t3-word-max then t3-refuse c "__narrow band wider than a 27-trit word"
     else t3-emit-narrow-code c args depth lo hi
-
- Reached only when a narrow turns up somewhere the band cannot be read off
- the position. Refused rather than approximated.
 
   t3-emit-narrow : T3Ctx, List IRExpr, Integer, CodexType -> T3Res
   t3-emit-narrow (c) (args) (depth) (rty) =
@@ -1242,10 +1041,6 @@ Section: Checked Narrow
       ctx = c2
     }
 
- Two comparisons folded into one sign: minus one if below the floor, minus
- one if above the ceiling, so their sum is negative exactly when the value
- is out of band and the three-way branch needs no second test.
-
   t3-narrow-check : Integer, Integer, Text -> Text
   t3-narrow-check (lo) (hi) (lbl) =
     t3-const-into "R11" lo
@@ -1269,11 +1064,6 @@ Section: Checked Narrow
 
   t3-rem-body : Text
   t3-rem-body = t3-line "TMOD  R9, R9, R10"
-
- The Euclidean remainder is the truncating one plus the divisor's magnitude
- when it came out negative. Absolute value is max(b, -b); the flag is the
- negated min of the sign with zero, which is one exactly when the remainder
- is below zero.
 
   t3-mod-body : Text
   t3-mod-body =
@@ -1307,27 +1097,6 @@ Section: Checked Narrow
  addressable memory; a literal is an entry in a sidecar table and its
  handle is an index into it.
 
- The reason used to be that the machine could not build one. Earlier
- revisions of the reference put fmt::show_int at 140 and fmt::concat at
- 142, and measured 2026-08-09, the emulator answered "TRAP: unknown
- syscall" for both, because no handler has ever existed at those numbers.
- Spec v1.3 gives the real ones. Re-measured 2026-08-10: syscall 14 with 42
- in R1, then syscall 3, prints "42", so show_int does work and does hand
- back a printable handle. fmt::concat is a different case and still cannot
- be reached at all, being one of the 22 of 31 fmt natives the T3 backend
- does not implement.
-
- So `show` is now a backend choice rather than a machine limit: what is
- missing is a Text representation in this emitter to carry the handle,
- not a way to make one. Append remains impossible either way.
-
- What CAN be done is emit a line. A print of an append tree linearises into
- one syscall per leaf: a literal prints with print_str, an integer with
- print_int, and the newline comes once at the end. That is the general
- lowering of formatted output for a target with no string heap, not a
- special case of any one program, and it is why print-line-uni is handled
- by walking its argument rather than by evaluating it.
-
   t3-emit-print : T3Ctx, List IRExpr, Integer -> T3Res
   t3-emit-print (c) (args) (depth) =
     if list-length args /= 1 then t3-refuse c "print-line-uni takes one argument"
@@ -1337,8 +1106,6 @@ Section: Checked Narrow
       code = p.code & t3-line "SYSCALL #4" & t3-line "TLIT  R9, #0" & t3-push "R9",
       ctx = c2
     }
-
- Each part emits its own print and leaves the stack as it found it.
 
   t3-print-parts : T3Ctx, IRExpr, Integer -> T3Res
   t3-print-parts (c) (e) (depth) =
@@ -1363,10 +1130,6 @@ Section: Checked Narrow
     let idx = list-length (c.strings)
     in let c2 = t3-add-string c s
     in T3Res { code = t3-line ("TLIT  R1, #str" & show idx) & t3-line "SYSCALL #3", ctx = c2 }
-
- A `show` under a print is the integer path: print_int renders it directly,
- which is the same rendering fmt::show_int would have produced had it
- existed.
 
   t3-print-apply : T3Ctx, IRExpr, Integer -> T3Res
   t3-print-apply (c) (e) (depth) =
@@ -1406,10 +1169,6 @@ Section: Checked Narrow
       ctx = c2
     }
 
- Arguments are evaluated left to right onto the stack and only then popped
- into R1 upward. Because the last one pushed is the last argument, the
- pops run from the highest register down.
-
   t3-emit-user-call : T3Ctx, Text, List IRExpr, Integer, CodexType -> T3Res
   t3-emit-user-call (c) (n) (args) (depth) (fty) =
     let want = t3-arity-of (c.arities) n
@@ -1422,9 +1181,6 @@ Section: Checked Narrow
   t3-emit-call-args (c) (n) (args) (depth) (fty) =
     let ev = t3-emit-args c args 0 depth "" fty
     in t3-emit-call (ev.ctx) n (list-length args) (ev.code)
-
- Each argument is emitted knowing the parameter type it is going into, which
- is where a __narrow in argument position finds its band.
 
   t3-emit-args : T3Ctx, List IRExpr, Integer, Integer, Text, CodexType -> T3Res
   t3-emit-args (c) (args) (i) (depth) (acc) (fty) =
@@ -1453,9 +1209,6 @@ Section: Checked Narrow
 
 Section: Act Blocks
 
- An act block runs its statements in order and answers the value of the
- last one. A bound name gets a frame slot exactly as a let does.
-
   t3-emit-act : T3Ctx, List IRActStmt, Integer -> T3Res
   t3-emit-act (c) (stmts) (depth) =
     if list-length stmts == 0 then t3-emit-const c 0
@@ -1467,9 +1220,6 @@ Section: Act Blocks
     else let last = i == list-length stmts - 1
     in let s = t3-emit-act-stmt c (list-at stmts i) depth last
     in t3-emit-act-loop (s.ctx) stmts (i + 1) depth (acc & s.code)
-
- Every statement but the last has its value dropped, which keeps the stack
- balanced across a block of any length.
 
   t3-emit-act-stmt : T3Ctx, IRActStmt, Integer, Boolean -> T3Res
   t3-emit-act-stmt (c) (st) (depth) (last) =
@@ -1502,10 +1252,6 @@ Section: Act Blocks
 
 Section: Frame Sizing
 
- A let never reuses a slot, so the frame is the parameter count plus every
- binder in the body. Counting them up front is what lets the prologue
- allocate once and the body never move the stack pointer except to push.
-
   t3-count-binders : IRExpr -> Integer
   t3-count-binders (e) =
     when e
@@ -1519,10 +1265,6 @@ Section: Frame Sizing
      is IrRecord (n) (fs) (ty) (sp) -> t3-count-field-binders fs 0 0
      is IrFieldAccess (r) (f) (ty) (sp) -> t3-count-binders r
      is otherwise -> 0
-
- A match adds a slot for the scrutinee, and every branch adds one per name its
- pattern binds. A frame short by one is not a crash: it is every local above
- the shortfall reading the wrong word.
 
   t3-count-branch-binders : List IRBranch, Integer, Integer -> Integer
   t3-count-branch-binders (bs) (i) (acc) =
@@ -1582,10 +1324,6 @@ Section: Definition Emission
     if i >= list-length ps then c
     else let p = list-at ps i
     in t3-bind-params (t3-bind-slot c (p.name)) ps (i + 1)
-
- The prologue allocates the whole frame and spills the incoming argument
- registers into their slots, because every register is caller-save and the
- first nested call would otherwise lose them.
 
   t3-def-code : Text, Integer, Integer, Text -> Text
   t3-def-code (tag) (frame) (np) (body) =

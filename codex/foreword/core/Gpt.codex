@@ -1,8 +1,6 @@
 Chapter: Gpt
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Constants
 
   gpt-sig-0 : Integer = 69
@@ -200,35 +198,64 @@ Section: Read GPT
     in let cnt = gpt-read-u32 buf 80
     in let sz = gpt-read-u32 buf 84
     in let first-usable = gpt-read-u64 buf 40
+    in let last-usable = gpt-read-u64 buf 48
     in if lba < 2 then False
     else if gpt-lba-ok first-usable == False then False
     else if gpt-lba-ok (gpt-read-u64 buf 32) == False then False
+    else if gpt-lba-ok last-usable == False then False
+    else if last-usable < first-usable then False
+    else if last-usable > gpt-read-u64 buf 32 then False
     else if cnt < 1 | cnt > 1024 then False
     else if sz < 128 | sz > 512 then False
     else if sz - (sz / 128) * 128 /= 0 then False
     else if first-usable < lba then False
     else (cnt * sz + 511) / 512 <= first-usable - lba
 
-  gpt-parts-ok : List GptPartition, Integer -> Boolean
-  gpt-parts-ok (parts) (i) =
+ UEFI 2.10 section 5.3.3: a partition lies between FirstUsableLBA and
+ LastUsableLBA, so none covers the protective MBR, the header or the entry
+ array, and none runs past the disk the header declares.
+
+  gpt-parts-ok : List GptPartition, Integer, Integer, Integer -> Boolean
+  gpt-parts-ok (parts) (first-usable) (last-usable) (i) =
     if i >= list-length parts then True
     else let p = list-at parts i
     in if gpt-lba-ok (p.gp-start-lba) == False then False
     else if gpt-lba-ok (p.gp-end-lba) == False then False
     else if p.gp-end-lba < p.gp-start-lba then False
-    else gpt-parts-ok parts (i + 1)
+    else if p.gp-start-lba < first-usable then False
+    else if p.gp-end-lba > last-usable then False
+    else gpt-parts-ok parts first-usable last-usable (i + 1)
 
   gpt-read-after-hdr : Integer -> [Device.Block] Maybe GptDisk
   gpt-read-after-hdr (hdr-buf) =
     if gpt-check-signature hdr-buf == False then None
     else if gpt-header-geom-ok hdr-buf == False then None
+    else if gpt-header-crc-ok hdr-buf == False then None
     else let entry-size = gpt-read-u32 hdr-buf 84
     in let disk-guid = gpt-read-guid hdr-buf 56
     in let total-sectors = gpt-read-u64 hdr-buf 32 + 1
+    in let array-bytes = gpt-read-u32 hdr-buf 80 * entry-size
     in act
-      parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) entry-size (gpt-read-u32 hdr-buf 80) 0 []
-      if gpt-parts-ok parts 0 then gpt-make-disk disk-guid total-sectors parts else None
+      acrc <- gpt-rt-crc32-sector (gpt-read-u64 hdr-buf 72) ((array-bytes + 511) / 512) array-bytes
+      if acrc /= gpt-read-u32 hdr-buf 88 then None
+      else act
+        parts <- gpt-read-entries (gpt-read-u64 hdr-buf 72) entry-size (gpt-read-u32 hdr-buf 80) 0 []
+        if gpt-parts-ok parts (gpt-read-u64 hdr-buf 40) (gpt-read-u64 hdr-buf 48) 0 then gpt-make-disk disk-guid total-sectors parts else None
+      end
     end
+
+ UEFI 2.10 section 5.3.2: HeaderSize is at least 92 and at most the block
+ size, and HeaderCRC32 is taken over HeaderSize bytes with its own field zero.
+
+  gpt-header-crc-ok : Integer -> Boolean
+  gpt-header-crc-ok (buf) =
+    let hs = gpt-read-u32 buf 12
+    in if hs < 92 | hs > 512 then False
+    else let stored = gpt-read-u32 buf 16
+    in let z = gpt-write-u32 buf 16 0
+    in let c = gpt-rt-crc32-bytes (gpt-read-buf-bytes buf 0 hs []) hs
+    in let r = gpt-write-u32 buf 16 stored
+    in c == stored
 
   gpt-make-disk : List Integer, Integer, List GptPartition -> Maybe GptDisk
   gpt-make-disk (disk-guid) (total-sectors) (parts) =
@@ -417,14 +444,6 @@ Section: Partition Layout
     [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, bit-and (idx + 1) 255]
 
 Section: Write Partition Entries
-
- Every realistic count is 1, 2 or 3, so **this wrote an empty partition table
- every time it was called.** It survived because nothing called it: the shipped
- boot images get their GPT from `build/build-img.ps1` on the host, and the one
- caller in the tree is the drive installer, which could not run at all while
- block-select selected nothing. The first time an install reached a real second
- drive, the header and the protective MBR landed correctly and the entry sector
- was 512 zero bytes.
 
   gpt-write-entries : List GptPartEntry, Integer, Integer, Integer -> [Device.Block] Integer
   gpt-write-entries (parts) (buf) (start-lba) (i) =

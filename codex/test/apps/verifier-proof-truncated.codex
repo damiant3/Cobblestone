@@ -1,0 +1,82 @@
+Chapter: VerifierProofTruncated
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+  cites Foreword chapter CCE
+
+ A proof entry whose hash is 3 bytes instead of 32 is encoded and signed
+ honestly, so the binary passes integrity while its proof section declares
+ one 33-byte entry and holds 4 bytes.
+
+Section: Helpers
+
+  vpt-bool : Boolean -> Text
+  vpt-bool (b) = if b then "True" else "False"
+
+  vpt-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  vpt-bin : List CdxProofEntry -> List Integer
+  vpt-bin (proofs) = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) vpt-sk proofs
+
+  vpt-poke : Integer, List Integer, Integer -> Integer
+  vpt-poke (addr) (bs) (i) =
+    if i >= list-length bs then addr
+    else let w = poke-byte addr i (list-at bs i)
+    in vpt-poke addr bs (i + 1)
+
+  vpt-hash-bytes : Text -> List Integer
+  vpt-hash-bytes (hex) = vpt-hex-loop hex 0 64 []
+
+  vpt-hex-loop : Text, Integer, Integer, List Integer -> List Integer
+  vpt-hex-loop (hex) (i) (len) (acc) =
+    if i >= len then acc
+    else if i + 1 >= text-length hex then list-push acc 0
+    else vpt-hex-loop hex (i + 2) len (list-push acc (vpt-nibble (to-unicode (char-code (char-at hex i))) * 16 + vpt-nibble (to-unicode (char-code (char-at hex (i + 1))))))
+
+  vpt-nibble : Integer -> Integer
+  vpt-nibble (c) =
+    if c >= 48 & c <= 57 then c - 48
+    else if c >= 97 & c <= 102 then c - 87
+    else if c >= 65 & c <= 70 then c - 55
+    else 0
+
+  vpt-line : Text, VerifyResult -> Text
+  vpt-line (label) (r) = label & ": " & vpt-bool (r.accepted) & " " & r.reason
+
+  vpt-at : List Integer, BareFactStore -> VerifyResult
+  vpt-at (bin) (store) =
+    let addr = vpt-poke (alloc-bytes (list-length bin)) bin 0
+    in verify-proofs-at addr (list-length bin) (list-slice bin 0 cdx-header-fixed-size) store 100
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let pf = fact-create ProofFact "termination-proof" "author" 0
+    in let store = fact-store fact-store-empty pf
+    in let good = vpt-bin [CdxProofEntry { kind = cdx-proof-termination, hash-bytes = vpt-hash-bytes (pf.hash) }]
+    in let short = vpt-bin [CdxProofEntry { kind = cdx-proof-termination, hash-bytes = [1, 2, 3] }]
+    in act
+      print-line-uni (vpt-line "one proof, integrity" (verify-integrity good))
+      print-line-uni (vpt-line "one proof, proofs" (verify-proofs good store 100))
+      print-line-uni (vpt-line "one proof, proofs at an address" (vpt-at good store))
+      print-line-uni (vpt-line "short entry, integrity" (verify-integrity short))
+      print-line-uni (vpt-line "short entry, proofs" (verify-proofs short store 100))
+      print-line-uni (vpt-line "short entry, proofs at an address" (vpt-at short store))
+    end

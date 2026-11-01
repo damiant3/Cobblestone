@@ -83,15 +83,12 @@ Transfers use one reusable 512-byte data buffer and constant work per sector.
 
 ## Proof and deployment boundary
 
-`pwsh -File apps/uoaix/proofs/test-virtio-block.ps1 -Kernel seed/Codex.cdx`
-runs the native queue oracle and five real QEMU device boots: write,
-fresh reboot, read-only, absent device and legacy-only refusal. A direct
-host check compares every written byte; the reboot reads the pattern before
-writing again. The read-only arm requires an unchanged image hash.
-The proof creates synthetic data only and retains hashes, PIDs and exits.
-
-The proof runs seven native queue checks and five device boots under QEMU TCG,
-including negotiated FLUSH and persistence into the next VM process.
+The kernel battery grades the driver: `codex/test/apps/virtio-pci-queue` (the
+native queue checks, on codex-vm) and `codex/test/apps/virtio-blk-qemu`, five
+QEMU TCG boots through `build/test-qemu-x86.ps1` on one copy of a minted disk:
+write, fresh reboot (reads all 512 written bytes back in a new VM process),
+read-only (the write refused before it is published), absent device and
+legacy-only refusal, including negotiated FLUSH.
 WorldDisk's virtio binding and storage-component proof are described in
 [WorldDisk.md](WorldDisk.md). Booting the actual UEFI shard image,
 NIC integration, port/authentication acceptance,

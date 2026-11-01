@@ -23,6 +23,14 @@ other than what it is:
   PowerShell automatic variable and shadows it). The request it sends is
   framed and **the reply is not**, so strip a header only when the length
   field proves one is there.
+- **The tag byte ahead of a plug's payload is the SENDER's choice of the
+  plug's lifetime.** Tag 1 is one payload, one reply, exit: what
+  `build/plug-run.ps1` sends. Tag 3 is reply, close and connect again for
+  another payload (the go, haskell, javascript, python and rust plugs serve
+  it, `plug-tag-serve-again`). A plug that waited for more work on its own made
+  every one-shot caller pay for the wait. Each session takes a new source port,
+  because a client cannot reuse one it has just closed, and `serve-max` (64) is
+  a fuel, so a host that stops answering cannot make a plug spin.
 - **PowerShell's `-band 0xFFFFFFFF` is not a mask.** `0xFFFFFFFF` parses as
   Int32 `-1`, so the AND is the identity and the value reaches the next
   `[int]` cast intact and overflows. In hand-assembly like `cdx-to-pe.ps1`,
@@ -128,15 +136,11 @@ other than what it is:
    Each sample has a sidecar (`.expected` for success, `.failing` for
    expected errors, `.skip` for skipped). Runs parallel VM instances.
 
-10. **Plug gates**: the five native backends (riscv, arm64, elf, pe,
-    img) must rebuild clean with the just-proven compiler
-    (`plug-binary`), and a representative transpiler subset
-    (typescript, python, rust, ptx) must run end-to-end -- SUT IR over
-    the framed TCP wire through the plug VM to non-empty target text
-    (`plug-smoke`). Missing plug CDX builds once and caches; a failing
-    smoke run gets one rebuild-and-retry before failing the build.
-    The full 53-plug matrix (`codex/plugs/test-plugs.ps1`) remains a
-    manual sweep.
+10. **No plug gate**: no release phase builds, runs or reports a plug or
+    cross output (Damian, 2026-10-31). The plug matrix
+    (`codex/plugs/test-plugs.ps1`), the cross batch
+    (`build/test-cross-batch.ps1`) and each plug's own harnesses are run
+    by hand.
 
 ### Quick Commands
 
@@ -221,9 +225,18 @@ build/desk.ps1 -Width 1920 -Height 1080         # any mode codex-vm will give yo
 build/desk.ps1 -Force                           # recompile even if the CDX is current
 build/desk.ps1 -Shot shot.bmp                   # headless, one frame, then exit
 build/desk.ps1 -Keys '4000:4'                   # scancode timeline: 33 = f, 4 = 3, 1 = Esc
-build/desk.ps1 -Rtc 2026-07-30T06:00:00         # freeze the taskbar clock
+build/desk.ps1 -Rtc 2026-07-30T06:00:00         # freeze RTC and HPET; see below: no clock reaches the glass
 build/desk.ps1 -Disk seed/Codex.img             # give the Files pane a real ESP
 ```
+
+**`-Rtc` shows only the first frame.** codex-vm's `-rtc` freezes the HPET
+with the RTC, and `GopPresent dsp-due` publishes a frame only once the HPET
+has advanced a sixtieth of a second past the last one, so after the first
+publish nothing more reaches the glass: the taskbar clock, which paints after
+that publish, is never seen. To read the clock at a chosen instant, run the
+desk's own functions in a guest under `-rtc` (`clk-ensure2`,
+`clk-band-text`, `clk-world-ensure`) with the image as `-DiskFile`, and print
+their text.
 
 **Two scales, and they step at different widths.** `ui-scale` drives the
 hand-drawn surfaces (topbar, welcome window, clock, cursor) and doubles at
@@ -271,8 +284,8 @@ attached, so `desk-font` falls back to the CBF bitmap face and the Welcome
 window says so; that is the fallback working, not a fault.
 
 **Nothing leaves the desktop by key.** `desk-loop` does not return, so Esc
-at the desk does nothing and the guest cannot be ended by a stray keypress
-(fester, main 12350). **Shutdown**, bottom-left, is the way out, and it is
+at the desk does nothing and the guest cannot be ended by a stray keypress.
+**Shutdown**, bottom-left, is the way out, and it is
 a deliberate click. Closing the window or `Stop-Process -Id` also works.
 
 The launcher hands back the codex-vm PID and the `Stop-Process -Id` line
@@ -333,8 +346,8 @@ chapters: foreword 1,309, kernel 282, board 13, apps 227, unclassified 313
 `compiler` and `plugs` are named batteries that select NO chapters, because
 nothing under `codex\test` cites either, and `-Battery compiler` REFUSES
 rather than running an empty set green. The compiler is covered by the
-fixed-point core, `test-bvt`, `sem-equiv` and `check-errors`; the plugs by
-`plug-binary`, `plug-smoke` and `plug-selftest`.
+fixed-point core, `test-bvt`, `sem-equiv` and `check-errors`; the plugs by no
+gate (Damian, 2026-10-31), only by their own harnesses run by hand.
 
 A chapter with no `.covers` and no resolvable cite is UNCLASSIFIED and joins
 no battery, deliberately: assigning it on a guess is how a battery goes blind
@@ -459,9 +472,7 @@ Platform (WHP). Build with `tools/build-vm.ps1`.
 **A guest CAN detect codex-vm through the HYPERVISOR bit since 2026-08-18.**
 CPUID leaf 1 ECX carries bit 31 (the conventional "am I virtualised" answer);
 leaves 8000_0002h..04h answer the brand string
-`codex-vm virtual CPU (WHP)`. Until 2026-08-18 leaf 1 ECX read ZERO and the
-brand leaves were absent, so a guest was told it was on bare silicon with no
-name. The vendor string is `GenuineIntel` and leaf 1 EDX carries a real feature
+`codex-vm virtual CPU (WHP)`. The vendor string is `GenuineIntel` and leaf 1 EDX carries a real feature
 set (FPU TSC MSR PAE APIC CMOV MMX FXSR SSE SSE2). On a host with XSAVE and
 AVX the maximum basic leaf is 0Dh, leaf 1 ECX adds XSAVE, AVX and OSXSAVE (the
 last mirroring the asking processor's CR4), and leaf 0Dh answers XCR0 = 7;
@@ -529,36 +540,9 @@ grepping that pattern yields the complete set codex-vm accepts. It answered 120
 flags on 2026-08-24 and 121 on 2026-08-27; re-measure rather than quoting
 either (L-COUNT).
 
-#### `-data-port` and `-ctrl-port` do not exist, and the usage banner used to say they did
+#### `-data-port` and `-ctrl-port` do not exist
 
-**No revision of `tools/codex-vm.c` has ever parsed either flag** (#1 through
-#110 checked 2026-08-24, and the flag table below is the full set it does
-parse). They are out of the usage banner as of 2026-08-27 and were not
-implemented: with the refusal above in place, advertising them would advertise
-two flags the program answers with exit 2. Passing either now says so.
-
-Until then, because unknown flags were dropped in silence, the command line
-looked accepted: the guest booted, found nothing on the wire, and halted inside
-500 ms.
-
-That kills `Start-VmRun`'s codex-vm path in `build/vm-config.ps1`, which builds
-exactly those two flags. `Start-CodexVmRun` reads the fast exit as a failed
-launch, retries four times and returns `$null`, so a caller reports
-`FAIL: VM did not start` and the real cause is a flag that was never there.
-**SETTLED BY DELETION, 2026-09-07.** The serve mode was never built and the
-callers are gone: `codex/plugs/elf/extract-x86-output.ps1` went at main 21478
-and `tools/test-codex-vm.ps1`, which passed the two flags directly and also
-invoked `codex.build\sample-compile-selfhost.ps1` from before the restructure,
-went with this paragraph. Nothing now asks codex-vm for a live serial pair.
-
-The rest of the account is history and reads as a live hazard, so it is stated
-as it now IS. `Start-VmRun` (`build/vm-config.ps1`) is QEMU's mode and says so:
-with no QEMU it refuses by name rather than booting a guest onto a wire nothing
-serves, so `build/test-disk-compile.ps1`, `tools/sim-test.ps1` and
-`build/gdb-watchpoint.ps1` are QEMU-only harnesses that decline cleanly, not
-silent failures. And codex-vm no longer drops an unknown flag: it refuses the
-first one it does not recognise (L-ACCEPTED), so a command line carrying a flag
-that was never real cannot look accepted again.
+No revision of `tools/codex-vm.c` has parsed either flag, and codex-vm refuses the first flag it does not recognise (L-ACCEPTED), so passing either exits 2. Nothing asks codex-vm for a live serial pair. `Start-VmRun` (`build/vm-config.ps1`) is QEMU's mode: with no QEMU it refuses by name rather than booting a guest onto a wire nothing serves, so `build/test-disk-compile.ps1`, `tools/sim-test.ps1` and `build/gdb-watchpoint.ps1` are QEMU-only harnesses that decline cleanly.
 #### CLI Flags
 
 ```
@@ -568,10 +552,14 @@ codex-vm -kernel file.cdx [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-kernel <file>` | (required) | CDX or multiboot kernel to boot |
-| `-mem <MB>` | 3072 | Guest RAM in megabytes. Binaries compiled by seeds older than CL 7209 require more than 2048 (their boot stack lands in the demand-paged range below 2 GB); current seeds boot at any size from ~128 MB up. **The size REPORTED to the guest is capped at 3040 MB**, so anything above that changes nothing without `-mem-nocap`: see "The guest heap ceiling is 3040 MB" |
+| `-mem <MB>` | 3072 | Guest RAM in megabytes. A binary boots at any size from ~128 MB up. **The size REPORTED to the guest is capped at 3040 MB**, so anything above that changes nothing without `-mem-nocap`: see "The guest heap ceiling is 3040 MB" |
 | `-mem-nocap` | off | Report the real `-mem` to the guest instead of the 3040 MB cap. Only for a run that draws nothing: the heap may then grow through the GPU and GOP windows, which are at fixed GPAs |
+| `-no-ram-cell` | off | Leave the RAM-size cell at 0xFE8 unwritten, as a multiboot loader does. The guest's `__start` then halts with `BOOT: RAM size at 0xFE8 refused: <hex>` (any value below 80 MB or above 2^40); the arm is `codex/test/boot-ram-cell-zero` |
 | `-gpu-files DIR` | none | Root for the GPU bridge's file-range upload (op 44): a guest path is relative to DIR, and an absolute path, a drive, a stream or any `..` component is refused. Repeat it for up to 4 roots; the first root holding the path serves it. Without it every upload is refused. The diffusion tests name model roots under `build-output`, each a junction to one folder of Diffusion Forge's `models` directory, made once per workspace by `pwsh build/diffusion-roots.ps1 -Provision [-ModelsRoot <Forge's models folder>]` (bare, the same tool checks every root a test names). `test-run.ps1`, `bvt.ps1` (therefore `cite-gate.ps1`) and `test.ps1` run that check before launching and refuse a run whose `.vmargs` name a root that is absent, not a junction, or a junction to a folder that is gone, naming the root; without the refusal codex-vm refuses to start (`-gpu-files: not a directory`) and the run reads as `(no output)`. A junction that lacks the checkpoint prints a named `SKIP:` line; that fails too. The T5 tests name a second root, `build-output/diffusion-text-encoders`, a junction to the folder holding `t5xxl_fp8_e4m3fn.safetensors` (Forge's `models\text_encoder`), made the same way, and `build-output/diffusion-vae` to Forge's `models\VAE` for Flux's `clip_l.safetensors`. The ESRGAN-family upscaler tests name `build-output/diffusion-upscalers`, a junction to Forge's `models\RealESRGAN`, the SwinIR test `build-output/diffusion-swinir`, a junction to Forge's `models\SwinIR`, and the DAT test `build-output/diffusion-dat`, a junction to Forge's `models\DAT`. `gpu-buf-upload` answers the bytes it wrote at the destination, not the elements read: 4,096 e4m3 elements widened to f32 answer 16,384 (blu, 2026-09-29, `T5Encoder`). A raw copy is u8 to u8; e4m3 to u8 is refused and answers 0. A run that launches on the GPU prints at exit one `GPU CENSUS:` line per kernel (launches, device microseconds from launch to sync, host microseconds for the whole op 45, PTX bytes the guest sent) and a TOTAL; the run's wall time minus the host total is the guest's own cost |
 | `-gpu-out DIR` | none | Root for the GPU bridge's buffer save (op 46, `gpu-buf-save`): a guest path is relative to DIR under the same rules as `-gpu-files`, and the file is created or replaced. Without it every save is refused. |
+| `-asset-root DIR` | none | Root for the asset load (ports 0x40C, 0x40D, 0x417): the guest's path is relative to DIR under the `-gpu-files` rules (no drive, `:`, `..` or device name, and a disk file only). Without it every asset load answers 0 bytes. The Codex globe wants `-asset-root apps/globe` |
+| `-hda-capture-stall` | off | The HDA input stream never completes: RUN stays set and IOC stays clear, so the guest's capture times out. The arm is `codex/test/hda-capture-stall` |
+| `-hda-capture-silence` | off | The HDA input stream completes with zeros and never opens the host microphone |
 | `-input <file>` | -- | Pre-load file into serial ring buffer (source input). **The image needs a TRAILING ZERO BYTE after the source** -- see below |
 | `-output <file>` | -- | Capture serial output to file |
 | `-disk <file>` | -- | Attach IDE disk image as the primary channel's MASTER (read/write, flushed to host) |
@@ -589,6 +577,7 @@ codex-vm -kernel file.cdx [options]
 | `-usb-bot-revive-on-reset` | off (the death is LATCHED) | Pairs with `-usb-bot-die-len` / `-usb-bot-die-lba`, which kill the BOT target at a write of a given size at or above a given LBA and leave it dead for the rest of the run. With this switch the target ANSWERS AGAIN after a Bulk-Only Mass Storage Reset, and the die trigger is SPENT rather than merely lifted. It keys on the BOT class reset and not a port reset because that is the one the driver issues: measured off `sink-dies`, the guest sends four Mass Storage Resets after the death and no port reset at all. Without the trigger being spent the driver retries the write that killed it, the length and LBA still match, and it dies again forever. This is what makes `msc-cell-retry` reach `msc-retry-ok` (3): the latched default can only ever reach `msc-retry-failed` (2), so the driver's recovery had a bed for its failure and none for its success |
 | `-usb-bot-die-on-nic` | off | The BOT target stops answering FOREVER at the first bulk WRITE issued after the e1000 model sees the first observable of NIC bring-up. Latched like `-usb-bot-die-lba`, and spent by `-usb-bot-revive-on-reset` in the same way. **It injects a symptom, not a mechanism**, exactly as `-usb-setcfg-fault` does: nothing here claims to know why a part would behave this way, and no reading taken under it is evidence that it does. It exists because the other two medium-death levers key on a property of the WRITE (its length, its LBA) and so can only express "the medium dies at a certain kind of write"; the candidate sitting 11 raised is that the write is innocent and its TIMING is the whole of it, which no length and no LBA can separate. Arms on either the CTRL write that sets SLU or the RCTL write that sets EN, whichever comes first, and the stderr line NAMES the register rather than assuming one: measured 2026-08-21 on the diag ladder it is **RCTL.EN**, written by `nicinit`. Its arm is `nic-kills-msc` and its control is `b3-pass` |
 | `-usb-bot-stall-lba <L>` `-usb-bot-stall-after <B>` `-usb-bot-stall-nth <K>` | off; K=1 | On the Kth WRITE(10) at exactly LBA L longer than B bytes, the BOT target takes the first B bytes of the data phase and NAKs the rest: the TRB stays at the dequeue pointer, so Stop Endpoint reports it as a TD in hand (code 26) with the true residual. The target stays in that command's data-out phase: a Mass Storage Reset is answered STALL, an IN transfer is NAKed, and each later OUT transfer is stored as the next 512-byte packets of the write, so a CBW lands at the start of a sector. When the write's declared length is complete the target returns its CSW, unless short packets (CBWs) completed it, in which case it latches dead (`-usb-bot-revive-on-reset` revives it). Sitting 17's loss (`HardwareSitting.md`, SITTING 17); its arm is `bank-desync` |
+| `-ivshmem <file>` | off | QEMU's ivshmem device without interrupts (`docs/specs/ivshmem-spec.rst`): PCI 1af4:1110 revision 1, BAR0 256 bytes of registers at 0xFE600000 (IVPosition reads 0, Doorbell writes are ignored), BAR2 a 32-bit prefetchable memory BAR at 0xFC000000 over `<file>`, which must exist and be exactly 1 MiB. Every codex-vm given the same file maps the same pages; a guest reads what an earlier guest wrote (`codex/test/apps/ivshmem-channel`, three boots: empty, request, reply, measured 2026-10-31). Two guests running at once are not yet measured. The file outlives the run: zero it for a fresh channel |
 | `-usb-writeback` | off (the target is WRITE-THROUGH) | The BOT target keeps written blocks in a volatile cache and makes them durable only when SYNCHRONIZE CACHE (0x35) commits them; whatever is uncommitted when the machine stops is LOST, as at a real power-off. **The default cannot express a missing flush** (L-FREEDOM): write-through calls `ide_flush` in the write's own data phase, so the bytes reach the image whether or not the guest ever asks for a commit, and a run with the flush and a run without it are the same colour, while sittings 13 and 14 lost the bank on the board. `Read-Bank` in `diag-arm.ps1` already reads the file out of the IMAGE after codex-vm is killed, so a power-off readback needs no new machinery. **Read the exit line before reading the arm's colour:** `USB WRITEBACK: commits=N committed-bytes=N lost-bytes=N`, printed whenever the flag is on. A flush-absent arm reporting `lost-bytes=0` never reached the condition it exists to test and its colour means nothing (L-VACUOUS). The dirty region is one coalesced span, which is exact and not an approximation: bytes between two writes are unmodified, so the in-memory image already equals the file there. |
 | `-usb-no-unit-attention` | off (the condition is ON) | Restore the old always-ready storage target. **By default the device now presents the power-on UNIT ATTENTION every conforming SCSI target presents:** the first command after a controller reset answers CHECK CONDITION with sense key 0x06 / ASC 0x29, and the condition persists until REQUEST SENSE reads it. A host that skips that handshake sees its first real command fail on real hardware and used to pass here; `msc-wait-ready`'s retry loop had never executed. The condition is armed in the RESET path, not at init, because the guest issues HCRST during bring-up and would wipe it -- a sabotage arm that should have failed and did not is what found that. |
 | `-usb-disk-port <N>` | 1 | Carry the mass-storage device to root port N; its old port goes dark rather than answering as well. Pair with `-xhci-ports` to reproduce a device sitting where no reader can see it. **No bed could put a connected device above root port 7** before this: the model had four ports, and QEMU refuses attachment above its eighth whatever HCSPARAMS1 claims. The ASUS answered with the boot stick on port 9, past the probe's eight PORTSC rows, so a count of connected ports named none of them. `-xhci-ports 26 -usb-disk-port 10` reproduces the board's `port=9 speed=4`. **Before believing a wide-port PASS, run the arm that must FAIL:** `-xhci-ports 8 -usb-disk-port 10` seats the disk past the declared port count, so the walk's own bound cannot reach it and the run has to report `connect=FAILED` (or `ok=0` on a `usb-attach` probe). Without that third arm a passing wide-port run is indistinguishable from a flag the emulator ignored. Better still, make the probe PRINT the port the walk settled on, so a vacuous run says `port=0` and convicts itself. |
@@ -623,6 +612,7 @@ codex-vm -kernel file.cdx [options]
 | `-gop-max-mode <N>` | -- | Cap the GOP mode table's `MaxMode`. The UEFI GOP enumerates modes 0..2 (640x480, 800x600, 1024x768) plus, as mode 3, the `-gop-width x -gop-height` you set when it matches none of them, so a bed at 1600x900 is a firmware whose largest mode is what the display supports; `Mode->Mode` names the current one. `-gop-max-mode 1` is a firmware with nothing to enumerate, the fallback arm for a stub that picks the largest mode (`build/gop-mode-arm.ps1`). `QueryMode` answers into a scratch info block, not the current mode's; a mode past `MaxMode` is `EFI_INVALID_PARAMETER`; `SetMode` commits the framebuffer before it clears it (a runtime mode set from a headless boot faulted the HOST until it did). |
 | `-smp [N]` | 1 | Enable multi-core: N virtual processors (1-16, default 4 if N omitted). Creates WHP VPs, LAPIC, MADT with per-core entries. Core count written to GPA 0xFF8; boot code reads it to decide whether to send INIT/SIPI. At exit it prints `IO BY VP: vp=N port-exits=N io-lock-wait-ms=N` per processor; quote that for port-I/O contention, not the global `exits` count, which does not count an AP's work. |
 | `-no-avx` | off | A machine without XSAVE or AVX: CPUID leaf 0 stops at 1, leaf 1 ECX carries neither bit, and the partition's XSAVE property stays at WHP's default. Without it, on a host with both, the partition takes the host's XSAVE features and CPUID reports XSAVE, AVX and leaf 0Dh for XCR0 = 7 (`codex/test/cpuid-avx`, `cpuid-no-avx`). |
+| `-no-rdrand` | off | A machine without RDRAND as a guest that asks sees it: CPUID leaf 1 ECX bit 30 is withheld, so `__hardware-random-word` answers 0 and every draw that must be unguessable refuses (`codex/test/apps/entropy-absent`). The instruction itself still executes natively under WHP, so a guest that skips CPUID still gets the host's generator. |
 | `-portfwd [udp:]<host:guest>` | -- | Port forwarding from host to guest NIC (repeatable, max 8). The host side listens on 127.0.0.1 only unless `-portfwd-any` is given. TCP by default; `udp:` forwards datagrams instead, giving each host client a synthetic gateway source port so the guest's replies route back. Examples: `-portfwd 8080:80`, `-portfwd udp:15683:5683`. Routine packet traces are disabled; set `CODEX_VM_NET_TRACE=1` to enable NAT TX hex, successful RX enqueue and forwarded-receive traces. Errors and final byte accounting remain enabled. Unbuffered packet tracing can dominate send latency when stderr is captured; keep tracing off for timing grades. |
 | `-portfwd-any` | off | Every `-portfwd` listens on all host interfaces instead of 127.0.0.1. Windows Firewall allows inbound codex-vm, so a forwarded port is then reachable from the network: only a hosted shard passes it (`start-composite-game.ps1 -Hosted`). |
 | `-natmap <guestdest:hostport>` | -- | Remap an OUTBOUND destination port (repeatable, max 16, TCP only). The opposite direction to `-portfwd`: when the guest dials `guestdest`, the NAT connects to the host on `hostport` instead of the port the guest asked for. Exists because a plug's port is compiled into it from `build/plug-ports.ps1`, so N copies of one plug all needed the same host listener and could not run at once. With this, each worker owns a private host port while running the same unmodified plug binary -- which is what lets `codex/plugs/recheck/sweep-all.ps1` go N-wide. Unmapped ports are untouched, so every existing invocation means what it always did. Example: `-natmap 9134:9250` |
@@ -632,15 +622,21 @@ codex-vm -kernel file.cdx [options]
 | `-watch <0xADDR>` | -- | Hardware watchpoint via page protection |
 | `-watch-size <N>` | 8 | Watchpoint region size (max 64 bytes) |
 | `-hbreak <fn>[:<reg>=<val>]` | -- | Conditional execution breakpoint through the debug registers (repeatable, max 4, one DR each, shared with `-wcet`; needs `-map`). The condition is evaluated at the host's `#DB` exit on the guest's own register file. Writes no guest byte, and an unmatched hit RESUMES instead of halting, so this is the way to reach the Nth call of a hot helper. Prints `HBREAK-OBS: <fn> hits=<n> matched=<m>` on exit -- **both counts, always**, because a run reporting only matches cannot be told from one whose breakpoint was never reached. **A conditional breakpoint on INT3 cannot work in this guest** and `-break`'s is not offered: vector 3 belongs to the guest, whose handler runs before the host sees the trap, so the condition would be read off the handler's registers (`rdi` is `0x33` every time) |
-| `-hwwatch <0xADDR>` | -- | Data watchpoint through DR0, trapping the exact linear address regardless of guest paging, so it does not collide with the guest's own demand-paging `#PF` handler the way `-watch`'s page-protection exits do. `-hwwatch-rw` widens it to reads, `-hwwatch-len <N>` sets 1, 2, 4 or 8 bytes. **It did not fire host-side until 2026-07-28**: DR0 was armed correctly but nothing enabled `ExtendedVmExits.ExceptionExit`, so the `#DB` was delivered to the guest IDT, which dumped `!EXC=01` and halted on the first hit. Any conclusion drawn from an older `-hwwatch` run saw at most one write |
+| `-hwwatch <0xADDR>` | -- | Data watchpoint through DR0, trapping the exact linear address regardless of guest paging, so it does not collide with the guest's own demand-paging `#PF` handler the way `-watch`'s page-protection exits do. `-hwwatch-rw` widens it to reads, `-hwwatch-len <N>` sets 1, 2, 4 or 8 bytes. |
 | `-hwwatch-log` | off | With `-hwwatch`, print one line per write and continue, instead of a full crash report. This is what names a corrupter: it is the SECOND write to a cell that matters, and the crash report is both too heavy and, in practice, terminal |
 | `-wcet <name>` | -- | Observe a function's per-invocation dynamic instruction count (repeatable, max 4 -- one DR0-DR3 exec breakpoint each; needs `-map`). Prints `WCET-OBS: <fn> max=<n> calls=<k>` on exit. Observation only: no guest byte is modified. |
 | `-mouse <script>` | -- | Scripted pointer: `t:x,y,btn` events separated by `;` (t = ms from boot, btn bit 0 left / 1 right / 2 middle). Injected straight into the guest, so no host cursor moves and no window takes focus. Works headless. **The `x,y` are NOT screen coordinates.** The host tracks a position starting at `0,0`, each event's `x,y` sets that tracked position, and what reaches the guest is the DELTA from the previous event, clamped to +-127 per sample (a HID boot mouse reports one signed byte per axis). Negative values are accepted and are how you move left or up. So a guest pointer that starts centred at 800,450 reaches 420,857 with four samples of about -95,+102 each, ending at `-380,407`, and a single `420,857` event moves it 127 right and 127 down instead of putting it there. Cost several boots to find; see the worked walk in `ModernDesk.md` stage 14. |
 | `-mouse-file <file>` | -- | Same, read from a file (one event per line, `#` comments). Use for drags, which run to dozens of samples. |
 | `-keys-file <file>` | -- | Timeline keyboard: `t:scancode` per line, on the same clock as `-mouse`. Lets a script interleave typing with clicks (the older `-keys` fires on a fixed start+interval). **The event separators are `;` and newline ONLY.** `inject_keyt_parse` skips leading `;`, newline, `\r`, space and tab, but after each event its trailing skip runs to the next `;` or newline, so **a comma-joined timeline silently injects its FIRST event and discards the rest of the line with no error printed.** Cost four boots to find. Re-derive any probe arm that rode a multi-key timeline before building on it. |
+| `-hid-pad` | off | `-hid-combo` plus a third interface, a HID gamepad (class 3, subclass 0, protocol 0) on EP3 IN: GET_DESCRIPTOR 0x22 with `wIndex` 2 returns its report descriptor (16 buttons, X, Y, Z, Rz signed bytes, a 4-bit hat), the 7-byte report follows `-pad-file`. |
+| `-pad-file <file>` | -- | Gamepad timeline for `-hid-pad`: `t:buttons,x,y,z,rz,hat` per line on the pointer clock; buttons a 16-bit mask, axes -127..127, hat 0-7 clockwise from up or 8 centred. A file that cannot be opened refuses the run (exit 2). |
 | `-rtc <stamp>` | host clock | Freeze the emulated CMOS RTC at `YYYY-MM-DDTHH:MM:SS` (the `T` may be a space). Day-of-week is computed from the date, not accepted. **This is what makes a guest that paints the time comparable against a recorded frame** -- without it the clock is host state the test cannot twist, which is why GuiOS was believed to be un-goldenable. It also turns the update-in-progress simulation OFF (a frozen clock cannot express UIP), so it is for frames and never for testing the RTC itself: anything asserting on clock behaviour must run without it. **It stops the HPET main counter as well**, pinned to `(minute*60 + second) * HPET_HZ` so the two clocks tell the same time and moving the stamp forward a second moves an HPET-driven animation forward a second. That was added when the desk's 3D orbit moved to the HPET: a guest animating off a hardware counter is exactly as uncomparable as one painting the wall clock, and freezing only the RTC would have left every existing capture recipe reproducing a different frame each run. Frozen-clock frames across that change were required to be byte-identical, and were. The counter therefore does not advance under this flag, so **anything that WAITS on the HPET must run without it** -- today that is `E1000e` and `NicAsde`, and no test sidecar passes `-rtc`. |
 | `-screenshot <file>` | -- | Save GOP framebuffer as BMP on exit |
 | `-screenshot-delay <ms>` | 0 | Delay before screenshot capture. **Measured 2026-08-15 on a `build-option-a` UEFI probe image: 0 and 2000 capture; 5000 and 9000 give `code=-1` and NO BMP. RE-MEASURED after the GOP rewrite at main 15469 and unchanged**, which is worth saying because that rewrite touched QueryMode, SetMode and the framebuffer commit and would reasonably be assumed to have invalidated this row. The 120000 recommended above is for the DeskVm BMP-write path and was not re-measured here. Verified with a control, because the first reading looked like a broken payload: the KNOWN-GOOD image fails the same way at the same delay. If a capture goes missing, bisect the delay before suspecting the guest. |
+| `-record <dir>` | off | Claims I/O port 0xE5: an OUT saves the live GOP framebuffer as `<dir>\frame-NNNNN.bmp` (24-bit, about 6 MB at 1920x1080), an IN answers the frames saved so far, and exit prints `RECORD: dir=... saved=N refused cap=N interval=N no-gop=N`. The directory is created if absent. Without the flag the port is unclaimed (IN reads 255, OUT is ignored). `Dev` chapter ScreenRecorder's `sr-capture` drives it; `codex/test/apps/screen-recorder-cap`, `-interval` and `-off` grade the three cases. |
+| `-record-max <N>` | 60 | Frames `-record` saves before refusing more (N at least 1). |
+| `-record-min-ms <ms>` | 200 | Least wall-clock time between two saved frames; a capture sooner is refused and counted. |
+| `-record-every-ms <ms>` | off | With `-record`, codex-vm also saves a frame on its own clock every N ms, with no guest write, so any GUI run can be recorded; the cap and the minimum interval still apply. `codex/test/apps/screen-recorder-timed` grades it. `-record-max`, `-record-min-ms` and `-record-every-ms` without `-record` refuse to start. |
 | `-args <string>` | -- | Boot arguments string (accessible to guest) |
 | `-trace-file <file>` | -- | Write execution trace to file |
 
@@ -911,7 +907,7 @@ accessed via I/O ports 0x400-0x40F:
 | 0x408 | OUT | Set texture guest address |
 | 0x409-0x40A | OUT | Set texture width/height |
 | 0x40B | OUT | Commit texture upload, and the value IS the wire format (0 or 1) |
-| 0x40C | OUT | Asset load: guest address of a null-terminated host path |
+| 0x40C | OUT | Asset load: guest address of a null-terminated path under `-asset-root` |
 | 0x40D | OUT | Asset load: guest destination address |
 | 0x40E | OUT | Fade-clear framebuffer toward an XRGB color |
 | 0x417 | OUT | Asset load: execute (reads the host file into guest RAM) |
@@ -1066,11 +1062,15 @@ ARP (responds for gateway), DHCP (offers 10.0.2.15/24), DNS, TCP
 forwarding, and UDP forwarding (see below). Port forwarding via
 `-portfwd` for host-to-guest TCP connections.
 
-**x86 virtio-net runs under QEMU, not codex-vm.** The modern PCI NIC driver,
-NetDriver selection, DMA lifetime rules and focused encrypted-port proof are
-documented in [VirtioNetX86.md](../apps/uoaix/VirtioNetX86.md).
-Run `apps/uoaix/proofs/test-virtio-net.ps1 -Kernel seed/Codex.cdx` for that
-device path; a NE2000 or ARM64 run does not grade the x86 virtio driver.
+**x86 virtio-pci runs under QEMU, not codex-vm.** A test whose `.qemu-x86`
+sidecar lists arms (`<name> <QEMU arguments>`, `{disk}` for its minted disk)
+is routed by `test.ps1` to `build/test-qemu-x86.ps1`, which boots it under
+QEMU TCG once per arm and prints each arm's output under an `ARM <name>` line;
+by hand: `pwsh build/test-qemu-x86.ps1 -Kernel <cdx> -OutFile <out> -ArmsFile
+<sidecar> [-DiskFile <disk>]`. `codex/test/apps/virtio-blk-qemu` and
+`virtio-net-qemu` are the device arms; the driver itself is documented in
+[VirtioNetX86.md](../apps/uoaix/VirtioNetX86.md). A NE2000 or ARM64 run does
+not grade the x86 virtio driver.
 
 **DHCP is answered.** The server answers DISCOVER with an OFFER and REQUEST
 with an ACK carrying mask, router, DNS and a 3600-second lease.
@@ -1220,36 +1220,7 @@ promiscuous mode, so a frame addressed to neither the station address nor
 broadcast is dropped and named on stderr -- the metal failure a stack
 sourcing the wrong MAC produces, which our driver's own RCTL.UPE hides.
 
-**A SECOND RECEIVER BRING-UP IN ONE BOOT USED TO STOP DELIVERY FOR GOOD, and
-what that costs is a class of old bed reading rather than anything still
-broken.** Fixed 2026-08-20 (blu, main 18011). `e1000_rx_cursor` is the head
-both delivery paths use, and nothing reset it: there was no
-`case E1000_REG_RDH` in `e1000_write` at all, so a write to RDH fell through
-to the default store and the cursor only ever advanced. `e1000-setup-rx`
-programs RDH=0 and RDT=15 on a 16-descriptor ring, and both paths declare
-"ring full, leave it queued" when the cursor equals RDT, so a guest bringing
-the receiver up a second time had **one chance in sixteen per bring-up** of
-resuming with the cursor already on 15 -- and from there nothing was ever
-delivered again. RNBC counted up, the host queue grew without bound, and the
-guest polled a ring the model refused to fill. Measured on the diagnostic
-ladder, which brings the receiver up four times in one boot: 138 ARP replies
-sat in `rx_queue` while the stage reported `no-arp`. RDH is device state the
-driver initialises, so writing it now moves the cursor, and reprogramming
-RDBAL/RDBAH/RDLEN resets it.
-
-**Which readings this voids, stated narrowly on purpose.** It was a BED
-defect, so **metal readings are untouched** -- the sittings stand because
-they are metal. It is also not "all bed evidence": the fault needs TWO
-receiver bring-ups in ONE boot *and* the cursor landing on RDT, so a test
-that boots, brings the receiver up once and exits could never reach it. All
-22 e1000 and net tests pass identically before and after the fix, and no
-published arm value changes. What IS void is one inference: **"the part did
-not deliver", drawn from an empty receive row taken after a second bring-up
-in the same boot.** In practice that is the diagnostic ladder's `nicring` and
-`b3` rows and nothing else. A bed reading of arrived-but-invisible from that
-shape corroborated nothing, which matters because arrived-but-invisible is
-exactly what NIC-4 was chasing on metal, and a bed that can produce it for a
-reason the metal does not have is worse than one that cannot.
+**`e1000_rx_cursor`, the head both delivery paths use, follows the driver.** A write to RDH moves it and reprogramming RDBAL/RDBAH/RDLEN resets it, so a receiver brought up a second time in one boot resumes from the head the driver programmed. Both paths treat the cursor equal to RDT as "ring full, leave it queued".
 
 **The PHY, reached through MDIC at 0x0020.** The model answers MDIC with a
 32-register PHY file at address 1; a read of any other address returns the
@@ -1309,18 +1280,7 @@ boot screen.
 `msc-cell-end` = 80 is an EXCLUSIVE bound for `xdiag-zero`, not a stored cell,
 which is why it may equal another owner's first cell.
 
-**The HID block was at 80 until 2026-08-13, four cells deep into storage
-territory**, overlapping `gfat-cell-stage` 80, `msc-cell-lastcc` 81,
-`msc-cell-phase` 82, `gfat-cell-write` 83, `xhci-cell-fuel-left` 84,
-`msc-cell-fuel-lo` 85, `msc-cell-fail-lba` 86 and `msc-cell-retry` 87. It
-stayed invisible because the writers run in order and neither reads the other:
-`usb-attach` binds HID and fills 80..95, then the mount and any disk I/O
-overwrite 80..87. So the storage diagnostics were correct and **the boot payload's
-first two HID table rows were showing storage state under device-descriptor
-labels**. In the other direction a cell the storage path did not write on a
-given boot kept its HID value, which is how an F12 mount failure came to
-report `gfat-cell-write` as 1964712320 -- not a write stage, but HID device
-0's report buffer address.
+**Two subsystems sharing an xdiag cell show each other's state under their own labels**, and nothing notices, because the writers run in order and neither reads the other: one writer's value survives on a boot where the other skips its write.
 
 `build/check-xdiag-cells.ps1` is the runner. It fails on an overlap between
 declared blocks, on two named constants claiming one cell, and on a named
@@ -1582,9 +1542,14 @@ for the correct poll sequence.) The press latch on 0xE1 means a click
 whose down and up both land between two guest polls is still delivered,
 exactly once, so a slow-rendering guest does not drop clicks.
 
-The 3-byte PS/2 packet buffer at GPA 28684 (read by
-`codex/os/kernel/Mouse.codex`) is inert: codex-vm flushes it but never
-populates it, so it always reads as 'no packet'.
+**Mouse (PS/2, the i8042 aux port).** Controller commands 0xA8 and 0xA7 on
+port 0x64 enable and disable the aux port, and 0xD4 sends the next byte
+written to 0x60 to the aux device, which ACKs with 0xFA, answers a reset
+with 0xFA 0xAA 0x00 and reports after 0xF4. With reporting on, every host
+pointer event (window or `-mouse`) becomes 3-byte packets in the aux queue,
+a move past 255 counts split across packets. Status bit 5 marks an aux
+byte, keyboard bytes come first, and nothing raises IRQ12, so a guest polls.
+`codex/os/kernel/Mouse.codex` is the driver; `codex/test/ps2-mouse` grades it.
 
 **ACPI.** RSDP at 0xE0000, RSDT, FADT (SCI on port 0x2000, PM timer
 at 0x2004), MADT (LAPIC entries per core + IOAPIC), DSDT stub.
@@ -1642,11 +1607,8 @@ does anything: `vm-config.ps1` decides the host with
 `$script:UseCodexVm = (codex-vm.exe exists) -and ($env:CODEX_VM_HOST -ne
 'qemu')`, and it reads that variable and no other.
 
-**`USE_QEMU` is not a switch and never was.** This section told the reader
-to set it until 2026-08-18, and `gdb-watchpoint.ps1` set it too, which is
-how the GDB watchpoint workflow came to be silently dead on every box that
-has `codex-vm.exe`: the host stayed codex-vm and `-gdb tcp::1234 -S` went
-to a VM with no GDB stub. Measured by dot-sourcing `vm-config.ps1` both
+**`USE_QEMU` is not a switch.** Setting it leaves the host codex-vm on a box
+that has `codex-vm.exe`, so `-gdb tcp::1234 -S` goes to a VM with no GDB stub. Measured by dot-sourcing `vm-config.ps1` both
 ways, `USE_QEMU=1` leaves `UseCodexVm` **True**.
 
 ```powershell
@@ -1669,11 +1631,10 @@ teardown 17 ms. Two traps sit in that profile:
   hundred bytes instead of the full binary because the guest never ran,
   and the run still looks like it finished. Drive it through `compile.ps1`
   with `CODEX_VM_HOST=qemu`.
-- **`Invoke-VmCompileFallback` used to pay a flat 2 s per compile.** Once
-  SIZE's declared payload was complete it set `ReadTimeout = 2000` and did
-  one more blocking read to drain a trailer that in practice is never
-  there. Now 250 ms. If a QEMU timing looks like it has a constant floor
-  in it, this is the shape of thing to look for.
+- **`Invoke-VmCompileFallback` drains a trailer after SIZE's payload with a
+  250 ms read timeout**, a trailer that in practice is never there. If a
+  QEMU timing looks like it has a constant floor in it, a timeout of this
+  shape is the thing to look for.
 
 The output path itself is no longer per-byte: `__write_binary_buf` polls
 LSR once and `rep outsb` a burst of up to 16 through the 16550 transmit
@@ -1875,9 +1836,8 @@ runs of the same harness had passed, and the only thing that changed between
 them was the addition of the poll.
 
 The tell is that shape: **an arm that fails under the harness and passes by
-hand is the harness perturbing the run**, not a flaky guest. `-output` was
-the obvious suspect and was wrong -- adding it to the by-hand run changed
-nothing, which is what ruled it out.
+hand is the harness perturbing the run**, not a flaky guest. `-output` is not
+the cause: adding it to the by-hand run changes nothing.
 
 Read a live log like this instead:
 
@@ -1943,6 +1903,13 @@ grep reported `errors=0` for `codex/test/type-name-existence` while
 control in an investigation, which sent a real regression looking like a
 host-versus-guest divergence for an hour. Grep for `error CDX` or read the exit
 code, which is the number the script actually publishes.
+
+**`Select-String -Path dir/**/*.codex` does not search `dir` itself.** PowerShell's `-Path` wildcard has no
+recursive `**`: it matches one directory level, so files at the root of `dir` are never read. Over
+`codex/compiler` it read 68 of 70 chapters and skipped `opening.codex`, so a "this function has no caller"
+claim went into a register row and was false (COMPILER-141, fester 2026-10-26; red closed it at main 49424).
+Search with `Get-ChildItem dir -Recurse -Filter *.codex | Select-String`, or the Grep tool, and print how many
+files the search read.
 
 **`pwsh -File script.ps1 -Paths $array` binds only the array's first element.** A `[string[]]` parameter given an
 array across `-File` receives one string: a measurement over four relay logs read one and published counts with no
@@ -2090,10 +2057,8 @@ all the apparatus; the product was fine every time.
   `-cnotmatch` / `-cmatch` wherever a filter has to agree with a
   case-sensitive reader. Related, same family: `"$$n"` in a double-quoted
   string expands `$$` as an automatic variable and leaves `n` literal, so
-  you get `n` rather than a literal `$` followed by `$n`. The specimen was
-  written `"\$$n"` until 2026-08-27; a backslash escapes nothing in
-  PowerShell, whose escape character is the backtick, so as written it was
-  a different construct from the one described.
+  you get `n` rather than a literal `$` followed by `$n`. A backslash
+  escapes nothing in PowerShell, whose escape character is the backtick.
 - **`Measure-Object -Line` silently DROPS EMPTY LINES, so it is the wrong
   instrument for a file size and it never says so.** Measured 2026-08-15 on
   `docs/Agents/PerforceProcess.md`: `(Get-Content $f).Count` = 500,
@@ -2187,9 +2152,7 @@ call (or the whole session, on a restart) is killed, and what the next
 reader sees is a run that died mid `test-compile` on a box that measures
 clean -- no stray codex-vm, RAM fine -- which invites the "host
 conditions" diagnosis and, from there, a fleet stand-down that clears
-nothing. It happened exactly that way on 2026-08-28: one lane's gate 4
-died on a clear box, a stand-down was called on the host-conditions
-premise, and the premise was retracted the same hour.
+nothing.
 
 The discriminating measurement (blu, same day): two `-Internal` runs
 died that way as children of killed tool calls; the SAME gate on the
@@ -2336,9 +2299,8 @@ builtin.
 bundles. On 2026-08-11 a workspace held 44 plug binaries from 08-06 against
 a shared `IRTextParser.codex` from 08-08, and 37 of 38 runnable plugs died
 with an invalid opcode in `parse-type-record` the moment the IR contained a
-record construction. The gate does not catch it: `plug-smoke` rebuilds a
-plug only when its CDX is MISSING, and tests four of them on one
-record-free program. Symptom to recognise: the plug VM exits `code=-1` and
+record construction. No gate catches it: no release phase builds or runs a
+plug. Symptom to recognise: the plug VM exits `code=-1` and
 the harness reports `plug produced no output` (exit 6).
 
 Timestamps are the fast check -- compare
@@ -2352,12 +2314,8 @@ after a SIGKILL-style abort (a `taskkill /F`, a harness OOM, a wedged WSL
 VM) left the traps in the test, build and 3stage harnesses unable to run.
 
 **A bare run kills only processes whose command line names the calling
-workspace.** Until 2026-08-28 it was fleet-wide by name, the section above's
-warning made deliberate -- and a bare run during another agent's gate killed
-three gates in one day, each reading as a truncated-artifact failure with
-nothing naming a kill. The old reasoning ("an orphan has no workspace left
-to scope it to") was wrong: the workspace is in the dead launcher's COMMAND
-LINE, which survives it. A foreign agent's VM, a bare WSL bridge and
+workspace**, which an orphan still carries: the workspace is in the dead
+launcher's COMMAND LINE, which survives it. A foreign agent's VM, a bare WSL bridge and
 `vmmemWSL` all survive a scoped run; your own GDB bridge names your repo
 path, so it does not. `-All` restores the fleet-wide sweep (and is the only
 mode that touches WSL); it is for a wedged BOX, not a wedged workspace, and
@@ -2368,8 +2326,7 @@ takes the foreign one.
 **Scoped still means YOUR LIVE GUESTS, not just your orphans -- the sweep
 cannot tell them apart.** Run it BETWEEN your runs, never while anything of
 yours is up: a sweep launched beside your own live gate kills that gate by
-your own hand (nearly demonstrated 2026-08-28, caught by the lane it would
-have hit).
+your own hand.
 
 ```powershell
 powershell -NoProfile -File build/clean-zombies.ps1        # your own zombies
@@ -2610,7 +2567,8 @@ CDX binary, bootable via codex-vm or QEMU multiboot.
    `build-output/bare-metal/Codex.cdx` (unsigned boot kernel).
 3. Self-verify: `build/test-self-verify.ps1`. Must print
    "THE SEED VERIFIES ITSELF", and must name the kernel it used on the
-   line above that. It builds its CHECKER with `-Kernel`, which defaults to
+   line above that. Read the line: the script exits 0 after "SIGNATURE
+   INVALID" too, so its exit code is not the verdict. It builds its CHECKER with `-Kernel`, which defaults to
    the depot seed; it refuses a `build-output` kernel whose digest differs
    from the seed under test unless you pass `-AllowStaleKernel`. Before that
    parameter existed it silently took whichever compiler ran last and said
@@ -2678,8 +2636,7 @@ either.
 over that path before running, so it ends up holding whichever kernel the
 LAST compile phase used, not whichever artifact the run produced.
 Measured after each of two green `build.ps1` runs on 2026-08-11, its
-content hash equalled `seed/Codex.cdx` exactly (`AF4E14D9703985AC`),
-because the phases after `plug-binary` compile against the seed.
+content hash equalled `seed/Codex.cdx` exactly (`AF4E14D9703985AC`).
 
 **Its WHOLE-FILE hash can differ from the seed while the content hash
 matches, and that is not an anomaly.** The path can hold `stage1.cdx`,
@@ -2689,13 +2646,8 @@ in place and stage1 is built afterwards by that Sut, so the content hash
 `Get-FileHash` does not. Measured 2026-09-02: `Sut.cdx` and
 `seed/Codex.cdx` both `BE8B04B5...`, `stage1.cdx` and
 `bare-metal/Codex.cdx` both `81B1F2D1...`, on a run whose gate reported a
-one-pass fixed point. **WHICH phase put stage1 there is NOT established**:
-an earlier version of this paragraph blamed `plug-binary`, and
-`build/build.ps1:948-949` shows `plug-binary` copying `$SutCdx`, the SIGNED
-Sut (signed at `:645`, before it); `stage1.cdx` is copied to that path only
-on the two-pass branch (`:791`), which is not the one-pass run measured
-(mindmeld 2026-09-02, R1). A later phase (sweep-app-classes, gen-scripts)
-is the candidate and is untraced. Comparing the wrong one of the two hashes
+one-pass fixed point. **WHICH phase puts stage1 there is not traced.**
+Comparing the wrong one of the two hashes
 is how a healthy tree reads as a mismatch worth chasing, whichever phase
 wrote it.
 
@@ -2780,10 +2732,8 @@ not an instruction that changed: **the emitter answers identically in both
 modes.** Control, and run it before believing any number here: the same arm
 compiled twice is byte-identical, so nothing in this is nondeterminism.
 
-**What was NOT meant to stay was `map` riding on the same switch**, which
-is why a compiler build emitted no symbol map. Fixed 2026-08-14; the two
-flags are independent in `compile.ps1` now, as they always were in
-`emit-cdx`.
+**`map` does not ride on that switch**: the two flags are independent in
+`compile.ps1`, as in `emit-cdx`.
 
 ### Two ways a hand-run probe serves the LAST run's answer
 
@@ -2983,8 +2933,7 @@ here on 2026-08-10.**
   `plugs/<name>/build.ps1` nor `build/plug-build.ps1` takes a `-Kernel` to
   override it. Auditing any other seed means installing it at that path first.
   Read the `kernel:` digest the compile prints and check it against the seed
-  you meant to audit. (This paragraph said the opposite until 2026-08-20,
-  when the builder was measured rather than remembered.)
+  you meant to audit.
 - **The C# arm writes diagnostics to stdout AHEAD of the binary.** The run
   above put 67,380 bytes of warning text before the CDX. Find the `CDX1`
   magic and slice from there; comparing the raw stream reports total
@@ -3148,10 +3097,7 @@ instruction boundary), so prefer the host sampler for accurate weights.
 `build/prof-report.ps1 -Log <capture> -Map <symbol.map>` resolves either
 format's `*PROF:` lines into a hot-function histogram. **Compile it the
 way the thing you are profiling was compiled and use the `<out>.map`
-sidecar beside it.** That is now possible in both modes: until 2026-08-14
-`compile.ps1` appended the `map` flag only when `-Repl` was ABSENT, so a
-compiler build emitted no map at all and this line told you to mint one
-NON-repl instead. It no longer does, and you no longer need to.
+sidecar beside it.** Both modes emit it.
 
 The coupling was in the driver, not the compiler. `emit-cdx` reads `repl`
 and `map` as two independent flags, and `emit-binary-tail-with-map` writes
@@ -3479,170 +3425,13 @@ matters because a harness that only captures `-output` sees an empty
 serial log and a nonzero exit and reads it as a guest that produced
 nothing. **Redirect stderr or the diagnosis is invisible.**
 
-**FIXED 2026-08-18 (root). A failed demand-commit was reported as a guest
-fault, and the crash reporter then read the page it was describing.**
-`guest_mem` is committed in 2 MB chunks on the guest's first touch; when
-`VirtualAlloc(MEM_COMMIT)` or `WHvMapGpaRange` refused (the box's commit
-charge: several agents' VMs, each committing whatever its guest touches of a 3 GB reservation), the run loop fell through
-to the `Unmapped MMIO GPA=...` crash report as though the guest had walked
-off the map, and `dbg_dump_mem` read the uncommitted GPA to print "Memory at
-fault address" and killed the process: `HOST CRASH ... at 0x...7C35`. That
-is the intermittent brotli-interop crash of 2026-08-16 (`Address: 0x70a00000
-Access: WRITE` then `HOST CRASH`), reproduced by refusing the commit past
-`0x70000000` in an ablation build: same two lines, same low address bits.
-Now the failure prints `HOST: cannot back guest RAM at GPA 0x...:
-VirtualAlloc(MEM_COMMIT) failed, err=1455 (ERROR_COMMITMENT_LIMIT) -- the
-host is out of commit charge, this is not a guest fault` (or the
-`WHvMapGpaRange` hr), the report's reason line says `Guest RAM commit
-failed`, and every host read the reporter makes (`dbg_dump_mem`,
-`dbg_backtrace`, `dbg_dump_stack`, `dbg_disasm_at`) asks `VirtualQuery`
-first and prints `host page not committed` instead of dying; the backtrace
-had a second instance one frame past `__start` (RBP chain ending at
-`0xbe000000`). Same CL: `Code at RIP` had printed EMPTY in every report on a
-3 GB guest because `(int)(guest_mem_size - addr)` went negative for any RIP
-under 1 GB; the clamp now happens before the narrowing. If you see the
-`HOST:` line, the fix is on the box (free memory or fewer concurrent VMs),
-not in the guest.
+**A host that cannot back guest RAM says so.** `guest_mem` is committed in 2 MB chunks on the guest's first touch; when `VirtualAlloc(MEM_COMMIT)` or `WHvMapGpaRange` refuses, codex-vm prints `HOST: cannot back guest RAM at GPA 0x...: VirtualAlloc(MEM_COMMIT) failed, err=1455 (ERROR_COMMITMENT_LIMIT) -- the host is out of commit charge, this is not a guest fault` (or the `WHvMapGpaRange` hr) and the report's reason line reads `Guest RAM commit failed`. Every host read the crash reporter makes (`dbg_dump_mem`, `dbg_backtrace`, `dbg_dump_stack`, `dbg_disasm_at`) asks `VirtualQuery` first and prints `host page not committed` rather than dying. If you see the `HOST:` line, the fix is on the box (free memory or fewer concurrent VMs), not in the guest.
 
-**FIXED 2026-08-10 (blu). Setting a VBE mode activated the framebuffer at
-runtime without committing the guest region the emulator reads back.** The
-same defect as the oversized-disk crash below, other direction: that one
-wrote past the commit, this one read out of it.
+**A runtime VBE mode set commits the framebuffer region** (`guest_commit_range`), and `load_kernel` commits before it copies an image, so a disk image above the 32 MB committed up front boots.
 
-The startup path commits `0xBE000000..GOP_FB_ADDR+fb` only when
-`gop_active` is ALREADY set, and the failing run's own log line says it is
-not (`gop=0`), so the region stayed `MEM_RESERVE`. The Bochs VBE handler
-then sets `gop_active` and `vbe_active` at runtime and allocates only the
-HOST buffer. `sync_shadow_buffers` bounds its memcpy against
-`guest_mem_size` -- `0xBF000000 + fb` is inside 3 GB, so the bound passes --
-and reads reserved uncommitted address space. `guest_commit_range` is the
-existing remedy and the GPU texture and asset upload paths already call it
-from this same I/O handler; the VBE handler did not.
+**`codex/test/vbe-mode-set` is easy to disarm silently.** The framebuffer read runs on an exit counter (`exits % 64`), so a guest that sets the mode and returns can exit before the counter comes round and pass on a broken emulator. The test calls `vbe-read` 200 times and sums every value into its answer so nothing elides them; if you change what it draws, re-run a pre-fix binary (depot `tools/codex-vm.exe#92` faults the host, exit 49374, no serial) before believing it still guards anything.
 
-**The read runs on an exit counter (`exits % 64`), and that is what makes
-this expensive to probe.** A guest that sets the mode and returns exits
-before the counter comes round and passes on a broken emulator: the first
-probe written for this did exactly that, twice, and the second version
-added 8 filler lines that bought 8 exits because serial is ring-buffered
-rather than a port write per byte. `codex/test/vbe-mode-set` calls
-`vbe-read` 200 times for the port pairs, and sums every value into its
-answer so nothing can elide them. Measured both arms on one binary: depot
-`codex-vm.exe#92` faults the host (exit 49374, no serial), the fixed build
-prints `1 2 0 204800 1024` at 612 exits.
-
-**This test is easy to disarm silently.** It once took its exits from
-drawing, and when `gfx-put-pixel` stopped
-banking (below), the exits fell from 1011 to 211, the pre-fix binary stopped
-crashing, and the recorded output did not move a single byte -- a guard
-reporting exactly what a working one reports. If you change what this test
-draws, re-run the old binary before believing it still guards anything.
-
-The original measurement, unchanged:
-
-**Measured 2026-08-09 (blu): setting VBE mode crashes the
-host.** `apps/browser/opening.codex` compiles clean (493057 bytes off seed
-`A1EBA5A03016A128`) and dies immediately on boot:
-
-```
-VBE: mode set 1024x768 fb=0xfd000000
-HOST CRASH: codex-vm faulted (code=0xC0000005) at 0x7FF7F24D5A0D reading memory 0x22715520000
-```
-
-Reproduced three times; the faulting code address is identical every run
-and the host address it reads varies, which is what a per-run mapping base
-does. One byte of guest serial appears before the fault, so the guest never
-reaches its first `print-line`.
-
-The log line above it is the lead: `RAM cap: guest_mem_size=0xc0000000
-effective=0xbe000000 gop=0`, and the VBE framebuffer is handed out at
-`0xfd000000`, which is above `effective`. **Raising `-mem` does not raise
-`effective`** -- at `-mem 4096` the line reads `guest_mem_size=0x100000000
-effective=0xbe000000` and the fault is unchanged, so the cap is not derived
-from the requested size. That refutes "give it more RAM" as a fix and
-points at the framebuffer mapping rather than at the guest.
-
-Whatever the guest did, a guest cannot be allowed to fault the emulator:
-the correct behaviour is a guest fault, not a host access violation.
-
-`codex/test/apps/browser-keys` passes and is not a counter-example: it
-never sets a video mode, so the whole display path is outside what the
-browser's gate observes. That is why the browser reads green and does not
-run.
-
-**FIXED 2026-08-10 (blu), main 14494. A disk image larger than 31 MB
-overran the pre-committed guest region.** Measured by reek, kept in full
-below because the measurement is what made it findable in one sitting.
-
-`guest_mem` is `MEM_RESERVE` with only the **first 32 MB committed** up
-front (`codex-vm.c:8997`), and `load_kernel`'s raw path memcpys the WHOLE
-file to `guest_mem + LOAD_ADDR` (`0x100000`) bounded against
-`guest_mem_size` -- 3 GB -- rather than against what is committed. A 32 MB
-image therefore writes 1 MB..33 MB and walks off the end of the commit into
-reserved address space. `guest_commit_range` exists for exactly this and its
-own comment describes the symptom ("a direct memcpy out of the same region
-does crash, and takes the VM process with it"); `load_kernel` was not among
-its callers. It now commits first.
-
-**The threshold is where the mechanism says it is, which is how it was
-pinned rather than argued.** `LOAD_ADDR + size` of exactly 32 MB
-(32,505,856-byte image) boots; one 64 KB step past it faults. Both crashing
-sizes boot after the fix and the 30 MB control is unchanged.
-
-Two corrections to the notes below, both worth keeping. **The absence of
-both GPT lines was not a clue about the directory walk** -- the fault is
-upstream of the walk entirely, in a copy that runs before it, so neither
-line could have printed and buffering was never involved. And the
-unbounded `memcpy` at the extracted-PE copy is **real but is not this
-crash**: it is bounded against the image and not against guest RAM, so it
-would need a `BOOTX64.EFI` larger than guest RAM, while the crash needs
-only a 32 MB disk. It is bounded and committed now as well.
-
-The original measurement, unchanged:
-
-**CLOSED. Re-verified 2026-08-10 (reek) against the fix above**: a 32 MB
-image (33,554,432 bytes, 65536 sectors) built from the same source now boots
-and runs to completion under `-uefi -disk`, with no host fault. The entry
-below is the original measurement, kept because it is what made the cause
-findable in one sitting. It said the cause was NOT pinned, and that was
-true when written; it is pinned now and the account is above.
-
-The `-timeout 60` below is a transcript of what was typed, not a recipe:
-that flag does not exist and was silently ignored, exactly as the section
-above records. **Do not copy this line.** To bound a run, use
-`-screenshot` with `-screenshot-delay`, which exits after the capture.
-
-```
-tools/codex-vm.exe -kernel X.img -uefi -disk X.img -headless -timeout 60
-IDE: X.img (33554432 bytes, 65536 sectors)
-UEFI mode / ACPI / SMBIOS lines, then:
-HOST CRASH: codex-vm faulted (code=0xC0000005) at 0x7FF62F685F9E writing memory 0x227397B0000
-```
-
-The control is the same payload and the same source in a **32768**-sector
-image, built by the same `build/build-img.ps1` invocation with only
-`-TotalSectors` changed: it boots, prints
-`GPT: extracted BOOTX64.EFI (2591232 bytes, FAT16) from partition at LBA 2048`,
-and compiles. So the variable is image size, not the payload.
-
-Two facts to start from rather than re-measure. The failing run prints
-neither the `GPT: extracted` line nor the `GPT: ESP ... has an unusable BPB`
-line that is its else-branch, which either puts the fault inside the
-directory walk or means those `fprintf(stderr, ...)` calls are lost to
-buffering while the SEH handler's own writes survive -- **establish which
-before reasoning from the absence**, because they imply different faults.
-And the fault is a WRITE, while every access in the walk itself is a read.
-
-Not on the A5 flight path: `a5flight2.img` and the 2.7 MB source arm are
-both 32768 sectors. It bites whoever first needs an image above 16 MB,
-which the drive installer will.
-
-**One thing this fix does NOT change, recorded so nobody reads it as
-covered.** A GPT disk image under `-uefi` is copied into guest RAM twice:
-once whole by the raw path above, then again as the extracted PE. The first
-copy is discarded and now commits the whole image, so a multi-gigabyte ESP
-will commit multiple gigabytes of host RAM before booting. That is waste,
-not a crash, and skipping the raw copy for a GPT image is a separate change
-with its own fallback question.
+**A GPT disk image under `-uefi` is copied into guest RAM twice**: once whole by the raw path, then again as the extracted PE. The first copy is discarded and commits the whole image, so a multi-gigabyte ESP commits multiple gigabytes of host RAM before booting. That is waste, not a crash, and skipping the raw copy for a GPT image is a separate change with its own fallback question.
 
 ### Interactive Debugger
 
@@ -3850,9 +3639,7 @@ the rehearsal record will not be the hash of the thing anyone else builds. And
 
 Both are in `codex/compiler/Emit/X86_64IO.codex`. **A diagnostic written to COM2
 is emitted and discarded**, so the code under it looks like code that never
-runs. `__out_of_memory` printed there for its whole life (fixed main 11837) and
-a correct, firing stack guard read as "the guard never fires" for as long as it
-did. Check which emitter a message goes through before concluding the path is
+runs: a correct, firing guard reads as "the guard never fires". Check which emitter a message goes through before concluding the path is
 dead. `emit-control-wait-and-send` also carries a 10000-spin bail-out that the
 serial one does not; the serial wait blocks until THR-empty.
 
@@ -3911,47 +3698,13 @@ build/compile.ps1 -Src codex\test\apps\foo.codex -Out out.cdx -Log out.log -Kern
 produce the same SHA-256 have not read your file. This is the cheap check and
 it is the only one that fires before you start debugging the wrong program.
 
-### `-IrUni` LIFTS AS `-IrCce` DOES since main 20176; the divergence this entry described is CLOSED
+### `-IrUni` and `-IrCce` carry the same lifting and are still not interchangeable
 
-**This entry described a real divergence that no longer exists, and it is kept
-because its detection advice survives its cause.** Between main 19558 and main
-20176 (both 2026-08-25 to 2026-08-27) `emit-ir-cce` lifted lambdas and
-`emit-ir-uni` did not, so a program with a lambda had TWO IRs depending on the
-flag and the plug only ever saw the lifted one. **Main 20176 reconciled them:
-both front doors now call the one `lift-ir-for-emit` helper
-(`codex/compiler/opening.codex:1799`, from `emit-ir-uni` at `:1815` and
-`emit-ir-cce` at `:1840`), so the readable dump and the plug wire carry the
-same lifting.**
+Both front doors call `lift-ir-for-emit` (`codex/compiler/opening.codex`), so a lifted lambda is visible in an `-IrUni` dump: a lambda that captures an enclosing local appears as a top-level `(def "__lam_0" ...)`, and `-RawFlags 'no-lift'` (the flag `build/jonquil.ps1` uses) is the control that moves both doors (measured 2026-09-01, seed `42ACED00`).
 
-**Measured 2026-09-01 against seed `42ACED00`, with `no-lift` as the control on
-both doors** (`-RawFlags 'no-lift'`, the flag `build/jonquil.ps1` uses): a
-program whose lambda captures an enclosing local emits `(def "__lam_0" ...)` as
-a top-level def under `-IrUni`, and the control moves BOTH doors -- `-IrUni` 8
-defs against 6, `-IrCce` 2,149 bytes against 1,969. A lifted lambda is visible
-in an `-IrUni` dump today.
+The two still differ in ENCODING (CCE is not readable text) and in OUTPUT ROUTING -- see the `-IrUni` / `-Text` / `-IrCce` table above, where only `-IrUni` brackets the wire in `-Log`. Grepping an `-IrCce` artifact for an ASCII identifier finds nothing, and reading an empty `-Log` from an `-IrCce` run as "no IR emitted" is the live trap.
 
-**Cost of the stale version, which is why the correction is written out rather
-than the paragraph just deleted:** COMPILER-29's cause was recorded wrong twice,
-both times off an `-IrUni` dump, and the second write-up named an innocent IR
-reader. That was true of the 19558..20176 window. The row and this entry then
-BOTH went on asserting the divergence after the same lane closed it, so the
-warning outlived its cause and kept steering readers away from a dump that had
-become accurate (L-PUBLISHED: grep for the consumer before trusting a warning,
-and re-measure before repeating one).
-
-**What still holds, and it is the half worth keeping:** `-IrUni` and `-IrCce`
-are still NOT interchangeable. They differ in ENCODING (CCE is not readable
-text) and in OUTPUT ROUTING -- see the `-IrUni` / `-Text` / `-IrCce` table
-above, where only `-IrUni` brackets the wire in `-Log`. Grepping an `-IrCce` artifact for an
-ASCII identifier finds nothing, and reading an empty `-Log` from an `-IrCce`
-run as "no IR emitted" is the live trap.
-
-**Detect:** if a claim is about what a PLUG receives, do not settle it from
-`-IrUni`. Force a marker constant into the emitted code from inside the arm you
-believe runs, rebuild the plug, and read it off the target -- and put the same
-marker in the arm you believe does NOT run, as the control. That pair is what
-finally answered COMPILER-29; each round is a plug rebuild plus one filtered
-`test-cross-batch.ps1` run, about ninety seconds.
+**Detect:** if a claim is about what a PLUG receives, do not settle it from `-IrUni`. Force a marker constant into the emitted code from inside the arm you believe runs, rebuild the plug, and read it off the target -- and put the same marker in the arm you believe does NOT run, as the control. Each round is a plug rebuild plus one filtered `test-cross-batch.ps1` run, about ninety seconds.
 
 ### Run a plug's `build.ps1` FROM THE REPO ROOT, never from the plug directory
 
@@ -4287,7 +4040,7 @@ copy and it is what tells you the restore happened; `compile.ps1` prints the
 kernel and its digest on every run for exactly this class of mistake, so read
 that line rather than trusting either guard.
 
-## What `-Internal` decides to run, and why an apps CL can pull in the plugs
+## What `-Internal` decides to run, and why an apps CL can pull in unrelated phases
 
 **The implicating set is `p4 opened` UNION every file that DIFFERS from
 main, in either direction. It is not a record of what you changed, and the
@@ -4296,12 +4049,9 @@ opened`, then `p4 diff2 -q //Codex/main/... <stream>/...`, and nothing
 else). The gate prints it as `[internal gate] changed here: ...` and
 selects phases from it. `diff2` reports a file that differs in EITHER
 direction, so a stream BEHIND main sees main's landed files as its own: a
-seven-file apps-only CL was measured pulling in plug-binary, cross-smoke,
-plug-smoke, gen-scripts, vm-differential, deck-headroom, app-sweep and
-run-list from files it had never touched, and going red on a plug defect
-that was neither the CL's nor the lane's (2026-09-02). An earlier version
-of this section said "everything changed since the last run"; no such
-mechanism exists (the mindmeld of 2026-09-02, F1).
+seven-file apps-only CL was measured pulling in eight regression phases
+from files it had never touched, and going red on a defect that was
+neither the CL's nor the lane's (2026-09-02).
 
 The two cases cannot be told apart from the set, so since fester's main
 21620 **the gate REFUSES when your stream is behind main** (`:113-120`,
@@ -4356,12 +4106,11 @@ which phase to suspect when a total moves:
 
 | phase | s | | phase | s |
 |---|---|---|---|---|
-| `test-compile` (1,484 chapters) | **431.6** | | `plug-smoke` | 42.4 |
-| `gen-scripts` | 113.0 | | `test-bvt` | 41.1 |
-| `deck-headroom` | 76.8 | | `app-sweep` | 30.5 |
-| `jonquil` | 68.2 | | `cdx-build` | 22.5 |
-| `plug-binary` | 46.4 | | `cdx-stage1` | 21.5 |
-| `check-errors` | 43.3 | | `cross-smoke` | 18.8 |
+| `test-compile` (1,484 chapters) | **431.6** | | `test-bvt` | 41.1 |
+| `gen-scripts` | 113.0 | | `app-sweep` | 30.5 |
+| `deck-headroom` (with its since-removed plug arm) | 76.8 | | `cdx-build` | 22.5 |
+| `jonquil` | 68.2 | | `cdx-stage1` | 21.5 |
+| `check-errors` | 43.3 | | | |
 
 **A step past roughly twice its number here, printing nothing, is a hang until
 proven otherwise, and one command settles it:**

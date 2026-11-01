@@ -7,21 +7,16 @@ Chapter: GopClock
   cites Works chapter GopLocale
   cites Works chapter GopZones
   cites Works chapter GopWorld
-
- We say:
+  cites Works chapter GopTzdb (gtz-load, gtz-zone-of)
+  cites Works chapter GopFat16
+  cites Foreword chapter TimeZone (Zone, utc-offset-at)
+  cites Foreword chapter TzCompile (TzTrans)
+  cites Foreword chapter DateTime (ymd-to-days, days-to-ymd)
+  cites Foreword chapter Maybe
 
 Section: Registers
 
-  clk-reg-seconds : Integer = 0
-  clk-reg-minutes : Integer = 2
-  clk-reg-hours : Integer = 4
-  clk-reg-day : Integer = 7
-  clk-reg-month : Integer = 8
-  clk-reg-year : Integer = 9
-
   clk-set-bit : Integer = 128
-  clk-h24-bit : Integer = 2
-  clk-pm-bit : Integer = 128
 
 Section: State
 
@@ -146,7 +141,35 @@ Section: State
       in let f = clk-set-stripe ks (if id == 0 then 0 else (zone-row-of id).zr-stripe)
       in let g = clk-set-zone ks (r.zc-minutes / 60)
       in let bnd = clk-set-band ks (r.zc-band)
-      in poke-32 ks clk-ready-cell 1
+      in let rd = poke-32 ks clk-ready-cell 1
+      in act
+        zm <- zone-machine-load
+        t <- clk-tz-reload ks zm
+        rd
+      end
+    end
+  end
+
+  clk-zone-name : Integer, ZoneMachine -> Text
+  clk-zone-name (ks) (zm) =
+    if zm.zm-name /= "" then zm.zm-name
+    else if zone-valid (clk-zid ks) then (zone-row-of (clk-zid ks)).zr-name
+    else ""
+
+  clk-tz-reload : Integer, ZoneMachine -> [Device.Port] Integer
+  clk-tz-reload (ks) (zm) = act
+    c <- rtc-civil 0
+    clk-tz-load ks (clk-zone-name ks zm) (zm.zm-rtc-local) (clk-civil-seconds (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-year) (c.rc-month) (c.rc-day))
+  end
+
+  clk-zone-pick : Integer -> [Device.Port] Integer
+  clk-zone-pick (ks) = act
+    zm <- zone-machine-load
+    let name = if zone-valid (clk-zid ks) then (zone-row-of (clk-zid ks)).zr-name else ""
+    in let picked = ZoneMachine { zm-name = name, zm-rtc-local = zm.zm-rtc-local }
+    in act
+      s <- zone-machine-save picked
+      clk-tz-reload ks picked
     end
   end
 
@@ -163,40 +186,230 @@ Section: State
   clk-record (ks) (y) (m) (d) (hh) =
     let id = clk-zid ks
     in ZoneRec {
-      zc-minutes = if zone-valid id then zone-offset-on id y m d hh else clk-zone ks * 60,
+      zc-minutes = if zone-valid id then zone-base-mins id else clk-zone ks * 60,
       zc-id = id,
       zc-clock = clk-cfmt ks,
       zc-date = clk-dfmt ks,
       zc-band = clk-band ks
     }
 
-Section: Reading
+Section: The Zone Table
 
-  clk-mode : Integer -> [Device.Port] Integer
-  clk-mode (d) = act
-    b <- rtc-read rtc-reg-status-b
-    b
+  clk-block-bytes : Integer = 704
+  clk-tz-n-cell : Integer = 100
+  clk-tz-local-cell : Integer = 104
+  clk-tz-base : Integer = 128
+  clk-tz-max : Integer = 24
+  clk-tz-back : Integer = 31622400
+
+  clk-tz-n : Integer -> Integer
+  clk-tz-n (ks) = peek-32 ks clk-tz-n-cell
+
+  clk-tz-at : Integer, Integer -> Integer
+  clk-tz-at (ks) (i) = peek-qword ks (clk-tz-base + 16 * i)
+
+  clk-tz-off : Integer, Integer -> Integer
+  clk-tz-off (ks) (i) = peek-qword ks (clk-tz-base + 16 * i + 8)
+
+  clk-tz-put : Integer, Integer, Integer, Integer -> Integer
+  clk-tz-put (ks) (i) (at) (off) =
+    let a = poke-qword ks (clk-tz-base + 16 * i) at
+    in poke-qword ks (clk-tz-base + 16 * i + 8) off
+
+  clk-tz-fill-loop : Integer, List TzTrans, Integer, Integer, Integer -> Integer
+  clk-tz-fill-loop (ks) (trans) (i) (k) (from) =
+    if i >= list-length trans | k >= clk-tz-max then k
+    else let t = list-at trans i
+    in if t.at <= from then clk-tz-fill-loop ks trans (i + 1) k from
+    else let w = clk-tz-put ks k (t.at) (t.kind.utoff)
+    in clk-tz-fill-loop ks trans (i + 1) (k + 1) from
+
+  clk-tz-fill : Integer, Zone, Integer, Boolean -> Integer
+  clk-tz-fill (ks) (z) (from) (rtc-local) =
+    let a = clk-tz-put ks 0 from (utc-offset-at z from)
+    in let n = clk-tz-fill-loop ks (z.trans) 0 1 from
+    in let l = poke-32 ks clk-tz-local-cell (if rtc-local then 1 else 0)
+    in poke-32 ks clk-tz-n-cell n
+
+  clk-tz-apply : Integer, Maybe Zone, Integer, Boolean -> Integer
+  clk-tz-apply (ks) (mz) (now) (rtc-local) =
+    when mz
+      is None -> poke-32 ks clk-tz-n-cell 0
+      is Just (z) -> clk-tz-fill ks z (now - clk-tz-back) rtc-local
+
+  clk-tz-find : Integer, Integer, Integer, Integer -> Integer
+  clk-tz-find (ks) (u) (i) (best) =
+    if i >= clk-tz-n ks then best
+    else if clk-tz-at ks i > u then best
+    else clk-tz-find ks u (i + 1) i
+
+  clk-tz-offset-at : Integer, Integer -> Integer
+  clk-tz-offset-at (ks) (u) = clk-tz-off ks (clk-tz-find ks u 0 0)
+
+  clk-civil-seconds : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  clk-civil-seconds (h) (mi) (s) (y) (mo) (d) = ymd-to-days y mo d * 86400 + h * 3600 + mi * 60 + s
+
+  clk-hand-mins : Integer, Integer, Integer, Integer, Integer -> Integer
+  clk-hand-mins (ks) (y) (mo) (d) (h) =
+    let id = clk-zid ks
+    in if zone-valid id then zone-base-mins id else clk-zone ks * 60
+
+  clk-local-seconds : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  clk-local-seconds (ks) (h) (mi) (s) (y) (mo) (d) =
+    let cs = clk-civil-seconds h mi s y mo d
+    in if clk-tz-n ks == 0 then cs + 60 * clk-hand-mins ks y mo d h
+    else if peek-32 ks clk-tz-local-cell == 1 then cs
+    else cs + clk-tz-offset-at ks cs
+
+  clk-local-ymd : Integer, RtcCivil -> Integer
+  clk-local-ymd (ks) (c) =
+    let l = if ks == 0 then clk-civil-seconds (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-year) (c.rc-month) (c.rc-day)
+            else clk-local-seconds ks (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-year) (c.rc-month) (c.rc-day)
+    in let (y, mo, d) = days-to-ymd (l / 86400)
+    in y * 10000 + mo * 100 + d
+
+  clk-offset-mins : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  clk-offset-mins (ks) (h) (mi) (s) (y) (mo) (d) =
+    if clk-tz-n ks == 0 then clk-hand-mins ks y mo d h
+    else clk-tz-offset-at ks (clk-civil-seconds h mi s y mo d) / 60
+
+  clk-choice-cell : Integer = 108
+  clk-choice-a-cell : Integer = 112
+  clk-choice-b-cell : Integer = 120
+
+  clk-choice-none : Integer = 0
+  clk-choice-exact : Integer = 1
+  clk-choice-fold : Integer = 2
+  clk-choice-gap : Integer = 3
+
+  clk-choice : Integer -> Integer
+  clk-choice (ks) = peek-32 ks clk-choice-cell
+
+  clk-choice-a : Integer -> Integer
+  clk-choice-a (ks) = peek-qword ks clk-choice-a-cell
+
+  clk-choice-b : Integer -> Integer
+  clk-choice-b (ks) = peek-qword ks clk-choice-b-cell
+
+  clk-choice-set : Integer, Integer, Integer, Integer -> Integer
+  clk-choice-set (ks) (kind) (a) (b) =
+    let x = poke-qword ks clk-choice-a-cell a
+    in let y = poke-qword ks clk-choice-b-cell b
+    in poke-32 ks clk-choice-cell kind
+
+  clk-valid-utcs : Integer, Integer, Integer, Integer, Integer -> Integer
+  clk-valid-utcs (ks) (l) (i) (lo) (hi) =
+    if i >= clk-tz-n ks then
+      (if lo > hi then clk-choice-set ks clk-choice-none 0 0
+      else if lo == hi then clk-choice-set ks clk-choice-exact lo lo
+      else clk-choice-set ks clk-choice-fold lo hi)
+    else let u = l - clk-tz-off ks i
+    in if clk-tz-offset-at ks u /= clk-tz-off ks i then clk-valid-utcs ks l (i + 1) lo hi
+    else clk-valid-utcs ks l (i + 1) (if u < lo then u else lo) (if u > hi then u else hi)
+
+  clk-gap-after : Integer, Integer, Integer -> Integer
+  clk-gap-after (ks) (l) (i) =
+    if i >= clk-tz-n ks then 0 - 1
+    else if i > 0 & clk-tz-at ks i > l - clk-tz-off ks i & clk-tz-at ks i <= l - clk-tz-off ks (i - 1) then clk-tz-at ks i
+    else clk-gap-after ks l (i + 1)
+
+  clk-resolve : Integer, Integer -> Integer
+  clk-resolve (ks) (l) =
+    let v = clk-valid-utcs ks l 0 1000000000000000000 (0 - 1000000000000000000)
+    in if clk-choice ks /= clk-choice-none then clk-choice ks
+    else let g = clk-gap-after ks l 0
+    in if g < 0 then clk-choice-none
+    else let s = clk-choice-set ks clk-choice-gap g g
+    in clk-choice-gap
+
+  clk-fields-of-utc : Integer, Integer -> Integer
+  clk-fields-of-utc (ks) (u) =
+    let tod = int-mod u 86400
+    in let (y, mo, d) = days-to-ymd (u / 86400)
+    in let a = poke-32 ks clk-h-cell (tod / 3600)
+    in let b = poke-32 ks clk-mi-cell (int-mod tod 3600 / 60)
+    in let c = poke-32 ks clk-s-cell (int-mod tod 60)
+    in let e = poke-32 ks clk-d-cell d
+    in let f = poke-32 ks clk-mo-cell mo
+    in poke-32 ks clk-y-cell (y - 2000)
+
+  clk-entered-local : Integer -> Integer
+  clk-entered-local (ks) =
+    clk-civil-seconds (peek-32 ks clk-h-cell) (peek-32 ks clk-mi-cell) (peek-32 ks clk-s-cell) (2000 + peek-32 ks clk-y-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-d-cell)
+
+  clk-tz-load : Integer, Text, Boolean, Integer -> [Device.Port] Integer
+  clk-tz-load (ks) (name) (rtc-local) (now) =
+    let m = __heap-save
+    in act
+      mz <- if name == "" then act None end else gtz-load name
+      let r = clk-tz-apply ks mz now rtc-local
+      in let d = __heap-restore m
+      in r
+    end
+
+Section: The World Rows
+
+  clk-world-stripe-cell : Integer = 512
+  clk-world-hour-cell : Integer = 516
+  clk-world-base : Integer = 520
+  clk-world-max : Integer = 16
+
+  clk-world-valid : Integer -> Boolean
+  clk-world-valid (ks) = peek-32 ks clk-world-stripe-cell == clk-stripe ks + 100
+
+  clk-world-mins : Integer, Integer, Integer -> Integer
+  clk-world-mins (ks) (i) (base) =
+    if clk-world-valid ks & i < clk-world-max then peek-qword ks (clk-world-base + 8 * i) else base
+
+  clk-world-row : Integer, Integer, Integer, Integer -> Integer
+  clk-world-row (buf) (len) (id) (u) =
+    when gtz-zone-of buf len ((zone-row-of id).zr-name)
+      is None -> zone-base-mins id
+      is Just (z) -> utc-offset-at z u / 60
+
+  clk-world-fill : Integer, Integer, Integer, List Integer, Integer, Integer -> Integer
+  clk-world-fill (ks) (buf) (len) (ids) (i) (u) =
+    if i >= list-length ids | i >= clk-world-max then 0
+    else let w = poke-qword ks (clk-world-base + 8 * i) (clk-world-row buf len (list-at ids i) u)
+    in clk-world-fill ks buf len ids (i + 1) u
+
+  clk-world-mark : Integer, Integer, Integer, Integer, Integer -> Integer
+  clk-world-mark (ks) (buf) (len) (u) (hour) =
+    let w = clk-world-fill ks buf len (clk-stripe-list ks) 0 u
+    in let a = poke-32 ks clk-world-hour-cell hour
+    in poke-32 ks clk-world-stripe-cell (clk-stripe ks + 100)
+
+  clk-world-read : Integer, Integer, Integer -> [Device.Port] Integer
+  clk-world-read (ks) (u) (hour) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then clk-world-mark ks 0 0 u hour
+    else act
+      f <- gfat-read-file (m.gm-vol) "TZDB.BIN"
+      if f.gf-ok == False then clk-world-mark ks 0 0 u hour
+      else clk-world-mark ks (f.gf-buf) (f.gf-len) u hour
+    end
   end
 
-  clk-field-value : Integer, Integer -> [Device.Port] Integer
-  clk-field-value (reg) (b) = act
-    raw <- rtc-read reg
-    rtc-decode raw (bit-and b rtc-binary-bit)
-  end
+  clk-world-utc : Integer, RtcCivil -> Integer
+  clk-world-utc (ks) (c) =
+    let cs = clk-civil-seconds (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-year) (c.rc-month) (c.rc-day)
+    in if clk-tz-n ks > 0 & peek-32 ks clk-tz-local-cell == 1 then cs - clk-tz-offset-at ks cs else cs
 
-  clk-decode-hour : Integer, Integer -> Integer
-  clk-decode-hour (raw) (b) =
-    let pm = bit-and raw clk-pm-bit /= 0
-    in let v = rtc-decode (bit-and raw 127) (bit-and b rtc-binary-bit)
-    in if bit-and b clk-h24-bit /= 0 then v
-    else if pm then (if v == 12 then 12 else v + 12)
-    else (if v == 12 then 0 else v)
-
-  clk-hour-now : Integer -> [Device.Port] Integer
-  clk-hour-now (b) = act
-    raw <- rtc-read clk-reg-hours
-    clk-decode-hour raw b
-  end
+  clk-world-ensure : Integer, RtcCivil -> [Device.Port] Integer
+  clk-world-ensure (ks) (c) =
+    if ks == 0 then act 0 end
+    else if clk-view ks /= clk-view-zones then act 0 end
+    else
+      let u = clk-world-utc ks c
+      in let hour = int-mod (u / 3600) 1000000000
+      in if clk-world-valid ks & peek-32 ks clk-world-hour-cell == hour then act 0 end
+      else
+        let mark = __heap-save
+        in act
+          r <- clk-world-read ks u hour
+          let d = __heap-restore mark
+          in r
+        end
 
 Section: Writing
 
@@ -214,45 +427,71 @@ Section: Writing
 
   clk-encode-hour : Integer, Integer -> Integer
   clk-encode-hour (h) (b) =
-    if bit-and b clk-h24-bit /= 0 then clk-encode h b
+    if bit-and b rtc-h24-bit /= 0 then clk-encode h b
     else if h == 0 then clk-encode 12 b
     else if h < 12 then clk-encode h b
-    else if h == 12 then clk-encode 12 b + clk-pm-bit
-    else clk-encode (h - 12) b + clk-pm-bit
+    else if h == 12 then clk-encode 12 b + rtc-pm-bit
+    else clk-encode (h - 12) b + rtc-pm-bit
 
   clk-commit : Integer -> [Device.Port] Integer
   clk-commit (ks) = act
     b <- rtc-read rtc-reg-status-b
     f <- clk-write rtc-reg-status-b (bit-or b clk-set-bit)
-    w1 <- clk-write clk-reg-hours (clk-encode-hour (peek-32 ks clk-h-cell) b)
-    w2 <- clk-write clk-reg-minutes (clk-encode (peek-32 ks clk-mi-cell) b)
-    w3 <- clk-write clk-reg-seconds (clk-encode (peek-32 ks clk-s-cell) b)
-    w4 <- clk-write clk-reg-day (clk-encode (peek-32 ks clk-d-cell) b)
-    w5 <- clk-write clk-reg-month (clk-encode (peek-32 ks clk-mo-cell) b)
-    w6 <- clk-write clk-reg-year (clk-encode (peek-32 ks clk-y-cell) b)
+    w1 <- clk-write rtc-reg-hours (clk-encode-hour (peek-32 ks clk-h-cell) b)
+    w2 <- clk-write rtc-reg-minutes (clk-encode (peek-32 ks clk-mi-cell) b)
+    w3 <- clk-write rtc-reg-seconds (clk-encode (peek-32 ks clk-s-cell) b)
+    w4 <- clk-write rtc-reg-day (clk-encode (peek-32 ks clk-d-cell) b)
+    w5 <- clk-write rtc-reg-month (clk-encode (peek-32 ks clk-mo-cell) b)
+    w6 <- clk-write rtc-reg-year (clk-encode (peek-32 ks clk-y-cell) b)
     r <- (clk-write rtc-reg-status-b b)
     1
   end
 
   clk-load : Integer -> [Device.Port] Integer
   clk-load (ks) = act
-    idle <- rtc-wait-idle rtc-uip-fuel
-    b <- clk-mode 0
-    h <- clk-hour-now b
-    mi <- clk-field-value clk-reg-minutes b
-    s <- clk-field-value clk-reg-seconds b
-    d <- clk-field-value clk-reg-day b
-    mo <- clk-field-value clk-reg-month b
-    y <- clk-field-value clk-reg-year b
-    let a = poke-32 ks clk-h-cell h
-    in let c = poke-32 ks clk-mi-cell mi
-    in let e = poke-32 ks clk-s-cell s
-    in let g = poke-32 ks clk-d-cell d
-    in let i = poke-32 ks clk-mo-cell mo
-    in let j = poke-32 ks clk-y-cell y
+    c <- rtc-civil 0
+    let l = clk-local-seconds ks (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-year) (c.rc-month) (c.rc-day)
+    in let shown = if clk-tz-n ks == 0 then clk-civil-seconds (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-year) (c.rc-month) (c.rc-day) else l
+    in let f = clk-fields-of-utc ks shown
+    in let x = clk-choice-set ks clk-choice-none 0 0
     in let k = poke-32 ks clk-editing-cell 1
     in poke-32 ks clk-field-cell 0
   end
+
+  clk-commit-utc : Integer, Integer -> [Device.Port] Integer
+  clk-commit-utc (ks) (u) = act
+    let f = clk-fields-of-utc ks u
+    in act
+      w <- clk-commit ks
+      clk-choice-set ks clk-choice-none 0 0
+    end
+  end
+
+  clk-commit-entry : Integer -> [Device.Port] Integer
+  clk-commit-entry (ks) =
+    if clk-tz-n ks == 0 | peek-32 ks clk-tz-local-cell == 1 then act
+      w <- clk-commit ks
+      1
+    end
+    else
+      let k = clk-resolve ks (clk-entered-local ks)
+      in if k == clk-choice-exact then act
+        w <- clk-commit-utc ks (clk-choice-a ks)
+        1
+      end
+      else if k == clk-choice-none then act
+        w <- clk-commit ks
+        1
+      end
+      else act 0 end
+
+  clk-commit-choice : Integer, Integer -> [Device.Port] Integer
+  clk-commit-choice (ks) (which) =
+    if clk-choice ks == clk-choice-none then act 0 end
+    else act
+      w <- clk-commit-utc ks (if which == 0 then clk-choice-a ks else clk-choice-b ks)
+      1
+    end
 
 Section: Formatting
 
@@ -339,14 +578,13 @@ Section: The Tree
 
   clk-band-text : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
   clk-band-text (ks) (h) (mi) (s) (d) (mo) (y) =
-    let t = clk-local-mins ks h mi (2000 + y) mo d
-    in let lh = clk-local-h t
-    in let lm = clk-local-mi t
-    in let tt = if clk-band-has ks zone-band-time then loc-time (clk-cfmt ks) lh lm s else ""
-    in let dt = if clk-band-has ks zone-band-date then loc-date (clk-dfmt ks) (2000 + y) mo d else ""
-    in let id = clk-zid ks
+    let l = clk-local-seconds ks h mi s (2000 + y) mo d
+    in let tod = int-mod l 86400
+    in let (ly, lmo, ld) = days-to-ymd (l / 86400)
+    in let tt = if clk-band-has ks zone-band-time then loc-time (clk-cfmt ks) (tod / 3600) (int-mod tod 3600 / 60) (int-mod tod 60) else ""
+    in let dt = if clk-band-has ks zone-band-date then loc-date (clk-dfmt ks) ly lmo ld else ""
     in let off = if clk-band-has ks zone-band-offset == False then ""
-                 else if zone-valid id then loc-utc-text (zone-offset-on id (2000 + y) mo d h)
+                 else if clk-tz-n ks > 0 | zone-valid (clk-zid ks) then loc-utc-text (clk-offset-mins ks h mi s (2000 + y) mo d)
                  else zone-text (clk-zone ks)
     in clk-join3 tt dt off
 
@@ -373,9 +611,7 @@ Section: The Tree
     widget-fixed (widget-tabs "clk-nav" ["Clock", "World", "Formats", "Set the clock"] (clk-nav-sel ks)) 0 clk-nav-h
 
   clk-local-mins : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
-  clk-local-mins (ks) (h) (mi) (y) (mo) (d) =
-    let id = clk-zid ks
-    in h * 60 + mi + (if zone-valid id then zone-offset-on id y mo d h else clk-zone ks * 60)
+  clk-local-mins (ks) (h) (mi) (y) (mo) (d) = int-mod (clk-local-seconds ks h mi 0 y mo d) 86400 / 60
 
   clk-local-h : Integer -> Integer
   clk-local-h (t) = int-mod (int-mod t 1440 + 1440) 1440 / 60
@@ -387,19 +623,19 @@ Section: The Tree
   clk-where (ks) (y) (mo) (d) (hh) =
     let id = clk-zid ks
     in if zone-valid id == False then "no zone chosen   " & zone-text (clk-zone ks)
-    else (zone-row-of id).zr-city & "   " & loc-utc-text (zone-offset-on id y mo d hh)
-         & (if zone-is-summer id y mo d hh then "   summer time" else "")
+    else if clk-tz-n ks > 0 then (zone-row-of id).zr-city & "   " & loc-utc-text (clk-offset-mins ks hh 0 0 y mo d)
+    else (zone-row-of id).zr-city & "   " & loc-utc-text (zone-base-mins id)
 
   clk-face-tree : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> WidgetNode
   clk-face-tree (ks) (h) (mi) (s) (d) (mo) (y) =
-    let t = clk-local-mins ks h mi (2000 + y) mo d
-    in let lh = clk-local-h t
-    in let lm = clk-local-mi t
+    let l = clk-local-seconds ks h mi s (2000 + y) mo d
+    in let tod = int-mod l 86400
+    in let (ly, lmo, ld) = days-to-ymd (l / 86400)
     in widget-panel "clk-pane" DirColumn 6 [
       clk-nav ks,
       clk-art "clk-art",
-      widget-set-min (widget-label "clk-now" (loc-time (clk-cfmt ks) lh lm s)) 0 26,
-      widget-set-min (widget-label "clk-date" (loc-date-long (clk-dfmt ks) (2000 + y) mo d & "   " & loc-dow-name (loc-dow (2000 + y) mo d))) 0 22,
+      widget-set-min (widget-label "clk-now" (loc-time (clk-cfmt ks) (tod / 3600) (int-mod tod 3600 / 60) (int-mod tod 60))) 0 26,
+      widget-set-min (widget-label "clk-date" (loc-date-long (clk-dfmt ks) ly lmo ld & "   " & loc-dow-name (loc-dow ly lmo ld))) 0 22,
       widget-set-min (widget-label "clk-zone" (clk-where ks (2000 + y) mo d h)) 0 22,
       widget-set-flex (widget-label "clk-gap" "") 1
     ]
@@ -407,7 +643,7 @@ Section: The Tree
   clk-zrow : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> WidgetNode
   clk-zrow (ks) (i) (id) (y) (mo) (d) (hh) =
     let mark = if clk-pick ks == i then "> " else "  "
-    in widget-set-min (widget-button ("clk-z-" & show id) (mark & zone-label id y mo d hh)) 0 22
+    in widget-set-min (widget-button ("clk-z-" & show id) (mark & (zone-row-of id).zr-city & "   " & loc-utc-text (clk-world-mins ks i (zone-base-mins id)))) 0 22
 
   clk-zrows : Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List WidgetNode -> List WidgetNode
   clk-zrows (ks) (ids) (i) (y) (mo) (d) (hh) (acc) =
@@ -462,6 +698,27 @@ Section: The Tree
       widget-set-min (widget-label "clk-help" "click a row to keep it") 0 20
     ]
 
+  clk-choice-label : Integer, Integer -> Text
+  clk-choice-label (ks) (u) =
+    let off = clk-tz-offset-at ks u
+    in let tod = int-mod (u + off) 86400
+    in clk-hms (tod / 3600) (int-mod tod 3600 / 60) (int-mod tod 60) & "  " & loc-utc-text (off / 60)
+
+  clk-choice-row : Integer -> WidgetNode
+  clk-choice-row (ks) =
+    if clk-choice ks == clk-choice-fold then
+      widget-fixed (widget-panel "clk-choice" DirRow 4 [
+        widget-label "clk-choice-q" "That time happens twice:",
+        widget-button "clk-pick-a" ("the first, " & clk-choice-label ks (clk-choice-a ks)),
+        widget-button "clk-pick-b" ("the second, " & clk-choice-label ks (clk-choice-b ks))
+      ]) 0 22
+    else if clk-choice ks == clk-choice-gap then
+      widget-fixed (widget-panel "clk-choice" DirRow 4 [
+        widget-label "clk-choice-q" "The clocks skip that time:",
+        widget-button "clk-pick-a" ("use the first time after it, " & clk-choice-label ks (clk-choice-a ks))
+      ]) 0 22
+    else widget-fixed (widget-label "clk-choice" "") 0 0
+
   clk-tree : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> WidgetNode
   clk-tree (ks) (h) (mi) (s) (d) (mo) (y) =
     if clk-editing ks then
@@ -481,6 +738,7 @@ Section: The Tree
           widget-button "clk-keep" "Write it to the clock",
           widget-button "clk-cancel" "Cancel"
         ]) 0 22,
+        clk-choice-row ks,
         widget-set-min (widget-label "clk-help2" "click a field, then - or +") 0 20
       ]
     else if clk-view ks == clk-view-zones then clk-zones-tree ks (2000 + y) mo d h

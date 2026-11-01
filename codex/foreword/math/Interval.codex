@@ -1,21 +1,5 @@
 Chapter: Interval
 
- The shared interval-arithmetic kernel for the compiler's two range
- provers. The checker's aexpr-proven-range consumes it (through
- range-interval, TypeCheckerInference); the emitter's
- ir-expr-proven-range still carries a private, hand-written copy that
- refuses everything but non-negative operands, so on that side a named
- local holding a provably small signed value still has no provable
- range. This chapter is the single kernel both
- provers will consume, written for full signed i64 semantics and
- verified by an exhaustive containment test
- (codex/test/interval-exhaustive.codex) in the ConstantRange
- discipline: every transfer function states its soundness contract in
- prose, and the test checks that contract against the runtime's own
- operators for every interval over a small universe. The kernel is
- pure arithmetic over a two-field record; it allocates one record per
- call and nothing else.
-
 Section: Representation
 
   Interval = record {
@@ -41,16 +25,6 @@ Section: Representation
   iv-exact (n) = Interval { lo = n, hi = n }
 
 Section: Overflow Refusal
-
- Predicates that decide whether an i64 endpoint computation would
- overflow, without themselves overflowing. Addition uses the standard
- rearrangement: a + b overflows iff b > 0 and a > max - b, or b <= 0
- and a < min - b; both right-hand sides stay in range under their
- guards. Subtraction mirrors it. Multiplication compares against a
- truncating division of the endpoint constants - Codex integer
- division truncates toward zero, which is exactly the rounding these
- bounds need - after handling the two corners where either operand is
- -1 against i64-min, because negating i64-min is itself an overflow.
 
   iv-add-overflows : Integer, Integer -> Boolean
   iv-add-overflows (a) (b) =
@@ -134,20 +108,6 @@ Section: Division
 
 Section: Modulo
 
- SOUNDNESS CONTRACT: for every concrete pair (x, y) with x in the
- input's range, y in the other input's range, and y not zero, the
- concrete result int-mod x y lies inside the returned interval. What
- the runtime actually does (emit-int-mod-builtin in
- Emit/X86_64Builtins.codex): idiv leaves the truncated remainder,
- which carries the sign of the DIVIDEND, and a negative remainder is
- then corrected by adding the absolute value of the divisor. The
- result is therefore Euclidean - always in [0, abs(y) - 1] - for
- every sign combination, negative dividends and negative divisors
- included. The bound is [0, m] where m is the largest abs(y) - 1 over
- the divisor corners; abs(iv-i64-min) - 1 is exactly iv-i64-max, so
- the magnitude is computable at every corner. A divisor range
- containing zero answers iv-unknown, same argument as division.
-
   iv-mod-mag : Integer -> Integer
   iv-mod-mag (n) =
     if n == iv-i64-min then iv-i64-max
@@ -170,13 +130,6 @@ Section: Union
     else Interval { lo = iv-int-min (a.lo) (b.lo), hi = iv-int-max (a.hi) (b.hi) }
 
 Section: Intersection
-
- SOUNDNESS CONTRACT: every concrete x that lies in BOTH inputs'
- ranges lies inside the returned interval; the returned interval is
- in fact exactly the set of such x. Disjoint inputs produce the
- canonical iv-empty. An empty input needs no special case: taking the
- max of the lows and the min of the highs against any lo > hi pair
- yields lo > hi again, which normalizes to iv-empty.
 
   iv-intersect : Interval, Interval -> Interval
   iv-intersect (a) (b) =

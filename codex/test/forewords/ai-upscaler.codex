@@ -1,7 +1,47 @@
 Chapter: FwdUpscalerTest
   cites AI chapter Upscaler
 
+Section: Fixtures
+
+  upt-flat : ImageData
+  upt-flat = image-new 2 2 [rgb 100 100 100, rgb 100 100 100, rgb 100 100 100, rgb 100 100 100]
+
+  upt-ramp : ImageData
+  upt-ramp = image-new 2 1 [rgb 0 0 0, rgb 200 200 200]
+
+  upt-count : List Rgb, Integer, Integer, Integer -> Integer
+  upt-count (px) (v) (i) (acc) =
+    if i >= list-length px then acc
+    else upt-count px v (i + 1) (acc + (if (list-at px i).cr == v then 1 else 0))
+
+  upt-reds : List Rgb, Integer, Text -> Text
+  upt-reds (px) (i) (acc) =
+    if i >= list-length px then acc
+    else upt-reds px (i + 1) (acc & (if i == 0 then "" else " ") & show ((list-at px i).cr))
+
+  upt-join : List Integer, Integer, Text -> Text
+  upt-join (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else upt-join xs (i + 1) (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
+  up-zeros-n : Integer -> List Integer
+  up-zeros-n (n) = if n <= 0 then [] else 0 :: up-zeros-n (n - 1)
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "AI/Upscaler OK"
-  end
+
+  opening : [Console] Nothing =
+    let bil = up-bilinear upt-flat 4 4
+    in let lan = up-lanczos upt-flat 4 4
+    in act
+      print-line-uni ("bilinear flat 100, 2x2 to 4x4: " & show (upt-count (bil.img-pixels) 100 0 0) & " of 16 stay 100; ramp 0,200 to 4 wide: " & upt-reds ((up-bilinear upt-ramp 4 1).img-pixels) 0 "")
+      print-line-uni ("lanczos flat 100, 2x2 to 4x4: " & show (upt-count (lan.img-pixels) 0 0 0) & " of 16 are 0")
+      print-line-uni ("lanczos weight at 0 500 1000 2000: " & show (up-lanczos-weight 0) & " " & show (up-lanczos-weight 500) & " " & show (up-lanczos-weight 1000) & " " & show (up-lanczos-weight 2000))
+      print-line-uni ("pixel shuffle 4 channels 1x1 by 2: " & upt-join (up-pixel-shuffle [1, 2, 3, 4] 4 1 1 2) 0 "" & "; 64 channels give " & show (list-length (up-pixel-shuffle (upt-seq64 0 []) 64 1 1 2) / 4) & " channels")
+      print-line-uni ("nearest upsample keeps channels: 64 channels 1x1 by 2 give " & show (list-length (up-nearest-upsample (up-zeros-n 64) 64 1 1 2) / 4) & " channels; 1 channel 1x2 [5 7] by 2: " & show (list-at (up-nearest-upsample [5, 7] 1 1 2 2) 0) & " " & show (list-at (up-nearest-upsample [5, 7] 1 1 2 2) 3) & " " & show (list-at (up-nearest-upsample [5, 7] 1 1 2 2) 5))
+      print-line-uni ("leaky relu -1000 500: " & upt-join (up-leaky-relu [0 - 1000, 500]) 0 "" & "; " & format-upscale-config upscale-4x-model & ", " & format-upscale-config upscale-4x-lanczos)
+    end
+
+  upt-seq64 : Integer, List Integer -> List Integer
+  upt-seq64 (i) (acc) =
+    if i >= 64 then acc
+    else upt-seq64 (i + 1) (list-push acc i)

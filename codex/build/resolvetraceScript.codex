@@ -7,30 +7,16 @@ Chapter: ResolveTraceScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
- THE ELEVENTH SUBJECT AND THE TENTH GENERATOR ON THE PIPELINE MODEL
- (PipelineModel.md). The emitted script is byte-identical to the one that
- shipped before the migration.
-
- ONE OF THIS SCRIPT'S EXITS IS SPELLED INSIDE A RAW PAYLOAD. `s04-binary`
- carries `ScRaw "Write-Error \"Trace file too small\"; exit 1"`, so nothing can
- DERIVE that exit from the statement tree the way `ScExit` can be derived: a
- future check that lists a stage's refusals by walking its body would miss it.
- An author who has read the payload can still DECLARE it, and the verdict below
- does. That is the raw-count argument in one file: a raw node hides a REFUSAL
- from every reader except the one holding the text.
-
 Section: Parameters
 
-  resolve-trace-params : List ShellParam = [sh-param "TraceFile" SptString, sh-param-default "MapFile" SptString (SeLit "")]
+  resolve-trace-params : List ShellParam =
+    [ sh-param "TraceFile" SptString
+    , sh-param-default "MapFile" SptString (SeLit "")
+    ]
 
 Section: The pipeline, declared before it is spelled
 
-  map-art : PipeArtifact = PipeArtifact { pa-name = "map", pa-kind = PkValue, pa-expr = SeVar "map", pa-from = Just (SeRaw "@()") }
-
- `entries`, `totalBytes` and `phaseNames` ARE BUILT BY RAW STATEMENTS, so each
- declares no production and the raw text that makes it stays where it is.
+  map-art : PipeArtifact = PipeArtifact { pa-name = "map", pa-kind = PkValue, pa-expr = SeVar "map", pa-from = Just (SeArrayLiteral []) }
 
   entries-art : PipeArtifact = PipeArtifact { pa-name = "entries", pa-kind = PkValue, pa-expr = SeVar "entries", pa-from = None }
 
@@ -49,62 +35,159 @@ Section: The pipeline, declared before it is spelled
 Section: S01 -- Preamble and validation
 
   s01-body : List ShellCmd =
-    let map-default = [ScAssign "MapFile" (SeStaticCall "System.IO.Path" "ChangeExtension" [pipe-ref rt-arts resolve-trace-params "TraceFile", SeLit ".map"])]
-    in let no-map = [ScRaw "Write-Error \"Symbol map not found: $MapFile\"", ScExit (SeInt 1)]
-    in let no-trace = [ScRaw "Write-Error \"Trace file not found: $TraceFile\"", ScExit (SeInt 1)]
-    in [ScSetStrictMode, ScSetErrorStop, ScBlank, ScIf (SeNot (pipe-ref rt-arts resolve-trace-params "MapFile")) map-default [], ScIf (SeNot (SeFileExists (pipe-ref rt-arts resolve-trace-params "MapFile"))) no-map [], ScIf (SeNot (SeFileExists (pipe-ref rt-arts resolve-trace-params "TraceFile"))) no-trace []]
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScBlank
+    , ScIf (SeNot (pipe-ref rt-arts resolve-trace-params "MapFile")) [ScAssign "MapFile" map-beside-trace] []
+    , ScIf (SeNot (SeFileExists (pipe-ref rt-arts resolve-trace-params "MapFile"))) [ScRaw "Write-Error \"Symbol map not found: $MapFile\"", ScExit (SeInt 1)] []
+    , ScIf (SeNot (SeFileExists (pipe-ref rt-arts resolve-trace-params "TraceFile"))) [ScRaw "Write-Error \"Trace file not found: $TraceFile\"", ScExit (SeInt 1)] []
+    ]
+
+  map-beside-trace : ShellExpr = SeStaticCall "System.IO.Path" "ChangeExtension" [pipe-ref rt-arts resolve-trace-params "TraceFile", SeLit ".map"]
 
   s01 : PipeStage = PipeStage { ps-name = "preamble and validation", ps-why = "default the symbol map beside the trace, and refuse before reading either file", ps-in = ["TraceFile", "MapFile"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "the symbol map named by -MapFile, or defaulted beside the trace, does not exist", PoExit 1 "the file named by -TraceFile does not exist"], ps-body = s01-body }
 
 Section: S02 -- Parse symbol map
 
   s02-body : List ShellCmd =
-    let parse-line = [ScIf (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$") [ScRaw "$addr = [Convert]::ToInt64($matches[1], 16)", ScRaw "$size = [int]$matches[2]", ScRaw "$name = $matches[3].Trim()", ScRaw "$map += [PSCustomObject]@{ Addr = $addr; Size = $size; Name = $name }"] []]
-    in [ScBlank, pipe-produce map-art, ScForEach "line" (SeRaw "[System.IO.File]::ReadAllLines($MapFile)") parse-line, ScRaw "$map = $map | Sort-Object Addr"]
+    [ ScBlank
+    , pipe-produce map-art
+    , ScForEach "line" (SeBare (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "MapFile"])) [ScIf (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$") s02-symbol []]
+    , ScAssign "map" (SeBare (SePipe (SeVar "map") [StSortBy "Addr"]))
+    ]
+
+  s02-symbol : List ShellCmd =
+    [ ScDotNetCallAssign "addr" "Convert" "ToInt64" [SeIndex (SeVar "matches") (SeInt 1), SeInt 16]
+    , ScAssign "size" (SeCast "int" (SeIndex (SeVar "matches") (SeInt 2)))
+    , ScAssign "name" (SeTrim (SeIndex (SeVar "matches") (SeInt 3)))
+    , ScAppend "map" (SeCast "PSCustomObject" (SeRecord [SfField "Addr" (SeVar "addr"), SfField "Size" (SeVar "size"), SfField "Name" (SeVar "name")]))
+    ]
 
   s02 : PipeStage = PipeStage { ps-name = "parse symbol map", ps-why = "address, size and name per symbol, sorted by address for the lookup below", ps-in = ["MapFile"], ps-out = [map-art], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- Resolve-Addr function
 
-  s03-body : List ShellCmd = [ScBlank, ScRaw "function Resolve-Addr([long]$rip) { for ($i = $map.Length - 1; $i -ge 0; $i--) { if ($map[$i].Addr -le $rip -and ($map[$i].Addr + $map[$i].Size) -gt $rip) { $off = $rip - $map[$i].Addr; return \"$($map[$i].Name)+0x$($off.ToString('X'))\" } } return \"0x$($rip.ToString('X'))\" }"]
+  s03-body : List ShellCmd =
+    [ ScBlank
+    , ScRaw "function Resolve-Addr([long]$rip) { for ($i = $map.Length - 1; $i -ge 0; $i--) { if ($map[$i].Addr -le $rip -and ($map[$i].Addr + $map[$i].Size) -gt $rip) { $off = $rip - $map[$i].Addr; return \"$($map[$i].Name)+0x$($off.ToString('X'))\" } } return \"0x$($rip.ToString('X'))\" }"
+    ]
 
   s03 : PipeStage = PipeStage { ps-name = "resolve-addr", ps-why = "the address to symbol lookup the accumulation stage calls, answering a bare hex address when nothing contains it", ps-in = ["map"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Parse trace entries
 
+  s04-body : List ShellCmd =
+    [ ScBlank
+    , ScDotNetCallAssign "entries" "System.Collections.Generic.List[long[]]" "new" []
+    , ScAssign "firstLine" (SeTrim (SeFileFirstLine (SeVar "TraceFile")))
+    , ScIf (SeStartsWith (SeVar "firstLine") (SeLit "T:")) [ScSequence s04-text] [ScSequence s04-binary]
+    ]
+
   s04-text : List ShellCmd =
-    let add-entry = [ScIf (SeMatch (SeVar "line") "^T:([0-9a-fA-F]+):([0-9a-fA-F]+)$") [ScRaw "$entries.Add(@([Convert]::ToInt64($matches[1], 16), [Convert]::ToInt64($matches[2], 16)))"] []]
-    in [ScForEach "line" (SeRaw "[System.IO.File]::ReadAllLines($TraceFile)") add-entry]
+    [ ScForEach "line" (SeBare (SeStaticCall "System.IO.File" "ReadAllLines" [SeVar "TraceFile"])) [ScIf (SeMatch (SeVar "line") "^T:([0-9a-fA-F]+):([0-9a-fA-F]+)$") [ScCallMethod (SeVar "entries") "Add" [text-entry]] []]
+    ]
+
+  text-entry : ShellExpr = SeArrayLiteral [SeBare (SeStaticCall "Convert" "ToInt64" [SeIndex (SeVar "matches") (SeInt 1), SeInt 16]), SeBare (SeStaticCall "Convert" "ToInt64" [SeIndex (SeVar "matches") (SeInt 2), SeInt 16])]
 
   s04-binary : List ShellCmd =
-    let trunc = [ScRaw "Write-Warning \"Trace file truncated\"", ScRaw "$count = [Math]::Floor(($bytes.Length - 8) / 16)"]
-    in [ScReadBytes "bytes" (pipe-ref rt-arts resolve-trace-params "TraceFile"), ScIf (SeIntLt (SeProperty (SeVar "bytes") "Length") (SeInt 8)) [ScRaw "Write-Error \"Trace file too small\"; exit 1"] [], ScRaw "$count = [BitConverter]::ToInt64($bytes, 0)", ScIf (SeRaw "$bytes.Length -lt 8 + $count * 16") trunc [], ScForLoop "i" (SeInt 0) (SeRaw "$i -lt $count") (SeRaw "$i++") [ScRaw "$off = 8 + $i * 16", ScRaw "$entries.Add(@([BitConverter]::ToInt64($bytes, $off), [BitConverter]::ToInt64($bytes, $off + 8)))"]]
+    [ ScReadBytes "bytes" (pipe-ref rt-arts resolve-trace-params "TraceFile")
+    , ScIf (SeIntLt (SeProperty (SeVar "bytes") "Length") (SeInt 8)) [ScRaw "Write-Error \"Trace file too small\"; exit 1"] []
+    , ScDotNetCallAssign "count" "BitConverter" "ToInt64" [SeVar "bytes", SeInt 0]
+    , ScIf (SeRaw "$bytes.Length -lt 8 + $count * 16") s04-truncated []
+    , ScForLoop "i" (SeInt 0) (SeBare (SeIntLt (SeVar "i") (SeVar "count"))) (SePostIncrement "i") s04-binary-entry
+    ]
 
-  s04-body : List ShellCmd =
-    let text-branch = [ScSequence s04-text]
-    in let binary-branch = [ScSequence s04-binary]
-    in [ScBlank, ScRaw "$entries = [System.Collections.Generic.List[long[]]]::new()", ScRaw "$firstLine = (Get-Content $TraceFile -First 1).Trim()", ScIf (SeRaw "$firstLine.StartsWith('T:')") text-branch binary-branch]
+  s04-truncated : List ShellCmd =
+    [ ScRaw "Write-Warning \"Trace file truncated\""
+    , ScDotNetCallAssign "count" "Math" "Floor" [SeBare (SeDiv (SeSub (SeProperty (SeVar "bytes") "Length") (SeInt 8)) (SeInt 16))]
+    ]
+
+  s04-binary-entry : List ShellCmd =
+    [ ScRaw "$off = 8 + $i * 16"
+    , ScCallMethod (SeVar "entries") "Add" [binary-entry]
+    ]
+
+  binary-entry : ShellExpr = SeArrayLiteral [SeBare (SeStaticCall "BitConverter" "ToInt64" [SeVar "bytes", SeVar "off"]), SeBare (SeStaticCall "BitConverter" "ToInt64" [SeVar "bytes", SeBare (SeAdd (SeVar "off") (SeInt 8))])]
 
   s04 : PipeStage = PipeStage { ps-name = "parse trace entries", ps-why = "read the trace in whichever of its two formats the first line says it is", ps-in = ["TraceFile"], ps-out = [entries-art], ps-needs = [], ps-verdict = [PoExit 1 "the binary trace carries fewer than the eight bytes its own count header needs; spelled inside a raw payload, so no walk of this stage's body finds it"], ps-body = s04-body }
 
 Section: S05 -- Accumulate per-phase per-function stats
 
   s05-body : List ShellCmd =
-    let phase-check = [ScIf (SeAnd (SeRaw "$size -eq 0") (SeRaw "$phaseNames.ContainsKey([int]$rip)")) [ScAssign "phase" (SeRaw "$phaseNames[[int]$rip]"), ScContinue] []]
-    in let accum = [ScRaw "$func = Resolve-Addr $rip", ScRaw "$key = \"$phase|$func\"", ScIf (SeNot (SeRaw "$summary.ContainsKey($key)")) [ScRaw "$summary[$key] = [PSCustomObject]@{ Phase=$phase; Func=$func; Count=0; Bytes=[long]0 }"] [], ScRaw "$summary[$key].Count++", ScRaw "$summary[$key].Bytes += $size", ScIf (SeNot (SeRaw "$phaseTotal.ContainsKey($phase)")) [ScRaw "$phaseTotal[$phase] = [PSCustomObject]@{ Count=0; Bytes=[long]0 }"] [], ScRaw "$phaseTotal[$phase].Count++", ScRaw "$phaseTotal[$phase].Bytes += $size", ScRaw "$totalAllocs++", ScRaw "$totalBytes += $size"]
-    in let loop-body = [ScAssign "size" (SeIndex (SeVar "e") (SeInt 0)), ScAssign "rip" (SeIndex (SeVar "e") (SeInt 1)), ScSequence phase-check, ScSequence accum]
-    in [ScBlank, ScRaw "$phaseNames = @{ 1='lex'; 2='parse'; 3='desugar'; 4='scope'; 5='check'; 6='lower'; 7='emit' }", pipe-produce phase-art, pipe-produce summary-art, pipe-produce phase-total-art, pipe-produce total-allocs-art, ScRaw "$totalBytes = [long]0", ScForEach "e" (pipe-ref rt-arts resolve-trace-params "entries") loop-body]
+    [ ScBlank
+    , ScRaw "$phaseNames = @{ 1='lex'; 2='parse'; 3='desugar'; 4='scope'; 5='check'; 6='lower'; 7='emit' }"
+    , pipe-produce phase-art
+    , pipe-produce summary-art
+    , pipe-produce phase-total-art
+    , pipe-produce total-allocs-art
+    , ScAssign "totalBytes" (SeCast "long" (SeInt 0))
+    , ScForEach "e" (pipe-ref rt-arts resolve-trace-params "entries") s05-one-entry
+    ]
+
+  s05-one-entry : List ShellCmd =
+    [ ScAssign "size" (SeIndex (SeVar "e") (SeInt 0))
+    , ScAssign "rip" (SeIndex (SeVar "e") (SeInt 1))
+    , ScSequence s05-phase-marker
+    , ScSequence s05-charge
+    ]
+
+  s05-phase-marker : List ShellCmd =
+    [ ScIf (SeAnd (SeBare (SeIntEq (SeVar "size") (SeInt 0))) (SeMethodCall (SeVar "phaseNames") "ContainsKey" [SeCast "int" (SeVar "rip")])) [ScAssign "phase" (SeIndex (SeVar "phaseNames") (SeCast "int" (SeVar "rip"))), ScContinue] []
+    ]
+
+  s05-charge : List ShellCmd =
+    [ ScAssign "func" (SeBare (SeCall "Resolve-Addr" [SeVar "rip"]))
+    , ScAssign "key" (SeText "$phase|$func")
+    , ScIf (SeNot (SeMethodCall (SeVar "summary") "ContainsKey" [SeVar "key"])) [ScRaw "$summary[$key] = [PSCustomObject]@{ Phase=$phase; Func=$func; Count=0; Bytes=[long]0 }"] []
+    , ScRaw "$summary[$key].Count++"
+    , ScRaw "$summary[$key].Bytes += $size"
+    , ScIf (SeNot (SeMethodCall (SeVar "phaseTotal") "ContainsKey" [SeVar "phase"])) [ScRaw "$phaseTotal[$phase] = [PSCustomObject]@{ Count=0; Bytes=[long]0 }"] []
+    , ScRaw "$phaseTotal[$phase].Count++"
+    , ScRaw "$phaseTotal[$phase].Bytes += $size"
+    , ScIncrement "totalAllocs"
+    , ScIncrementBy "totalBytes" (SeVar "size")
+    ]
 
   s05 : PipeStage = PipeStage { ps-name = "accumulate stats", ps-why = "a zero-size entry names the phase; every other entry is one allocation charged to a phase and a function", ps-in = ["entries", "map"], ps-out = [phase-art, summary-art, phase-total-art, total-allocs-art, total-bytes-art], ps-needs = [], ps-verdict = [], ps-body = s05-body }
 
 Section: S06 -- Output report
 
   s06-body : List ShellCmd =
-    let header = [ScEcho (SeLit ""), ScRaw "Write-Host (\"{0,-12} {1,-40} {2,8} {3,12}\" -f 'Phase', 'Function', 'Count', 'Total Bytes')", ScRaw "Write-Host (\"{0,-12} {1,-40} {2,8} {3,12}\" -f '-----', '--------', '-----', '-----------')"]
-    in let detail = [ScRaw "$sorted = $summary.Values | Sort-Object { $_.Phase }, { -$_.Bytes }", ScForEach "entry" (SeVar "sorted") [ScRaw "Write-Host (\"{0,-12} {1,-40} {2,8} {3,12}\" -f $entry.Phase, $entry.Func, $entry.Count, $entry.Bytes.ToString('N0'))"]]
-    in let phase-totals = [ScEcho (SeLit ""), ScRaw "Write-Host '--- Phase Totals ---'", ScForEach "p" (SeRaw "($phaseTotal.Keys | Sort-Object)") [ScRaw "$pt = $phaseTotal[$p]", ScRaw "Write-Host (\"{0,-12} {1,8} allocs  {2,12} bytes ({3:F1} MB)\" -f $p, $pt.Count, $pt.Bytes.ToString('N0'), ($pt.Bytes / 1048576.0))"]]
-    in let totals = [ScEcho (SeLit ""), ScRaw "Write-Host (\"TOTAL: {0:N0} allocations, {1:N0} bytes ({2:F1} MB)\" -f $totalAllocs, $totalBytes, ($totalBytes / 1048576.0))"]
-    in [ScBlank, ScSequence header, ScSequence detail, ScSequence phase-totals, ScSequence totals]
+    [ ScBlank
+    , ScSequence s06-header
+    , ScSequence s06-detail
+    , ScSequence s06-phase-totals
+    , ScSequence s06-totals
+    ]
+
+  row-format : ShellExpr = SeText "{0,-12} {1,-40} {2,8} {3,12}"
+
+  s06-header : List ShellCmd =
+    [ ScEcho (SeLit "")
+    , ScEcho (SeFormat row-format [SeLit "Phase", SeLit "Function", SeLit "Count", SeLit "Total Bytes"])
+    , ScEcho (SeFormat row-format [SeLit "-----", SeLit "--------", SeLit "-----", SeLit "-----------"])
+    ]
+
+  s06-detail : List ShellCmd =
+    [ ScRaw "$sorted = $summary.Values | Sort-Object { $_.Phase }, { -$_.Bytes }"
+    , ScForEach "entry" (SeVar "sorted") [ScEcho (SeFormat row-format [SeProperty (SeVar "entry") "Phase", SeProperty (SeVar "entry") "Func", SeProperty (SeVar "entry") "Count", SeMethodCall (SeProperty (SeVar "entry") "Bytes") "ToString" [SeLit "N0"]])]
+    ]
+
+  s06-phase-totals : List ShellCmd =
+    [ ScEcho (SeLit "")
+    , ScEcho (SeLit "--- Phase Totals ---")
+    , ScForEach "p" (SePipe (SeProperty (SeVar "phaseTotal") "Keys") [StSort]) s06-one-phase
+    ]
+
+  s06-one-phase : List ShellCmd =
+    [ ScAssign "pt" (SeIndex (SeVar "phaseTotal") (SeVar "p"))
+    , ScRaw "Write-Host (\"{0,-12} {1,8} allocs  {2,12} bytes ({3:F1} MB)\" -f $p, $pt.Count, $pt.Bytes.ToString('N0'), ($pt.Bytes / 1048576.0))"
+    ]
+
+  s06-totals : List ShellCmd =
+    [ ScEcho (SeLit "")
+    , ScRaw "Write-Host (\"TOTAL: {0:N0} allocations, {1:N0} bytes ({2:F1} MB)\" -f $totalAllocs, $totalBytes, ($totalBytes / 1048576.0))"
+    ]
 
   s06 : PipeStage = PipeStage { ps-name = "output report", ps-why = "one line per phase and function, then the per-phase and overall totals", ps-in = ["summary", "phaseTotal", "totalAllocs", "totalBytes"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s06-body }
 

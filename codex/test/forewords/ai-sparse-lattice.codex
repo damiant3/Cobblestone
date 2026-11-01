@@ -1,7 +1,78 @@
 Chapter: FwdSparseLatticeTest
   cites AI chapter SparseLattice
 
+Section: Fixtures
+
+  slt-occ : Integer, Integer -> SparseOccupant
+  slt-occ (id) (v) = SparseOccupant { so-id = id, so-vector = sv-new [v], so-payload = v }
+
+  slt-lat : SparseLattice
+  slt-lat = sl-insert (sl-insert (sl-insert (sl-insert (sl-new 1 2) (slt-occ 1 100)) (slt-occ 2 300)) (slt-occ 3 200)) (slt-occ 4 150)
+
+  slt-left : SparseNode -> Text
+  slt-left (root) =
+    when root
+      is SparseBranch (dim) (median) (children) -> (when list-at children 0
+        is SparseLeaf (occs) -> "left leaf holds " & show (list-length occs)
+        is SparseBranch (d) (m) (cs) -> "left is a branch")
+      is SparseLeaf (occs) -> "root is a leaf"
+
+  slt-ids : List SparseOccupant, Integer, Integer -> Integer
+  slt-ids (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else slt-ids xs (i + 1) (acc + (list-at xs i).so-id)
+
+  slt-pt : Integer -> SparseOccupant
+  slt-pt (i) = SparseOccupant { so-id = i, so-vector = sv-new [i * 7919 - i * 7919 / 2000 * 2000, i * 104729 - i * 104729 / 2000 * 2000], so-payload = i }
+
+  slt-q : Integer -> SparseVector
+  slt-q (j) = sv-new [j * 331 - j * 331 / 2000 * 2000, j * 577 - j * 577 / 2000 * 2000]
+
+  slt-fill : SparseLattice, Integer, Integer -> SparseLattice
+  slt-fill (lat) (i) (n) = if i >= n then lat else slt-fill (sl-insert lat (slt-pt i)) (i + 1) n
+
+  slt-scan-min : SparseVector, Integer, Integer, Integer -> Integer
+  slt-scan-min (q) (i) (n) (best) =
+    if i >= n then best
+    else let d = sv-distance-sq ((slt-pt i).so-vector) q
+    in slt-scan-min q (i + 1) n (if d < best then d else best)
+
+  slt-scan-count : SparseVector, Integer, Integer, Integer, Integer -> Integer
+  slt-scan-count (q) (r) (i) (n) (acc) =
+    if i >= n then acc
+    else slt-scan-count q r (i + 1) n (acc + (if sv-distance-sq ((slt-pt i).so-vector) q <= r then 1 else 0))
+
+  slt-agree : SparseLattice, Integer, Integer, Integer -> Integer
+  slt-agree (lat) (j) (m) (acc) =
+    if j >= m then acc
+    else let q = slt-q j
+    in let near-ok = when sl-nearest lat q
+      is Just (o) -> sv-distance-sq (o.so-vector) q == slt-scan-min q 0 40 999999999
+      is None -> False
+    in let count-ok = list-length (sl-query-radius lat q 100) == slt-scan-count q 100 0 40 0
+    in slt-agree lat (j + 1) m (acc + (if near-ok & count-ok then 1 else 0))
+
+  slt-depth : SparseNode -> Integer
+  slt-depth (node) = when node
+    is SparseLeaf (occs) -> 0
+    is SparseBranch (dim) (median) (children) -> 1 + slt-depth (list-at children 0)
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "AI/SparseLattice OK"
-  end
+
+  opening : [Console] Nothing =
+    let lat = slt-lat
+    in let near = sl-nearest lat (sv-new [160])
+    in let found = sl-query-radius lat (sv-new [200]) 3
+    in act
+      print-line-uni ("count " & show (sl-count lat) & ", distance-sq 100 to 150: " & show (sv-distance-sq (sv-new [100]) (sv-new [150])))
+      print-line-uni ("nearest to 160: " & (when near
+        is Just (o) -> "id " & show (o.so-id)
+        is None -> "none"))
+      print-line-uni ("within 3 of 200: " & show (list-length found) & " found, id sum " & show (slt-ids found 0 0))
+      print-line-uni ("after 100 300 200 150 with leaves of 2, the first split at 200: " & slt-left (lat.sl-root) & " of the 2 points below 200")
+      let wide = slt-fill (sl-new 2 4) 0 40
+      in print-line-uni ("40 points in 2-D, leaves of 4: nearest and radius 100 agree with a full scan for " & show (slt-agree wide 0 20 0) & " of 20 queries, left depth " & show (slt-depth (wide.sl-root)))
+      print-line-uni ("empty nearest: " & (when sl-nearest (sl-new 1 2) (sv-new [5])
+        is Just (o) -> "id " & show (o.so-id)
+        is None -> "none"))
+    end

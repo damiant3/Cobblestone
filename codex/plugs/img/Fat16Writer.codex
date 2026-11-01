@@ -126,10 +126,6 @@ Section: Directory Entries
     in let w5 = gpt-buf-write-i32 buf (off + 28) size
     in off + 32
 
- A source name arrives as eleven bytes off the wire rather than as a literal,
- so it is written as bytes. Going through Text would put a CCE conversion on a
- name the host already padded to the 8.3 field width.
-
   fat16w-write-dir-entry-nb : Integer, Integer, List Integer, Integer, Integer, Integer -> Integer
   fat16w-write-dir-entry-nb (buf) (off) (name-bytes) (attr) (cluster) (size) =
     let w0 = __buf-write-bytes buf off name-bytes
@@ -149,11 +145,6 @@ Section: Filesystem Assembly
   fat16w-clusters-needed : Integer, Integer -> Integer
   fat16w-clusters-needed (byte-count) (spc) =
     (byte-count + spc * gpt-sector-size - 1) / (spc * gpt-sector-size)
-
- The sources are read from the payload buffer one at a time rather than handed
- over as a list of lists. Building that list would mean a push loop, and a
- shared backing array behind two names is the trap that has cost this tree most
- (L-ALIAS); reading each source at its own offset has no accumulator to alias.
 
   fat16w-write-sources : Integer, Fat16Layout, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   fat16w-write-sources (buf) (lay) (fat1) (cluster) (dir-off) (src-buf) (tbl-off) (data-off) (n) (i) =
@@ -202,11 +193,6 @@ Section: Filesystem Assembly
     if i >= n then 0
     else
       fat16w-dir-entry-clusters (fat16w-dir-file-count src-buf dtbl-off i) spc + fat16w-sum-dir-clusters src-buf dtbl-off spc n (i + 1)
-
- A directory's files are a contiguous run of the source table, so every offset
- this loop needs is a prefix sum over the two tables rather than a value carried
- out of the previous iteration. Carrying would want two returns from one
- recursion, and an accumulator list is the alias trap (L-ALIAS).
 
  Clusters 2, 3 and 4 are the EFI, SEED and BOOT directories; the root holds
  those three entries' worth of slots (EFI, SEED, the volume label) before the

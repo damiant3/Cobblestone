@@ -1,0 +1,46 @@
+Chapter: MqttMessageHeap
+  cites Encode chapter MqttEndpoint
+  cites Encode chapter Mqtt
+  cites Foreword chapter Console
+
+Section: Probe
+
+ R-COST: the heap of one 1000-byte PUBLISH received and one published by a connected endpoint, and of 20 such
+ packets coalesced in one receive buffer, which a parse that copied the rest of the buffer before each packet paid
+ for quadratically. Every packet must still be taken whole.
+
+  fill : Integer, List Integer -> List Integer
+  fill (n) (acc) = if list-length acc >= n then acc else fill n (list-push acc 65)
+
+  payload : List Integer = fill 1000 []
+
+  repeat : List Integer, Integer, List Integer -> List Integer
+  repeat (one) (k) (acc) = if k <= 0 then acc else repeat one (k - 1) (acc & one)
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+  under : Integer, Integer, Integer -> Text
+  under (cap) (a) (b) = if b - a < cap then "yes" else "no, " & show (b - a)
+
+  opening : [Console] Nothing =
+    let ep = (mqtt-ep-recv ((mqtt-ep-connect mqtt-ep-new default-mqtt-connect).ms-ep) [32, 3, 0, 0, 0] 0).ms-ep
+    in let pub = mqtt-build-publish "sensor/temp" payload QosAtMostOnce False 0
+    in let twenty = repeat pub 20 []
+    in let body = payload
+    in let m0 = __heap-save
+    in let r1 = mqtt-ep-recv ep pub 0
+    in let m1 = __heap-save
+    in let p1 = mqtt-ep-publish (r1.ms-ep) "sensor/temp" body QosAtMostOnce 0
+    in let m2 = __heap-save
+    in let r20 = mqtt-ep-recv (p1.ms-ep) twenty 0
+    in let m3 = __heap-save
+    in act
+      print-line-uni ("receive one 1000-byte publish, payload " & show (list-length (mqtt-ep-in-payload (r1.ms-ep))) & "; under 10000 bytes: " & under 10000 m0 m1)
+      print-line-uni ("publish 1000 bytes, packet " & show (list-length (list-at (p1.ms-out) 0)) & " same-bytes=" & show (same (list-at (p1.ms-out) 0) pub 0) & "; under 10000 bytes: " & under 10000 m1 m2)
+      print-line-uni ("receive 20 coalesced, count " & show (mqtt-ep-in-count (r20.ms-ep)) & " consumed " & show (r20.ms-consumed) & " of " & show (list-length twenty) & "; under 200000 bytes: " & under 200000 m2 m3)
+    end

@@ -1,0 +1,305 @@
+Chapter: AccpExact
+  cites Foreword chapter BigInt
+  cites Foreword chapter Maybe
+
+Section: Results
+
+  ExactResult =
+    | ExactValue (BigInt)
+    | ExactError (Text)
+
+  ExactDecimal = record { units : BigInt, scale : Integer }
+
+  DecimalResult =
+    | DecimalValue (ExactDecimal)
+    | DecimalError (Text)
+
+ Bounds, each for an attacker as much as a caller: a parsed integer holds at
+ most 4096 digits, a power or factorial may produce at most 20000 digits, and
+ a decimal scale is 0..1000. Long division is O(n m) limb steps with a binary
+ search of 14 trials per quotient limb, base 10000.
+
+  exact-digit-cap : Integer
+  exact-digit-cap = 4096
+
+  exact-result-cap : Integer
+  exact-result-cap = 20000
+
+  exact-scale-cap : Integer
+  exact-scale-cap = 1000
+
+Section: Parsing
+
+  ex-digit : Text, Integer -> Integer
+  ex-digit (s) (i) =
+    let d = char-code-at s i - char-code-at "0" 0
+    in if d >= 0 & d <= 9 then d else 0 - 1
+
+  ex-all-digits : Text, Integer, Integer -> Boolean
+  ex-all-digits (s) (i) (stop) =
+    if i >= stop then True
+    else if ex-digit s i < 0 then False
+    else ex-all-digits s (i + 1) stop
+
+  ex-limb : Text, Integer, Integer, Integer -> Integer
+  ex-limb (s) (i) (stop) (acc) =
+    if i >= stop then acc else ex-limb s (i + 1) stop (acc * 10 + ex-digit s i)
+
+  ex-limbs : Text, Integer, Integer, List Integer -> List Integer
+  ex-limbs (s) (start) (stop) (acc) =
+    if stop <= start then acc
+    else let lo = if stop - 4 > start then stop - 4 else start
+    in ex-limbs s start lo (list-push acc (ex-limb s lo stop 0))
+
+  ex-signed : Integer, List Integer -> BigInt
+  ex-signed (sign) (limbs) =
+    let ls = bigint-strip-zeros limbs
+    in if list-length ls == 1 & list-at ls 0 == 0 then bigint-zero
+    else BigInt { bi-sign = sign, bi-limbs = ls }
+
+  exact : Text -> ExactResult
+  exact (s) =
+    let neg = text-length s > 0 & char-code-at s 0 == char-code-at "-" 0
+    in let start = if neg then 1 else 0
+    in let n = text-length s - start
+    in if n == 0 then ExactError "an exact integer needs at least one digit"
+    else if n > exact-digit-cap then ExactError "an exact integer holds at most 4096 digits"
+    else if ex-all-digits s start (text-length s) == False then ExactError ("not an exact integer: " & s)
+    else ExactValue (ex-signed (if neg then 0 - 1 else 1) (ex-limbs s start (text-length s) []))
+
+  exact-integer : Integer -> ExactResult
+  exact-integer (n) = ExactValue (bigint-from-integer n)
+
+Section: Arithmetic
+
+  ex-lift : ExactResult, ExactResult, Integer -> ExactResult
+  ex-lift (a) (b) (op) = when a
+    is ExactError (e) -> a
+    is ExactValue (x) -> when b
+      is ExactError (e) -> b
+      is ExactValue (y) ->
+        if op == 0 then ExactValue (bigint-add x y)
+        else if op == 1 then ExactValue (bigint-sub x y)
+        else if op == 2 then ExactValue (bigint-mul x y)
+        else ex-divide x y (op == 3)
+
+  exact-add : ExactResult, ExactResult -> ExactResult
+  exact-add (a) (b) = ex-lift a b 0
+
+  exact-sub : ExactResult, ExactResult -> ExactResult
+  exact-sub (a) (b) = ex-lift a b 1
+
+  exact-mul : ExactResult, ExactResult -> ExactResult
+  exact-mul (a) (b) = ex-lift a b 2
+
+  exact-div : ExactResult, ExactResult -> ExactResult
+  exact-div (a) (b) = ex-lift a b 3
+
+  exact-rem : ExactResult, ExactResult -> ExactResult
+  exact-rem (a) (b) = ex-lift a b 4
+
+Section: Division
+
+  ExDivision = record { quotient : BigInt, remainder : BigInt }
+
+  ex-small : Integer -> BigInt
+  ex-small (n) = bigint-from-integer n
+
+  ex-shift-in : BigInt, Integer -> BigInt
+  ex-shift-in (rem) (limb) =
+    if rem.bi-sign == 0 then ex-small limb
+    else BigInt { bi-sign = 1, bi-limbs = bigint-strip-zeros ([limb] & rem.bi-limbs) }
+
+  ex-best : BigInt, BigInt, Integer, Integer -> Integer
+  ex-best (rem) (divisor) (lo) (hi) =
+    if lo >= hi then lo
+    else let mid = (lo + hi + 1) / 2
+    in if bigint-gt (bigint-mul divisor (ex-small mid)) rem then ex-best rem divisor lo (mid - 1)
+    else ex-best rem divisor mid hi
+
+  ex-long : List Integer, Integer, BigInt, BigInt, List Integer -> ExDivision
+  ex-long (limbs) (i) (divisor) (rem) (quot) =
+    if i < 0 then ExDivision { quotient = ex-signed 1 quot, remainder = rem }
+    else let r = ex-shift-in rem (list-at limbs i)
+    in let q = ex-best r divisor 0 (bigint-base - 1)
+    in let left = bigint-sub r (bigint-mul divisor (ex-small q))
+    in ex-long limbs (i - 1) divisor left ([q] & quot)
+
+  ex-unsigned : BigInt, BigInt -> ExDivision
+  ex-unsigned (a) (b) = ex-long (a.bi-limbs) (list-length (a.bi-limbs) - 1) b bigint-zero []
+
+  ex-divide : BigInt, BigInt, Boolean -> ExactResult
+  ex-divide (a) (b) (want-quotient) =
+    if b.bi-sign == 0 then ExactError "division by zero"
+    else if a.bi-sign == 0 then ExactValue bigint-zero
+    else let d = ex-unsigned (bigint-abs a) (bigint-abs b)
+    in if want-quotient then
+      ExactValue (if d.quotient.bi-sign == 0 then bigint-zero
+        else BigInt { bi-sign = a.bi-sign * b.bi-sign, bi-limbs = d.quotient.bi-limbs })
+    else ExactValue (if d.remainder.bi-sign == 0 then bigint-zero
+      else BigInt { bi-sign = a.bi-sign, bi-limbs = d.remainder.bi-limbs })
+
+Section: Powers and Number Theory
+
+  ex-digits : BigInt -> Integer
+  ex-digits (a) = text-length (bigint-to-text (bigint-abs a))
+
+  ex-square-multiply : BigInt, Integer, BigInt -> BigInt
+  ex-square-multiply (base) (e) (acc) =
+    if e == 0 then acc
+    else let acc2 = if e - (e / 2) * 2 == 1 then bigint-mul acc base else acc
+    in if e / 2 == 0 then acc2 else ex-square-multiply (bigint-mul base base) (e / 2) acc2
+
+  exact-pow : ExactResult, Integer -> ExactResult
+  exact-pow (a) (e) = when a
+    is ExactError (x) -> a
+    is ExactValue (x) ->
+      if e < 0 then ExactError "exact-pow requires a nonnegative exponent"
+      else if bigint-compare (bigint-abs x) bigint-one > 0 & ex-digits x * e > exact-result-cap then
+        ExactError "exact-pow result would exceed 20000 digits"
+      else ExactValue (ex-square-multiply x e bigint-one)
+
+  exact-factorial : Integer -> ExactResult
+  exact-factorial (n) =
+    if n < 0 then ExactError "exact-factorial requires a nonnegative argument"
+    else if n > 5000 then ExactError "exact-factorial result would exceed 20000 digits"
+    else ExactValue (bigint-factorial n)
+
+  ex-gcd : BigInt, BigInt -> BigInt
+  ex-gcd (a) (b) =
+    if b.bi-sign == 0 then a
+    else ex-gcd b ((ex-unsigned a b).remainder)
+
+  exact-gcd : ExactResult, ExactResult -> ExactResult
+  exact-gcd (a) (b) = when a
+    is ExactError (e) -> a
+    is ExactValue (x) -> when b
+      is ExactError (e) -> b
+      is ExactValue (y) -> ExactValue (ex-gcd (bigint-abs x) (bigint-abs y))
+
+  exact-compare : ExactResult, ExactResult -> Maybe Integer
+  exact-compare (a) (b) = when a
+    is ExactError (e) -> None
+    is ExactValue (x) -> when b
+      is ExactError (e) -> None
+      is ExactValue (y) -> Just (bigint-compare x y)
+
+  exact-format : ExactResult -> Text
+  exact-format (r) = when r
+    is ExactValue (x) -> bigint-to-text x
+    is ExactError (e) -> "error: " & e
+
+Section: Decimals
+
+  ex-pow10 : Integer -> BigInt
+  ex-pow10 (k) = ex-square-multiply (ex-small 10) k bigint-one
+
+  ex-find : Text, Integer, Integer -> Integer
+  ex-find (s) (i) (code) =
+    if i >= text-length s then 0 - 1
+    else if char-code-at s i == code then i
+    else ex-find s (i + 1) code
+
+  exact-decimal : Text -> DecimalResult
+  exact-decimal (s) =
+    let dot = ex-find s 0 (char-code-at "." 0)
+    in if dot < 0 then
+      (when exact s
+        is ExactValue (x) -> DecimalValue (ExactDecimal { units = x, scale = 0 })
+        is ExactError (e) -> DecimalError e)
+    else let scale = text-length s - dot - 1
+    in if scale == 0 then DecimalError ("a decimal point needs digits after it: " & s)
+    else if scale > exact-scale-cap then DecimalError "a decimal scale is at most 1000 digits"
+    else when exact (substring s 0 dot & substring s (dot + 1) scale)
+      is ExactValue (x) -> DecimalValue (ExactDecimal { units = x, scale = scale })
+      is ExactError (e) -> DecimalError ("not an exact decimal: " & s)
+
+  ex-at-scale : ExactDecimal, Integer -> BigInt
+  ex-at-scale (d) (scale) = bigint-mul (d.units) (ex-pow10 (scale - d.scale))
+
+  ex-dec-lift : DecimalResult, DecimalResult, Integer -> DecimalResult
+  ex-dec-lift (a) (b) (op) = when a
+    is DecimalError (e) -> a
+    is DecimalValue (x) -> when b
+      is DecimalError (e) -> b
+      is DecimalValue (y) ->
+        let s = if x.scale > y.scale then x.scale else y.scale
+        in if op == 0 then DecimalValue (ExactDecimal { units = bigint-add (ex-at-scale x s) (ex-at-scale y s), scale = s })
+        else if op == 1 then DecimalValue (ExactDecimal { units = bigint-sub (ex-at-scale x s) (ex-at-scale y s), scale = s })
+        else if x.scale + y.scale > exact-scale-cap then DecimalError "a decimal scale is at most 1000 digits"
+        else DecimalValue (ExactDecimal { units = bigint-mul (x.units) (y.units), scale = x.scale + y.scale })
+
+  exact-dec-add : DecimalResult, DecimalResult -> DecimalResult
+  exact-dec-add (a) (b) = ex-dec-lift a b 0
+
+  exact-dec-sub : DecimalResult, DecimalResult -> DecimalResult
+  exact-dec-sub (a) (b) = ex-dec-lift a b 1
+
+  exact-dec-mul : DecimalResult, DecimalResult -> DecimalResult
+  exact-dec-mul (a) (b) = ex-dec-lift a b 2
+
+ Rounding is half to even: a remainder of exactly half a unit rounds to the
+ even neighbour, so a column of rounded amounts carries no upward bias.
+
+  ex-round : BigInt, Integer -> BigInt
+  ex-round (units) (drop) =
+    if drop <= 0 then bigint-mul units (ex-pow10 (0 - drop))
+    else let p = ex-pow10 drop
+    in let d = ex-unsigned (bigint-abs units) p
+    in let twice = bigint-compare (bigint-mul (d.remainder) (ex-small 2)) p
+    in let odd = list-at (d.quotient.bi-limbs) 0 - (list-at (d.quotient.bi-limbs) 0 / 2) * 2 == 1
+    in let q = if twice > 0 | (twice == 0 & odd) then bigint-add (d.quotient) bigint-one else d.quotient
+    in if units.bi-sign < 0 then bigint-negate q else q
+
+  exact-dec-round : DecimalResult, Integer -> DecimalResult
+  exact-dec-round (a) (scale) = when a
+    is DecimalError (e) -> a
+    is DecimalValue (x) ->
+      if scale < 0 | scale > exact-scale-cap then DecimalError "a decimal scale is 0 to 1000"
+      else DecimalValue (ExactDecimal { units = ex-round (x.units) (x.scale - scale), scale = scale })
+
+  exact-dec-div : DecimalResult, DecimalResult, Integer -> DecimalResult
+  exact-dec-div (a) (b) (scale) = when a
+    is DecimalError (e) -> a
+    is DecimalValue (x) -> when b
+      is DecimalError (e) -> b
+      is DecimalValue (y) ->
+        if scale < 0 | scale > exact-scale-cap then DecimalError "a decimal scale is 0 to 1000"
+        else if y.units.bi-sign == 0 then DecimalError "division by zero"
+        else let num = bigint-mul (x.units) (ex-pow10 (scale + 1 + y.scale))
+        in let den = bigint-mul (y.units) (ex-pow10 (x.scale))
+        in let d = ex-unsigned (bigint-abs num) (bigint-abs den)
+        in let sign = num.bi-sign * den.bi-sign
+        in let one-more = if d.quotient.bi-sign == 0 then bigint-zero else BigInt { bi-sign = sign, bi-limbs = d.quotient.bi-limbs }
+        in let exact-tail = d.remainder.bi-sign == 0
+        in let rounded = ex-round-guard one-more exact-tail
+        in DecimalValue (ExactDecimal { units = rounded, scale = scale })
+
+  ex-round-guard : BigInt, Boolean -> BigInt
+  ex-round-guard (q) (exact-tail) =
+    let a = bigint-abs q
+    in let d = ex-unsigned a (ex-small 10)
+    in let digit = if d.remainder.bi-sign == 0 then 0 else list-at (d.remainder.bi-limbs) 0
+    in let base = d.quotient
+    in let odd = list-at (base.bi-limbs) 0 - (list-at (base.bi-limbs) 0 / 2) * 2 == 1
+    in let up = digit > 5 | (digit == 5 & (exact-tail == False | odd))
+    in let r = if up then bigint-add base bigint-one else base
+    in if q.bi-sign < 0 & r.bi-sign /= 0 then bigint-negate r else r
+
+  ex-dec-text : ExactDecimal -> Text
+  ex-dec-text (d) =
+    let digits = bigint-to-text (bigint-abs (d.units))
+    in let padded = ex-zeros (d.scale + 1 - text-length digits) & digits
+    in let whole = substring padded 0 (text-length padded - d.scale)
+    in let frac = substring padded (text-length padded - d.scale) (d.scale)
+    in (if d.units.bi-sign < 0 then "-" else "") & whole & (if d.scale > 0 then "." & frac else "")
+
+  ex-zeros : Integer -> Text
+  ex-zeros (n) = if n <= 0 then "" else "0" & ex-zeros (n - 1)
+
+  exact-dec-format : DecimalResult -> Text
+  exact-dec-format (r) = when r
+    is DecimalValue (d) -> ex-dec-text d
+    is DecimalError (e) -> "error: " & e
+
+Page 1

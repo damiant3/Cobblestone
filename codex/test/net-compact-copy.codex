@@ -20,13 +20,13 @@ Section: Fixture
   sess0 : NetSession = NetSession {
     local-mac = [2, 4, 6, 8, 10, 12], local-ip = [10, 0, 2, 16], gateway-ip = [10, 0, 2, 3],
     conn = conn0,
-    arp = ArpCache { entries = [ArpEntry { ip = [10, 0, 2, 3], mac = [1, 3, 5, 7, 9, 11] }, ArpEntry { ip = [10, 0, 2, 4], mac = [2, 3, 5, 7, 9, 11] }], count = 2 },
+    arp = ArpCache { entries = [ArpEntry { ip = [10, 0, 2, 3], mac = [1, 3, 5, 7, 9, 11] }, ArpEntry { ip = [10, 0, 2, 4], mac = [2, 3, 5, 7, 9, 11] }], count = 2, pending = [[10, 0, 2, 9]] },
     outbox = [[31, 32, 33], [41, 42]],
     rexmit-queue = [RexmitSeg { rx-frame = [51, 52, 53, 54], rx-ack = 6001, rx-sent = 17, rx-resent = True }],
     rexmit-rto = 23, rexmit-tries = 3, close-timer = 29, now-ticks = 31, srtt = 37, rttvar = 41, isn-chosen = True
   }
 
-  ts0 : TcpTransportState = TcpTransportState { session = sess0, recv-base = 43, recv-len = 47, recv-cap = 53, messages-sent = 59, messages-received = 61, arena-base = 67, deferred-base = 73, gen = 71 }
+  ts0 : TcpTransportState = TcpTransportState { session = sess0, recv-base = 43, recv-len = 47, recv-cap = 53, recv-limit = 79, recv-floor = 83, messages-sent = 59, messages-received = 61, arena-base = 67, deferred-base = 73, gen = 71 }
 
 Section: Judges
 
@@ -63,12 +63,12 @@ Section: Entry
     in let e1 = list-at (a.entries) 1
     in let r = list-at (s.rexmit-queue) 0
     in act
-      print-line-uni ("transport ints: " & yn (t.recv-base == 43 & t.recv-len == 47 & t.recv-cap == 53 & t.messages-sent == 59 & t.messages-received == 61 & t.arena-base == 67 & t.deferred-base == 73 & t.gen == 71))
+      print-line-uni ("transport ints: " & yn (t.recv-base == 43 & t.recv-len == 47 & t.recv-cap == 53 & t.recv-limit == 79 & t.recv-floor == 83 & t.messages-sent == 59 & t.messages-received == 61 & t.arena-base == 67 & t.deferred-base == 73 & t.gen == 71))
       print-line-uni ("session lists: " & yn (same-ints (s.local-mac) [2, 4, 6, 8, 10, 12] & same-ints (s.local-ip) [10, 0, 2, 16] & same-ints (s.gateway-ip) [10, 0, 2, 3]))
       print-line-uni ("session ints: " & yn (s.rexmit-rto == 23 & s.rexmit-tries == 3 & s.close-timer == 29 & s.now-ticks == 31 & s.srtt == 37 & s.rttvar == 41))
       print-line-uni ("conn state: " & tcp-state-name (c.state))
       print-line-uni ("conn fields: " & yn (c.local-port == 8080 & c.remote-port == 50001 & same-ints (c.local-ip) [10, 0, 2, 15] & same-ints (c.remote-ip) [10, 0, 2, 101] & c.send-next == 70001 & c.recv-next == 90001 & c.send-window == 4321))
-      print-line-uni ("arp: " & yn (a.count == 2 & list-length (a.entries) == 2 & same-ints (e1.ip) [10, 0, 2, 4] & same-ints (e1.mac) [2, 3, 5, 7, 9, 11]))
+      print-line-uni ("arp: " & yn (a.count == 2 & list-length (a.entries) == 2 & same-ints (e1.ip) [10, 0, 2, 4] & same-ints (e1.mac) [2, 3, 5, 7, 9, 11] & list-length (a.pending) == 1 & same-ints (list-at (a.pending) 0) [10, 0, 2, 9] & fresh (list-at (a.pending) 0) (list-at ((os.arp).pending) 0)))
       print-line-uni ("outbox: " & yn (list-length (s.outbox) == 2 & same-ints (list-at (s.outbox) 0) [31, 32, 33] & same-ints (list-at (s.outbox) 1) [41, 42]))
       print-line-uni ("rexmit: " & yn (list-length (s.rexmit-queue) == 1 & same-ints (r.rx-frame) [51, 52, 53, 54] & r.rx-ack == 6001 & r.rx-sent == 17 & r.rx-resent))
       print-line-uni ("shares no list with the original: " & yn (fresh (s.local-mac) (os.local-mac) & fresh (c.remote-ip) ((os.conn).remote-ip) & fresh (e1.mac) ((list-at ((os.arp).entries) 1).mac) & fresh (r.rx-frame) ((list-at (os.rexmit-queue) 0).rx-frame) & fresh (list-at (s.outbox) 1) (list-at (os.outbox) 1)))

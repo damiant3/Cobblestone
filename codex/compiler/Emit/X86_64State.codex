@@ -134,7 +134,8 @@ Section: Record Types
 
   EffectOpAddr = record {
    name : Text,
-   addr : Integer between 0 and 4294967295
+   addr : Integer between 0 and 4294967295,
+   nullary : Boolean
   }
 
   EmitResult = record {
@@ -223,20 +224,13 @@ Section: Constants
   bare-metal-nx-boundary : Integer = 3
 
  EFER bits, MSR 0xC0000080: SCE (bit 0) enables SYSCALL, NXE (bit 11) makes
- bit 63 of a page-table entry mean no-execute instead of RESERVED. Both are
- written together because the boot processor needs both and used to set only
- SCE, inheriting NXE from whatever the firmware left behind.
+ bit 63 of a page-table entry mean no-execute instead of RESERVED.
 
   efer-sce-nxe : Integer = 2049
 
  The gigabyte above RAM is where the machine keeps its devices: the
  LAPIC at 0xFEE00000, the IOAPIC at 0xFEC00000, the HPET at 0xFED00000,
- and every PCI BAR codex-vm advertises. The runtime page tables used to
- stop at bare-metal-ram-size, so none of it was reachable and a load
- there raised a page fault the demand handler would not serve -- which
- is why the xHCI driver could never touch its BAR, why the board drivers
- whose register windows sit above 3 GB were skipped, and why the machine
- talks to its devices almost entirely through port I/O.
+ and every PCI BAR codex-vm advertises.
 
   bare-metal-device-pd-index : Integer = bare-metal-pd-count
 
@@ -525,29 +519,7 @@ Section: State Helpers
     let fuel-msg = "compiler resource exhausted in x86-64-emitter.emit-expr (budget " & integer-to-text max-emit-work & ")"
     in st-add-error st cdx-resource-exhausted fuel-msg synthetic-span
 
- __buf-write-bytes takes a buffer and an offset and no capacity, so it
- cannot bounds-check, and a function that outgrew the code buffer wrote
- straight past it -- 155 KB past it, measured, on a 256 KB buffer asked
- for 418 KB of code. This stops the write and still advances code-len, so
- offsets stay what they would have been and finalize sees the real length.
-
- Whether this changes what the author is told depends entirely on how far
- the overrun reaches, and the first control run here was too gentle to
- show it. A 256 KB code buffer asked for 418 KB overruns by 155 KB, which
- lands INSIDE the adjacent 2 MB data buffer: guarded and unguarded both
- report CDX9001 and both emit no binary, because the finalize check is
- arithmetic on code-len and never reads the buffer. Read alone, that run
- says the guard is free hygiene.
-
- It is not. Shrink the data buffer to 4 KB so the same overrun runs past
- both buffers into live deck data, and the unguarded compiler dies in a
- general protection fault inside __list_snoc -- a register dump, no
- diagnostic, no source location. The guarded one still answers CDX9001.
- That is the whole point of the guard, and it only appears once the
- overrun is bigger than whatever happens to sit next door.
-
- So the fact is recorded instead of read back. A jump is five bytes and
- 0xE9 is unambiguously `jmp rel32` in 64-bit mode, so an append of
+ A jump is five bytes and 0xE9 is unambiguously `jmp rel32` in 64-bit mode, so an append of
  exactly that shape IS one; anything else leaves last-jmp-end where it
  was and the predicate answers no. A jump emitted inside a longer byte
  list is missed, which costs a dead five-byte jump and never a wrong
@@ -681,14 +653,6 @@ Section: State Helpers
     in __record-set st "fo-offsets" (list-set-at (st.fo-offsets) (n - 1) (st.code-len))
 
 Section: Register Allocation
- The active register pools are per-function. By default locals use the
- callee-saved set and temps the full caller-saved rotation. A pure-leaf
- function (see emit-function-minimal) may instead hold its locals in
- caller-saved argument registers -- no prologue save is owed, and a
- parameter binds to the register it already arrives in. When that mode
- is active, `func-local-regs` lists the chosen local registers and the
- temp rotation carves them out so a temp can never alias a live local.
-
   reg-list-without : List Integer, List Integer, Integer, List Integer -> List Integer
   reg-list-without (xs) (excl) (i) (acc) =
     if i == list-length xs then acc
@@ -723,13 +687,6 @@ Section: Register Allocation
     state = fc-evict-reg (__record-set st "next-temp" (temp-step (st.next-temp))) reg,
     reg = __narrow reg
   }
-
- When a value is still live in a temp register, every temp allocated
- before its last read must skip that register, or the rotation can
- hand the live register back and the new temp's first write destroys
- the operand. The collision is phase-dependent (it appears only when
- the surrounding expression has consumed the right number of temps),
- which is how bit-xor of three calls shipped computing x ^ x = 0.
 
   alloc-temp-avoiding : CodegenState, Integer -> EmitResult
   alloc-temp-avoiding (st) (avoid) =
@@ -924,22 +881,6 @@ Section: Byte Patching
     in if off == -1 then
       st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" & name & "'") synthetic-span
     else st
-
- A handler-table slot is only ever written by a handler clause. A read of a
- slot no clause writes lands on zeroed memory and yields zero -- and zero is
- a plausible Integer, an empty Text and an empty List all at once, so nothing
- downstream can tell it apart from an answer. An operation that takes
- arguments is emitted as a call and CDX2040 catches it at the fixup. A nullary
- one is emitted as a load, and no fixup ever sees it. These two lists close
- that gap: every table read is recorded, every clause that writes a slot is
- recorded, and the reads with no writer are reported once the whole chapter
- has been emitted -- deferred, because a handler may be emitted after a
- function that reads through it.
-
- Both pushes must be deck-record'd. emit-all-defs brackets every function in
- __heap-save / __heap-restore, so a list grown on the function's heap is freed
- the moment that function is done and the next read walks a dangling spine.
- bag-add carries the diagnostic bag across the same boundary the same way.
 
   eo-name-seen : List Text, Text, Integer, Integer -> Boolean
   eo-name-seen (xs) (target) (i) (len) =

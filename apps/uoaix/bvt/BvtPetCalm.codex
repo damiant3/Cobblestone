@@ -1,0 +1,47 @@
+Chapter: BvtPetCalm
+  cites Uoaix chapter CompositeGameRules
+  cites Uoaix chapter BvtLeash
+  cites Uoaix chapter BvtCheck
+
+ UOAIX-221 (root, 2026-10-26; ServUO BaseAI OnCurrentOrderChanged): an owner's follow, stay or stop order ends a pet's
+ self-defense until the next order. Answers a bit per check: 1 a pet told "all follow me" takes no foe from a striker,
+ 2 its own swing back is refused, 4 after "all guard" it takes the striker again; 7 is all, negative when not built.
+  bpcl-mobile : GameShard, Integer -> Integer
+  bpcl-mobile (game) (x) = when world-create game.world (__record-set (gs-mobile 0 x 1700 0 400 0) "health" 50)
+    is Err (_) -> 0
+    is Ok (serial) -> serial
+  bpcl-checks : Integer -> Integer
+  bpcl-checks (unused) = when blh-owner 0
+    is Err (_) -> -1
+    is Ok (owner) -> when owner.spawns
+      is None -> -1
+      is Just (g) -> let game = owner.checkpoint.game
+        in let wits = __record-set owner.combat "admit-hook" (cg-admit-wits owner)
+        in let master = bpcl-mobile game 1420
+        in let striker = bpcl-mobile game 1422
+        in let profile = gws-claim-profile g "horse" 0
+        in if master == 0 | striker == 0 | profile < 0 then -2
+        else let bm = cb-profile g.combat game master "Master" 20 1 2 0
+        in let bs = cb-profile g.combat game striker "Striker" 20 1 2 0
+        in when gws-summon g game profile 1421 1700 0 master (g.combat.tick + gws-forever)
+          is Err (_) -> -3
+          is Ok (pet) -> let slot = list-at g.slots (gws-slot-of g pet 0)
+            in when world-get game.world master
+              is Err (_) -> -4
+              is Ok (m) -> when cb-ensure g.combat game pet
+                is Err (_) -> -5
+                is Ok (p) -> when cb-ensure g.combat game striker
+                  is Err (_) -> -6
+                  is Ok (s) -> let followed = cg-pet-order-each owner g game master "all follow me" gws-order-follow True 0
+                    in let struck = cb-select g.combat game s p
+                    in let ignores = gws-pet-foe g game slot p m == 0
+                    in let refused = not (cb-select g.combat game p s)
+                    in let guarded = cg-pet-order-each owner g game master "all guard" gws-order-guard True 0
+                    in let defends = gws-pet-foe g game slot p m == striker
+                    in if followed /= 1 | guarded /= 1 | not struck then -7
+                    else (if ignores then 1 else 0) + (if refused then 2 else 0) + (if defends then 4 else 0)
+  bvt-pet-calm : Integer -> [Console] Integer
+  bvt-pet-calm (unused) = act
+    n <- bpcl-checks 0
+    bvt-check ("an owner's follow order ends a pet's self-defense until the next order (UOAIX-221, code " & show n & ")") (n == 7)
+  end

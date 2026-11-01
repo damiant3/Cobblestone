@@ -1,0 +1,350 @@
+Chapter: GopUsbPad
+  cites Works chapter GopXhci
+
+ USB HID game controller, the report half. A gamepad has no boot protocol:
+ its interface is class 3, subclass 0, protocol 0, and where each button
+ and axis sits in a report is declared only by the HID report descriptor
+ (HID 1.11 section 6.2.2). This chapter parses that descriptor into a
+ layout and decodes reports by it.
+
+ A short item is a prefix byte -- bits 0-1 the data size (0, 1, 2 or 4
+ bytes), bits 2-3 the type (0 Main, 1 Global, 2 Local), bits 4-7 the tag --
+ then its data, little-endian. 0xFE opens a long item: its next byte is the
+ data length and the byte after it the tag. Global tags: 0 Usage Page,
+ 1 Logical Minimum, 2 Logical Maximum, 7 Report Size, 8 Report ID,
+ 9 Report Count. Local: 0 Usage, 1 Usage Minimum, 2 Usage Maximum. Main:
+ 8 Input, 10 Collection, 12 End Collection. Input data bit 0 set is a
+ constant (padding), bit 1 set a variable field, clear an array.
+ Usage page 1 is Generic Desktop (usage 4 Joystick, 5 Gamepad, X 0x30
+ through Rz 0x35, Hat Switch 0x39) and page 9 is Button, usage n the nth
+ button. Only the first Report ID's fields are collected; a report that
+ carries IDs starts with that one byte.
+
+Section: Layout
+
+  PadAxis = record {
+    pa-usage : Integer,
+    pa-offset : Integer,
+    pa-size : Integer,
+    pa-min : Integer,
+    pa-max : Integer
+  }
+
+  PadLayout = record {
+    pl-ok : Boolean,
+    pl-report-id : Integer,
+    pl-bits : Integer,
+    pl-buttons : List Integer,
+    pl-axes : List PadAxis
+  }
+
+  PadParse = record {
+    pp-page : Integer,
+    pp-min : Integer,
+    pp-max : Integer,
+    pp-size : Integer,
+    pp-count : Integer,
+    pp-id : Integer,
+    pp-first-id : Integer,
+    pp-usages : List Integer,
+    pp-umin : Integer,
+    pp-umax : Integer,
+    pp-bit : Integer,
+    pp-pad : Boolean,
+    pp-buttons : List Integer,
+    pp-axes : List PadAxis
+  }
+
+  pad-parse-new : PadParse
+  pad-parse-new = PadParse {
+    pp-page = 0, pp-min = 0, pp-max = 0, pp-size = 0, pp-count = 0, pp-id = 0,
+    pp-first-id = 0, pp-usages = [], pp-umin = 0, pp-umax = 0, pp-bit = 0,
+    pp-pad = False, pp-buttons = [], pp-axes = []
+  }
+
+Section: Items
+
+  pad-item-data : Integer, Integer, Integer -> Integer
+  pad-item-data (d) (off) (n) = pad-item-data-loop d off n 0 0
+
+  pad-item-data-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  pad-item-data-loop (d) (off) (n) (i) (acc) =
+    if i >= n then acc
+    else pad-item-data-loop d off n (i + 1) (bit-or acc (bit-shl (peek-byte d (off + i)) (8 * i)))
+
+  pad-sext : Integer, Integer -> Integer
+  pad-sext (v) (n) =
+    if n == 0 then 0
+    else let top = bit-shl 1 (8 * n - 1)
+    in if bit-and v top /= 0 then v - bit-shl 1 (8 * n) else v
+
+  pad-size-code : Integer -> Integer
+  pad-size-code (c) = if c == 3 then 4 else c
+
+Section: Parse
+
+  pad-parse : Integer, Integer -> PadLayout
+  pad-parse (d) (len) =
+    let st = pad-parse-loop d 0 len pad-parse-new
+    in PadLayout {
+      pl-ok = st.pp-pad & (list-length (st.pp-buttons) + list-length (st.pp-axes) > 0),
+      pl-report-id = st.pp-first-id,
+      pl-bits = st.pp-bit,
+      pl-buttons = st.pp-buttons,
+      pl-axes = st.pp-axes
+    }
+
+  pad-parse-loop : Integer, Integer, Integer, PadParse -> PadParse
+  pad-parse-loop (d) (off) (len) (st) =
+    if off >= len then st
+    else let b = peek-byte d off
+    in if b == 254 then
+      (if off + 2 >= len then st else pad-parse-loop d (off + 3 + peek-byte d (off + 1)) len st)
+    else let n = pad-size-code (bit-and b 3)
+    in if off + 1 + n > len then st
+    else let v = pad-item-data d (off + 1) n
+    in pad-parse-loop d (off + 1 + n) len (pad-item st (bit-and (bit-shru b 2) 3) (bit-shru b 4) v n)
+
+  pad-item : PadParse, Integer, Integer, Integer, Integer -> PadParse
+  pad-item (st) (kind) (tag) (v) (n) =
+    if kind == 1 then pad-global st tag v n
+    else if kind == 2 then pad-local st tag v
+    else if kind == 0 then pad-main st tag v
+    else st
+
+  pad-global : PadParse, Integer, Integer, Integer -> PadParse
+  pad-global (st) (tag) (v) (n) =
+    if tag == 0 then st revised { pp-page = v }
+    else if tag == 1 then st revised { pp-min = pad-sext v n }
+    else if tag == 2 then st revised { pp-max = pad-sext v n }
+    else if tag == 7 then st revised { pp-size = v }
+    else if tag == 9 then st revised { pp-count = v }
+    else if tag == 8 then pad-report-id st v
+    else st
+
+  pad-report-id : PadParse, Integer -> PadParse
+  pad-report-id (st) (v) =
+    if st.pp-first-id == 0 then st revised { pp-id = v, pp-first-id = v, pp-bit = 8 }
+    else st revised { pp-id = v }
+
+  pad-local : PadParse, Integer, Integer -> PadParse
+  pad-local (st) (tag) (v) =
+    if tag == 0 then st revised { pp-usages = (st.pp-usages) & [v] }
+    else if tag == 1 then st revised { pp-umin = v }
+    else if tag == 2 then st revised { pp-umax = v }
+    else st
+
+  pad-clear-local : PadParse -> PadParse
+  pad-clear-local (st) = st revised { pp-usages = [], pp-umin = 0, pp-umax = 0 }
+
+  pad-main : PadParse, Integer, Integer -> PadParse
+  pad-main (st) (tag) (v) =
+    if tag == 10 then pad-clear-local (pad-collection st)
+    else if tag == 8 then pad-clear-local (pad-input st v)
+    else if tag == 12 then st
+    else pad-clear-local st
+
+  pad-collection : PadParse -> PadParse
+  pad-collection (st) =
+    let u = pad-usage-at st 0
+    in if st.pp-page == 1 & (u == 4 | u == 5) then st revised { pp-pad = True } else st
+
+  pad-usage-at : PadParse, Integer -> Integer
+  pad-usage-at (st) (i) =
+    if i < list-length (st.pp-usages) then list-at (st.pp-usages) i
+    else if list-length (st.pp-usages) > 0 then list-at (st.pp-usages) (list-length (st.pp-usages) - 1)
+    else if st.pp-umax >= st.pp-umin & st.pp-umin + i <= st.pp-umax then st.pp-umin + i
+    else 0
+
+  pad-input : PadParse, Integer -> PadParse
+  pad-input (st) (flags) =
+    if st.pp-size < 0 | st.pp-size > 32 | st.pp-count < 0 | st.pp-count > 8192 then st revised { pp-bit = pad-poison-bits }
+    else let total = st.pp-size * st.pp-count
+    in let ours = st.pp-id == st.pp-first-id
+    in if ours == False then st
+    else if bit-and flags 1 /= 0 | bit-and flags 2 == 0 then st revised { pp-bit = st.pp-bit + total }
+    else pad-fields st 0 (st.pp-bit)
+
+  pad-fields : PadParse, Integer, Integer -> PadParse
+  pad-fields (st) (i) (base) =
+    if i >= st.pp-count then st revised { pp-bit = base + st.pp-size * st.pp-count }
+    else let at = base + i * st.pp-size
+    in let u = pad-usage-at st i
+    in let st2 = if st.pp-page == 9 & u > 0 then st revised { pp-buttons = (st.pp-buttons) & [at] }
+      else if st.pp-page == 1 & u >= 48 & u <= 57 then st revised { pp-axes = (st.pp-axes) & [PadAxis { pa-usage = u, pa-offset = at, pa-size = st.pp-size, pa-min = st.pp-min, pa-max = st.pp-max }] }
+      else st
+    in pad-fields st2 (i + 1) base
+
+Section: Decode
+
+  pad-bits : Integer, Integer, Integer -> Integer
+  pad-bits (buf) (at) (size) = pad-bits-loop buf at size 0 0
+
+  pad-bits-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  pad-bits-loop (buf) (at) (size) (i) (acc) =
+    if i >= size then acc
+    else let p = at + i
+    in let bit = bit-and (bit-shru (peek-byte buf (p / 8)) (bit-and p 7)) 1
+    in pad-bits-loop buf at size (i + 1) (bit-or acc (bit-shl bit i))
+
+  pad-report-ok : PadLayout, Integer, Integer -> Boolean
+  pad-report-ok (l) (buf) (len) =
+    if l.pl-ok == False then False
+    else if len * 8 < l.pl-bits then False
+    else l.pl-report-id == 0 | peek-byte buf 0 == l.pl-report-id
+
+  pad-buttons : PadLayout, Integer -> Integer
+  pad-buttons (l) (buf) = pad-buttons-loop l buf 0 0
+
+  pad-buttons-loop : PadLayout, Integer, Integer, Integer -> Integer
+  pad-buttons-loop (l) (buf) (i) (acc) =
+    if i >= list-length (l.pl-buttons) | i >= 32 then acc
+    else pad-buttons-loop l buf (i + 1) (bit-or acc (bit-shl (pad-bits buf (list-at (l.pl-buttons) i) 1) i))
+
+  pad-axis-raw : PadLayout, Integer, Integer -> Integer
+  pad-axis-raw (l) (buf) (i) =
+    let a = list-at (l.pl-axes) i
+    in let v = pad-bits buf (a.pa-offset) (a.pa-size)
+    in if a.pa-min < 0 & a.pa-size > 0 & bit-and v (bit-shl 1 (a.pa-size - 1)) /= 0 then v - bit-shl 1 (a.pa-size) else v
+
+  pad-axis-norm : PadLayout, Integer, Integer -> Integer
+  pad-axis-norm (l) (buf) (i) =
+    let a = list-at (l.pl-axes) i
+    in let span = a.pa-max - a.pa-min
+    in if span <= 0 then 0
+    else let v = pad-axis-raw l buf i
+    in let c = if v < a.pa-min then a.pa-min else if v > a.pa-max then a.pa-max else v
+    in (c - a.pa-min) * 2000 / span - 1000
+
+Section: The Handle
+
+ A report descriptor belongs to an interface, so it is fetched with a
+ standard GET_DESCRIPTOR addressed to the interface (bmRequestType 0x81,
+ wValue type 0x22, wIndex the interface number); the length is the HID
+ descriptor's wDescriptorLength, bytes 7 and 8 of the 0x21 descriptor that
+ follows the interface descriptor. State cells, eight bytes each so an axis
+ keeps its sign: 0 the pump phase, 8 reports consumed, 16 buttons, 24 X,
+ 32 Y, 40 Z, 48 Rz (each -1000..1000), 56 the hat (0-7, 8 or more centred).
+
+  UsbPad = record {
+    upad-ok : Boolean,
+    upad-host : XhciHost,
+    upad-dev : UsbDev,
+    upad-dci : Integer,
+    upad-ring : Integer,
+    upad-report : Integer,
+    upad-len : Integer,
+    upad-state : Integer,
+    upad-layout : PadLayout
+  }
+
+  pad-no-layout : PadLayout
+  pad-no-layout = PadLayout { pl-ok = False, pl-report-id = 0, pl-bits = 0, pl-buttons = [], pl-axes = [] }
+
+  pad-no-pad : UsbPad
+  pad-no-pad = UsbPad { upad-ok = False, upad-host = xhci-no-host, upad-dev = xhci-no-dev, upad-dci = 0, upad-ring = 0, upad-report = 0, upad-len = 0, upad-state = 0, upad-layout = pad-no-layout }
+
+ A USB interrupt endpoint moves at most 1024 bytes a transaction. The config
+ descriptor buffer is read to byte 255 (GopXhci caps wTotalLength there). A
+ Report Size past 32 bits or a Report Count past 8192 fits no report, and
+ pad-poison-bits is past every report length times 8.
+
+  pad-max-packet : Integer = 1024
+  pad-cfg-last : Integer = 255
+  pad-poison-bits : Integer = 1048576
+
+  pad-packet-ok : Integer -> Boolean
+  pad-packet-ok (maxpkt) = maxpkt >= 1 & maxpkt <= pad-max-packet
+
+  pad-ph-idle : Integer = 0
+  pad-ph-armed : Integer = 1
+
+  pad-report-desc-len : Integer, Integer -> Integer
+  pad-report-desc-len (cfg) (iface-off) =
+    let h = iface-off + peek-byte cfg iface-off
+    in if h + 8 > pad-cfg-last then 0
+    else if peek-byte cfg (h + 1) /= 33 then 0
+    else bit-or (peek-byte cfg (h + 7)) (bit-shl (peek-byte cfg (h + 8)) 8)
+
+  pad-layout-of : XhciHost, UsbDev, Integer, Integer -> PadLayout
+  pad-layout-of (xh) (dev) (cfg) (iface-off) =
+    let n = pad-report-desc-len cfg iface-off
+    in if n <= 0 | n > 1024 then pad-no-layout
+    else let buf = alloc-zeroed (n + 8) 64
+    in if xhci-ctrl-in xh dev 129 6 (bit-shl 34 8) (peek-byte cfg (iface-off + 2)) buf n == False then pad-no-layout
+    else pad-parse buf n
+
+  pad-open-iface : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Boolean, PadLayout -> UsbPad
+  pad-open-iface (xh) (dev) (cfgv) (epnum) (maxpkt) (binterval) (do-cfg) (layout) =
+    if pad-packet-ok maxpkt == False then pad-no-pad
+    else let sc = if do-cfg then usb-set-configuration xh dev cfgv else True
+    in if sc == False then pad-no-pad
+    else let dci = epnum * 2 + 1
+    in let ring = xhci-ring-new
+    in let r0 = xhci-set-ep-ring (dev.ud-ctx) dci (xhci-ring-trbs ring) (xh.xh-ctxsz)
+    in let ictx = xhci-ictx-single dci 7 maxpkt (xhci-ring-trbs ring) (xhci-ep-interval (dev.ud-speed) binterval) (xh.xh-ctxsz) (dev.ud-ctx)
+    in let ce = xhci-configure-endpoint xh dev ictx
+    in if ce.xe-ok == False then pad-no-pad
+    else if ce.xe-code /= trb-cc-success then pad-no-pad
+    else let st = alloc-zeroed 64 64
+    in let h = poke-qword st 56 8
+    in UsbPad { upad-ok = True, upad-host = xh, upad-dev = dev, upad-dci = dci, upad-ring = ring, upad-report = alloc-zeroed (if maxpkt < 64 then 64 else maxpkt) 64, upad-len = maxpkt, upad-state = st, upad-layout = layout }
+
+Section: The Pad Pump
+
+ The mouse's three phases: arm one TRB, check for its completion, consume.
+ The idle path allocates nothing.
+
+  pad-events : UsbPad -> Integer
+  pad-events (p) = if p.upad-ok == False then 0 else peek-qword (p.upad-state) 8
+
+  pad-buttons-now : UsbPad -> Integer
+  pad-buttons-now (p) = if p.upad-ok == False then 0 else peek-qword (p.upad-state) 16
+
+  pad-axis-now : UsbPad, Integer -> Integer
+  pad-axis-now (p) (i) = if p.upad-ok == False | i < 0 | i > 3 then 0 else peek-qword (p.upad-state) (24 + 8 * i)
+
+  pad-hat-now : UsbPad -> Integer
+  pad-hat-now (p) = if p.upad-ok == False then 8 else peek-qword (p.upad-state) 56
+
+  pad-axis-index : PadLayout, Integer, Integer -> Integer
+  pad-axis-index (l) (usage) (i) =
+    if i >= list-length (l.pl-axes) then 0 - 1
+    else if (list-at (l.pl-axes) i).pa-usage == usage then i
+    else pad-axis-index l usage (i + 1)
+
+  pad-store-axis : UsbPad, Integer, Integer -> Integer
+  pad-store-axis (p) (usage) (cell) =
+    let i = pad-axis-index (p.upad-layout) usage 0
+    in poke-qword (p.upad-state) cell (if i < 0 then 0 else pad-axis-norm (p.upad-layout) (p.upad-report) i)
+
+  pad-consume : UsbPad -> Integer
+  pad-consume (p) =
+    let l = p.upad-layout
+    in let ph = poke-qword (p.upad-state) 0 pad-ph-idle
+    in if pad-report-ok l (p.upad-report) (p.upad-len) == False then 0
+    else let b = poke-qword (p.upad-state) 16 (pad-buttons l (p.upad-report))
+    in let x = pad-store-axis p 48 24
+    in let y = pad-store-axis p 49 32
+    in let z = pad-store-axis p 50 40
+    in let r = pad-store-axis p 53 48
+    in let hi = pad-axis-index l 57 0
+    in let hat = poke-qword (p.upad-state) 56 (if hi < 0 then 8 else pad-axis-raw l (p.upad-report) hi)
+    in let n = poke-qword (p.upad-state) 8 (peek-qword (p.upad-state) 8 + 1)
+    in 1
+
+  pad-arm : UsbPad -> Integer
+  pad-arm (p) =
+    let w = xhci-ring-push (p.upad-ring) (p.upad-report) 0 (p.upad-len) (bit-or (bit-shl trb-t-normal 10) trb-flag-ioc)
+    in let db = xhci-ring-doorbell (p.upad-host) ((p.upad-dev).ud-slot) (p.upad-dci)
+    in poke-qword (p.upad-state) 0 pad-ph-armed
+
+  pad-pump : UsbPad -> Integer
+  pad-pump (p) =
+    if p.upad-ok == False then 0
+    else if peek-qword (p.upad-state) 0 == pad-ph-armed then
+      (if xhci-wait-xfer (p.upad-host) ((p.upad-dev).ud-slot) (p.upad-dci) 0 == 0 then 0 else pad-consume p)
+    else let a = pad-arm p
+    in 0
+
+Page 1

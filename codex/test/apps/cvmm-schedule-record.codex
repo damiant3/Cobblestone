@@ -1,0 +1,60 @@
+Chapter: CvmmScheduleRecord
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone
+  cites Cvmm chapter TaskScheduler
+
+Section: Fixtures
+
+  utc : Integer, Integer, Integer, Integer, Integer -> Integer
+  utc (y) (mo) (d) (h) (mi) = tz-days y mo d * 86400 + h * 3600 + mi * 60
+
+  pad : Integer -> Text
+  pad (v) = if v < 10 then "0" & show v else show v
+
+  stamp : Integer -> Text
+  stamp (u) =
+    let t = u - (u / 86400) * 86400
+    in sched-day-label (u / 86400) & " " & pad (t / 3600) & ":" & pad (t / 60 - (t / 3600) * 60) & " UTC"
+
+  task : ScheduledTask
+  task = sched-task-new "t1" "nightly" (SchedDaily 1 30) (TaRunCommand "backup")
+
+  next-text : ScheduledTask -> Text
+  next-text (t) = stamp (t.st-next-run) & " [" & t.st-next-note & "]"
+
+  last-note : ScheduledTask -> Text
+  last-note (t) = if t.st-history-count == 0 then "(none)" else "[" & (list-at (t.st-history) (t.st-history-count - 1)).tr-note & "]"
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let mz = zone-from-db (tz-parse tz-sources) "Europe/London"
+    in when mz
+      is None -> print-line-uni "no zone"
+      is Just (z) ->
+        let fold = sched-task-zoned task z AfterGap (utc 2026 10 24 12 0)
+        in let ran = sched-task-record-run fold (fold.st-next-run) (RunSuccess 5) ""
+        in let after = sched-task-record-run ran (ran.st-next-run) (RunSuccess 5) ""
+        in let later = sched-task-zoned task z Later (utc 2026 10 24 12 0)
+        in let refuse = sched-task-zoned task z Refuse (utc 2026 10 24 12 0)
+        in let refused-ran = sched-task-record-run refuse (refuse.st-next-run) (RunSuccess 5) ""
+        in let gap = sched-task-zoned task z AfterGap (utc 2027 3 27 12 0)
+        in let gap-early = sched-task-zoned task z Earlier (utc 2027 3 27 12 0)
+        in let plain = sched-task-zoned task z AfterGap (utc 2026 7 1 12 0)
+        in act
+          print-line-uni ("fold, default        : " & next-text fold)
+          print-line-uni ("  its run record     : " & last-note ran)
+          print-line-uni ("  the next night     : " & next-text ran)
+          print-line-uni ("  and its record     : " & last-note after)
+          print-line-uni ("fold, later          : " & next-text later)
+          print-line-uni ("fold, refuse         : " & next-text refuse)
+          print-line-uni ("  its run record     : " & last-note refused-ran)
+          print-line-uni ("gap, default         : " & next-text gap)
+          print-line-uni ("gap, earlier         : " & next-text gap-early)
+          print-line-uni ("summer night         : " & next-text plain)
+          print-line-uni ("utc task, untouched  : " & next-text (sched-task-record-run task (utc 2026 10 24 12 0) (RunSuccess 5) ""))
+        end

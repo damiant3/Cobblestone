@@ -301,8 +301,21 @@ card, in a window or a sitting.
     sabotaged IADD3 opcode changes the 18 IADD3 rows, a sabotaged control
     bit all 104. What a kernel computes is not graded before stage 5.
   - **Open, toward `GemmKernels.codex` on SM 8.9**, each graded by
-    turingas the same way: division by a variable (its zero divisor traps
-    in Codex and has no GPU trap yet). Register pairs come from a busy mask,
+    turingas the same way. A signed division by a variable (ruled, "Open")
+    first traps when the divisor is zero, unless the divisor is a nonzero
+    literal: two ISETP.EQ.U32 of its words, the first ANDed with the
+    enclosing guard, then BPT.TRAP 0x1 under that predicate (ptxas's word for
+    `trap;`, graded against nvdisasm's hex; turingas has no BPT). It traps
+    the same way on `MIN / -1`, unless the divisor is a literal other than
+    -1: four ISETP.EQ.U32 against 0xFFFFFFFF, 0xFFFFFFFF, 0 and 0x80000000,
+    ANDed in turn from the enclosing guard. The
+    quotient is then unsigned restoring division of the magnitudes, 64 rounds
+    of a warp-uniform counted loop, and the sign fix; a magnitude and the sign
+    fix are `(x ^ s) - s` with `s` the sign word from SHF.R.S32.HI, the
+    remainder takes the dividend's top bit from SHF.R.U32.HI, and the
+    subtraction is of the divisor ANDed with a mask a guarded MOV sets from
+    the unsigned comparison, so the whole sequence holds one predicate and
+    four scratch pairs. It truncates toward zero. Register pairs come from a busy mask,
     the lowest free pair first; restoring a mark frees exactly the pairs
     taken since. A binding, a `let` and a statement whose value is dropped
     give back every pair their lowering took except the kept value's, where
@@ -350,10 +363,16 @@ card, in a window or a sitting.
     red. `gpu-warp` in the slice grades it; SM 5.2 refuses it (`warp
     sync`). `kernel-gemm-wmma`, `kernel-linear-wmma`,
     `-batched`, `kernel-linear-fp8`, the five `kernel-linear-fast` kernels,
-    `kernel-nchw-to-nhwc` and `kernel-attention-fused` (A, B and C slots
-    0..7, 128 fragment registers) list (2026-10-20: 28872 instructions, 81
-    of them WARPSYNC, every word equal, graded by `test-turingas.ps1`); the
-    other 4 refuse for division by a variable (Open, Damian's). A load takes its destination before its address, so
+    `kernel-nchw-to-nhwc`, `kernel-attention-fused` (A, B and C slots
+    0..7, 128 fragment registers), `kernel-conv2d-wmma`, `kernel-conv2d-fast`,
+    `kernel-conv-weight-khwc` and `kernel-attention-fused-128` list
+    (2026-11-01: 38336 instructions, 132 of them WARPSYNC or BPT, every word
+    equal, graded by `test-turingas.ps1`). `gpu-divide-var` in the slice grades a checked
+    and a proven division; SM 5.2 refuses both (`divide`). A 64-bit add with
+    every predicate held (`conv-stage-b` adds an address under six nested
+    `if`s and its loop's guard) takes no carry predicate: IMAD.WIDE.U32 of the
+    second operand's low word by 1 into the first pair, then IADD3 of the
+    high words; a subtraction there still refuses for predicates. A load takes its destination before its address, so
     a kept load strands no address registers.
   - **WMMA, the plan.** A 16x16x16 fragment operation is two
     HMMA.16816.F32, one per 8-column half of the output. Fragments take the
@@ -599,13 +618,25 @@ The 970:
 
 ## Open
 
-**Damian: Integer division by a variable on the GPU.** Codex traps on a
-zero divisor; the GPU has no trap. Four GEMM kernels need it
-(`kernel-conv2d-wmma`, `kernel-conv2d-fast`, `kernel-conv-weight-khwc`,
-`kernel-attention-fused-128`). The choice: a zero divisor answers 0 (a
-value with no diagnostic, L-BAILVALUE), or the plug refuses a division
-whose divisor it cannot prove nonzero. The plug refuses until this is
-ruled (root, 2026-10-20).
+**Integer division by a variable on the GPU (ruled, Damian, 2026-11-01).**
+"divide by zero is a programmer error in all cases, regardless of what the
+hardware allows or does. We check at compile time for any we can know about,
+and at runtime for any we cant. GPU included. sentinels are just bad
+engineering masquerading as discipline." The plug proves a divisor nonzero
+where it can and refuses nothing it proves; every other division carries a
+run-time zero check that faults the launch, and the host raises the same
+divide-by-zero failure Codex raises on the CPU. No division answers 0 or a
+sentinel. `MIN / -1` faults the same way (root's reading, 2026-11-01: the
+founding vision does not inherit C's silent integer overflow, x86-64's IDIV
+faults there, and the ruling says "GPU included"). The SM 8.9 side of both
+is built (stage 2's open list above); open:
+
+- The host half: a launch that ends in BPT.TRAP must raise divide-by-zero.
+  It waits on the launch path of stages 4 and 5, the first host that sees a
+  trapped launch. BPT.TRAP 0x1 is the plug's only trap today.
+- Whether a guarded BPT.TRAP honours its guard on Ada is a hardware
+  question: ptxas branches around an unguarded BPT instead, and a forward
+  branch is outside what `test-turingas.ps1` admits.
 
 **Boot allocation:** on 2026-09-30, the successful host fixture plus boot
 sequence and RPC serialization allocated 83,096 bytes before trace
@@ -620,13 +651,6 @@ per-chunk event lists. The fixture uses a bounded raw trace buffer and
 restores its per-case heap after printing; its recursive hex formatting
 also copies growing strings. Establish complete boot lifetimes, peak usage
 and the hardware memory budget during integration.
-
-**Question for Damian (asked 2026-10-20, unanswered): division by zero on
-the GPU.** Codex traps on an integer divide by zero; a GPU kernel has no
-trap. Division by a variable (`ow`, `kw`, `kh * kw` in two conv kernels of
-`GemmKernels.codex`) waits on the choice: the result is 0, the result is a
-fixed sentinel, or the plug refuses unless it can prove the divisor
-non-zero. Division by a power-of-two literal is built and needs no answer.
 
 **The firmware licence** (decision 3 stands): `LICENCE.nvidia` 2.1.2 allows
 redistribution only with an OS under an OSI-approved licence, and the

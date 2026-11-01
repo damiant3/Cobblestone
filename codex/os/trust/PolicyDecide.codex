@@ -1,0 +1,297 @@
+Chapter: PolicyDecide
+  cites Trust chapter PolicyEngine
+
+ Region enumeration. Every atom tests one context field against a constant
+ the policy names, so a finite set of candidate values per field realises
+ every answer each atom can give: per capability each named name and one
+ unnamed; per direction each named byte and one unnamed; per agent each
+ named id and one unnamed; per trust each threshold t and t - 1 clipped to
+ 0..65535; per time each window end e, e - 1 and e + 1; per scope the empty
+ scope, each scope an AllowWithScope names, and one unnamed. Every candidate
+ context is decided by eval-policy itself, so an answer is never this
+ chapter's own reading of a rule, and a witness is a context the evaluator
+ allowed.
+
+Section: Answers
+
+  PolicyAnswer = record {
+    decided : Boolean,
+    holds : Boolean,
+    witness : PolicyContext,
+    min-trust : Integer,
+    evaluations : Integer,
+    why : Text
+  }
+
+  DeadRules = record {
+    decided : Boolean,
+    dead : List Text,
+    evaluations : Integer,
+    why : Text
+  }
+
+ 200,000 evaluations is the refusal line: one evaluation of a policy of a
+ dozen rules costs a few microseconds on the bed, so a question stays under
+ about a second, and a policy whose regions need more is refused with the
+ count rather than run unbounded.
+
+  decide-budget : Integer = 200000
+
+Section: Constants
+
+  DecideConsts = record {
+    caps : List Text,
+    dirs : List Integer,
+    agents : List Text,
+    thresholds : List Integer,
+    ends : List Integer,
+    scopes : List Text
+  }
+
+  dc-empty : DecideConsts
+  dc-empty = DecideConsts { caps = [], dirs = [], agents = [], thresholds = [], ends = [], scopes = [] }
+
+  dc-has-text : List Text, Text, Integer -> Boolean
+  dc-has-text (xs) (t) (i) = if i >= list-length xs then False else if list-at xs i == t then True else dc-has-text xs t (i + 1)
+
+  dc-has-int : List Integer, Integer, Integer -> Boolean
+  dc-has-int (xs) (v) (i) = if i >= list-length xs then False else if list-at xs i == v then True else dc-has-int xs v (i + 1)
+
+  dc-text : List Text, Text -> List Text
+  dc-text (xs) (t) = if dc-has-text xs t 0 then xs else xs & [t]
+
+  dc-int : List Integer, Integer -> List Integer
+  dc-int (xs) (v) = if dc-has-int xs v 0 then xs else xs & [v]
+
+  dc-cond : DecideConsts, PolicyCondition -> DecideConsts
+  dc-cond (k) (c) = when c
+    is CapabilityMatch (n) (d) -> DecideConsts { caps = dc-text k.caps n, dirs = if d < 0 | d > 255 then k.dirs else dc-int k.dirs d, agents = k.agents, thresholds = k.thresholds, ends = k.ends, scopes = k.scopes }
+    is TrustAbove (t) -> DecideConsts { caps = k.caps, dirs = k.dirs, agents = k.agents, thresholds = dc-int k.thresholds t, ends = k.ends, scopes = k.scopes }
+    is TimeWindow (a) (b) -> DecideConsts { caps = k.caps, dirs = k.dirs, agents = k.agents, thresholds = k.thresholds, ends = dc-int (dc-int k.ends a) b, scopes = k.scopes }
+    is AgentIs (id) -> DecideConsts { caps = k.caps, dirs = k.dirs, agents = dc-text k.agents id, thresholds = k.thresholds, ends = k.ends, scopes = k.scopes }
+    is AllOf (cs) -> dc-conds k cs 0
+    is AnyOf (cs) -> dc-conds k cs 0
+    is NotCond (x) -> dc-cond k x
+    is AlwaysTrue -> k
+
+  dc-conds : DecideConsts, List PolicyCondition, Integer -> DecideConsts
+  dc-conds (k) (cs) (i) = if i >= list-length cs then k else dc-conds (dc-cond k (list-at cs i)) cs (i + 1)
+
+  dc-rule : DecideConsts, PolicyRule -> DecideConsts
+  dc-rule (k) (r) = dc-outcome (dc-cond k r.condition) r.outcome
+
+  dc-outcome : DecideConsts, PolicyEffect -> DecideConsts
+  dc-outcome (k1) (e) = when e
+    is AllowWithScope (s) -> DecideConsts { caps = k1.caps, dirs = k1.dirs, agents = k1.agents, thresholds = k1.thresholds, ends = k1.ends, scopes = dc-text k1.scopes s }
+    is AllowWithQuota (minutes) (period) (inner) -> dc-outcome k1 inner
+    is otherwise -> k1
+
+  dc-policy : DecideConsts, Policy -> DecideConsts
+  dc-policy (k) (pol) = dc-rules k pol.rules 0
+
+  dc-rules : DecideConsts, List PolicyRule, Integer -> DecideConsts
+  dc-rules (k) (rs) (i) = if i >= list-length rs then k else dc-rules (dc-rule k (list-at rs i)) rs (i + 1)
+
+Section: Candidates
+
+  DecideSpace = record {
+    caps : List Text,
+    dirs : List Integer,
+    agents : List Text,
+    trusts : List Integer,
+    times : List Integer,
+    scopes : List Text
+  }
+
+  ds-unnamed-dir : List Integer, Integer -> List Integer
+  ds-unnamed-dir (named) (b) =
+    if b > 255 then named
+    else if dc-has-int named b 0 then ds-unnamed-dir named (b + 1)
+    else named & [b]
+
+  ds-clip : Integer -> Integer
+  ds-clip (t) = if t < 0 then 0 else if t > 65535 then 65535 else t
+
+  ds-trusts : List Integer, Integer, List Integer -> List Integer
+  ds-trusts (ts) (i) (acc) =
+    if i >= list-length ts then (if list-length acc == 0 then [0] else acc)
+    else let t = list-at ts i
+    in ds-trusts ts (i + 1) (dc-int (dc-int acc (ds-clip t)) (ds-clip (t - 1)))
+
+  ds-times : List Integer, Integer, List Integer -> List Integer
+  ds-times (es) (i) (acc) =
+    if i >= list-length es then (if list-length acc == 0 then [0] else acc)
+    else let e = list-at es i
+    in let below = if e >= 0 - 9223372036854775807 then dc-int acc (e - 1) else acc
+    in let at = dc-int below e
+    in ds-times es (i + 1) (if e <= 9223372036854775806 then dc-int at (e + 1) else at)
+
+  ds-space : DecideConsts -> DecideSpace
+  ds-space (k) = DecideSpace {
+    caps = dc-text k.caps "~unnamed-capability~",
+    dirs = ds-unnamed-dir k.dirs 0,
+    agents = dc-text k.agents "~unnamed-agent~",
+    trusts = ds-trusts k.thresholds 0 [],
+    times = ds-times k.ends 0 [],
+    scopes = dc-text (ds-merge k.scopes 0 [""]) "~unnamed-scope~"
+  }
+
+  ds-merge : List Text, Integer, List Text -> List Text
+  ds-merge (xs) (i) (acc) = if i >= list-length xs then acc else ds-merge xs (i + 1) (dc-text acc (list-at xs i))
+
+  ds-merge-ints : List Integer, Integer, List Integer -> List Integer
+  ds-merge-ints (xs) (i) (acc) = if i >= list-length xs then acc else ds-merge-ints xs (i + 1) (dc-int acc (list-at xs i))
+
+  ds-union : DecideConsts, DecideConsts -> DecideConsts
+  ds-union (a) (b) = DecideConsts {
+    caps = ds-merge b.caps 0 a.caps,
+    dirs = ds-merge-ints b.dirs 0 a.dirs,
+    agents = ds-merge b.agents 0 a.agents,
+    thresholds = ds-merge-ints b.thresholds 0 a.thresholds,
+    ends = ds-merge-ints b.ends 0 a.ends,
+    scopes = ds-merge b.scopes 0 a.scopes
+  }
+
+ The product is capped as it is built, so a policy whose regions multiply
+ past 64 bits is refused rather than wrapped.
+
+  ds-size : DecideSpace -> Integer
+  ds-size (s) = ds-mul (ds-mul (ds-mul (ds-mul (ds-mul (list-length s.caps) (list-length s.dirs)) (list-length s.agents)) (list-length s.trusts)) (list-length s.times)) (list-length s.scopes)
+
+  ds-mul : Integer, Integer -> Integer
+  ds-mul (a) (b) = if a > decide-budget | b > decide-budget then decide-budget + 1 else a * b
+
+  ds-context : DecideSpace, Integer -> PolicyContext
+  ds-context (s) (idx) =
+    let nc = list-length s.caps
+    in let nd = list-length s.dirs
+    in let na = list-length s.agents
+    in let nt = list-length s.trusts
+    in let nm = list-length s.times
+    in let ns = list-length s.scopes
+    in let r1 = idx / nc
+    in let r2 = r1 / nd
+    in let r3 = r2 / na
+    in let r4 = r3 / nt
+    in let r5 = r4 / nm
+    in PolicyContext {
+      capability = list-at s.caps (idx - r1 * nc),
+      direction = __narrow (list-at s.dirs (r1 - r2 * nd)),
+      trust-score = __narrow (list-at s.trusts (r3 - r4 * nt)),
+      current-time = list-at s.times (r4 - r5 * nm),
+      agent-id = list-at s.agents (r2 - r3 * na),
+      scope = list-at s.scopes (r5 - (r5 / ns) * ns)
+    }
+
+Section: Questions
+
+  pd-refused : DecideSpace, Policy -> PolicyAnswer
+  pd-refused (s) (pol) = PolicyAnswer {
+    decided = False,
+    holds = False,
+    witness = pd-no-witness,
+    min-trust = pol.min-trust,
+    evaluations = 0,
+    why = "needs more than " & show decide-budget & " evaluations (" & show (list-length s.caps) & " x " & show (list-length s.dirs) & " x " & show (list-length s.agents) & " x " & show (list-length s.trusts) & " x " & show (list-length s.times) & " x " & show (list-length s.scopes) & " candidates)"
+  }
+
+  pd-answer : DecideSpace, Policy, Integer, Boolean, Integer -> PolicyAnswer
+  pd-answer (s) (pol) (idx) (holds) (n) = PolicyAnswer {
+    decided = True,
+    holds = holds,
+    witness = if holds then ds-context s idx else pd-no-witness,
+    min-trust = pol.min-trust,
+    evaluations = n,
+    why = ""
+  }
+
+  pd-no-witness : PolicyContext
+  pd-no-witness = PolicyContext { capability = "", direction = 0, trust-score = 0, current-time = 0, agent-id = "", scope = "" }
+
+  pd-allowed : Policy, PolicyContext -> Boolean
+  pd-allowed (pol) (ctx) = (eval-policy pol ctx).allowed
+
+ Each candidate is evaluated inside a heap mark, so a scan of the budget
+ keeps nothing per candidate; the witness is rebuilt from its index after
+ the scan.
+
+  pd-scan-allow : Policy, DecideSpace, Integer, Integer -> Integer
+  pd-scan-allow (pol) (s) (idx) (n) =
+    if idx >= n then 0 - 1
+    else let mark = __heap-save
+    in let hit = pd-allowed pol (ds-context s idx)
+    in let freed = __heap-restore mark
+    in if hit then idx else pd-scan-allow pol s (idx + 1) n
+
+  pd-scan-widen : Policy, Policy, DecideSpace, Integer, Integer -> Integer
+  pd-scan-widen (old) (new) (s) (idx) (n) =
+    if idx >= n then 0 - 1
+    else let mark = __heap-save
+    in let ctx = ds-context s idx
+    in let hit = pd-allowed new ctx & pd-allowed old ctx == False
+    in let freed = __heap-restore mark
+    in if hit then idx else pd-scan-widen old new s (idx + 1) n
+
+  policy-can-allow : Policy, Text, Integer -> PolicyAnswer
+  policy-can-allow (pol) (cap) (dir) =
+    let k = dc-policy dc-empty pol
+    in let full = ds-space k
+    in let s = DecideSpace { caps = [cap], dirs = [dir], agents = full.agents, trusts = full.trusts, times = full.times, scopes = full.scopes }
+    in let n = ds-size s
+    in if n > decide-budget then pd-refused s pol
+    else let at = pd-scan-allow pol s 0 n
+    in pd-answer s pol at (at >= 0) (if at >= 0 then at + 1 else n)
+
+  policy-widens : Policy, Policy -> PolicyAnswer
+  policy-widens (old) (new) =
+    let s = ds-space (ds-union (dc-policy dc-empty old) (dc-policy dc-empty new))
+    in let n = ds-size s
+    in if n > decide-budget then pd-refused s new
+    else let at = pd-scan-widen old new s 0 n
+    in pd-answer s new at (at >= 0) (if at >= 0 then at + 1 else n)
+
+Section: Dead Rules
+
+ The rules are renamed to their positions for the scan, because two rules
+ can share a name and matched-rule reports only a name. A dead rule is
+ reported as its position and its own name.
+
+  pd-renamed : List PolicyRule, Integer, List PolicyRule -> List PolicyRule
+  pd-renamed (rs) (i) (acc) =
+    if i >= list-length rs then acc
+    else let r = list-at rs i
+    in pd-renamed rs (i + 1) (acc & [PolicyRule { name = show i, condition = r.condition, outcome = r.outcome }])
+
+  pd-position : Text, Integer, Integer -> Integer
+  pd-position (t) (i) (acc) =
+    if i >= text-length t then acc
+    else let d = char-code (char-at t i) - char-code (char-at "0" 0)
+    in if d < 0 | d > 9 then 0 - 1 else pd-position t (i + 1) (acc * 10 + d)
+
+  pd-mark-hits : Policy, DecideSpace, Integer, Integer, List Integer -> List Integer
+  pd-mark-hits (pol) (s) (idx) (n) (hits) =
+    if idx >= n then hits
+    else let mark = __heap-save
+    in let at = pd-position (eval-policy pol (ds-context s idx)).matched-rule 0 0
+    in let stored = if at >= 0 & at < list-length hits then list-set-at hits at 1 else hits
+    in let freed = __heap-restore mark
+    in pd-mark-hits pol s (idx + 1) n hits
+
+  pd-zeros : Integer, List Integer -> List Integer
+  pd-zeros (n) (acc) = if n <= 0 then acc else pd-zeros (n - 1) (list-push acc 0)
+
+  pd-dead-names : List PolicyRule, List Integer, Integer, List Text -> List Text
+  pd-dead-names (rs) (hits) (i) (acc) =
+    if i >= list-length rs then acc
+    else pd-dead-names rs hits (i + 1) (if list-at hits i == 0 then acc & [show i & ":" & (list-at rs i).name] else acc)
+
+  policy-dead-rules : Policy -> DeadRules
+  policy-dead-rules (pol) =
+    let s = ds-space (dc-policy dc-empty pol)
+    in let n = ds-size s
+    in if n > decide-budget then DeadRules { decided = False, dead = [], evaluations = 0, why = (pd-refused s pol).why }
+    else let renamed = Policy { name = pol.name, rules = pd-renamed pol.rules 0 [], min-trust = pol.min-trust }
+    in let hits = pd-mark-hits renamed s 0 n (pd-zeros (list-length pol.rules) (__list-with-capacity (list-length pol.rules)))
+    in DeadRules { decided = True, dead = pd-dead-names pol.rules hits 0 [], evaluations = n, why = "" }
+
+Page 1

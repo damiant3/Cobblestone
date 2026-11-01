@@ -147,14 +147,32 @@ Section: Response Parsing
   oauth-extract-tokens (v) =
     let err = json-get-str v "error" ""
     in if text-length err > 0 then OAuthError err (json-get-str v "error_description" "")
+    else let access = json-get-str v "access_token" ""
+    in let ttype = json-get-str v "token_type" ""
+    in if text-length access == 0 then OAuthError "invalid_response" "token response carries no access_token"
+    else if oauth-is-bearer ttype == False then OAuthError "invalid_response" "token_type is not Bearer"
     else OAuthSuccess (OAuthTokens {
-      ot-access-token = json-get-str v "access_token" "",
+      ot-access-token = access,
       ot-refresh-token = json-get-str v "refresh_token" "",
       ot-id-token = json-get-str v "id_token" "",
       ot-expires-in = json-get-int v "expires_in" 3600,
-      ot-token-type = json-get-str v "token_type" "Bearer",
+      ot-token-type = ttype,
       ot-scope = json-get-str v "scope" ""
     })
+
+ RFC 6749 section 5.1: access_token and token_type are REQUIRED and token_type
+ is case-insensitive; section 7.1: a client does not use a token whose type it
+ does not understand, and the only header this client writes is Bearer.
+
+  oauth-is-bearer : Text -> Boolean
+  oauth-is-bearer (t) =
+    if text-length t /= 6 then False else oauth-ci-eq t "bearer" 0 6
+
+  oauth-ci-eq : Text, Text, Integer, Integer -> Boolean
+  oauth-ci-eq (a) (b) (i) (n) =
+    if i >= n then True
+    else if char-code (to-lower (char-at a i)) /= char-code (char-at b i) then False
+    else oauth-ci-eq a b (i + 1) n
 
 Section: Token Queries
 

@@ -1,0 +1,35 @@
+Chapter: RevocationIdBindingTest
+  cites Services chapter Revocation
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+
+ Keys a and b are RFC 8032 section 7.1 test vectors 1 and 2.
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  sk-a : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  sk-b : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  fresh : Integer -> RevocationStore
+  fresh (unused) = RevocationStore { rs-records = [], rs-count = 0, rs-last-check = 0 }
+
+Section: Body
+  opening : [Console] Nothing =
+    let pa = ed25519-public-key sk-a
+    in let pb = ed25519-public-key sk-b
+    in let genuine = sign-revocation (revoke-key-compromise pa pa 100 50 "my key leaked") sk-a
+    in let own = sign-revocation (revoke-key-compromise pb pb 90 50 "b retires b") sk-b
+    in let squatter = RevocationRecord { rr-id = genuine.rr-id, rr-type = own.rr-type, rr-scope = own.rr-scope, rr-authority = own.rr-authority, rr-timestamp = own.rr-timestamp, rr-effective = own.rr-effective, rr-reason = own.rr-reason, rr-signature = own.rr-signature, rr-supersedes = own.rr-supersedes }
+    in let s-control = revocation-add (fresh 1) genuine
+    in let s1 = revocation-add (fresh 2) squatter
+    in let c1 = s1.rs-count
+    in let s2 = revocation-add s1 genuine
+    in act
+      print-line-uni ("control: a's own revocation stored, a revoked = " & show-bool (is-identity-revoked s-control pa))
+      print-line-uni ("b's self-revocation carrying a's record id stored = " & show c1)
+      print-line-uni ("a's own revocation after it, a revoked = " & show-bool (is-identity-revoked s2 pa))
+      print-line-uni ("b's own self-revocation with its own id stored = " & show ((revocation-add (fresh 3) own).rs-count))
+    end

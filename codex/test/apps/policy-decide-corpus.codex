@@ -1,0 +1,85 @@
+Chapter: PolicyDecideCorpus
+  cites Trust chapter PolicyDecide
+  cites Trust chapter PolicyEngine
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  pol : List PolicyRule -> Policy
+  pol (rs) = Policy { name = "t", rules = rs, min-trust = 0 }
+
+  net : Integer -> PolicyCondition
+  net (d) = CapabilityMatch "Net" d
+
+  witness-text : PolicyContext -> Text
+  witness-text (w) = "cap=" & w.capability & " dir=" & show w.direction & " agent=" & w.agent-id & " trust=" & show w.trust-score & " time=" & show w.current-time & " scope=[" & w.scope & "]"
+
+  can : Text, Policy, Text, Integer -> [Console] Nothing
+  can (label) (p) (cap) (dir) =
+    let a = policy-can-allow p cap dir
+    in print-line-uni (label & ": " & (if a.decided == False then "refused, " & a.why
+      else if a.holds then "witness " & witness-text a.witness & ", re-evaluated allowed " & yn (eval-policy p a.witness).allowed
+      else "never") & ", evaluations " & show a.evaluations)
+
+  widens : Text, Policy, Policy -> [Console] Nothing
+  widens (label) (old) (new) =
+    let a = policy-widens old new
+    in print-line-uni (label & ": " & (if a.decided == False then "refused, " & a.why
+      else if a.holds then "witness " & witness-text a.witness & ", re-evaluated new " & yn (eval-policy new a.witness).allowed & " old " & yn (eval-policy old a.witness).allowed
+      else "never") & ", evaluations " & show a.evaluations)
+
+  dead : Text, Policy -> [Console] Nothing
+  dead (label) (p) =
+    let d = policy-dead-rules p
+    in print-line-uni (label & ": " & (if d.decided == False then "refused, " & d.why else "dead [" & join d.dead 0 "" & "]") & ", evaluations " & show d.evaluations)
+
+  join : List Text, Integer, Text -> Text
+  join (xs) (i) (acc) = if i >= list-length xs then acc else join xs (i + 1) (acc & (if i == 0 then "" else ", ") & list-at xs i)
+
+  many-rules : Integer, Integer, List PolicyRule -> List PolicyRule
+  many-rules (i) (n) (acc) =
+    if i >= n then acc
+    else many-rules (i + 1) n (acc & [rule-allow ("r" & show i) (AllOf [AgentIs ("a" & show i), TimeWindow (i * 10) (i * 10 + 5)])])
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    can "last minute of a window" (pol [rule-deny "early" (TimeWindow 0 199) "early", rule-allow "win" (AllOf [net 1, TimeWindow 100 200])]) "Net" 1
+    can "  never: window ends a minute sooner" (pol [rule-deny "early" (TimeWindow 0 199) "early", rule-allow "win" (AllOf [net 1, TimeWindow 100 199])]) "Net" 1
+    can "trust exactly the threshold" (pol [rule-deny "high" (TrustAbove 501) "high", rule-allow "t" (AllOf [net 1, TrustAbove 500])]) "Net" 1
+    can "  never: deny from the threshold" (pol [rule-deny "high" (TrustAbove 500) "high", rule-allow "t" (AllOf [net 1, TrustAbove 500])]) "Net" 1
+    can "one named agent" (pol [rule-allow "k" (AllOf [net 1, AgentIs "k"])]) "Net" 1
+    can "  never: the rule removed" (pol []) "Net" 1
+    can "NotCond through an unnamed agent" (pol [rule-allow "u" (AllOf [net 1, NotCond (AnyOf [AgentIs "a", AgentIs "b"])])]) "Net" 1
+    can "  never: shadowed by a deny" (pol [rule-deny "all" (net 2) "all", rule-allow "u" (AllOf [net 1, NotCond (AnyOf [AgentIs "a", AgentIs "b"])])]) "Net" 1
+    can "direction 7 through NotCond" (pol [rule-allow "d" (AllOf [net 2, NotCond (AnyOf [net 0, net 1])])]) "Net" 7
+    can "  never: direction 1 asked" (pol [rule-allow "d" (AllOf [net 2, NotCond (AnyOf [net 0, net 1])])]) "Net" 1
+    widens "an unnamed direction is enumerated" (pol []) (pol [rule-allow "d" (AllOf [net 2, NotCond (AnyOf [net 0, net 1])])])
+    can "second rule after a narrower deny" (pol [rule-deny "a" (AllOf [net 1, AgentIs "a"]) "a", rule-allow "n" (net 1)]) "Net" 1
+    can "  never: the deny made wide" (pol [rule-deny "a" (net 1) "a", rule-allow "n" (net 1)]) "Net" 1
+    can "trust above 65535" (pol [rule-allow "t" (AllOf [net 1, TrustAbove 65535])]) "Net" 1
+    can "trust above 65536" (pol [rule-allow "t" (AllOf [net 1, TrustAbove 65536])]) "Net" 1
+    can "trust above 0" (pol [rule-allow "t" (AllOf [net 1, TrustAbove 0])]) "Net" 1
+    can "window start after stop" (pol [rule-allow "w" (AllOf [net 1, TimeWindow 10 5])]) "Net" 1
+    can "adjacent window ends" (pol [rule-deny "before" (TimeWindow 0 99) "before", rule-allow "w" (AllOf [net 1, TimeWindow 100 100])]) "Net" 1
+    can "below every window" (pol [rule-allow "w" (AllOf [net 1, NotCond (TimeWindow 0 1000)])]) "Net" 1
+    can "scoped allow" (pol [rule-allow-scoped "fs" (CapabilityMatch "FileSystem" 1) "/home/"]) "FileSystem" 1
+    widens "scope dropped widens" (pol [rule-allow-scoped "fs" (CapabilityMatch "FileSystem" 1) "/home/"]) (pol [rule-allow "fs" (CapabilityMatch "FileSystem" 1)])
+    widens "  never: scope added" (pol [rule-allow "fs" (CapabilityMatch "FileSystem" 1)]) (pol [rule-allow-scoped "fs" (CapabilityMatch "FileSystem" 1) "/home/"])
+    widens "  never: the same policy" (pol [rule-allow "n" (net 1)]) (pol [rule-allow "n" (net 1)])
+    widens "a window moved later" (pol [rule-allow "w" (AllOf [net 1, TimeWindow 100 200])]) (pol [rule-allow "w" (AllOf [net 1, TimeWindow 100 201])])
+    dead "dead rules" (pol [rule-allow "a" (net 1), rule-allow "b" (net 1), rule-deny "c" (TimeWindow 10 5) "c", rule-allow "d" (net 2)])
+    dead "no dead rules" (pol [rule-allow "a" (net 1), rule-allow "d" (net 2)])
+    can "only just after every window" (pol [rule-deny "w" (TimeWindow (0 - 9223372036854775807 - 1) 1000) "w", rule-allow "n" (net 1)]) "Net" 1
+    can "only just before every window" (pol [rule-deny "w" (TimeWindow 1000 9223372036854775807) "w", rule-allow "n" (net 1)]) "Net" 1
+    can "only at one instant" (pol [rule-deny "w" (NotCond (TimeWindow 100 100)) "w", rule-allow "n" (net 1)]) "Net" 1
+    can "only below the threshold" (pol [rule-allow "t" (AllOf [net 1, NotCond (TrustAbove 500)])]) "Net" 1
+    widens "only at an unnamed direction" (pol []) (pol [rule-allow "d" (AllOf [NotCond (net 0), NotCond (net 1), NotCond (CapabilityMatch "~unnamed-capability~" 0), NotCond (CapabilityMatch "~unnamed-capability~" 1)])])
+    widens "only at an unnamed capability" (pol []) (pol [rule-allow "c" (NotCond (net 2))])
+    can "past the budget"(pol (many-rules 0 200 [])) "Net" 1
+    dead "past the budget, dead rules" (pol (many-rules 0 200 []))
+  end
+
+Page 1

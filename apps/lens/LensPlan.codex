@@ -123,7 +123,11 @@ Section: Grain Checking
     else if list-length paths == 0 then
       lp-check-reach model dims m (i + 1) (list-push acc (lens-diag 23 ("measure " & m.name & " on table " & m.table & " cannot reach dimension " & d.name & " on table " & d.table & ": no many-to-one join chain declared")))
     else
-      lp-check-reach model dims m (i + 1) (list-push acc (lens-diag 28 ("measure " & m.name & " on table " & m.table & " reaches dimension " & d.name & " on table " & d.table & " by more than one many-to-one path: " & lp-render-path (model.joins) (list-at paths 0) 0 (m.table) & " and " & lp-render-path (model.joins) (list-at paths 1) 0 (m.table))))
+      let subject = "measure " & m.name & " on table " & m.table & " reaches dimension " & d.name & " on table " & d.table
+      in let path-a = lp-render-path (model.joins) (list-at paths 0) 0 (m.table)
+      in let path-b = lp-render-path (model.joins) (list-at paths 1) 0 (m.table)
+      in let msg = subject & " by more than one many-to-one path: " & path-a & " and " & path-b
+      in lp-check-reach model dims m (i + 1) (list-push acc (lens-diag 28 msg))
 
   lp-check-measures : LensModel, List LensDimension, List LensMeasure, Integer, List LensDiag -> List LensDiag
   lp-check-measures (model) (dims) (ms) (i) (acc) =
@@ -229,7 +233,10 @@ Section: Bucketed Dimensions
     if i >= list-length dims then acc
     else let d = list-at dims i
     in if d.table == tbl then
-      (if lp-dim-bucketed d then lp-derive-specs dims tbl (i + 1) (list-push acc (DeriveSpec { der-alias = lp-dim-col d, der-col = d.column, der-fn = lp-bucket-fn (d.bucket) })) else lp-derive-specs dims tbl (i + 1) acc)
+      if lp-dim-bucketed d then
+        let spec = DeriveSpec { der-alias = lp-dim-col d, der-col = d.column, der-fn = lp-bucket-fn (d.bucket) }
+        in lp-derive-specs dims tbl (i + 1) (list-push acc spec)
+      else lp-derive-specs dims tbl (i + 1) acc
     else lp-derive-specs dims tbl (i + 1) acc
 
   lp-derived-scan : List LensDimension, List LensFilter, Text -> RelOp

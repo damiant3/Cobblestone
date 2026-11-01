@@ -1,0 +1,63 @@
+Chapter: DeskPadMonitorTest
+  cites Works chapter GopDesk
+  cites Works chapter GopUsbPad
+  cites Works chapter GopXhci
+  cites Works chapter GopFont
+  cites UI chapter Widget
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+Section: Test
+
+  pm-kind-text : WidgetNode -> Text
+  pm-kind-text (n) =
+    when n.wn-kind
+      is WkLabel (t) -> t
+      is otherwise -> "<not a label>"
+
+  pm-row : Integer, AcpiInfo -> Text
+  pm-row (ds) (ai) =
+    when widget-find (dk-mon-tree ds 3204448256 1600 900 1600 gfont-none ai "00:00:00" 0) "mon-v-input"
+      is Just (n) -> pm-kind-text n
+      is None -> "<absent>"
+
+  pm-ds : Integer -> Integer
+  pm-ds (present) =
+    let ds = alloc-zeroed dk-ds-bytes 64
+    in let ap = poke-32 ds dk-adorn-cell dk-adorn-default
+    in let mp = poke-32 ds dk-mon-cell (alloc-zeroed 64 64)
+    in let pp = poke-32 (peek-32 ds dk-mon-cell) dk-mon-pad-cell present
+    in ds
+
+  pm-pad : Integer -> UsbPad
+  pm-pad (st) = UsbPad { upad-ok = True, upad-host = xhci-no-host, upad-dev = xhci-no-dev, upad-dci = 0, upad-ring = 0, upad-report = 0, upad-len = 0, upad-state = st, upad-layout = pad-no-layout }
+
+  pm-yn : Boolean -> Text
+  pm-yn (v) = if v then "yes" else "no"
+
+  opening : [Console] Nothing =
+    let ai = acpi-boot 0
+    in let st = alloc-zeroed 64 64
+    in let live = pm-pad st
+    in let ds = pm-ds 1
+    in let b1 = poke-qword st 16 5
+    in let n1 = desk-pad-note live ds
+    in let r1 = pm-row ds ai
+    in let b2 = poke-qword st 16 9
+    in let n2 = desk-pad-note live ds
+    in let r2 = pm-row ds ai
+    in let n3 = desk-pad-note pad-no-pad ds
+    in let r3 = pm-row ds ai
+    in let absent = pm-ds 0
+    in let n4 = desk-pad-note pad-no-pad absent
+    in let r4 = pm-row absent ai
+    in let fonts = gapp-fallback cbf-init
+    in act
+      print-line-uni ("pressed   " & r1)
+      print-line-uni ("changed   " & r2)
+      print-line-uni ("no pad    " & r3)
+      print-line-uni ("absent    " & r4)
+      print-line-uni ("blank carries the pad: " & pm-yn ((desk-apps-blank fonts live).da-pad.upad-ok) & "  empty carries none: " & pm-yn ((desk-apps-empty fonts).da-pad.upad-ok == False))
+    end
+
+Page 1

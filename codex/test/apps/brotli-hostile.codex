@@ -82,6 +82,37 @@ Section: Helpers
   show-bounded (out) (label) =
     label & " terminated bounded=" & (if list-length out < 1000000 then "True" else "False")
 
+ Rows 8 and 9 are the malformed-input layer. Row 8 is a seeded single-byte
+ mutation sweep over a stream this encoder wrote: every byte position in turn is
+ flipped and the result decoded under a cap, and the arm requires every decode to
+ stop with output no larger than the cap. The three out-of-alphabet index refusals
+ and the output cap are what make that hold; against the decoder before them a
+ mutation that reached a context-map tree index or a simple-code symbol trapped,
+ and one that enlarged the meta-block length ran the heap out. Row 9 decodes a
+ real stream under a cap smaller than its output and requires the result to honour
+ the cap.
+
+  mutate-copy : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mutate-copy (xs) (pos) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else mutate-copy xs pos val (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) val else list-at xs i))
+
+  sweep-mut : List Integer, Integer, Integer, Integer, Integer -> Integer
+  sweep-mut (base) (n) (pos) (cap) (bad) =
+    if pos >= n then bad
+    else let m = mutate-copy base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in let d = brotli-decompress-capped m cap
+    in let ok = list-length d <= cap
+    in sweep-mut base n (pos + 1) cap (if ok then bad else bad + 1)
+
+  show-sweep : List Integer, Text -> Text
+  show-sweep (base) (label) =
+    label & " all-bounded=" & (if sweep-mut base (list-length base) 0 2000 0 == 0 then "True" else "False")
+
+  show-cap : List Integer, Integer, Text -> Text
+  show-cap (input) (cap) (label) =
+    label & " within=" & (if list-length (brotli-decompress-capped input cap) <= cap then "True" else "False")
+
  Row 5's header, derived from brotli-read-wbits:313 rather than guessed. Bit
  0 set sends it past the wbits=16 shorthand; bits 1..3 zero make n zero; bits
  4..6 equal to one make m one, so wbits is 8 + 1 = 9. brotli-valid:2507
@@ -124,7 +155,11 @@ Section: Body
     d <- row (show-len (brotli-decompress []) "4-empty-input")
     e <- row (show-len (brotli-decompress wbits-nine) "5-wbits-nine")
     f <- row (show-bounded (brotli-decompress valid-header-garbage) "6-valid-header-garbage")
-    print-line-uni (show-bounded (brotli-decompress truncated) "7-truncated")
+    g <- row (show-bounded (brotli-decompress truncated) "7-truncated")
+    h <- row (show-sweep (brotli-compress (make-skew 2000 0 [])) "8-mutation-sweep")
+    i <- row (show-cap (brotli-compress (make-skew 600 0 [])) 50 "9-output-cap")
+    j <- row (show-sweep (brotli-compress (make-repeated 65 2000 0 [])) "10-mutation-sweep-uniform")
+    print-line-uni (show-sweep (brotli-compress (make-skew 4000 0 [])) "11-mutation-sweep-skew4k")
   end
 
 Page 1

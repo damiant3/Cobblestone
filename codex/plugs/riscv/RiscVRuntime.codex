@@ -133,15 +133,6 @@ Section: __str_concat (with prologue)
 
 Section: __itoa (with prologue)
 
- `8(sp)` HOLDS THE INDEX THE REVERSAL STARTS AT, and every path that reaches
- `done-label` must have written it. The digit loop's `pos-label` store covers
- the two paths that run it (0 with no sign, 1 past the minus); the ZERO path
- branches straight to `done-label` and wrote nothing, so the reversal read
- whatever the caller had left in that slot. `show 0` then indexed the digit
- buffer by a stale value and, when the caller was a Real one (`-2.9` as a bit
- pattern), took an unmapped address and hung in `__trap_handler` with no output
- (plugs-backlog 1.100, `real-compare-negative`).
-
   rv-rt-itoa : List Integer
   rv-rt-itoa =
     let i = []
@@ -627,10 +618,6 @@ Section: __text_to_double (a0=text -> f64 bits in a0)
     rv-ld rv-t0 src 0 & rv-sd dst rv-t0 0 & rv-ld rv-t0 src 8 & rv-sd dst rv-t0 8
     & rv-ld rv-t0 src 16 & rv-sd dst rv-t0 16 & rv-ld rv-t0 src 24 & rv-sd dst rv-t0 24
 
- s2 length then den, s3 bytes then R, s4 index then tmp and counters, s5
- negative flag, s6 N, s7 fraction digits, s8 dot flag then exponent, a1
- the 53-bit accumulator. den, R and tmp live at sp + 0, 32 and 64.
-
   rv-rt-text-to-double : List Integer
   rv-rt-text-to-double =
     let i = []
@@ -755,24 +742,6 @@ Section: __text_to_double (a0=text -> f64 bits in a0)
 Section: __list_cons
 
    **The arguments are (element, list), and this helper had them the other way
- round.** x86-64 is the contract of record and its `__list_cons` reads the
- length out of `rsi`, the SECOND argument (`X86_64ListHelpers.codex`,
- `emit-list-cons-alloc`); ARM64's reads it out of `x1`; and both emitters,
- this lane's included, pass the element first. This helper read the list from
- `a0` and stored `a1` as the element, so `n :: acc` handed it the integer as
- a list pointer and the first `ld` faulted on it: `cause 5`, `tval` equal to
- the integer being consed.
-
- Nothing caught it because nothing on this lane conses. `list-view-probe` is
- the only test that uses `::` and it is PASS_REFUSED here for `__list-len`,
- so it never runs; the riscv battery has never executed this helper.
- `codex/test/list-cons-tail` is the guard, and it checks CONTENT rather than
- only length, because a length-only check passes against a cons that stores
- the wrong operand.
-
- The element is parked in `t6` across the allocation because `a0` is
- overwritten with the new list before the element is stored, and `t6` is not
- touched until the copy loop below.
 
   rv-rt-list-cons : List Integer
   rv-rt-list-cons =
@@ -1317,15 +1286,6 @@ Section: print-line-uni (NS16550A UART at 0x10000000 with CCE-to-Unicode)
     in rv-patch-insn-raw i to-m6 (rv-j ((m6 - to-m6) * 4))
 
 Section: int-mod
-
- int-mod answers the NON-NEGATIVE residue, and rem does not: it keeps the
- sign of the dividend. x86-64's emit-int-mod-reg-locals adds the divisor's
- magnitude when idiv's remainder comes back negative; this helper stopped at
- the remainder, so int-mod (-7) 3 was -1 here and 2 there. Measured against
- codex/test/modprobe, and it is the whole of interval-exhaustive's failures on
- both cross lanes, all of them in mod, because iv-mod's transfer function is
- written for a non-negative result. The branch skips five instructions, so its
- offset is twenty bytes.
 
   rv-rt-int-mod : List Integer
   rv-rt-int-mod =
@@ -2627,11 +2587,6 @@ Section: Process Table
 
 Section: Capability Gates
 
- The port of the ARM64 "Capability Gates" (x86-64's emit-check-capability,
- inline at each network helper, every refusal -1, every admitted answer what
- x86-64 answers with no NIC): there is no flags register here, so the check
- leaves the tested bits in t0 and the caller branches on `beq t0, zero`.
-
   rv-cap-network-read : Integer = 8
   rv-cap-network-write : Integer = 9
 
@@ -2709,28 +2664,9 @@ Section: Block device helpers
   rv-cap-block-device : Integer = 10
   rv-fs-elevated-addr : Integer = rv-fixed-base + #14100
 
- The deck's three cells. A deck is a WATERMARK inside the same bump heap,
- not a second arena, so this is all the state it takes: `build` saves the
- heap position, records it with `__deck-set` and advances past the
- reservation, and `phase-compact` is `__heap-restore (__deck-pos)`. `s1` is
- this lane's allocation pointer as `x28` is ARM64's. They sit above the
- block driver's span, which ends at `rv-fixed-base + #14108`, and below the
- effect-op slots and the heap.
-
   rv-deck-pos-addr : Integer = rv-fixed-base + #15000
   rv-deck-bound-counter-addr : Integer = rv-fixed-base + #15008
   rv-bivy-save-addr : Integer = rv-fixed-base + #15010
-
- The gate ARM64 puts behind its SVC, inline here because these are emitted
- helpers rather than a syscall (x86-64 gates its network family the same
- way). Admitted by `cap-block-device`, or by the `fs-elevated` cell, which
- only the FileSystem servicers set and which is what lets a program holding
- FileSystem.Read but not Device.Block reach the disk through them. Refusal
- is -1 for all three, which is x86-64's answer and ARM64's.
-
- It goes ABOVE each helper's frame and argument shuffling, so the refusal
- can be a bare `ret`, and that is safe because
- `rv-rt-proc-caller-cap-in-t0` touches only t0, t1 and t2.
 
   rv-emit-block-gate : RvState -> RvState
   rv-emit-block-gate (st) =
@@ -2748,16 +2684,6 @@ Section: Block device helpers
     in let st8 = rv-patch-insn st7 has-cap-idx (rv-bne rv-t0 rv-zero ((proceed - has-cap-idx) * 4))
     in rv-patch-insn st8 elev-idx (rv-bne rv-t1 rv-zero ((proceed - elev-idx) * 4))
 
- The helpers are emitted only when the DRIVER is in the program, and that
- is what lets an unresolved call be a hard failure rather than a warning.
- They call `vb-capacity-auto`, `vb-read-auto` and `vb-write-auto`, which a
- program that never declares `Device.Block` correctly eliminates, so
- emitting them unconditionally put three unresolved calls in EVERY compile
- on this lane: measured 2026-08-18, 506 of 506 programs in the riscv cross
- battery. A check that fires on every subject cannot be turned into a
- refusal, and allow-listing the `vb-` names would have excused exactly the
- calls that matter in a program that does declare the capability.
-
   rv-emit-block-helpers : RvState -> RvState
   rv-emit-block-helpers (st) =
     if st.has-block-driver == False then st
@@ -2773,15 +2699,6 @@ Section: Block device helpers
     in let st9 = rv-emit st8 (rv-addi rv-sp rv-sp 16)
     in let st10 = rv-emit st9 rv-ret
     in rv-emit-block-read st10
-
- The buffer is bump-allocated from the heap frontier in s1 and its address
- is the answer, which is x86-64's contract for this builtin. It is kept in
- the frame rather than a callee-saved register across the call: s1 is the
- heap pointer and the callee bumps it, so the pre-call value is not
- recoverable from it afterwards.
-
- The incoming sector arrives in a0 and moves to a4 BEFORE the argument
- registers are loaded, or loading a0 destroys it.
 
   rv-emit-block-read : RvState -> RvState
   rv-emit-block-read (st) =
@@ -2804,14 +2721,6 @@ Section: Block device helpers
     in let st16 = rv-emit st15 rv-ret
     in rv-emit-block-write st16
 
- **`block-write-sector` answers 0 for SUCCESS.** That is x86-64's contract
- and not a convention this lane may choose: `fat16-claim-cluster` reads it
- as `if w == 0 then c else 0`, so a non-zero answer means the cluster was
- not claimed. The driver keeps 1 for success like every other `vb-` entry
- point, and the translation happens here because here is the contract
- boundary. The `addi -1` maps 1 to 0 and 0 to -1, so success answers 0 and
- failure answers something that is not 0, which is all either side asks.
-
   rv-emit-block-write : RvState -> RvState
   rv-emit-block-write (st) =
     let st1 = rv-record-func st "block-write-sector"
@@ -2831,16 +2740,6 @@ Section: Block device helpers
     in rv-emit st13 rv-ret
 
 Section: FileSystem servicer
-
- The port of ARM64's "FileSystem servicer". Capability bits are Foreword
- Capability's own and the refusal answers are x86-64's: the empty text for
- a read, False for a write.
-
- Each call is bracketed with `rv-fs-elevated-addr`, which is the token the
- block gate above admits a caller on when it does not hold
- `cap-block-device`. A program declaring FileSystem.Read and not
- Device.Block reaches the disk through here and nowhere else, so the cell is
- set immediately before the fat16 call and cleared immediately after it.
 
   rv-cap-filesystem-read : Integer = 6
   rv-cap-filesystem-write : Integer = 7
@@ -2898,14 +2797,6 @@ Section: FileSystem servicer
     in let st10 = rv-emit st9 rv-ret
     in rv-patch-insn st10 deny-idx (rv-beq rv-t0 rv-zero ((deny - deny-idx) * 4))
 
- The slot address is materialised BEFORE the code address is loaded, and
- the order is load-bearing rather than stylistic. A slot address is above
- 0x7FFFFFFF, so `rv-li` reaches `rv-li-64`, which takes a SCRATCH register
- (`RiscVEncoder.codex`: `tmp = if rd == rv-t0 then rv-t1 else rv-t0`).
- Loading the code into t0 first and then materialising the address into t1
- destroys the code address in the scratch, and the slot receives whatever
- the low half of the address was.
-
   rv-emit-boot-closure : RvState, Text, Integer -> RvState
   rv-emit-boot-closure (st) (code-name) (slot) =
     let st1 = rv-emit-li st rv-t1 slot
@@ -2930,11 +2821,6 @@ Section: FileSystem servicer
     else rv-emit-boot-closure st2 wh-resume-id (rv-resume-slot st)
 
 Section: Apply One
-
- A closure is [code, arity, captures...]. `__rv_apply1` applies the closure in
- a0 to the one argument in a1: an arity of 0 (unknown) or 1 calls it, and a
- larger arity answers a 32-byte partial [trampoline, arity - 1, closure,
- argument] whose trampoline puts the argument first and calls through.
 
   rv-rt-apply1 : List Integer
   rv-rt-apply1 =
@@ -2996,16 +2882,6 @@ Section: Apply One
     in rv-rt-emit i (rv-jalr rv-zero rv-t1 0)
 
 Section: Process Lifecycle
-
- The port of the ARM64 "Process Lifecycle" (design
- `docs/Designs/Done/Compiler/Arm64ProcessLifecycle.md`): the cooperative half
- of x86-64's model, a switch only at process-wait, process-yield or an exit.
- Saved context is the callee-saved set at a call boundary: sp at 72, s1 (the
- heap pointer) at 80, s2..s7 at 88..128, the resume address (ra) at 160,
- the delivered status (a0 on resume) at 176, s8..s11 at 184..208, s0 at
- 216. A child's region is pool + (slot << 25): heap from its base, stack
- top 2 MiB above it. A closure is called the way rv-emit-closure-call calls
- it: pointer in t2, code word at [t2], argument in a0.
 
   rv-proc-state-ready : Integer = 1
   rv-proc-state-blocked : Integer = 3
@@ -3342,8 +3218,7 @@ Section: Emit All Runtime Helpers
     in let st3d = rv-emit (rv-emit st3c rv-nop) rv-nop
     in let st3e = rv-emit st3d (rv-csrw #305 rv-t0)
     in let st3f = rv-emit-seed-fs-handlers st3e
-    in let st4 = rv-add-call-patch st3f "opening"
-    in let st5 = rv-emit st4 rv-nop
+    in let st5 = rv-emit-call-to st3f "opening"
     in let st5 = rv-emit st5 rv-wfi
     in let st6 = rv-emit st5 (rv-j (0 - 4))
     in let ap-idx = st6.insn-count

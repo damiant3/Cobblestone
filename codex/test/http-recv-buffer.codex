@@ -1,0 +1,65 @@
+Chapter: HttpRecvBufferTest
+
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter HttpFetch
+
+Section: Fixtures
+
+  ramp : Integer, Integer, List Integer -> List Integer
+  ramp (i) (len) (acc) = if i >= len then acc else ramp (i + 1) len (list-push acc (bit-and (i * 11 + 1) 255))
+
+  ascii : Text, Integer, List Integer -> List Integer
+  ascii (t) (i) (acc) = if i >= text-length t then acc else ascii t (i + 1) (list-push acc (if char-code-at t i == char-code-at "|" 0 then 13 else to-unicode (char-code-at t i)))
+
+  sess : Integer -> NetSession
+  sess (d) = net-session-new [1, 2, 3, 4, 5, 6] [10, 0, 0, 2] [10, 0, 0, 1] 4000 80 [10, 0, 0, 1] 1000
+
+  result-of : List Integer, Integer, Integer -> NetResult
+  result-of (bs) (off) (stop) = NetResult { session = sess 0, output = "", data = bs, data-off = off, data-stop = stop }
+
+  feed-in : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
+  feed-in (ts) (bs) (off) (step) =
+    if off >= list-length bs then ts
+    else let stop = if off + step > list-length bs then list-length bs else off + step
+    in feed-in (http-feed-capped ts (result-of bs off stop)) bs stop step
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+  take : List Integer, Integer, Integer, List Integer -> List Integer
+  take (bs) (i) (n) (acc) = if i >= n then acc else take bs (i + 1) n (list-push acc (list-at bs i))
+
+  scans-agree : List Integer -> Boolean
+  scans-agree (bs) =
+    let ts = feed-in (transport-new (sess 0)) bs 0 700
+    in http-headers-end-buf ts 0 (ts.recv-len) == http-headers-end bs 0 (list-length bs)
+
+  response : Integer -> List Integer
+  response (n) = ascii "HTTP/1.1 200 OK|\nContent-Length: 20000|\n|\n" 0 [] & ramp 0 n []
+
+  small-cost : Integer -> Integer
+  small-cost (d) =
+    let bs = response 2000
+    in let a = __heap-save
+    in let ts = feed-in (transport-new (sess 0)) bs 0 1460
+    in let data = http-recv-data ts
+    in let b = __heap-save
+    in if list-length data /= list-length bs then 0 - 1 else b - a
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("the buffer's header scan agrees with the list's on a response, on a body with no blank line, and on a blank line at the very end: " & show (scans-agree (response 3000) & scans-agree (ramp 0 5000 []) & scans-agree (ascii "HTTP/1.1 204 No Content|\n|\n" 0 [])))
+    print-line-uni ("a response fed 1,460 bytes at a time reads back byte for byte: " & show (same (http-recv-data (feed-in (transport-new (sess 0)) (response 50000) 0 1460)) (response 50000) 0))
+    print-line-uni ("the feed keeps exactly the first http-max-response bytes and no more, as the list did: " & show (same (http-recv-data (feed-in (transport-new (sess 0)) (ramp 0 1050000 []) 0 1460)) (take (ramp 0 1050000 []) 0 http-max-response []) 0))
+    print-line-uni ("a 2,000-byte response costs less than 1/100 of the 8 MiB the list reserved: " & show (small-cost 0 > 0 & small-cost 0 < http-max-response * 8 / 100))
+  end
+
+Page 1

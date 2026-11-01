@@ -7,10 +7,7 @@ Chapter: MqttEndpoint
  accepted the message, and a reconnect loses whatever was in flight. So a
  QoS 1 PUBLISH is held until its PUBACK matches by packet identifier, and
  retransmitted with the DUP flag if the broker stays silent past the
- deadline. That is the retransmission this row wanted, at the layer that
- can actually promise anything.
-
- We say:
+ deadline.
 
 Section: Constants
 
@@ -132,20 +129,39 @@ Section: Publishing
 
 Section: Receiving
 
+ A packet that has not parsed is waited for unless its head already says it never will (MQTT 5 sections 1.5.5 and
+ 4.13): a remaining length still continuing after its fourth byte is malformed, and a packet declared past
+ mqtt-max-packet can never arrive through the receive buffer, whose capacity it is (tep-app-cap; the protocol's own
+ ceiling is 268435455). Either fails the endpoint.
+
+  mqtt-max-packet : Integer = 262144
+
+  mqtt-head-refused : List Integer -> Boolean
+  mqtt-head-refused (bs) = mqtt-head-refused-at bs 0
+
+  mqtt-head-refused-at : List Integer, Integer -> Boolean
+  mqtt-head-refused-at (bs) (off) =
+    if list-length bs - off < 2 then False
+    else let v = mqtt-decode-vbi bs (off + 1)
+    in if v.mv-ok then 1 + v.mv-len + v.mv-value > mqtt-max-packet
+    else list-length bs - off >= 5
+
   mqtt-ep-recv : MqttEp, List Integer, Integer -> MqttEpStep
   mqtt-ep-recv (ep) (buf) (now) = mqtt-ep-drain ep buf 0 [] now
 
   mqtt-ep-drain : MqttEp, List Integer, Integer, List (List Integer), Integer -> MqttEpStep
   mqtt-ep-drain (ep) (buf) (used) (outs) (now) =
-    when mqtt-parse (mqtt-slice buf used (list-length buf))
-      is None -> MqttEpStep { ms-ep = ep, ms-out = outs, ms-consumed = used }
+    when mqtt-parse-at buf used
+      is None ->
+        MqttEpStep { ms-ep = (if mqtt-head-refused-at buf used then __record-set ep "me-state" mqtt-st-failed else ep), ms-out = outs, ms-consumed = used }
       is Just (p) ->
         let step = mqtt-ep-on-packet ep p now
         in mqtt-ep-drain (step.ms-ep) buf (used + p.mp-total) (outs & (step.ms-out)) now
 
   mqtt-ep-on-packet : MqttEp, MqttPacket, Integer -> MqttEpStep
   mqtt-ep-on-packet (ep) (p) (now) =
-    if p.mp-type == mqtt-t-connack then mqtt-ep-on-connack ep p
+    if ep.me-state == mqtt-st-failed then mqtt-ep-idle ep
+    else if p.mp-type == mqtt-t-connack then mqtt-ep-on-connack ep p
     else if p.mp-type == mqtt-t-suback then mqtt-ep-on-suback ep p
     else if p.mp-type == mqtt-t-puback then mqtt-ep-on-puback ep p
     else if p.mp-type == mqtt-t-pubrec then mqtt-ep-on-pubrec ep p now
@@ -179,10 +195,7 @@ Section: Receiving
     in __record-set r3 "me-phase" mqtt-ph-none
 
  QoS 2, publishing half. PUBREC says the broker has taken delivery and is
- holding it; PUBREL releases it and PUBCOMP retires the exchange. The
- pending packet becomes the PUBREL, because that is now the message whose
- loss must be recovered from -- keeping the PUBLISH there is what makes a
- timeout redeliver something the broker already has.
+ holding it; PUBREL releases it and PUBCOMP retires the exchange.
 
   mqtt-ep-on-pubrec : MqttEp, MqttPacket, Integer -> MqttEpStep
   mqtt-ep-on-pubrec (ep) (p) (now) =
@@ -223,7 +236,8 @@ Section: Receiving
 
   mqtt-ep-on-publish : MqttEp, MqttPacket -> MqttEpStep
   mqtt-ep-on-publish (ep) (p) =
-    let b1 = __record-set ep "me-in-topic" (mqtt-publish-topic p)
+    if mqtt-publish-valid p == False then mqtt-ep-idle (__record-set ep "me-state" mqtt-st-failed)
+    else let b1 = __record-set ep "me-in-topic" (mqtt-publish-topic p)
     in let b2 = __record-set b1 "me-in-payload" (mqtt-publish-payload p)
     in let ep2 = __record-set b2 "me-in-count" ((ep.me-in-count) + 1)
     in if mqtt-publish-qos p == 1 then

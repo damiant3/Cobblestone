@@ -10,7 +10,7 @@ is still real is never quietly dropped.
 
 ## The shared mixer
 
-`Foreword chapter Random` supplies `mix-bits` and `rand-in-range` (CL 10493),
+`Foreword chapter Random` supplies `mix-bits` and `rand-in-range`,
 and its prose carries the whole account: why an unfolded multiply-add has no
 usable low bits, why that is invisible to a balance check, and -- the part
 that matters most -- **why it is only a defect where the consumer reads low
@@ -55,9 +55,6 @@ boundaries before it carry all input; the gain is prompts that arrive
 decomposed, which our own input does not produce. Grade each repair with a line in
 that test's oracle before changing the code.
 
-## lora-resident exceeds the 60 s wall budget under load
+## TorchZip: a tensor is not bounded by its storage
 
-`codex/test/apps/lora-resident` failed `wall budget exceeded` in two cite-gate
-fan-outs on 2026-10-17 (red at `-Jobs 16`, root on seed A24CC2ED) and passes alone.
-**Open:** a `lora-resident.wall` sized from a measured loaded run, as the four
-GPU arms got (`flux-condition.wall` and its siblings).
+`tz-meta` (`TorchZip.codex`) bounds a tensor's shape, stride and offset, but never checks its end, `base + (off + numel) * width`, against the size of the storage entry it names: `torch-zip-read` takes storage names and starts and no sizes. A checkpoint whose pickle names a tensor longer than its `data/<key>` entry is accepted, and the layout reads the bytes of whatever entry follows (found by reading the code, not yet run; reek 2026-11-01). The repair is a sizes list beside starts (`TzEntry.te-size`, stored at +24, method 0) and a refusal in `tz-meta`; three of the five callers are the Spark loaders (`apps/spark/MusicT5Load`, `MusicLMLoad`, `EncodecLoad`), which no lane takes until Damian reopens Spark (CurrentPlan), so the change waits on that.

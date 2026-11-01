@@ -55,35 +55,6 @@ Section: Builtin Emission
     reg = tmp.reg
   }
 
-  emit-s-new-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-s-new-builtin (st) (args) =
-    let r = emit-helper-call-0 (st-append-code st (li reg-rdi chan-max-slots)) args "chan-kern-create"
-    in EmitResult {
-    state = st-append-code (r.state) (cmp-ri (r.reg) 0 & jcc cc-ge 2 & [15, 11]),
-    reg = r.reg
-  }
-
-  emit-s-send-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-s-send-builtin (st) (args) =
-    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
-    in let loc = alloc-local (r0.state)
-    in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
-    in let r1 = emit-expr st1 (list-at args 1)
-    in let loaded = load-local (r1.state) (loc.reg)
-    in let st2 = st-append-code (loaded.state) (mov-rr reg-rsi (r1.reg))
-    in let st3 = st-append-code st2 (mov-rr reg-rdi (loaded.reg))
-    in let st4 = emit-call-to st3 "chan-kern-send-block"
-    in let st5 = st-append-code st4 (cmp-ri reg-rax 0 & jcc cc-ge 2 & [15, 11])
-    in let back = load-local st5 (loc.reg)
-    in let tmp = alloc-temp (back.state)
-    in EmitResult {
-    state = st-append-code (tmp.state) (mov-rr (tmp.reg) (back.reg)),
-    reg = tmp.reg
-  }
-
-  emit-s-recv-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-s-recv-builtin (st) (args) = emit-expr (st-set-tail-pos st False) (list-at args 0)
-
   emit-helper-call-3 : CodegenState, List IRExpr, Text -> EmitResult
   emit-helper-call-3 (st) (args) (helper) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -123,20 +94,6 @@ Section: Builtin Emission
     reg = tmp.reg
   }
 
- list-at is view-aware: the capacity cell at [p-8] is negative for a
- tail view, whose [p+8] holds a phantom base shaped exactly like a
- plain list pointer (see Section: List Views in the list helpers).
- Both paths finish with the same +8-displacement load, therefore the
- branch only selects which base the scaled index is added to.
-
- The index is bounded before either path runs, and the bound is read off
- the header rather than off the effective base, so a tail view is bounded
- by the view's own length and not by the backing block behind it. Measured
- before this guard existed, on a three-element list with a marker list
- allocated after it: `list-at t 3` and `t 4` answered the neighbour's
- capacity and length cells, and `t 5` through `t 7` answered its three
- elements verbatim. Nothing said anything.
-
   emit-list-at-builtin : CodegenState, List IRExpr -> EmitResult
   emit-list-at-builtin (st) (args) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -165,13 +122,6 @@ Section: Builtin Emission
     state = st-append-code (rd.state) (mov-load (rd.reg) (addr.reg) 8),
     reg = rd.reg
   }
-
- tag-equal reads the constructor tag word at [p+0] of both variant
- values -- the same cell every IrCtorPat test loads -- and answers
- their equality without touching a field. One comparison on bare
- metal, which is the whole reason the builtin exists; the arguments
- must be variant values, which the ForAll type in the registry cannot
- say, and the row's prose there says it instead.
 
   emit-tag-equal-builtin : CodegenState, List IRExpr -> EmitResult
   emit-tag-equal-builtin (st) (args) =
@@ -227,35 +177,8 @@ Section: Builtin Emission
     in let rd = alloc-temp (r.state)
     in EmitResult { state = st-append-code (rd.state) (mov-load (rd.reg) (r.reg) 8), reg = rd.reg }
 
- A sized vector has a list's layout, the count at offset 0 and the elements
- from offset 8, so a singleton is the one-element literal and `emit-list`
- already builds exactly that. The helper route cannot: `__list_cons` reads the
- list it extends out of `rsi`, `emit-helper-call-1` loads only `rdi`, and
- there is no list to extend in the first place.
-
   emit-vec-singleton-builtin : CodegenState, List IRExpr -> EmitResult
   emit-vec-singleton-builtin (st) (args) = emit-list st args
-
-  emit-session-new-builtin : CodegenState, List IRExpr -> EmitResult
-  emit-session-new-builtin (st) (args) = emit-helper-call-0 st args "chan-kern-create"
-
- char-at and char-code-at had substring's defect in its smaller form: the
- index was added to the pointer and the byte was read, with no check at
- either end. Measured before this, with a neighbour allocated after the
- subject and filled with a byte the subject cannot contain, `char-code-at a
- 20` on a five-byte text answered 64 -- the neighbour's first byte. A
- negative index read backwards.
-
- The bound is TIGHTER than substring's by one. `substring s n 0` at
- start == length is legal and answers empty, because a zero-length slice at
- the end asks for no bytes; `char-at s n` at index == length is not, because
- there is no byte there to name. So this is `0 <= i` and `i < len`, not
- `i <= len`.
-
- The length temp avoids the index register only. The container pointer
- arrives from load-local, whose scratch pool is R8/R9/R15 and whose
- register-local case hands back a callee-saved register; neither is in the
- temp rotation, so the pointer cannot be the register the length lands in.
 
   emit-index-bounds : CodegenState, Integer, Integer -> CodegenState
   emit-index-bounds (st) (idx-reg) (ptr-reg) =
@@ -319,8 +242,8 @@ Section: Builtin Emission
   }
 
  128, 2176 and 67712 are the CCE band boundaries and 192/224/240/128 the
- lead and continuation masks. cce-encode in codex/foreword/core/CCE.codex
- is the authority for all seven.
+ lead and continuation masks. cce-encode (Foreword chapter CCE) is the
+ authority for all seven.
 
   emit-char-encode-builtin : CodegenState, List IRExpr -> EmitResult
   emit-char-encode-builtin (st) (args) =
@@ -397,17 +320,7 @@ Section: Builtin Emission
  A letter is TWO bands, because CCE's punctuation sits between the ASCII
  letters and the rest. Code points 13..64 are the ASCII lowercase and
  uppercase, 65..96 are the punctuation and symbols, and 97..127 are the
- sixteen accented Latin letters and fifteen Cyrillic ones. So this cannot be
- the single range it used to be: the old test was 13..64 and refused all 31
- non-ASCII Tier 0 letters, and extending it to 13..127 would have called
- every punctuation character a letter.
-
- Two consecutive alloc-temps and no local, which is safe in both directions
- the rotation can go. If the first temp is handed the operand's own register
- the opening move is a no-op, and the operand is never read again after it;
- the second temp is the next entry in a six-register rotation and so cannot
- be the first. That is the hazard this file's own prose describes and it is
- why the operand is copied once and then consumed, rather than re-read.
+ sixteen accented Latin letters and fifteen Cyrillic ones.
 
   emit-is-letter-builtin : CodegenState, List IRExpr -> EmitResult
   emit-is-letter-builtin (st) (args) =
@@ -457,15 +370,6 @@ Section: Builtin Emission
     state = st4,
     reg = rd.reg
   }
-
- The BUILTIN and the unary-minus OPERATOR are the same operation and now share
- one emitter. This carried its own copy that emitted `neg-r` unconditionally,
- a two's-complement INTEGER negation, so `negate` on a real returned that
- real's bit pattern negated as an integer: measured 2026-08-21, `negate` of
- the f32 2.5 answered -1.75 and of 1.5 answered -3.0, which are exactly those
- bit patterns two's-complement negated and read back as f32. Nothing caught it
- because no test in the tree called `negate` on a real -- every negative
- operand in `codex/test/ops/real-mode-compare` is built as `0.0 - x`.
 
   emit-negate-builtin : CodegenState, List IRExpr -> EmitResult
   emit-negate-builtin (st) (args) = emit-negate st (list-at args 0)
@@ -622,31 +526,6 @@ Section: Builtin Emission
      reg = rd.reg
     }
 
- int-rem is int-mod without the correction. idiv leaves the truncated
- remainder in RDX already -- sign of the dividend, magnitude below the
- divisor's -- and that is exactly what int-rem answers, so these two
- functions are their int-mod siblings stopped at the mov out of RDX.
- The branch the siblings continue into is what makes int-mod Euclidean:
- it adds the divisor's absolute value when the remainder came back
- negative. Deleting that branch is the whole difference between the two
- builtins, and it is why int-rem pairs with `/` where int-mod does not.
-
- Keep the pair together. If the register discipline around idiv changes
- in one of these, it changes in both -- the clobber is RAX and RDX
- either way, and the reg-locals fast path exists for the same reason in
- each.
-
- These are NOT the path a saturated `int-rem a b` takes. That call is
- rewritten at lowering into `IrBinary IrRemInt` (`lower-int-rem-apply`),
- which is what lets the node reach the plugs and what gets it the
- power-of-two strength reduction and the LIR selector for free. What is
- left here is the call that lowering does not rewrite, which is the
- partial application `int-rem x`: the rewrite fires only on the
- two-argument apply. Both forms were measured against
- `codex/test/int-rem` -- these functions carried the whole pin before
- the lowering rewrite existed, which is why they are known good rather
- than merely plausible.
-
   emit-int-rem-reg-locals : CodegenState, Integer, Integer -> EmitResult
   emit-int-rem-reg-locals (st) (a-reg) (b-reg) =
     let st1 = st-append-code st (mov-rr reg-rax a-reg)
@@ -751,31 +630,11 @@ Section: Builtin Emission
     in let st11 = st-append-code st10 (jmp (sub-loop - (st10.code-len + 5)))
     in patch-jcc-at st11 sub-exit-pos (st11.code-len)
 
- substring took its start and length on trust and copied that many bytes,
- with no clamp against the source and no non-negative check. It was an
- unchecked heap read, and the demonstration is not subtle: with a second
- text allocated after the first, `substring a 0 40` on a five-byte string
- answered `abcde   s       PASSWORD-1234567890     ` -- the whole of the
- next allocation, returned verbatim. A negative start read BEFORE the
- string, and a negative length produced a Text whose length field was -1.
-
- It traps now, at Damian's ruling. Trapping rather than clamping because a
- clamp turns a program's bug into quietly wrong data, and this project's
- virtues say a safety guarantee is never silently degraded; `__narrow`
- already dies on UD2 for the same shape, so the machinery and the
- expectation both already exist.
-
  The obvious range check is `start + len <= srclen` and it is wrong: the
  sum can wrap, and the input that wraps it is the one an attacker picks.
  Subtracting instead cannot overflow here, because the first check pins
  start to [0, i64-max] and srclen is a length, so srclen - start is always
  representable.
-
- The source length is read from offset 0, which is where every Text carries
- it. It is held in a temp across three loads, so the second temp is taken
- with alloc-temp-avoiding: the rotation is six deep and would otherwise be
- free to hand back the register the length is sitting in, which is the
- hazard this file's own prose describes.
 
   emit-substring-bounds : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-substring-bounds (st) (src-loc) (start-loc) (len-loc) =
@@ -854,14 +713,6 @@ Section: Builtin Emission
     state = st-append-code (rd.state) (li (rd.reg) 0),
     reg = rd.reg
   }
-
- print-text is print-line minus the terminator: the same raw CCE byte
- loop with NO trailing linefeed. It exists for wire emitters whose
- payload newlines are CCE bytes inside the Text -- a payload built in
- pieces cannot delegate any newline to print-line, whose terminator is
- the raw serial byte 10 and not the CCE newline, and whose extra byte
- lands inside any SIZE-framed payload region (measured 2026-07-28
- against the IR wire; the account is in red-workplan's outbox).
 
   emit-print-text-builtin : CodegenState, List IRExpr -> EmitResult
   emit-print-text-builtin (st) (args) =
@@ -1109,11 +960,6 @@ Section: Builtin Emission
     reg = rd.reg
   }
 
- Evicts RAX for the same reason emit-text-lit does: the mov-ri64 below writes RAX
- before alloc-temp runs, and alloc-temp only evicts the register it allocates, so
- a field cached in RAX would survive in the cache after this instruction had
- overwritten it. This is the second and last site with that shape.
-
   emit-self-type-defs-builtin : CodegenState -> EmitResult
   emit-self-type-defs-builtin (st) =
     let site = st.code-len + 2
@@ -1152,11 +998,6 @@ Section: Builtin Emission
     state = st-append-code st4 (mov-store (addr-tmp.reg) (new-tmp.reg) 0),
     reg = rd.reg
   }
-
- Arming rides the same flag as the guard, so at `deck-guard-enabled` 0 an
- extent's enter and exit are byte-identical to what they were before the guard
- existed. Without that test the arming would be emitted into every program
- whether or not anything reads the cell, and `deck-record` is not rare.
 
   emit-deck-arm : CodegenState -> CodegenState
   emit-deck-arm (st) =
@@ -1356,8 +1197,20 @@ Section: Builtin Emission
      reg = rd.reg
     }
 
-  emit-bit-shift : CodegenState, List IRExpr, (Integer -> List Integer) -> EmitResult
-  emit-bit-shift (st) (args) (shift-bytes) =
+ COMPILER-158 (Damian, 2026-11-01): a count of 64 or more answers 0, or the
+ sign fill for the arithmetic shift, and a negative count traps. SHL, SHR and
+ SAR mask CL to its low six bits, so the range is decided before the shift.
+
+  emit-shift-guarded : Integer, (Integer -> List Integer), Boolean -> List Integer
+  emit-shift-guarded (rd) (shift-bytes) (arith) =
+    let shift = shift-bytes rd
+    in let wide = if arith then sar-ri rd 63 else xor-rr64 rd rd
+    in let neg-check = cmp-ri reg-rcx 0 & jcc cc-ge 2 & [15, 11]
+    in let big = neg-check & wide
+    in cmp-ri reg-rcx 63 & jcc cc-a (list-length shift + 5) & shift & jmp (list-length big) & big
+
+  emit-bit-shift : CodegenState, List IRExpr, (Integer -> List Integer), Boolean -> EmitResult
+  emit-bit-shift (st) (args) (shift-bytes) (arith) =
     let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
     in let loc0 = alloc-local (r0.state)
     in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
@@ -1369,7 +1222,7 @@ Section: Builtin Emission
     else ld0.state
     in let rd = alloc-temp st3
     in EmitResult {
-     state = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg) & shift-bytes (rd.reg)),
+     state = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg) & emit-shift-guarded (rd.reg) shift-bytes arith),
      reg = rd.reg
     }
 
@@ -1438,10 +1291,6 @@ Section: State Effect
  guard: the lane count is a compile-time constant fixed by the builtin's
  own type, so both comparisons are against immediates. Two compares and
  two predictable branches, no memory traffic, no temp.
-
- The guard reads the index register and writes nothing, so it introduces
- no register hazard; `alloc-temp-avoiding` below still keeps the result
- off the index.
 
   emit-vec-lane-bounds : CodegenState, Integer, Integer -> CodegenState
   emit-vec-lane-bounds (st) (idx-reg) (lanes) =
@@ -1831,14 +1680,6 @@ Section: State Effect
      reg = rd.reg
     }
 
- CodegenState's reg is declared 0..65535 and a type argument is invariant,
- so pairing it with the state below would otherwise build a Tup2 carrying
- those bounds against a declared plain Integer.
-
- How it was found is worth the line: a tuple desugars to a MkTupN
- application carrying a SYNTHETIC span, so the mismatch is reported with no
- file and no line at all.
-
   emit-mask-extract : CodegenState, List IRExpr -> (CodegenState, Integer)
   emit-mask-extract (st) (args) =
     let mask = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -2125,27 +1966,9 @@ Section: Builtin Registry
   sort-x86-emitters : List BuiltinX86Emitter -> List BuiltinX86Emitter
   sort-x86-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
 
- emit-expr is defined twice in the unit -- here in the X86-64 emitter as
- CodegenState, IRExpr -> EmitResult, and in the Codex Emitter as IRExpr,
- List Text, Integer -> Text -- so which one a mention resolves to depends on
- the chapter the mention sits in. Written inline in the table it resolved to
- the text emitter and would not type-check. Written here it resolves to this
- one. The name is bound at the call site, so an emitter body is only
- portable between chapters if every name in it is unique across the unit;
- this is the single name in the whole table for which that is false. That is
- the collision, met head-on. A helper with an unambiguous name is the fix
- that does not depend on the collision either way.
-
   emit-identity-builtin : CodegenState, List IRExpr -> EmitResult
   emit-identity-builtin (st) (args) =
     emit-expr (st-set-tail-pos st False) (list-at args 0)
-
- A NULLARY BUILTIN IS ONE WHOSE REGISTRY TYPE IS NOT A FUNCTION, and the
- distinction is load-bearing rather than descriptive: `emit-name-nonlocal`
- hands a bare name's emitter an EMPTY argument list, so an emitter that
- indexes an argument faults on it. A row with no recorded type answers False
- and keeps the older behaviour, which is the safe direction: the caller then
- emits a call, and an unresolved call is a diagnostic rather than a crash.
 
   ty-is-nullary : CodexType -> Boolean
   ty-is-nullary (t) =
@@ -2200,16 +2023,6 @@ Section: Builtin Registry
   emit-vec256-pending (st) (what) =
     emit-int-lit (st-add-error st cdx-emit-not-implemented ("'" & what & "' works on a vector wider than 16 bytes that is neither Vector 8 (Real approximate) nor Vector 4 Real, and x86-64 has no emission for it. The build halts rather than emit a 16-byte value for a wider type.") synthetic-span) 0
 
- This is the miss path, and it can no longer be reached from the routing
- list: sorted-builtin-names is derived from this very table, so a routed
- name has an emitter by construction. It stays because it is still the
- answer to a lookup that finds nothing, and because of what it replaced.
- The miss used to answer by emitting the constant 1 -- it fell through to
- the emitter for file-exists, whose whole body was `li rd, 1`. That is a
- silent miscompile: the builtin quietly becomes True. A miss that cannot
- happen must still be loud, because the cost of being wrong about that is
- a program that compiles and lies.
-
   emit-unknown-builtin : CodegenState, Text -> EmitResult
   emit-unknown-builtin (st) (name) =
     let st0 = st-add-error st cdx-emit-not-implemented ("No x86-64 emitter for builtin '" & name & "'. Nothing routed here should be able to miss: sorted-builtin-names is derived from x86-builtin-emitters. Reaching this means emit-builtin was called for a name is-builtin did not admit.") synthetic-span
@@ -2220,17 +2033,9 @@ Section: Builtin Registry
      reg = rd.reg
     }
 
- The table is read out of the state, and that is load-bearing rather than
- tidy. x86-builtin-emitters is a zero-parameter definition, and a mention of
- one is emitted as a call, not read from a slot: this function once made
- three mentions and so built and sorted all 143 entries three times over on
- every builtin emission in the program. Binding it to a local cut that to
- one, which was the whole fix at the time.
-
  One per emission is now too many. The emitters are a projection of the
  builtins table, so building them means building all 244 rows and every
- type expression they carry, and doing that per emission would be far worse
- than the three-fold waste this paragraph used to describe. So it is built
+ type expression they carry. So it is built
  where sorted-builtin-names is built -- once, where a CodegenState is
  constructed -- and carried forward from function to function as a pointer.
  The search below is unchanged.

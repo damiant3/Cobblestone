@@ -23,6 +23,23 @@ Section: Helpers
     if i >= n then acc
     else copy-set bs k v (i + 1) n (list-push acc (if i == k then v else list-at bs i))
 
+ A seeded single-byte mutation sweep: every byte of a valid message is flipped
+ and run through icmp-parse-checked and icmp-parse, both of which must return.
+ A bound removed from the ICMP parse would read past the message and trap; the
+ sweep completing is the guard.
+
+  icmp-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  icmp-mutate (bs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else icmp-mutate bs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at bs i) v else list-at bs i))
+
+  icmp-sweep : List Integer, Integer, Integer, Integer -> Integer
+  icmp-sweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else let m = icmp-mutate base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in let c = when icmp-parse-checked m is Just (x) -> 1 is None -> 0
+    in icmp-sweep base (pos + 1) n (acc + c + list-length ((icmp-parse m).payload))
+
 Section: Entry
 
   opening : [Console] Nothing =
@@ -37,4 +54,5 @@ Section: Entry
       print-line-uni (arm "short" [0, 0, 255])
       print-line-uni (arm "short-sums-zero" [255, 255])
       print-line-uni (arm "not-a-byte" (set-at (set-at good 8 6) 9 265))
+      print-line-uni ("icmp-mutation-sweep completed=" & (if icmp-sweep good 0 (list-length good) 0 >= 0 then "True" else "False"))
     end

@@ -7,32 +7,18 @@ Chapter: CheckErrorsScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
- THE NINETEENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
- script is byte-identical to the one that shipped before the migration.
-
- EVERY STATEMENT HERE IS RAW, so `pipe-ref` binds nothing and no artifact
- declares a production: the three stages below are named, their inputs and
- resources are declared, and their FOUR refusals are written down, which is all
- the model can reach into a script spelled this way. The verdicts are the
- return on the migration, because all four exits are inside raw payloads and
- no walk of the bodies would find any of them.
-
- THIS SCRIPT'S `-Jobs` IS REAL, unlike `sweep-apps`': it reaches
- `ForEach-Object -ThrottleLimit`, so the stage below declares a parallelism the
- caller actually controls.
-
 Section: Parameters
 
- -Kernel carries the doc block because the default is the trap: compile.ps1
- falls back to build-output/bare-metal/Codex.cdx, which holds whichever
- kernel ran LAST, so a check that omits it can judge the OLD compiler and
- report that nothing changed.
+  ce-kernel-doc : List Text =
+    [ "The compiler to judge. Empty means compile.ps1's own default, which is"
+    , "build-output/bare-metal/Codex.cdx and therefore whichever kernel ran"
+    , "LAST. Every caller inside a gate passes this explicitly."
+    ]
 
-  ce-kernel-doc : List Text = ["The compiler to judge. Empty means compile.ps1's own default, which is", "build-output/bare-metal/Codex.cdx and therefore whichever kernel ran", "LAST. Every caller inside a gate passes this explicitly."]
-
-  ce-params : List ShellParam = [sh-doc ce-kernel-doc (sh-param-default "Kernel" SptString (SeLit "")), sh-param-default "Jobs" SptInt (SeInt 16)]
+  ce-params : List ShellParam =
+    [ sh-doc ce-kernel-doc (sh-param-default "Kernel" SptString (SeLit ""))
+    , sh-param-default "Jobs" SptInt (SeInt 16)
+    ]
 
 Section: The pipeline, declared before it is spelled
 
@@ -50,31 +36,173 @@ Section: The pipeline, declared before it is spelled
 
 Section: S01 -- Derive the set
 
-  s01-body : List ShellCmd = [ScRaw "Set-StrictMode -Version Latest", ScRaw "$ErrorActionPreference = 'Stop'", ScRaw "Set-Location (Join-Path $PSScriptRoot '..')", ScRaw "[Environment]::CurrentDirectory = (Get-Location).Path", ScBlank, ScComment "176 tests assert a REFUSAL, and until 2026-08-17 the gate ran 13 of them.", ScComment "", ScComment "codex/test/errors is the diagnostic path: each source is a program the", ScComment "compiler must reject, and its .failing names the codes that must fire. The", ScComment "set is reachable only from build/test.ps1, which is the battery and refuses", ScComment "to run without Damian. bvt.ps1 carries thirteen by name. So a rejection that", ScComment "stopped happening, or started happening for a different reason, was caught", ScComment "by nothing an agent is allowed to run.", ScComment "", ScComment "That is not hypothetical. bounded-exceeded declared `bounded linear` over a", ScComment "loop appending a text LITERAL; COMPILER-8 made that extend in place, rule 3", ScComment "stopped inferring it growing, the declaration held, and the test compiled", ScComment "clean -- the exact opposite of what it exists to assert. It reached main", ScComment "green in Update 45 and was found by a release battery, not by a gate.", ScComment "", ScComment "The set is derived from the directory, never listed here. A hand-maintained", ScComment "list is how the thirteen came to stand for a hundred and seventy-six.", ScComment "", ScComment "Exit 1 on any test that compiles, that fails with the wrong codes, or that", ScComment "declares nothing at all.", ScBlank, ScRaw "$errDir = Join-Path 'codex' (Join-Path 'test' 'errors')", ScRaw "if (-not (Test-Path -PathType Container $errDir)) {", ScRaw "    Write-Host \"FAIL: $errDir is missing\"", ScRaw "    exit 1", ScRaw "}", ScBlank, ScRaw "$tests = @(Get-ChildItem $errDir -Filter *.codex -File | ForEach-Object { $_.FullName } | Sort-Object)", ScRaw "if ($tests.Count -eq 0) {", ScRaw "    Write-Host \"FAIL: no tests under $errDir -- a check over an empty set passes for free\"", ScRaw "    exit 1", ScRaw "}", ScBlank]
+  s01-body : List ShellCmd =
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScSetLocation (SePathJoin SeScriptRoot (SeLit ".."))
+    , ScBlank
+    , ScComment "176 tests assert a REFUSAL, and until 2026-08-17 the gate ran 13 of them."
+    , ScComment ""
+    , ScComment "codex/test/errors is the diagnostic path: each source is a program the"
+    , ScComment "compiler must reject, and its .failing names the codes that must fire. The"
+    , ScComment "set is reachable only from build/test.ps1, which is the battery and refuses"
+    , ScComment "to run without Damian. bvt.ps1 carries thirteen by name. So a rejection that"
+    , ScComment "stopped happening, or started happening for a different reason, was caught"
+    , ScComment "by nothing an agent is allowed to run."
+    , ScComment ""
+    , ScComment "That is not hypothetical. bounded-exceeded declared `bounded linear` over a"
+    , ScComment "loop appending a text LITERAL; COMPILER-8 made that extend in place, rule 3"
+    , ScComment "stopped inferring it growing, the declaration held, and the test compiled"
+    , ScComment "clean -- the exact opposite of what it exists to assert. It reached main"
+    , ScComment "green in Update 45 and was found by a release battery, not by a gate."
+    , ScComment ""
+    , ScComment "The set is derived from the directory, never listed here. A hand-maintained"
+    , ScComment "list is how the thirteen came to stand for a hundred and seventy-six."
+    , ScComment ""
+    , ScComment "Exit 1 on any test that compiles, that fails with the wrong codes, or that"
+    , ScComment "declares nothing at all."
+    , ScBlank
+    , ScAssign "errDir" (SeBare (SePathJoin (SeLit "codex") (SePathJoin (SeLit "test") (SeLit "errors"))))
+    , ScIf (SeBare (SeNot (SeDirExists (SeVar "errDir")))) [ScEcho (SeText "FAIL: $errDir is missing"), ScExit (SeInt 1)] []
+    , ScBlank
+    , ScRaw "$tests = @(Get-ChildItem $errDir -Filter *.codex -File | ForEach-Object { $_.FullName } | Sort-Object)"
+    , ScIf (SeBare (SeIntEq (SeProperty (SeVar "tests") "Count") (SeInt 0))) ce-no-tests []
+    , ScBlank
+    ]
 
- THE EMPTY-SET REFUSAL IS THE ONE WORTH NAMING: a check over no subjects is
- green for free, so the absence of tests is itself a failure here (L-DENOM).
+  ce-no-tests : List ShellCmd =
+    [ ScEcho (SeText "FAIL: no tests under $errDir -- a check over an empty set passes for free")
+    , ScExit (SeInt 1)
+    ]
 
-  s01 : PipeStage = PipeStage { ps-name = "derive the set", ps-why = "every refusal test is taken from the directory, never from a list, because a hand-maintained list is how thirteen came to stand for a hundred and seventy-six", ps-in = [], ps-out = [tests-art], ps-needs = [], ps-verdict = [PoExit 1 "codex/test/errors does not exist; spelled inside a raw payload", PoExit 1 "codex/test/errors holds no test at all, and a check over an empty set passes for free; spelled inside a raw payload"], ps-body = s01-body }
+  s01 : PipeStage = PipeStage { ps-name = "derive the set", ps-why = "every refusal test is taken from the directory, never from a list, because a hand-maintained list is how thirteen came to stand for a hundred and seventy-six", ps-in = [], ps-out = [tests-art], ps-needs = [], ps-verdict = [PoExit 1 "codex/test/errors does not exist", PoExit 1 "codex/test/errors holds no test at all, and a check over an empty set passes for free"], ps-body = s01-body }
 
 Section: S02 -- Compile each, in parallel
 
-  s02-body : List ShellCmd = [ScRaw "$outRoot = Join-Path 'test-output' '_errors'", ScRaw "if (Test-Path $outRoot) { Remove-Item -Recurse -Force $outRoot }", ScRaw "New-Item -ItemType Directory -Force -Path $outRoot | Out-Null", ScBlank, ScRunDot (SePathJoin SeScriptRoot (SeLit "vm-config.ps1")), ScAssign "Jobs" (SeCallArgs "Get-VmAdmittedSlots" [SaNamed "Slots" (SeVar "Jobs"), SaNamed "GuestMB" (SeInt 256), SaNamed "What" (SeLit "check-errors")]), ScRaw "$sw = [System.Diagnostics.Stopwatch]::StartNew()", ScRaw "Write-Host \"  check-errors: $($tests.Count) refusals, $Jobs parallel slots\"", ScBlank, ScRaw "$compileScript = Join-Path (Resolve-Path .).Path 'build\\compile.ps1'", ScRaw "$bad = [System.Collections.Concurrent.ConcurrentBag[string]]::new()", ScRaw "$skipped = [System.Collections.Concurrent.ConcurrentBag[string]]::new()", ScRaw "$passed = [System.Collections.Concurrent.ConcurrentBag[string]]::new()", ScBlank, ScRaw "$tests | ForEach-Object -ThrottleLimit $Jobs -Parallel {", ScRaw "    $t = $_", ScRaw "    $base = [System.IO.Path]::GetFileNameWithoutExtension($t)", ScRaw "    $skipFile = $t -replace '\\.codex$', '.skip'", ScRaw "    if (Test-Path -PathType Leaf $skipFile) {", ScRaw "        ($using:skipped).Add(\"$base ($((Get-Content -TotalCount 1 $skipFile).Trim()))\")", ScRaw "        return", ScRaw "    }", ScRaw "    $failFile = $t -replace '\\.codex$', '.failing'", ScRaw "    if (-not (Test-Path -PathType Leaf $failFile)) {", ScRaw "        ($using:bad).Add(\"$base -- no .failing sidecar: the test asserts nothing\")", ScRaw "        return", ScRaw "    }", ScRaw "    $codes = @(Get-Content $failFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })", ScRaw "    if ($codes.Count -eq 0) {", ScRaw "        ($using:bad).Add(\"$base -- .failing is empty: the test asserts nothing\")", ScRaw "        return", ScRaw "    }", ScRaw "    $outDir = Join-Path $using:outRoot $base", ScRaw "    New-Item -ItemType Directory -Force -Path $outDir | Out-Null", ScRaw "    $cdxOut = Join-Path $outDir \"$base.cdx\"", ScRaw "    $logOut = Join-Path $outDir \"$base.log\"", ScIndent [ScComment "NOT $args: that is an automatic variable, and assigning it inside a"], ScIndent [ScComment "scriptblock shadows the one splatting reads."], ScRaw "    $cargs = @('-Src', $t, '-Out', $cdxOut, '-Log', $logOut)", ScRaw "    if ($using:Kernel) { $cargs += @('-Kernel', $using:Kernel) }", ScRaw "    & pwsh -NoProfile -File $using:compileScript @cargs *> $null", ScRaw "    if ($LASTEXITCODE -eq 0) {", ScRaw "        ($using:bad).Add(\"$base -- COMPILED, and it must be refused ($($codes -join ' '))\")", ScRaw "        return", ScRaw "    }", ScRaw "    $logText = if (Test-Path $logOut) { Get-Content $logOut -Raw } else { '' }", ScIndent [ScComment "test.ps1's adjudication, and it must stay identical to it: `error"], ScIndent [ScComment "(CDX)?0*<n>` rather than a bare CDX<n> search, because the lexer's codes"], ScIndent [ScComment "print unprefixed and single-digit (`error 6:`) and a CDX-prefixed search"], ScIndent [ScComment "reports those as wrong-code failures. A bare `CDX2031` checks only that"], ScIndent [ScComment "the code fired; `CDX2031@33:5` also pins WHERE, which a bare code cannot"], ScIndent [ScComment "-- a diagnostic reported at a synthetic 0,0 span prints no line:column"], ScIndent [ScComment "prefix at all, so a code-only check passes against a compiler that lost"], ScIndent [ScComment "the position entirely."], ScRaw "    $missing = ''", ScRaw "    foreach ($code in $codes) {", ScRaw "        if ($code -match '^(?<c>(CDX)?\\d+)@(?<l>\\d+):(?<col>\\d+)$') {", ScRaw "            $c = $matches['c'] -replace '^CDX', ''", ScRaw "            $pat = \"\\b$($matches['l']):$($matches['col']):\\s*error (CDX)?0*$c\\b\"", ScRaw "            if ($logText -notmatch $pat) { $missing = $code; break }", ScRaw "        } elseif ($logText -notmatch \"error (CDX)?0*$code\\b\") { $missing = $code; break }", ScRaw "    }", ScRaw "    if ($missing) {", ScRaw "        ($using:bad).Add(\"$base -- refused, but not with $missing (declared: $($codes -join ' '))\")", ScRaw "        return", ScRaw "    }", ScRaw "    $msgFile = $t -replace '\\.codex$', '.message'", ScRaw "    $lostNote = @(if (Test-Path -PathType Leaf $msgFile) { Get-Content $msgFile | Where-Object { $_.Trim() } | Where-Object { -not $logText.Contains($_.Trim()) } })", ScRaw "    if ($lostNote.Count -gt 0) {", ScRaw "        ($using:bad).Add(\"$base -- refused as declared, but the diagnostic lost its note: '$($lostNote[0].Trim())'\")", ScRaw "    } else {", ScRaw "        ($using:passed).Add($base)", ScRaw "    }", ScRaw "}", ScBlank]
+  s02-body : List ShellCmd =
+    [ ScAssign "outRoot" (SeBare (SePathJoinN [SeLit "test-output", SeLit "_errors"]))
+    , ScRaw "if (Test-Path $outRoot) { Remove-Item -Recurse -Force $outRoot }"
+    , ScRaw "New-Item -ItemType Directory -Force -Path $outRoot | Out-Null"
+    , ScBlank
+    , ScRunDot (SePathJoin SeScriptRoot (SeLit "vm-config.ps1"))
+    , ScAssign "Jobs" (SeCallArgs "Get-VmAdmittedSlots" [SaNamed "Slots" (SeVar "Jobs"), SaNamed "GuestMB" (SeInt 256), SaNamed "What" (SeLit "check-errors")])
+    , ScDotNetCallAssign "sw" "System.Diagnostics.Stopwatch" "StartNew" []
+    , ScEcho (SeText "  check-errors: $($tests.Count) refusals, $Jobs parallel slots")
+    , ScBlank
+    , ScRaw "$compileScript = Join-Path (Resolve-Path .).Path 'build\\compile.ps1'"
+    , ScDotNetCallAssign "bad" "System.Collections.Concurrent.ConcurrentBag[string]" "new" []
+    , ScDotNetCallAssign "skipped" "System.Collections.Concurrent.ConcurrentBag[string]" "new" []
+    , ScDotNetCallAssign "passed" "System.Collections.Concurrent.ConcurrentBag[string]" "new" []
+    , ScBlank
+    , ScRaw "$tests | ForEach-Object -ThrottleLimit $Jobs -Parallel {"
+    , ScIndent ce-one-test
+    , ScRaw "}"
+    , ScBlank
+    ]
 
- THIS STAGE IS THE ONLY ONE ON THE CAMPAIGN SO FAR THAT IS GENUINELY PARALLEL,
- and the guest count it declares is `-Jobs`' default rather than a fixed one.
+  ce-one-test : List ShellCmd =
+    [ ScAssign "t" SeItem
+    , ScDotNetCallAssign "base" "System.IO.Path" "GetFileNameWithoutExtension" [SeVar "t"]
+    , ScAssign "skipFile" (SeBare (SeReplace (SeVar "t") "\\.codex$" (SeLit ".skip")))
+    , ScIf (SeBare (SeFileExists (SeVar "skipFile"))) ce-skip-one []
+    , ScAssign "failFile" (SeBare (SeReplace (SeVar "t") "\\.codex$" (SeLit ".failing")))
+    , ScIf (SeBare (SeNot (SeFileExists (SeVar "failFile")))) ce-no-failing []
+    , ScRaw "$codes = @(Get-Content $failFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })"
+    , ScIf (SeBare (SeIntEq (SeProperty (SeVar "codes") "Count") (SeInt 0))) ce-empty-failing []
+    , ScAssign "outDir" (SeBare (SePathJoinN [SeVar "using:outRoot", SeVar "base"]))
+    , ScRaw "New-Item -ItemType Directory -Force -Path $outDir | Out-Null"
+    , ScAssign "cdxOut" (SeBare (SePathJoinN [SeVar "outDir", SeText "$base.cdx"]))
+    , ScAssign "logOut" (SeBare (SePathJoinN [SeVar "outDir", SeText "$base.log"]))
+    , ScComment "NOT $args: that is an automatic variable, and assigning it inside a"
+    , ScComment "scriptblock shadows the one splatting reads."
+    , ScAssign "cargs" (SeArrayLiteral [SeLit "-Src", SeVar "t", SeLit "-Out", SeVar "cdxOut", SeLit "-Log", SeVar "logOut"])
+    , ScRaw "if ($using:Kernel) { $cargs += @('-Kernel', $using:Kernel) }"
+    , ScAssign "flagsFile" (SeBare (SeReplace (SeVar "t") "\\.codex$" (SeLit ".flags")))
+    , ScIf (SeBare (SeFileExists (SeVar "flagsFile"))) [ScAppend "cargs" (SeArrayLiteral [SeLit "-RawFlags", SeTrim (SeFileText (SeVar "flagsFile"))])] []
+    , ScRaw "& pwsh -NoProfile -File $using:compileScript @cargs *> $null"
+    , ScIf (SeBare (SeExitCodeEq 0)) ce-compiled []
+    , ScRaw "$logText = if (Test-Path $logOut) { Get-Content $logOut -Raw } else { '' }"
+    , ScComment "test.ps1's adjudication, and it must stay identical to it: `error"
+    , ScComment "(CDX)?0*<n>` rather than a bare CDX<n> search, because the lexer's codes"
+    , ScComment "print unprefixed and single-digit (`error 6:`) and a CDX-prefixed search"
+    , ScComment "reports those as wrong-code failures. A bare `CDX2031` checks only that"
+    , ScComment "the code fired; `CDX2031@33:5` also pins WHERE, which a bare code cannot"
+    , ScComment "-- a diagnostic reported at a synthetic 0,0 span prints no line:column"
+    , ScComment "prefix at all, so a code-only check passes against a compiler that lost"
+    , ScComment "the position entirely."
+    , ScAssign "missing" (SeLit "")
+    , ScForEach "code" (SeVar "codes") ce-match-code
+    , ScIf (SeVar "missing") ce-wrong-code []
+    , ScAssign "msgFile" (SeBare (SeReplace (SeVar "t") "\\.codex$" (SeLit ".message")))
+    , ScRaw "$lostNote = @(if (Test-Path -PathType Leaf $msgFile) { Get-Content $msgFile | Where-Object { $_.Trim() } | Where-Object { -not $logText.Contains($_.Trim()) } })"
+    , ScIf (SeBare (SeIntGt (SeProperty (SeVar "lostNote") "Count") (SeInt 0))) ce-lost-note [ScRaw "($using:passed).Add($base)"]
+    ]
+
+  ce-skip-one : List ShellCmd =
+    [ ScRaw "($using:skipped).Add(\"$base ($((Get-Content -TotalCount 1 $skipFile).Trim()))\")"
+    , ScRaw "return"
+    ]
+
+  ce-no-failing : List ShellCmd =
+    [ ScRaw "($using:bad).Add(\"$base -- no .failing sidecar: the test asserts nothing\")"
+    , ScRaw "return"
+    ]
+
+  ce-empty-failing : List ShellCmd =
+    [ ScRaw "($using:bad).Add(\"$base -- .failing is empty: the test asserts nothing\")"
+    , ScRaw "return"
+    ]
+
+  ce-compiled : List ShellCmd =
+    [ ScRaw "($using:bad).Add(\"$base -- COMPILED, and it must be refused ($($codes -join ' '))\")"
+    , ScRaw "return"
+    ]
+
+  ce-match-code : List ShellCmd =
+    [ ScRaw "if ($code -match '^(?<c>(CDX)?\\d+)@(?<l>\\d+):(?<col>\\d+)$') {"
+    , ScRaw "    $c = $matches['c'] -replace '^CDX', ''"
+    , ScRaw "    $pat = \"\\b$($matches['l']):$($matches['col']):\\s*error (CDX)?0*$c\\b\""
+    , ScRaw "    if ($logText -notmatch $pat) { $missing = $code; break }"
+    , ScRaw "} elseif ($logText -notmatch \"error (CDX)?0*$code\\b\") { $missing = $code; break }"
+    ]
+
+  ce-wrong-code : List ShellCmd =
+    [ ScRaw "($using:bad).Add(\"$base -- refused, but not with $missing (declared: $($codes -join ' '))\")"
+    , ScRaw "return"
+    ]
+
+  ce-lost-note : List ShellCmd =
+    [ ScRaw "($using:bad).Add(\"$base -- refused as declared, but the diagnostic lost its note: '$($lostNote[0].Trim())'\")" ]
 
   s02 : PipeStage = PipeStage { ps-name = "compile each, in parallel", ps-why = "every test must be REFUSED, and refused with the codes its .failing declares; a test that compiles is the defect this exists to catch", ps-in = ["tests", "Kernel", "Jobs"], ps-out = [out-root-art, bad-art, skipped-art, passed-art], ps-needs = [PrGuests 16], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- The verdict
 
-  s03-body : List ShellCmd = [ScRaw "$sw.Stop()", ScRaw "$elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)", ScBlank, ScRaw "if ($bad.Count -gt 0) {", ScRaw "    Write-Host ''", ScRaw "    Write-Host \"FAIL: $($bad.Count) of $($tests.Count) refusal test(s) did not refuse as declared:\"", ScRaw "    foreach ($b in ($bad | Sort-Object)) { Write-Host \"  $b\" }", ScRaw "    Write-Host ''", ScRaw "    Write-Host '  A test here asserts the compiler REFUSES a program, and what it refuses'", ScRaw "    Write-Host '  with is the assertion. A rejection that moved to a different code is a'", ScRaw "    Write-Host '  diagnostic regression; one that stopped happening is a soundness hole.'", ScRaw "    Write-Host \"  Per-test logs: $outRoot\\<name>\\<name>.log\"", ScRaw "    exit 1", ScRaw "}", ScBlank, ScRaw "$skipNote = if ($skipped.Count -gt 0) { \", $($skipped.Count) skipped\" } else { '' }", ScRaw "Write-Host \"  refusals ok ($($passed.Count) refused as declared$skipNote, ${elapsed}s)\"", ScRaw "foreach ($s in ($skipped | Sort-Object)) { Write-Host \"    skipped: $s\" }", ScRaw "exit 0"]
+  s03-body : List ShellCmd =
+    [ ScCallMethod (SeVar "sw") "Stop" []
+    , ScDotNetCallAssign "elapsed" "math" "Round" [SeProperty (SeProperty (SeVar "sw") "Elapsed") "TotalSeconds", SeInt 1]
+    , ScBlank
+    , ScIf (SeBare (SeIntGt (SeProperty (SeVar "bad") "Count") (SeInt 0))) ce-refusals-failed []
+    , ScBlank
+    , ScRaw "$skipNote = if ($skipped.Count -gt 0) { \", $($skipped.Count) skipped\" } else { '' }"
+    , ScEcho (SeText "  refusals ok ($($passed.Count) refused as declared$skipNote, ${elapsed}s)")
+    , ScRaw "foreach ($s in ($skipped | Sort-Object)) { Write-Host \"    skipped: $s\" }"
+    , ScExit (SeInt 0)
+    ]
 
- A SKIPPED TEST IS NOT COUNTED AGAINST THE VERDICT: `$skipped` is reported and
- never reaches `$bad`, so a `.skip` beside a refusal test removes it from the
- assertion silently as far as the exit code is concerned.
+  ce-refusals-failed : List ShellCmd =
+    [ ScEcho (SeLit "")
+    , ScEcho (SeText "FAIL: $($bad.Count) of $($tests.Count) refusal test(s) did not refuse as declared:")
+    , ScRaw "foreach ($b in ($bad | Sort-Object)) { Write-Host \"  $b\" }"
+    , ScEcho (SeLit "")
+    , ScEcho (SeLit "  A test here asserts the compiler REFUSES a program, and what it refuses")
+    , ScEcho (SeLit "  with is the assertion. A rejection that moved to a different code is a")
+    , ScEcho (SeLit "  diagnostic regression; one that stopped happening is a soundness hole.")
+    , ScEcho (SeText "  Per-test logs: $outRoot\\<name>\\<name>.log")
+    , ScExit (SeInt 1)
+    ]
 
-  s03 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse if any test compiled, refused with the wrong code, or declared nothing", ps-in = ["bad", "skipped", "passed", "tests", "outRoot"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one test compiled when it must be refused, refused with a code its .failing does not declare, or carries no assertion at all; spelled inside a raw payload", PoExit 0 "every test not skipped refused with the codes it declares; spelled inside a raw payload"], ps-body = s03-body }
+  s03 : PipeStage = PipeStage { ps-name = "verdict", ps-why = "refuse if any test compiled, refused with the wrong code, or declared nothing", ps-in = ["bad", "skipped", "passed", "tests", "outRoot"], ps-out = [], ps-needs = [], ps-verdict = [PoExit 1 "at least one test compiled when it must be refused, refused with a code its .failing does not declare, or carries no assertion at all", PoExit 0 "every test not skipped refused with the codes it declares"], ps-body = s03-body }
 
 Section: Assembly
 

@@ -1,0 +1,47 @@
+Chapter: IcmpErrorIgnored
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Net chapter Icmp
+  cites Foreword chapter Console
+
+Section: Fixtures
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  peer-mac : List Integer = [82, 85, 10, 0, 2, 2]
+  local-ip : List Integer = [10, 0, 2, 15]
+  remote-ip : List Integer = [93, 184, 216, 34]
+  router-ip : List Integer = [10, 0, 2, 2]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+
+  live : NetSession =
+    let s = net-session-new-at local-mac local-ip gateway-ip 5000 80 remote-ip 1000
+    in set-conn s (set-recv-next (tcp-set-state (s.conn) TcpEstablished) 7001)
+
+  first-eight : List Integer, Integer, List Integer -> List Integer
+  first-eight (xs) (i) (acc) = if i >= 8 then acc else first-eight xs (i + 1) (acc & [list-at xs i])
+
+  quoted : List Integer =
+    let seg = tcp-build-segment 5000 80 1001 7001 tcp-flag-ack 8192 []
+    in ip-build-packet local-ip remote-ip ip-proto-tcp (first-eight seg 0 [])
+
+  icmp-frame : List Integer, Integer -> List Integer
+  icmp-frame (from) (code) =
+    eth-build-frame local-mac peer-mac eth-type-ipv4 (ip-build-packet from local-ip ip-proto-icmp (icmp-build-unreachable code quoted))
+
+  report : Text, List Integer -> [Console] Nothing
+  report (name) (frame) =
+    let r = net-process-frame live frame
+    in let c0 = live.conn
+    in let c1 = (r.session).conn
+    in print-line-uni (name & " -> " & r.output & ", state " & tcp-state-name (c1.state) & ", send-next kept " & show (c1.send-next == c0.send-next) & ", recv-next kept " & show (c1.recv-next == c0.recv-next) & ", nothing queued " & show (list-length ((r.session).outbox) == 0))
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni ("live: " & tcp-state-name ((live.conn).state))
+    report "port unreachable from peer  " (icmp-frame remote-ip icmp-code-port-unreachable)
+    report "fragmentation needed        " (icmp-frame router-ip 4)
+    report "host unreachable from router" (icmp-frame router-ip icmp-code-host-unreachable)
+    print-line-uni "done"
+  end
+
+Page 1

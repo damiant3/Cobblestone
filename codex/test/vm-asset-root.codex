@@ -1,0 +1,42 @@
+Chapter: VmAssetRoot
+  cites Foreword chapter Console
+  cites Foreword chapter CCE
+
+ The asset load (ports 0x40C, 0x40D, 0x417) resolves the guest's path under
+ the -asset-root of this chapter's sidecar, codex/test/gpu-files, whose
+ pattern.bin is 8192 bytes.
+
+Section: Load
+
+  write-path : Text, Integer, Integer -> Integer
+  write-path (s) (addr) (i) =
+    if i >= text-length s then poke-byte addr i 0
+    else let w = poke-byte addr i (to-unicode (char-code (char-at s i)))
+    in write-path s addr (i + 1)
+
+  load : Text, Integer, Integer -> [Device.Port, Gpu.Compute] Integer
+  load (path) (path-buf) (dest) =
+    let w = write-path path path-buf 0
+    in act
+      a <- gpu-out #40C path-buf
+      b <- gpu-out #40D dest
+      c <- gpu-out #417 0
+      gpu-in #40E
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Port, Gpu.Compute] Nothing = act
+    let pb = alloc-bytes 256
+    in let dest = alloc-bytes 16384
+    in act
+      n1 <- load "pattern.bin" pb dest
+      print-line-uni ("under the root: " & show n1)
+      n2 <- load "codex/test/gpu-files/pattern.bin" pb dest
+      print-line-uni ("working-directory path: " & show n2)
+      n3 <- load "../vm-touch-refusal.codex" pb dest
+      print-line-uni ("parent of the root: " & show n3)
+      n4 <- load "missing.bin" pb dest
+      print-line-uni ("missing file: " & show n4)
+    end
+  end

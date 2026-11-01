@@ -77,7 +77,7 @@ Section: Gossip Messages
 Section: Update Queue
 
   UpdateQueue = record {
-    uq-updates : List GossipUpdate,
+    uq-updates : List UpdateEntry,
     uq-count : Integer,
     uq-max-piggyback : Integer,
     uq-retransmit-limit : Integer
@@ -95,19 +95,40 @@ Section: Update Queue
     uq-retransmit-limit = retransmit
   }
 
+  uq-with : UpdateQueue, List UpdateEntry -> UpdateQueue
+  uq-with (q) (entries) = UpdateQueue {
+    uq-updates = entries, uq-count = list-length entries,
+    uq-max-piggyback = q.uq-max-piggyback,
+    uq-retransmit-limit = q.uq-retransmit-limit
+  }
+
   uq-enqueue : UpdateQueue, GossipUpdate -> UpdateQueue
   uq-enqueue (q) (update) =
-    __record-set (__record-set q "uq-updates" (list-push (q.uq-updates) update)) "uq-count" (q.uq-count + 1)
+    let kept = uq-drop-target (q.uq-updates) (gu-target update) 0 (q.uq-count) []
+    in uq-with q (list-push kept (UpdateEntry { ue-update = update, ue-remaining = q.uq-retransmit-limit }))
 
-  uq-take-piggyback : UpdateQueue, Integer -> List GossipUpdate
-  uq-take-piggyback (q) (max-count) =
-    let take = if q.uq-count < max-count then q.uq-count else max-count
-    in uq-take-loop (q.uq-updates) 0 take []
-
-  uq-take-loop : List GossipUpdate, Integer, Integer, List GossipUpdate -> List GossipUpdate
-  uq-take-loop (updates) (i) (n) (acc) =
+  uq-drop-target : List UpdateEntry, Text, Integer, Integer, List UpdateEntry -> List UpdateEntry
+  uq-drop-target (entries) (target) (i) (n) (acc) =
     if i >= n then acc
-    else uq-take-loop updates (i + 1) n (list-push acc (list-at updates i))
+    else let e = list-at entries i
+    in if gu-target (e.ue-update) == target then uq-drop-target entries target (i + 1) n acc
+    else uq-drop-target entries target (i + 1) n (list-push acc e)
+
+  UqTake = record { ut-updates : List GossipUpdate, ut-queue : UpdateQueue }
+
+  uq-take : UpdateQueue -> UqTake
+  uq-take (q) =
+    let n = if q.uq-count < q.uq-max-piggyback then q.uq-count else q.uq-max-piggyback
+    in uq-take-loop q 0 n [] []
+
+  uq-take-loop : UpdateQueue, Integer, Integer, List GossipUpdate, List UpdateEntry -> UqTake
+  uq-take-loop (q) (i) (n) (sent) (kept) =
+    if i >= q.uq-count then UqTake { ut-updates = sent, ut-queue = uq-with q kept }
+    else let e = list-at (q.uq-updates) i
+    in if i >= n then uq-take-loop q (i + 1) n sent (list-push kept e)
+    else let left = e.ue-remaining - 1
+    in let kept2 = if left > 0 then list-push kept (UpdateEntry { ue-update = e.ue-update, ue-remaining = left }) else kept
+    in uq-take-loop q (i + 1) n (list-push sent (e.ue-update)) kept2
 
 Section: Gossip Node State
 
@@ -145,10 +166,28 @@ Section: Gossip Node State
     gos-updates-sent = 0, gos-updates-received = 0
   }
 
+  gos-make : GossipState, List GossipPeer, UpdateQueue, Integer, Integer, Integer, Integer, Integer -> GossipState
+  gos-make (st) (peers) (queue) (seq) (sent) (received) (usent) (ureceived) = GossipState {
+    gos-id = st.gos-id, gos-address = st.gos-address,
+    gos-peers = peers, gos-peer-count = list-length peers,
+    gos-generation = st.gos-generation, gos-sequence = seq,
+    gos-queue = queue,
+    gos-ping-interval = st.gos-ping-interval,
+    gos-ping-timeout = st.gos-ping-timeout,
+    gos-suspect-timeout = st.gos-suspect-timeout,
+    gos-indirect-checks = st.gos-indirect-checks,
+    gos-last-ping = st.gos-last-ping,
+    gos-pings-sent = sent, gos-pings-received = received,
+    gos-updates-sent = usent, gos-updates-received = ureceived
+  }
+
+  gos-with : GossipState, List GossipPeer, UpdateQueue -> GossipState
+  gos-with (st) (peers) (queue) =
+    gos-make st peers queue (st.gos-sequence) (st.gos-pings-sent) (st.gos-pings-received) (st.gos-updates-sent) (st.gos-updates-received)
+
   gos-add-peer : GossipState, GossipPeer -> GossipState
   gos-add-peer (st) (p) =
-    let st2 = __record-set (__record-set st "gos-peers" (list-push (st.gos-peers) p)) "gos-peer-count" (st.gos-peer-count + 1)
-    in __record-set st2 "gos-queue" (uq-enqueue (st2.gos-queue) (GuJoin (p.gp-id) (p.gp-address) (p.gp-generation)))
+    gos-with st (list-push (for x in st.gos-peers -> x) p) (uq-enqueue (st.gos-queue) (GuJoin (p.gp-id) (p.gp-address) (p.gp-generation)))
 
   gos-find-peer : GossipState, Text -> Maybe GossipPeer
   gos-find-peer (st) (id) = gos-find-loop (st.gos-peers) id 0 (st.gos-peer-count)
@@ -160,23 +199,38 @@ Section: Gossip Node State
     in if p.gp-id == id then Just p
     else gos-find-loop peers id (i + 1) n
 
+  gp-with : GossipPeer, Text, Integer, Integer -> GossipPeer
+  gp-with (p) (status) (gen) (seen) = GossipPeer {
+    gp-id = p.gp-id, gp-address = p.gp-address,
+    gp-status = status, gp-generation = gen,
+    gp-last-seen = seen, gp-metadata = p.gp-metadata, gp-meta-count = p.gp-meta-count
+  }
+
+  gos-replace-peer : List GossipPeer, GossipPeer, Integer, Integer, List GossipPeer -> List GossipPeer
+  gos-replace-peer (peers) (np) (i) (n) (acc) =
+    if i >= n then acc
+    else let p = list-at peers i
+    in gos-replace-peer peers np (i + 1) n (list-push acc (if p.gp-id == np.gp-id then np else p))
+
 Section: Ping Cycle
 
-  gos-make-ping : GossipState -> GossipMsg
-  gos-make-ping (st) =
-    let piggyback = uq-take-piggyback (st.gos-queue) (st.gos-queue).uq-max-piggyback
-    in GmPing (st.gos-id) (st.gos-sequence) piggyback
+  GossipPing = record { gpo-state : GossipState, gpo-msg : GossipMsg }
+
+  gos-ping : GossipState -> GossipPing
+  gos-ping (st) =
+    let t = uq-take (st.gos-queue)
+    in let next = gos-make st (st.gos-peers) (t.ut-queue) (st.gos-sequence + 1) (st.gos-pings-sent + 1) (st.gos-pings-received) (st.gos-updates-sent + list-length (t.ut-updates)) (st.gos-updates-received)
+    in GossipPing { gpo-state = next, gpo-msg = GmPing (st.gos-id) (st.gos-sequence) (t.ut-updates) }
 
   gos-handle-ping : GossipState, Text, Integer, List GossipUpdate, Integer -> GossipState
   gos-handle-ping (st) (from) (seq) (updates) (now) =
-    let st2 = gos-apply-updates st updates now
-    in let st3 = gos-mark-alive st2 from now
-    in __record-set st3 "gos-pings-received" (st3.gos-pings-received + 1)
+    let st2 = gos-mark-alive (gos-apply-updates st updates now) from now
+    in gos-make st2 (st2.gos-peers) (st2.gos-queue) (st2.gos-sequence) (st2.gos-pings-sent) (st2.gos-pings-received + 1) (st2.gos-updates-sent) (st2.gos-updates-received + list-length updates)
 
   gos-handle-ack : GossipState, Text, Integer, List GossipUpdate, Integer -> GossipState
   gos-handle-ack (st) (from) (seq) (updates) (now) =
-    let st2 = gos-apply-updates st updates now
-    in gos-mark-alive st2 from now
+    let st2 = gos-mark-alive (gos-apply-updates st updates now) from now
+    in gos-make st2 (st2.gos-peers) (st2.gos-queue) (st2.gos-sequence) (st2.gos-pings-sent) (st2.gos-pings-received) (st2.gos-updates-sent) (st2.gos-updates-received + list-length updates)
 
   gos-apply-updates : GossipState, List GossipUpdate, Integer -> GossipState
   gos-apply-updates (st) (updates) (now) =
@@ -190,51 +244,51 @@ Section: Ping Cycle
     in gos-apply-loop st2 updates (i + 1) n now
 
   gos-apply-single : GossipState, GossipUpdate, Integer -> GossipState
-  gos-apply-single (st) (update) (now) = when update
-    is GuAlive (id) (gen) -> gos-set-peer-status st id "alive" gen now
-    is GuSuspect (id) (gen) -> gos-set-peer-status st id "suspect" gen now
-    is GuDead (id) (gen) -> gos-set-peer-status st id "dead" gen now
-    is GuJoin (id) (addr) (gen) ->
-      when gos-find-peer st id
-        is Just (p) -> gos-set-peer-status st id "alive" gen now
-        is None -> gos-add-peer st (gossip-peer-new id addr)
-    is GuLeave (id) (gen) -> gos-set-peer-status st id "dead" gen now
-    is GuMeta (id) (key) (gen) -> st
+  gos-apply-single (st) (update) (now) =
+    if gu-target update == st.gos-id then st
+    else when update
+      is GuAlive (id) (gen) -> gos-learn-id st id "alive" gen now update
+      is GuSuspect (id) (gen) -> gos-learn-id st id "suspect" gen now update
+      is GuDead (id) (gen) -> gos-learn-id st id "dead" gen now update
+      is GuJoin (id) (addr) (gen) ->
+        when gos-find-peer st id
+          is Just (p) -> gos-learn st p "alive" gen now update
+          is None -> gos-add-peer st (gp-with (gossip-peer-new id addr) "alive" gen now)
+      is GuLeave (id) (gen) -> gos-learn-id st id "dead" gen now update
+      is GuMeta (id) (key) (gen) -> st
+
+  gos-learn-id : GossipState, Text, Text, Integer, Integer, GossipUpdate -> GossipState
+  gos-learn-id (st) (id) (status) (gen) (now) (update) =
+    when gos-find-peer st id
+      is Just (p) -> gos-learn st p status gen now update
+      is None -> st
+
+  gos-learn : GossipState, GossipPeer, Text, Integer, Integer, GossipUpdate -> GossipState
+  gos-learn (st) (p) (status) (gen) (now) (update) =
+    if gos-overrides (p.gp-status) (p.gp-generation) status gen then
+      gos-with st (gos-replace-peer (st.gos-peers) (gp-with p status gen now) 0 (st.gos-peer-count) []) (uq-enqueue (st.gos-queue) update)
+    else st
+
+  gos-overrides : Text, Integer, Text, Integer -> Boolean
+  gos-overrides (cur) (cur-gen) (new) (new-gen) =
+    if new == "alive" then new-gen > cur-gen
+    else if new == "suspect" then
+      (if cur == "alive" then new-gen >= cur-gen else if cur == "suspect" then new-gen > cur-gen else False)
+    else if cur == "dead" then False
+    else new-gen >= cur-gen
 
   gos-mark-alive : GossipState, Text, Integer -> GossipState
   gos-mark-alive (st) (id) (now) =
-    let peers = gos-update-peer-status (st.gos-peers) id "alive" now 0 (st.gos-peer-count) []
-    in __record-set st "gos-peers" peers
-
-  gos-set-peer-status : GossipState, Text, Text, Integer, Integer -> GossipState
-  gos-set-peer-status (st) (id) (status) (gen) (now) =
-    let peers = gos-update-peer-gen (st.gos-peers) id status gen now 0 (st.gos-peer-count) []
-    in __record-set st "gos-peers" peers
-
-  gos-update-peer-status : List GossipPeer, Text, Text, Integer, Integer, Integer, List GossipPeer -> List GossipPeer
-  gos-update-peer-status (peers) (id) (status) (now) (i) (n) (acc) =
-    if i >= n then acc
-    else let p = list-at peers i
-    in if p.gp-id == id then
-      gos-update-peer-status peers id status now (i + 1) n (list-push acc (__record-set (__record-set p "gp-status" status) "gp-last-seen" now))
-    else gos-update-peer-status peers id status now (i + 1) n (list-push acc p)
-
-  gos-update-peer-gen : List GossipPeer, Text, Text, Integer, Integer, Integer, Integer, List GossipPeer -> List GossipPeer
-  gos-update-peer-gen (peers) (id) (status) (gen) (now) (i) (n) (acc) =
-    if i >= n then acc
-    else let p = list-at peers i
-    in if p.gp-id == id then
-      if gen > p.gp-generation then
-        gos-update-peer-gen peers id status gen now (i + 1) n (list-push acc (__record-set (__record-set (__record-set p "gp-status" status) "gp-generation" gen) "gp-last-seen" now))
-      else gos-update-peer-gen peers id status gen now (i + 1) n (list-push acc p)
-    else gos-update-peer-gen peers id status gen now (i + 1) n (list-push acc p)
+    when gos-find-peer st id
+      is Just (p) -> gos-with st (gos-replace-peer (st.gos-peers) (gp-with p "alive" (p.gp-generation) now) 0 (st.gos-peer-count) []) (st.gos-queue)
+      is None -> st
 
 Section: Failure Detection
 
   gos-check-suspects : GossipState, Integer -> GossipState
   gos-check-suspects (st) (now) =
-    let peers = gos-suspect-loop (st.gos-peers) now (st.gos-suspect-timeout) (st.gos-ping-timeout) 0 (st.gos-peer-count) [] (st.gos-queue)
-    in __record-set (__record-set st "gos-peers" (peers.scr-peers)) "gos-queue" (peers.scr-queue)
+    let r = gos-suspect-loop (st.gos-peers) now (st.gos-suspect-timeout) (st.gos-ping-timeout) 0 (st.gos-peer-count) [] (st.gos-queue)
+    in gos-with st (r.scr-peers) (r.scr-queue)
 
   SuspectCheckResult = record { scr-peers : List GossipPeer, scr-queue : UpdateQueue }
 
@@ -243,16 +297,10 @@ Section: Failure Detection
     if i >= n then SuspectCheckResult { scr-peers = acc, scr-queue = queue }
     else let p = list-at peers i
     in let elapsed = now - p.gp-last-seen
-    in if p.gp-status == "alive" then
-      if elapsed > ping-t then
-        let updated = __record-set p "gp-status" "suspect"
-        in gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc updated) (uq-enqueue queue (GuSuspect (p.gp-id) (p.gp-generation)))
-      else gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc p) queue
-    else if p.gp-status == "suspect" then
-      if elapsed > suspect-t then
-        let updated = __record-set p "gp-status" "dead"
-        in gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc updated) (uq-enqueue queue (GuDead (p.gp-id) (p.gp-generation)))
-      else gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc p) queue
+    in if p.gp-status == "alive" & elapsed > ping-t then
+      gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc (gp-with p "suspect" (p.gp-generation) (p.gp-last-seen))) (uq-enqueue queue (GuSuspect (p.gp-id) (p.gp-generation)))
+    else if p.gp-status == "suspect" & elapsed > suspect-t then
+      gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc (gp-with p "dead" (p.gp-generation) (p.gp-last-seen))) (uq-enqueue queue (GuDead (p.gp-id) (p.gp-generation)))
     else gos-suspect-loop peers now suspect-t ping-t (i + 1) n (list-push acc p) queue
 
 Section: Statistics

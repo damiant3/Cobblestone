@@ -7,8 +7,6 @@ Chapter: ChatServer
   cites Foreword chapter Maybe
   cites Foreword chapter Tuple
 
- We say:
-
 Section: State
 
   ChatAccount = record {
@@ -337,7 +335,13 @@ Section: Conversations
     else let names = chat-group-members (st.cs-accounts) (text-split members ",") (u.ca-name) 0 [(u.ca-name)]
     in let cid = "c" & show (st.cs-next-conv)
     in let conv = ChatConv { cv-id = cid, cv-kind = "group", cv-members = names, cv-messages = [], cv-name = gname }
-    in (ChatState { cs-accounts = chat-join-all (st.cs-accounts) names cid 0, cs-convs = list-push (st.cs-convs) conv, cs-next-conv = st.cs-next-conv + 1, cs-next-msg = st.cs-next-msg }, chat-conv-id-json cid)
+    in let st2 = ChatState {
+      cs-accounts = chat-join-all (st.cs-accounts) names cid 0,
+      cs-convs = list-push (st.cs-convs) conv,
+      cs-next-conv = st.cs-next-conv + 1,
+      cs-next-msg = st.cs-next-msg
+    }
+    in (st2, chat-conv-id-json cid)
 
   chat-group-members : List ChatAccount, List Text, Text, Integer, List Text -> List Text
   chat-group-members (accts) (parts) (me) (i) (acc) =
@@ -384,7 +388,9 @@ Section: Messages
     if text-length body == 0 then (st, chat-error "empty")
     else when chat-conv-of (st.cs-convs) to
       is None -> (st, chat-error "no conv")
-      is Just (c) -> (chat-append-message st c (ChatMessage { cm-id = st.cs-next-msg, cm-sender = u.ca-name, cm-body = body, cm-time = host.ch-time }), chat-json (json-object [json-pair "ok" (json-bool True)]))
+      is Just (c) ->
+        let msg = ChatMessage { cm-id = st.cs-next-msg, cm-sender = u.ca-name, cm-body = body, cm-time = host.ch-time }
+        in (chat-append-message st c msg, chat-json (json-object [json-pair "ok" (json-bool True)]))
 
   chat-append-message : ChatState, ChatConv, ChatMessage -> ChatState
   chat-append-message (st) (c) (m) = ChatState {

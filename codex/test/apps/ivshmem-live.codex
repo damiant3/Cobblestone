@@ -1,0 +1,75 @@
+Chapter: IvshmemLive
+  cites Kernel chapter Ivshmem
+  cites Kernel chapter Pci
+  cites Kernel chapter MmioMapX86
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+Section: Layout
+  ivl-claim : Integer = 0
+
+  ivl-request-ready : Integer = 8
+
+  ivl-reply-ready : Integer = 16
+
+  ivl-request-at : Integer = 64
+
+  ivl-reply-at : Integer = 1024
+
+  ivl-fuel : Integer = 200000000
+
+Section: Channel
+  ivl-text-bytes : Text, Integer, List Integer -> List Integer
+  ivl-text-bytes (t) (i) (acc) =
+    if i >= text-length t then acc
+    else ivl-text-bytes t (i + 1) (list-push acc (char-code-at t i))
+
+  ivl-put : IvshmemDev, Integer, Text -> Integer
+  ivl-put (dev) (at) (msg) =
+    let bytes = ivl-text-bytes msg 0 []
+    in let w = shm-write-bytes dev (at + 8) bytes 0 (list-length bytes)
+    in if w < 0 then -1 else shm-write-32 dev at (list-length bytes)
+
+  ivl-get : IvshmemDev, Integer -> Text
+  ivl-get (dev) (at) =
+    let n = shm-read-32 dev at
+    in if n < 0 | n > 512 then "<bad length>" else raw-bytes-to-text (shm-read-bytes dev (at + 8) n)
+
+  ivl-wait : Integer, Integer, Integer -> Boolean
+  ivl-wait (addr) (want) (fuel) =
+    if fuel <= 0 then False
+    else if atomic-load addr == want then True
+    else ivl-wait addr want (fuel - 1)
+
+Section: Roles
+  ivl-first : IvshmemDev -> [Console] Nothing
+  ivl-first (dev) =
+    let sent = ivl-put dev ivl-request-at "hello from guest A"
+    in let raised = atomic-store (dev.shm-base + ivl-request-ready) 1
+    in act
+      print-line-uni ("LIVE A request sent=" & show (sent >= 0))
+      if ivl-wait (dev.shm-base + ivl-reply-ready) 1 ivl-fuel then
+        print-line-uni ("LIVE A read reply: " & ivl-get dev ivl-reply-at)
+      else print-line-uni "LIVE A timed out waiting for the reply"
+    end
+
+  ivl-second : IvshmemDev -> [Console] Nothing
+  ivl-second (dev) =
+    if ivl-wait (dev.shm-base + ivl-request-ready) 1 ivl-fuel == False then
+      print-line-uni "LIVE B timed out waiting for the request"
+    else let request = ivl-get dev ivl-request-at
+    in let sent = ivl-put dev ivl-reply-at "ack from guest B"
+    in let raised = atomic-store (dev.shm-base + ivl-reply-ready) 1
+    in act
+      print-line-uni ("LIVE B read request: " & request)
+      print-line-uni ("LIVE B reply sent=" & show (sent >= 0))
+    end
+
+Section: Entry
+  opening : [Console] Nothing =
+    let dev = ivshmem-init
+    in if dev.shm-found == False then print-line-uni ("LIVE " & format-ivshmem dev)
+    else if atomic-cas (dev.shm-base + ivl-claim) 0 1 then ivl-first dev
+    else if atomic-cas (dev.shm-base + ivl-claim) 1 2 then ivl-second dev
+    else print-line-uni "LIVE region already claimed by two guests"

@@ -1,0 +1,55 @@
+Chapter: AccpFlowRung0b
+  cites Foreword chapter Console
+  cites Accp chapter AccpFlow
+
+Section: Verdicts
+
+  rules : List Text
+  rules = ["FileSystem.Read \"/patient/\" -> Network.Write \"api.example\""]
+
+  joined : List Text, Integer, Text -> Text
+  joined (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else joined xs (i + 1) (if i == 0 then list-at xs i else acc & ", " & list-at xs i)
+
+  verdict : Text, List Text, Text -> Text
+  verdict (label) (rs) (ir) =
+    let raw = afl-raw-check rs ir
+    in label & ": " & (if list-length raw == 0 then "admit" else "refuse [" & joined raw 0 "" & "]")
+
+  call1 : Text -> Text
+  call1 (f) = "(apply (name \"" & f & "\" (fn int-default int-default)) (int-lit 8) int-default)"
+
+  def1 : Text -> Text
+  def1 (body) = "(chapter \"Program\" (defs (def \"opening\" \"P\" (params) (effectful (effs \"Console\") (scopes \"\") nothing) " & body & " 0 0)))"
+
+  every-listed : List Text, Integer, Integer -> Integer
+  every-listed (xs) (i) (n) =
+    if i >= list-length xs then n
+    else let raw = afl-raw-check rules (def1 (call1 (list-at xs i)))
+    in every-listed xs (i + 1) (if list-length raw == 1 & list-at raw 0 == list-at xs i then n + 1 else n)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("every listed builtin refused: " & show (every-listed afl-raw-memory 0 0) & " of " & show (list-length afl-raw-memory))
+    print-line-uni (verdict "peek" rules (def1 "(apply (apply (name \"peek-byte\" (fn int-default (fn int-default int-default))) (name \"a\" int-default) (fn int-default int-default)) (int-lit 0) int-default)"))
+    print-line-uni (verdict "poke" rules (def1 "(apply (apply (apply (name \"poke-qword\" (fn int-default (fn int-default (fn int-default int-default)))) (int-lit 64) (fn int-default (fn int-default int-default))) (int-lit 0) (fn int-default int-default)) (int-lit 7) int-default)"))
+    print-line-uni (verdict "buffer" rules (def1 (call1 "__buf-read-bytes")))
+    print-line-uni (verdict "vector" rules (def1 (call1 "vec-store-at")))
+    print-line-uni (verdict "atomic" rules (def1 (call1 "atomic-cas")))
+    print-line-uni (verdict "allocator" rules (def1 (call1 "__heap-restore")))
+    print-line-uni (verdict "device" rules (def1 (call1 "net-send-raw")))
+    print-line-uni (verdict "machine" rules (def1 (call1 "vmwrite")))
+    print-line-uni (verdict "two families" rules (def1 ("(if (bool-lit true) " & call1 "peek-32" & " " & call1 "poke-16" & " int-default)")))
+    print-line-uni (verdict "named twice" rules (def1 ("(binary add " & call1 "peek-byte" & " " & call1 "peek-byte" & " int-default)")))
+    print-line-uni (verdict "inside a lambda" rules (def1 ("(lambda (params (param \"x\" int-default)) " & call1 "atomic-load" & " (fn int-default int-default))")))
+    print-line-uni (verdict "no flow rule" [] (def1 (call1 "peek-byte")))
+    print-line-uni (verdict "address only" rules (def1 (call1 "alloc-bytes")))
+    print-line-uni (verdict "address-of" rules (def1 (call1 "address-of")))
+    print-line-uni (verdict "longer name" rules (def1 (call1 "peek-bytes")))
+    print-line-uni (verdict "in a text literal" rules (def1 "(text-lit \"(name \\\"peek-byte\\\" int-default)\")"))
+    print-line-uni (verdict "after an escaped backslash" rules (def1 ("(binary text-concat (text-lit \"a\\\\\") " & call1 "peek-byte" & " text)")))
+    print-line-uni (verdict "as a definition name" rules "(chapter \"Program\" (defs (def \"peek-byte\" \"P\" (params) int-default (int-lit 0) 0 0)))")
+    print-line-uni (verdict "unterminated string" rules "(chapter \"Program\" (defs (def \"opening")
+  end

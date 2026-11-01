@@ -26,9 +26,8 @@ parameter. Open work is in [works-backlog.md](works-backlog.md).
 
 ### Compiler & Build System
 - **CompilerDriver** -- Self-hosted compiler driver replacing PowerShell build scripts
-- **BuildManifest, BuildRecord, BuildTrace** -- Structured seed-rebuild manifest, per-compilation records, artifact provenance
+- **BuildManifest, BuildRecord** -- Structured seed-rebuild manifest, per-compilation records
 - **SweepHarness** -- Sample-battery classification and pass/fail evaluation
-- **SeedVerify** -- CDX seed self-verification: magic, Ed25519 signature, author key
 - **DigestCompute** -- SHA-256 digest utilities
 
 ### VMX Hypervisor & Testing
@@ -47,7 +46,6 @@ parameter. Open work is in [works-backlog.md](works-backlog.md).
 - **Discussion** -- Threaded discussion store anchored to annotation targets
 - **Historian** -- Supersession-chain walker for attribution and verdict history
 - **Narrator** -- Narration collapse: annotations to plain-language summary
-- **TrustExplorer** -- Trust-lattice browser: publisher list, trust threshold dial, blocklist
 - **KeyManager** -- Ed25519 keypair generation, keyring, fingerprinting
 
 ### AI Agent System
@@ -59,7 +57,6 @@ parameter. Open work is in [works-backlog.md](works-backlog.md).
 ### Network & Web
 - **WebServer** -- HTTP server with route dispatch
 - **Http** -- HTTP/1.0 request parsing and response formatting
-- **Middleware** -- Logging, metrics, rate limiting, session gating
 
 ## Completeness
 

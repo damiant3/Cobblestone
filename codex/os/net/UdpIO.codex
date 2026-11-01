@@ -3,8 +3,6 @@ Chapter: UdpIO
   cites Net chapter Udp
   cites Net chapter Ethernet
 
- We say:
-
 Section: The Socket
 
   UdpSocket = record {
@@ -28,11 +26,6 @@ Section: Send
     in net-driver-send-frame frame
 
 Section: Receive
-
- A TIMEOUT AND AN EMPTY DATAGRAM ARE DIFFERENT ANSWERS and the caller is
- told which it got. Returning a bare `List Integer` would make a
- zero-length datagram indistinguishable from the fuel running out, and a
- protocol that retransmits on silence would then retransmit on an answer.
 
   UdpRecv = record {
     ur-data : List Integer,
@@ -86,17 +79,42 @@ Section: Receive
     else if ip-proto ip /= ip-proto-udp then False
     else if udp-checksum-valid (ip-payload ip) (ip-src ip) (ip-dst ip) == False then False
     else let dg = udp-parse (ip-payload ip)
-    in dg.dst-port == sk.us-local-port
+    in if dg.dst-port /= sk.us-local-port then False
+    else udp-io-from-peer sk (ip-src ip) (dg.src-port)
+
+ A socket opened with peer port 0 listens and takes any sender. Any other socket takes a datagram only from its
+ peer's port, and from the peer's address unless the peer is the limited broadcast 255.255.255.255, whose replies
+ come from whichever host answers (RFC 2131 section 4.1, a DHCP server replying from port 67).
+
+  udp-io-from-peer : UdpSocket, List Integer, Integer -> Boolean
+  udp-io-from-peer (sk) (src-ip) (src-port) =
+    if sk.us-peer-port == 0 then True
+    else if src-port /= sk.us-peer-port then False
+    else if udp-io-ip-eq (sk.us-peer-ip) [255, 255, 255, 255] then True
+    else udp-io-ip-eq src-ip (sk.us-peer-ip)
+
+  udp-io-ip-eq : List Integer, List Integer -> Boolean
+  udp-io-ip-eq (a) (b) =
+    if list-length a /= 4 then False
+    else if list-length b /= 4 then False
+    else if list-at a 0 /= list-at b 0 then False
+    else if list-at a 1 /= list-at b 1 then False
+    else if list-at a 2 /= list-at b 2 then False
+    else list-at a 3 == list-at b 3
 
   udp-io-payload : List Integer -> List Integer
   udp-io-payload (frame) =
-    let dg = udp-parse (ip-payload (eth-payload frame))
-    in dg.payload
+    if eth-ethertype frame /= eth-type-ipv4 then []
+    else let ip = eth-payload frame
+    in if ip-length-valid ip == False then []
+    else (udp-parse (ip-payload ip)).payload
 
   udp-io-src-port : List Integer -> Integer
   udp-io-src-port (frame) =
-    let dg = udp-parse (ip-payload (eth-payload frame))
-    in dg.src-port
+    if eth-ethertype frame /= eth-type-ipv4 then 0
+    else let ip = eth-payload frame
+    in if ip-length-valid ip == False then 0
+    else (udp-parse (ip-payload ip)).src-port
 
 Section: Answering
 

@@ -1,0 +1,116 @@
+Chapter: ImportGateDegenerateTest
+  cites Foreword chapter ImportGate
+  cites Foreword chapter FactStore
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ The signing key is RFC 8032 section 7.1, TEST 1.
+
+Section: Fixtures
+
+  priv : List Integer =
+    [#9D, #61, #B1, #9D, #EF, #FD, #5A, #60, #BA, #84, #4A, #F4, #92, #EC, #2C, #C4,
+     #44, #49, #C5, #69, #7B, #32, #69, #19, #70, #3B, #AC, #03, #1C, #AE, #7F, #60]
+
+  pub : List Integer = ed25519-public-key priv
+
+  fp : Text = "author-key"
+
+  good : Fact = fact-create DefinitionFact "the genuine body" "alice" 1700000000
+
+  other : Fact = fact-create DefinitionFact "another signed body" "alice" 1700000001
+
+  manifest : TrustManifest = manifest-add manifest-empty fp pub 100
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0)
+
+  sign-fact : Fact -> SignedFact
+  sign-fact (f) = SignedFact { fact = f, signature = sign-content-bytes priv pub (fact-signing-content f), signer-fingerprint = fp }
+
+  with-fact : SignedFact, Fact -> SignedFact
+  with-fact (sf) (f) = SignedFact { fact = f, signature = sf.signature, signer-fingerprint = sf.signer-fingerprint }
+
+  fact-with : Fact, Text, FactKind, Text, Text, Integer -> Fact
+  fact-with (f) (hash) (kind) (content) (author) (ts) = Fact { hash = hash, kind = kind, content = content, author = author, timestamp = ts }
+
+  bundle-of : Fact, Text, SignedFact -> FactBundle
+  bundle-of (stored) (key) (sf) = FactBundle { facts = fact-store fact-store-empty stored, signed = hamt-set hamt-empty key sf }
+
+  admitted : ImportResult -> Text
+  admitted (r) =
+    when r.outcome
+      is ImportOk (f) -> "ok, content \"" & f.content & "\""
+      is otherwise -> import-outcome-name (r.outcome)
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+Section: Lookups and Signatures
+
+  look : Text, Text -> Text
+  look (label) (key) =
+    when manifest-lookup manifest key
+      is None -> "lookup " & label & " = none"
+      is Just (tk) -> "lookup " & label & " = key of " & show (list-length (tk.public-key)) & " bytes"
+
+  sig-lines : List Text
+  sig-lines =
+    let sf = sign-fact good
+    in let content = fact-signing-content good
+    in [
+      look "control" fp,
+      look "empty fingerprint" "",
+      look "unknown fingerprint" "someone-else",
+      look "fingerprint differing in case" "Author-key",
+      "content signature control = " & yn (verify-content-signature pub content (sf.signature)),
+      "content signature over other content = " & yn (verify-content-signature pub (content & " ") (sf.signature)),
+      "content signature all-zero = " & yn (verify-content-signature pub content (zeros 64 [])),
+      "content signature empty = " & yn (verify-content-signature pub content []),
+      "content signature all-zero key and signature = " & yn (verify-content-signature (zeros 32 []) content (zeros 64 [])),
+      "content signature empty key = " & yn (verify-content-signature [] content (sf.signature)),
+      "fact signature control = " & yn (verify-fact-signature pub sf),
+      "fact signature, hash changed = " & yn (verify-fact-signature pub (with-fact sf (fact-with good (other.hash) DefinitionFact (good.content) "alice" (good.timestamp)))),
+      "fact signature, kind changed = " & yn (verify-fact-signature pub (with-fact sf (fact-with good (good.hash) ProofFact (good.content) "alice" (good.timestamp)))),
+      "fact signature, author changed = " & yn (verify-fact-signature pub (with-fact sf (fact-with good (good.hash) DefinitionFact (good.content) "mallory" (good.timestamp)))),
+      "fact signature, timestamp changed = " & yn (verify-fact-signature pub (with-fact sf (fact-with good (good.hash) DefinitionFact (good.content) "alice" (good.timestamp + 1)))),
+      "fact signature under another key = " & yn (verify-fact-signature (ed25519-public-key (zeros 32 [])) sf)
+    ]
+
+Section: The Gate
+
+  gate : Text, FactBundle -> Text
+  gate (label) (b) = "gate " & label & " = " & admitted (gate-import b manifest 50 (good.hash) "Chapter")
+
+  gate-lines : List Text
+  gate-lines =
+    let sf = sign-fact good
+    in let evil = fact-with good (good.hash) DefinitionFact "the attacker's body" "alice" (good.timestamp)
+    in [
+      gate "control" (bundle-of good (good.hash) sf),
+      gate "signed entry whose content is replaced" (bundle-of good (good.hash) (with-fact sf evil)),
+      gate "genuine signed entry for another fact, filed under this hash" (bundle-of good (good.hash) (sign-fact other)),
+      gate "signed entry with the signature zeroed" (bundle-of good (good.hash) (SignedFact { fact = good, signature = zeros 64 [], signer-fingerprint = fp })),
+      gate "signed entry naming an unknown signer" (bundle-of good (good.hash) (SignedFact { fact = good, signature = sf.signature, signer-fingerprint = "" })),
+      gate "no signed entry" (FactBundle { facts = fact-store fact-store-empty good, signed = hamt-empty })
+    ]
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-all sig-lines 0
+    print-all gate-lines 0
+  end

@@ -22,14 +22,13 @@ Chapter: CoapsEndpoint
  is therefore sealed at the moment it is sent, taking a fresh record
  sequence number from the DTLS endpoint, and no sealed record is stored.
 
- We say:
-
 Section: Types
 
   CoapsEp = record {
     xe-coap : CoapEp,
     xe-dtls : DtlsEp,
-    xe-read : Integer
+    xe-read : Integer,
+    xe-anon : Boolean
   }
 
   CoapsStep = record {
@@ -40,7 +39,16 @@ Section: Types
 Section: Construction
 
   coaps-ep-new : CoapEp, DtlsEp -> CoapsEp
-  coaps-ep-new (c) (d) = CoapsEp { xe-coap = c, xe-dtls = d, xe-read = 0 }
+  coaps-ep-new (c) (d) = CoapsEp { xe-coap = c, xe-dtls = d, xe-read = 0, xe-anon = False }
+
+ SAFE BY DEFAULT (Damian, 2026-11-01): an endpoint carries nothing, either way, while its DTLS peer is
+ unauthenticated, unless it was made by the constructor that names the unauthenticated mode.
+
+  coaps-ep-new-unauthenticated : CoapEp, DtlsEp -> CoapsEp
+  coaps-ep-new-unauthenticated (c) (d) = CoapsEp { xe-coap = c, xe-dtls = d, xe-read = 0, xe-anon = True }
+
+  coaps-ep-carries : CoapsEp -> Boolean
+  coaps-ep-carries (ep) = if ep.xe-anon then True else dtls-ep-authenticated (ep.xe-dtls)
 
   coaps-ep-idle : CoapsEp -> CoapsStep
   coaps-ep-idle (ep) = CoapsStep { xs-ep = ep, xs-out = [] }
@@ -55,17 +63,20 @@ Section: Sending
 
   coaps-ep-get : CoapsEp, Text, Integer -> CoapsStep
   coaps-ep-get (ep) (path) (now) =
-    let cs = coap-ep-get (ep.xe-coap) path now
+    if coaps-ep-carries ep == False then coaps-ep-idle ep
+    else let cs = coap-ep-get (ep.xe-coap) path now
     in coaps-seal-all (__record-set ep "xe-coap" (cs.cs-ep)) (cs.cs-out) 0 []
 
   coaps-ep-post : CoapsEp, Text, List Integer, Integer -> CoapsStep
   coaps-ep-post (ep) (path) (payload) (now) =
-    let cs = coap-ep-post (ep.xe-coap) path payload now
+    if coaps-ep-carries ep == False then coaps-ep-idle ep
+    else let cs = coap-ep-post (ep.xe-coap) path payload now
     in coaps-seal-all (__record-set ep "xe-coap" (cs.cs-ep)) (cs.cs-out) 0 []
 
   coaps-ep-tick : CoapsEp, Integer -> CoapsStep
   coaps-ep-tick (ep) (now) =
-    let cs = coap-ep-tick (ep.xe-coap) now
+    if coaps-ep-carries ep == False then coaps-ep-idle ep
+    else let cs = coap-ep-tick (ep.xe-coap) now
     in coaps-seal-all (__record-set ep "xe-coap" (cs.cs-ep)) (cs.cs-out) 0 []
 
 Section: Receiving
@@ -83,9 +94,10 @@ Section: Receiving
     in let buf = dtls-ep-app-in (st.es-ep)
     in let n = list-length buf
     in if n <= ep.xe-read then coaps-ep-idle (__record-set ep "xe-dtls" (st.es-ep))
-    else let msg = coaps-slice buf (ep.xe-read) n []
+    else if coaps-ep-carries ep == False then coaps-ep-idle (__record-set ep "xe-dtls" (st.es-ep))
+    else let msg = if ep.xe-read == 0 then buf else coaps-slice buf (ep.xe-read) n []
     in let cs = coap-ep-recv (ep.xe-coap) msg now
-    in let ep2 = __record-set (__record-set (__record-set ep "xe-dtls" (st.es-ep)) "xe-coap" (cs.cs-ep)) "xe-read" n
+    in let ep2 = __record-set (__record-set (__record-set ep "xe-dtls" (dtls-ep-app-drain (st.es-ep) n)) "xe-coap" (cs.cs-ep)) "xe-read" 0
     in coaps-seal-all ep2 (cs.cs-out) 0 []
 
   coaps-slice : List Integer, Integer, Integer, List Integer -> List Integer

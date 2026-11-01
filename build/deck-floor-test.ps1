@@ -1,54 +1,27 @@
-# A starved deck floor says so instead of trampling the bivy.
+# A starved deck floor says so, and the deck grows, instead of trampling memory.
 #
-# A phase reserves its deck with `build`, and its deck-record allocations grow
-# UP through that reservation while its ordinary allocations grow up through
-# the bivy immediately above it. Nothing bounded the first against the second.
-# Past the reservation the deck grew into the bivy, and the phase read its own
-# overwrite one call later: `compile.ps1 -Decks 5` on the compiler's own source
-# died in a #GP inside __linked_list_to_list with no diagnostic at all. The
-# phase's own check-deck-overflow runs at phase-measure, which is after the
-# damage and after the crash, so it never arrived.
+# A phase reserves its deck with `build`. When a phase overflows its floor it
+# raises CDX9002, the front end and the back end grow that deck (CDX9014
+# "<DECK> deck grown to N bytes; phase repeated") and repeat the phase, and the
+# compile goes on. An in-phase guard has to stop the phase a guard band short of
+# its ceiling, because the phase-end check runs after any damage. Inside one
+# deck-record extent the deck cursor cell is not written until the extent
+# exits, so such a guard reads the live heap cursor (deck-bound-short-of); a
+# guard reading __deck-pos there never fires (COMPILER-148).
 #
-# LEX is the phase starving reaches first, measured rather than assumed: at 5
-# per cent the parse scratch fits (12.6 MB used against a 19.2 MB floor) and
-# the LEX deck does not (28.7 MB against 4.8 MB). tokenize-collect now reads
-# __deck-pos every token and stops a guard band short of the ceiling with
-# CDX9002.
+# Legs, on the compiler's own unit:
 #
-# This harness walks the whole reporting range:
+#   -Decks 5    must compile, LEX grown, no crash
+#   -Decks 15   must compile, LEX and FRONTEND-KEEP (DESUGAR) grown, no crash
+#   -Decks 100  must compile with no growth and no CDX9002
 #
-#   -Decks 5    must FAIL with CDX9002 and no crash    (LEX, fires early)
-#   -Decks 20   must FAIL with CDX9002 and no crash    (LEX, fires LATE)
-#   -Decks 40   must FAIL with CDX9002 and no crash    (DESUGAR)
-#   -Decks 100  must SUCCEED                           (the guard is not noise)
-#
-# 20 is not decoration. The first cut of the LEX guard passed at 5 and crashed
-# at 20, because firing is not the whole job: the wind-down converted the
-# tokens collected so far onto the deck that had just overflowed, and a late
-# fire has far more of them than the flat guard band covers. A guard tested
-# only where it fires early is a guard tested only where the bug cannot reach.
-#
-# 40 is the band that used to corrupt silently. Measured 2026-07-21 with the
-# phase trace on, -Decks 30, 40, 50 and 60 all completed LEX and PARSE and
-# then died inside DESUGAR, in three different shared runtime helpers -- so
-# the crash site named nothing and the phase trace is what identified it.
-# DESUGAR now stops per definition like LEX does.
-#
-# The knob is monotonic, measured 2026-07-21 across 5..100: LEX reports at 5
-# and 20, DESUGAR at 30-60, LOWER at 85-93, and 94 upward compile. It was NOT
-# monotonic until check-deck-overflow stopped reading its operands out of a
-# PhaseMetrics that the overflowing phase had already destroyed. If an
-# inversion ever reappears here, suspect the instrument before
-# the arithmetic.
-#
-# The legs below stay at the two ends and one middle. Pinning the LOWER
-# threshold itself would pin 1.06x of headroom that legitimately moves as the
-# compiler grows, and this harness is about whether a starved floor SPEAKS,
-# not about where the floor happens to sit this month.
+# 15 is the leg with teeth: under seeds 229F2026 to 76F77A0D (main 45004 to
+# 50365) it trapped in token-text, DESUGAR having overrun its deck into the
+# token arrays above it. 5 trapped in __alloc under BC0D2829, CHECK's stale-read
+# scan keeping every definition's scratch on the CHECK deck.
 #
 #   pwsh build/deck-floor-test.ps1                              # against seed/Codex.cdx
 #   pwsh build/deck-floor-test.ps1 -Kernel build/output/Sut.cdx # against a fresh SUT
-
 param(
   [string]$Kernel = "seed/Codex.cdx"
 )
@@ -80,41 +53,32 @@ function Invoke-Leg {
   return (Get-Content $log -Raw)
 }
 
-# The starved floor must name ITSELF, not merely complain. Each leg asserts
-# which phase reported, because "some phase raised CDX9002" would pass just as
-# well if the wrong guard fired first -- and at these percentages more than one
-# floor is genuinely short.
-# The middle leg moved from 40 to 60 on 2026-09-01: the token list is now a
-# flat list with capacity on the LEX deck (40 MB on the compiler's own unit
-# against 32 before, with 45 MB of bivy gone), so at 40 per cent LEX's 38 MB
-# floor is the first to starve and the leg no longer reaches DESUGAR. At 60
-# LEX has 57 MB, DESUGAR 46 against its 49, and DESUGAR speaks first.
-foreach ($leg in @(@{ Decks = 5; Phase = 'LEX' }, @{ Decks = 20; Phase = 'LEX' }, @{ Decks = 60; Phase = 'DESUGAR' })) {
+# Each starved leg asserts which decks grew, because "some deck grew" would pass
+# just as well if the wrong floor spoke first.
+foreach ($leg in @(@{ Decks = 5; Grown = @('LEX') }, @{ Decks = 15; Grown = @('LEX', 'FRONTEND-KEEP') })) {
   $d = $leg.Decks
-  $want = $leg.Phase
-  Write-Host "deck-floor-test: -Decks $d (expect CDX9002 from $want)"
+  Write-Host "deck-floor-test: -Decks $d (expect a compile with $($leg.Grown -join ' and ') grown)"
   $starved = Invoke-Leg -Decks $d -Tag "decks$d"
-  if ($starved -match 'Deck overflow in (\w+)') {
-    $got = $Matches[1]
-    if ($got -eq $want) {
-      Write-Host "  ok: CDX9002 reported by $got"
-    } else {
-      Write-Host "  FAIL: CDX9002 came from $got, expected $want"
-      $failures++
-    }
-  } else {
-    Write-Host "  FAIL: no CDX9002 in the starved compile"
-    $failures++
+  $grown = @([regex]::Matches($starved, 'CDX9014: (\S+) deck grown') | ForEach-Object { $_.Groups[1].Value })
+  foreach ($want in $leg.Grown) {
+    if ($grown -contains $want) { Write-Host "  ok: $want deck grown" }
+    else { Write-Host "  FAIL: no CDX9014 for $want (grown: $($grown -join ','))"; $failures++ }
   }
   if ($starved -match '!EXC=' -or $starved -match 'CRASH in ') {
-    Write-Host "  FAIL: the starved compile still crashed -- the guard did not get there first"
+    Write-Host "  FAIL: the starved compile crashed"
     ($starved -split "`n" | Select-String -Pattern '!EXC=|CRASH in ' | Select-Object -First 3) | ForEach-Object { "    $_" }
     $failures++
+  } elseif ($starved -match 'error CDX') {
+    Write-Host "  FAIL: the starved compile reported errors"
+    ($starved -split "`n" | Select-String -Pattern 'error CDX' | Select-Object -First 3) | ForEach-Object { "    $_" }
+    $failures++
+  } elseif (-not (Test-Path $script:LegBinary) -or (Get-Item $script:LegBinary).Length -le 1048576) {
+    Write-Host "  FAIL: the starved compile produced no binary"
+    $failures++
   } else {
-    Write-Host "  ok: no crash"
+    Write-Host "  ok: compiled, no crash"
   }
 }
-
 # The last leg -- and the guard must not fire on a floor that is fine. Without
 # it the script passes just as well against a compiler that refuses every
 # compile, which is the classic function that always answers the same thing.
@@ -122,8 +86,8 @@ Write-Host "deck-floor-test: -Decks 100 (expect a clean compile)"
 $normal = Invoke-Leg -Decks 100 -Tag 'decks100'
 $normalBin = $script:LegBinary
 $normalLen = if (Test-Path $normalBin) { (Get-Item $normalBin).Length } else { 0 }
-if ($normal -match 'CDX9002') {
-  Write-Host "  FAIL: CDX9002 at the shipping floors -- the guard is firing on healthy input"
+if ($normal -match 'CDX9002' -or $normal -match 'CDX9014') {
+  Write-Host "  FAIL: CDX9002 or a grown deck at the shipping floors -- the guard is firing on healthy input"
   $failures++
 } elseif ($normal -match 'error CDX') {
   Write-Host "  FAIL: the normal compile reported errors"
@@ -142,5 +106,5 @@ if ($failures -gt 0) {
   exit 1
 }
 Write-Host ""
-Write-Host "deck-floor-test: PASS (LEX and DESUGAR each name themselves when starved; shipping floors compile)"
+Write-Host "deck-floor-test: PASS (starved floors grow and compile; shipping floors compile without growth)"
 exit 0

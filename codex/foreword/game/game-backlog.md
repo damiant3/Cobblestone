@@ -10,7 +10,7 @@ is still real is never quietly dropped.
 
 ## The shared mixer
 
-`Foreword chapter Random` supplies `mix-bits` and `rand-in-range` (CL 10493),
+`Foreword chapter Random` supplies `mix-bits` and `rand-in-range`,
 and its prose carries the whole account: why an unfolded multiply-add has no
 usable low bits, why that is invisible to a balance check, and -- the part
 that matters most -- **why it is only a defect where the consumer reads low
@@ -58,3 +58,16 @@ this is an open question again and this paragraph is not evidence about it.
 
 Both of this quire's mixer rows are now closed, one by measurement and one by a
 declined trade, so nothing in the migration remains here.
+
+## Inventory loses items and miscounts equipment
+
+Four defects in `Game chapter Inventory`, each pinned by a line of
+`codex/test/forewords/game-inventory` (2026-10-31). `inv-add-to-slot` caps a stack at
+its maximum and drops the rest (30 then 20 of max 40 leaves 40); an add into an empty
+slot does not cap (50 of max 40 stores 50); `inv-remove` takes only from the first
+matching slot (removing 42 from stacks of 40 and 5 leaves 5). And `inv-equip` sets
+`inv-equip-count` to `list-length cleaned + 1` after `list-push cleaned entry` has
+grown `cleaned` in place (L-ALIAS), so the second distinct slot equipped counts 3
+for 2 entries, and `inv-unequip` then walks past the list and traps (`!EXC=06`,
+measured). **Open:** overflow into a new stack, cap the first stack, remove across
+stacks, and count the list after building it.

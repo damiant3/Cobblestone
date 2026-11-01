@@ -1,0 +1,82 @@
+Chapter: Arm64Gicv2Tick
+  cites Kernel chapter Arm64Boot
+  cites Kernel chapter Arm64Timer
+  cites Foreword chapter Console
+
+ QEMU virt without gic-version=3 is a GICv2: the distributor at #8000000 and
+ the CPU interface at #8010000. GICD_CTLR #0 bit 0 enables forwarding;
+ GICD_ISENABLER0 #100 and GICD_IPRIORITYR #400 (one byte per INTID, banked
+ per CPU for INTIDs below 32) configure INTID 30, the EL1 physical timer PPI.
+ GICC_CTLR #0 bit 0 signals group 0 as IRQ; GICC_PMR #4 at #F0 passes
+ priority #A0. DAIF bit 7 is the I mask; bits 9, 8 and 6 are D, A and F.
+ VBAR_EL1 needs a 2048-byte-aligned table.
+
+Section: GIC
+
+  gv-gicd : Integer = #8000000
+  gv-gicc : Integer = #8010000
+  gv-timer-bit : Integer = #40000000
+
+  gv-gic-init : Integer -> [Device.Mmio] Integer
+  gv-gic-init (dummy) = act
+    c <- poke-mmio-32 gv-gicd 0 1
+    p <- poke-mmio-32 gv-gicd #41C #A0A0A0A0
+    e <- poke-mmio-32 gv-gicd #100 gv-timer-bit
+    m <- poke-mmio-32 gv-gicc 4 #F0
+    i <- poke-mmio-32 gv-gicc 0 1
+    read-mmio-32 gv-gicc 0
+  end
+
+Section: Vectors
+
+  gv-copy : Integer, List Integer, Integer, Integer -> Integer
+  gv-copy (base) (bs) (i) (n) =
+    if i >= n then base
+    else let w = poke-byte base i (list-at bs i)
+    in gv-copy base bs (i + 1) n
+
+  gv-install-vectors : Integer -> Integer
+  gv-install-vectors (dummy) =
+    let code = arm64-build-vector-table 2048 & arm64-irq-handler-code-gicv2 gv-gicc
+    in let raw = alloc-bytes (list-length code + 2048)
+    in let base = bit-and (raw + 2047) (0 - 2048)
+    in let t = gv-copy base code 0 (list-length code)
+    in let v = write-vbar-el1 base
+    in base
+
+Section: Waiting
+
+  gv-wait : Integer -> Boolean
+  gv-wait (deadline) =
+    if peek-qword arm64-tick-count-addr 0 >= 2 then True
+    else if read-cntvct-el0 > deadline then False
+    else gv-wait deadline
+
+Section: Entry
+
+  opening : [Console, Device.Mmio] Nothing = act
+    ctl <- gv-gic-init 0
+    gv-run ctl
+  end
+
+  gv-run : Integer -> [Console] Nothing
+  gv-run (ctl) =
+    let z = poke-qword arm64-tick-count-addr 0 0
+    in let daif0 = read-daif
+    in let vb = gv-install-vectors 0
+    in let t = arm64-timer-init 0
+    in let before = peek-qword arm64-tick-count-addr 0
+    in let deadline = read-cntvct-el0 + 5 * peek-qword timer-freq-addr 0
+    in let u = write-daif (bit-and daif0 #340)
+    in let ticked = gv-wait deadline
+    in let r = write-daif (bit-or daif0 #80)
+    in let after = peek-qword arm64-tick-count-addr 0
+    in act
+      print-line-uni ("irq masked at boot: " & (if bit-and daif0 #80 == #80 then "yes" else "no"))
+      print-line-uni ("cpu interface enabled: " & (if bit-and ctl 1 == 1 then "yes" else "no"))
+      print-line-uni ("ticks before unmask: " & show before)
+      print-line-uni ("timer irq ticked twice: " & (if ticked then "yes" else "no"))
+      print-line-uni ("tick count at least 2: " & (if after >= 2 then "yes" else "no"))
+    end
+
+Page 1

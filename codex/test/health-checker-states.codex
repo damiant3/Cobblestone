@@ -1,0 +1,50 @@
+Chapter: HealthCheckerStates
+  cites Net chapter HealthChecker
+
+Section: Checks
+
+  truth : Boolean -> Text
+  truth (b) = if b then "True" else "False"
+
+  results : List CheckResult
+  results = [CrHealthy 10, CrHealthy 20, CrHealthy 30, CrTimeout, CrUnhealthy "x", CrError "e", CrHealthy 40, CrHealthy 40, CrHealthy 40]
+
+  run : HealthCheck, Integer, Integer -> HealthCheck
+  run (hc) (i) (n) =
+    if i >= n then hc
+    else run (hck-record-result hc (list-at results i) (i + 1)) (i + 1) n
+
+  trail : HealthCheck, Integer, Integer -> Text
+  trail (hc) (i) (n) =
+    if i >= n then ""
+    else let next = hck-record-result hc (list-at results i) (i + 1)
+    in (if i == 0 then "" else " ") & hs-label (next.hck-state) & trail next (i + 1) n
+
+  fresh : HealthCheck
+  fresh = health-check-new "c1" "10.0.0.1" "web" (HcHttpGet "/health" 200)
+
+  six : HealthCheck
+  six = run fresh 0 6
+
+  nine : HealthCheck
+  nine = run fresh 0 9
+
+  service : HealthCheckerState
+  service = hcs-add-check (hcs-add-check health-checker-new nine) (health-check-new "c2" "10.0.0.2" "db" HcPing)
+
+  found : Text -> Text
+  found (id) = when hcs-find-check service id
+    is Just (hc) -> hc.hck-service
+    is None -> "none"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (trail fresh 0 9)
+    print-line-uni (show (hck-success-rate six) & " " & show (six.hck-avg-latency) & " " & cr-label (six.hck-last-result))
+    print-line-uni (show (hck-success-rate nine) & " " & show (nine.hck-avg-latency) & " " & show (nine.hck-history-count) & " " & show (nine.hck-total-checks))
+    print-line-uni (truth (hck-is-due nine 18) & " " & truth (hck-is-due nine 19))
+    print-line-uni (hcs-status service & " " & show (list-length (hcs-checks-for-service service "web")) & " " & show (list-length (hcs-due-checks service 19)) & " " & found "c2" & " " & found "zz")
+    print-line-uni (hc-type-label (HcHttpGet "/health" 200) & " | " & hc-type-label (HcTcpConnect 250) & " | " & cr-label (CrDegraded 70 "slow"))
+  end
+

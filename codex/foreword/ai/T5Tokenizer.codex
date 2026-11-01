@@ -18,8 +18,6 @@ Chapter: T5Tokenizer
  a combining sequence the library treats as one grapheme is normalized
  character by character.
 
- We say:
-
 Section: Types
   T5Tok = record {
     tk-count : Integer,
@@ -137,8 +135,6 @@ Section: tokenizer.json
   tj-key-bytes : Text, Integer, List Integer -> List Integer
   tj-key-bytes (s) (i) (acc) = if i >= text-length s then list-push acc 34 else tj-key-bytes s (i + 1) (list-push acc (to-unicode (char-code (char-at s i))))
 
- The position after the ':' that follows the key's closing quote, or -1.
-
   tj-value : Integer, Integer, Text -> Integer
   tj-value (j) (n) (key) =
     let k = tj-find j n (tj-key key) 0
@@ -157,8 +153,6 @@ Section: tokenizer.json
     in let d = tj-hex (peek-byte j (i + 3))
     in if a < 0 | b < 0 | c < 0 | d < 0 then 0 - 1 else ((a * 16 + b) * 16 + c) * 16 + d
 
- One code point as UTF-8 at out; answers the bytes written.
-
   tj-utf8 : Integer, Integer -> Integer
   tj-utf8 (out) (u) =
     if u < 128 then let w = poke-byte out 0 u in 1
@@ -167,10 +161,6 @@ Section: tokenizer.json
     else if u < 65536 then
       let a = poke-byte out 0 (224 + bit-shru u 12) in let b = poke-byte out 1 (128 + bit-and (bit-shru u 6) 63) in let c = poke-byte out 2 (128 + bit-and u 63) in 3
     else let a = poke-byte out 0 (240 + bit-shru u 18) in let b = poke-byte out 1 (128 + bit-and (bit-shru u 12) 63) in let c = poke-byte out 2 (128 + bit-and (bit-shru u 6) 63) in let d = poke-byte out 3 (128 + bit-and u 63) in 4
-
- A JSON string whose opening quote is at i, decoded to out: answers the
- position after the closing quote, and the length written at out - 1 as one
- byte; -1 for a malformed or over-long string.
 
   tj-string : Integer, Integer, Integer, Integer, Integer -> Integer
   tj-string (j) (n) (i) (out) (len) =
@@ -211,10 +201,6 @@ Section: Scores
   tj-bitlen : Integer, Integer -> Integer
   tj-bitlen (v) (n) = if v == 0 then n else tj-bitlen (bit-shru v 1) (n + 1)
 
- m / d as a binary expansion: acc holds the bits so far and fb of them lie
- after the binary point; the expansion stops at 55 significant bits, r being
- the remainder left.
-
   TjExp = record {
     te-acc : Integer,
     te-fb : Integer,
@@ -228,8 +214,6 @@ Section: Scores
     in if r2 >= d then
       tj-expand (2 * acc + 1) (r2 - d) d (fb + 1)
     else tj-expand (2 * acc) r2 d (fb + 1)
-
- The f64 bits of (-1)^neg m / 10^k, rounded to nearest, ties to even.
 
   tj-dec-bits : Boolean, Integer, Integer -> Integer
   tj-dec-bits (neg) (m) (k) =
@@ -260,9 +244,6 @@ Section: Scores
   tj-digit : Integer, Integer, Integer -> Boolean
   tj-digit (j) (n) (i) = i < n & peek-byte j i >= 48 & peek-byte j i <= 57
 
- The digits of a JSON number from i: m, the digits after the point k (less
- an exponent), and the position after the number.
-
   tj-digits : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> TjDec
   tj-digits (j) (n) (i) (m) (k) (frac) (seen) =
     if tj-digit j n i then
@@ -290,9 +271,6 @@ Section: Scores
     tn-end : Integer
   }
 
- A JSON number at i: its f64 bits and the position after it; tn-end -1 when
- malformed or outside the taken range.
-
   tj-number : Integer, Integer, Integer -> TjNum
   tj-number (j) (n) (i) =
     let neg = i < n & peek-byte j i == 45
@@ -303,9 +281,6 @@ Section: Charsmap
 
   tj-b64 : Integer -> Integer
   tj-b64 (c) = if c >= 65 & c <= 90 then c - 65 else if c >= 97 & c <= 122 then c - 71 else if c >= 48 & c <= 57 then c + 4 else if c == 43 then 62 else if c == 47 then 63 else 0 - 1
-
- base64 from i up to the closing quote into out: answers the bytes written,
- -1 on a character outside the alphabet.
 
   tj-base64 : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   tj-base64 (j) (n) (i) (out) (len) (acc) (bits) =
@@ -321,10 +296,6 @@ Section: Charsmap
     else tj-base64 j n (i + 1) out len a2 (bits + 6)
 
 Section: Vocab
-
- Entries from i, the position after the vocab array's '[': each [piece,
- score] adds its piece to pieces at pl (a length byte then the bytes) and
- its score's f64 bits at scores + 8 id.
 
   TjVocab = record {
     tv-count : Integer,
@@ -352,10 +323,6 @@ Section: Vocab
     else let w1 = poke-32 scores (id * 8) (bit-and (v.tn-bits) #FFFFFFFF)
     in let w2 = poke-32 scores (id * 8 + 4) (bit-and (bit-shru (v.tn-bits) 32) #FFFFFFFF)
     in tj-entries j n (close + 1) scores pieces (pl + 1 + peek-byte pieces pl) (id + 1)
-
- The two tables from tokenizer.json's n bytes at j: vocab as vocab.bin (the
- count, the f64 scores, then each piece as a length byte and its bytes) and
- the decoded charsmap as charsmap.bin.
 
   t5-json-tables : Integer, Integer -> T5Tables
   t5-json-tables (j) (n) =
@@ -448,10 +415,6 @@ Section: Normalizing
   tk-meta : List Integer -> List Integer
   tk-meta (acc) = list-push (list-push (list-push acc 226) 150) 129
 
- The strip, the run replacement and Metaspace's space replacement in one
- pass: a run of two or more spaces becomes one U+2581, a single space one
- U+2581.
-
   tk-spaces : List Integer, Integer, Integer, List Integer -> List Integer
   tk-spaces (bs) (i) (n) (acc) =
     if i >= n then acc
@@ -465,9 +428,6 @@ Section: Normalizing
   tk-is-meta (bs) (i) = i + 2 < list-length bs & list-at bs i == 226 & list-at bs (i + 1) == 150 & list-at bs (i + 2) == 129
 
 Section: Segmenting
-
- Viterbi over one word's character boundaries: best score and the step that
- reached each boundary, pieces up to 64 bytes long.
 
   TkNode = record {
     tn-score : Real,
@@ -542,12 +502,8 @@ Section: Segmenting
 
 Section: Entry
 
- The ids of n UTF-8 bytes at a, ending in </s>.
-
   t5-tokenize : T5Tok, Integer, Integer -> List Integer
   t5-tokenize (t) (a) (n) = list-push (t5-tokenize-plain t a n) 1
-
- The same without </s> (add_special_tokens False).
 
   t5-tokenize-plain : T5Tok, Integer, Integer -> List Integer
   t5-tokenize-plain (t) (a) (n) =

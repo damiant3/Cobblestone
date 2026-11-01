@@ -1,31 +1,7 @@
 Chapter: GgufHostile
   cites AI chapter Gguf
 
- Track D item 16. Every read in this chapter is a bare list-at, which traps out
- of range, so a length or count off the model file decides where a read lands
- and a wrong one halts the machine. The two guards that existed checked the
- wrong thing: gguf-parse-header admitted a 20-byte file and then read bytes
- 16..23 of a header that is 24 bytes (gguf-header-bytes), and
- gguf-skip-metadata checked the START offset against the data length without
- checking that the read at that offset fits.
-
- The path is reached. AgentBundle.ab-parse-model walks a model file off the
- boot volume, and ab-window-step calls gguf-tensor-info-offset on a DELIBERATE
- prefix of it, growing the window until the metadata block fits: a parser that
- dies on a short buffer rather than answering -1 kills the guest on the one
- path that is exercised every time a bundle loads.
-
- Rows 1 and 2 are the positive controls. Rows 3 to 5 are shapes that already
- refused before this arm existed and must keep refusing, so an over-eager guard
- shows up here. Rows 6 to 11 are the kills.
-
 Section: Helpers
-
- Every row computes its value INSIDE the print statement, through these two
- helpers, rather than in a let above the act block. A let binding is evaluated
- before the first line is printed, so the arm's first run against the unfixed
- chapter died with no output at all and named its row only through RSI=0x14.
- The rows are the evidence of where it died, so they have to be ordered.
 
   show-bool : Boolean -> Text
   show-bool (b) = if b then "True" else "False"
@@ -57,7 +33,7 @@ Section: Files
     [71, 71, 85, 70, 3, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
 
  A header declaring one metadata pair with nothing after it. The start offset
- is already off the end, which is the one case gguf-skip-metadata caught.
+ is already off the end.
 
   md-none : List Integer =
     [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
@@ -127,6 +103,81 @@ Section: Files
   q4-one-block : List Integer =
     [0, 60, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
+ Lengths at the top of the u64 range: a key length of 2^63 - 16, a key length
+ of all-ones bytes, a string value length of 2^63 - 16, an array of 8-byte
+ scalars counting 2^62, and a tensor name length of 2^63 - 16. An addition or
+ product over one of these overflows a signed Integer.
+
+  kv-keylen-top : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     240, 255, 255, 255, 255, 255, 255, 127, 120, 8, 0, 0, 0]
+
+  kv-keylen-ones : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     255, 255, 255, 255, 255, 255, 255, 255, 120, 8, 0, 0, 0]
+
+  kv-strlen-top : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     1, 0, 0, 0, 0, 0, 0, 0, 120,
+     8, 0, 0, 0,
+     240, 255, 255, 255, 255, 255, 255, 127]
+
+  kv-array-top : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     1, 0, 0, 0, 0, 0, 0, 0, 120,
+     9, 0, 0, 0,
+     10, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 64]
+
+  ti-name-top : List Integer = [240, 255, 255, 255, 255, 255, 255, 127, 120, 1, 0, 0, 0]
+
+  hdr-mc-top : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255]
+
+  big-shape : GgufTensorInfo = GgufTensorInfo { gti-name = "x", gti-ndim = 3, gti-shape = [1048576, 1048576, 1048576], gti-dtype = 0, gti-offset = 0, gti-valid = True }
+
+ A whole small file for the sweep: one metadata pair, general.architecture =
+ "llama", and one tensor "w" of shape 2x3, F32, at offset 0.
+
+  sweep-file : List Integer =
+    [71, 71, 85, 70, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+     20, 0, 0, 0, 0, 0, 0, 0,
+     103, 101, 110, 101, 114, 97, 108, 46, 97, 114, 99, 104, 105, 116, 101, 99, 116, 117, 114, 101,
+     8, 0, 0, 0,
+     5, 0, 0, 0, 0, 0, 0, 0, 108, 108, 97, 109, 97,
+     1, 0, 0, 0, 0, 0, 0, 0, 119,
+     2, 0, 0, 0,
+     2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,
+     0, 0, 0, 0,
+     0, 0, 0, 0, 0, 0, 0, 0]
+
+  sw-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  sw-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else sw-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  sw-flip : Integer, Integer -> Integer
+  sw-flip (pos) (k) = if k == 0 then 1 + (pos * 37 - (pos * 37 / 255) * 255) else if k == 1 then 128 else 255
+
+  sw-whole : List Integer -> Integer
+  sw-whole (bs) =
+    let off = gguf-tensor-info-offset bs
+    in let arch = gguf-metadata-text bs "general.architecture"
+    in if off < 0 then 0
+    else let t = gguf-parse-tensor-info bs off
+    in if t.gti-valid & arch == "llama" & gguf-tensor-element-count t == 6 then 1 else 0
+
+  sw-flips : List Integer, Integer, Integer, Integer -> Integer
+  sw-flips (base) (pos) (k) (acc) =
+    if pos >= list-length base then acc
+    else if k >= 3 then sw-flips base (pos + 1) 0 acc
+    else sw-flips base pos (k + 1) (acc + sw-whole (sw-mutate base pos (sw-flip pos k) 0 (list-length base) []))
+
+  sw-cuts : List Integer, Integer, Integer -> Integer
+  sw-cuts (base) (n) (acc) =
+    if n >= list-length base then acc
+    else sw-cuts base (n + 1) (acc + sw-whole (sw-mutate base (0 - 1) 0 0 n []))
+
 Section: Body
 
   opening : [Console] Nothing =
@@ -151,6 +202,16 @@ Section: Body
       print-line-uni ("dq8-over:  " & show (list-length (gguf-dequant-q8-0 q8-one-block 0 64)))
       print-line-uni ("dq4-fit:   " & show (list-length (gguf-dequant-q4-0 q4-one-block 0 32)))
       print-line-uni ("dq4-over:  " & show (list-length (gguf-dequant-q4-0 q4-one-block 0 64)))
+      print-line-uni ("kv-keylen-top:  " & show (gguf-tensor-info-offset kv-keylen-top))
+      print-line-uni ("kv-keylen-top-t:[" & gguf-metadata-text kv-keylen-top "general.architecture" & "]")
+      print-line-uni ("kv-keylen-ones: " & show (gguf-tensor-info-offset kv-keylen-ones))
+      print-line-uni ("kv-strlen-top:  " & show (gguf-tensor-info-offset kv-strlen-top))
+      print-line-uni ("kv-strlen-top-t:[" & gguf-metadata-text kv-strlen-top "x" & "]")
+      print-line-uni ("kv-array-top:   " & show (gguf-tensor-info-offset kv-array-top))
+      print-line-uni ("ti-name-top:    " & ti-row ti-name-top)
+      print-line-uni ("hdr-mc-top:     " & hdr-counts hdr-mc-top & " off=" & show (gguf-tensor-info-offset hdr-mc-top))
+      print-line-uni ("big-shape:      " & show (gguf-tensor-element-count big-shape))
+      print-line-uni ("sweep: whole " & show (sw-whole sweep-file) & ", " & show (list-length sweep-file * 3) & " flips read whole " & show (sw-flips sweep-file 0 0 0) & ", " & show (list-length sweep-file) & " cuts read whole " & show (sw-cuts sweep-file 0 0))
     end
 
 Page 1

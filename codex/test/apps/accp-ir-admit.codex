@@ -1,0 +1,38 @@
+Chapter: AccpIrAdmitTest
+  cites Accp chapter AccpIr
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+ answer-ir and console-ir are the compiler's own IR text (build/compile.ps1
+ -IrCce, decoded from CCE) for "opening : Integer = 6 * 7" and for an opening
+ of type [Console] Nothing that prints a line.
+
+  answer-ir : Text
+  answer-ir = "(chapter \"Program\"\n  (title \"Answer\")\n  (prose \"\")\n  (pblocks)\n  (anns)\n  (sections \"Construction\" \"Slicing\" \"Slicing(extended)\" \"Map and Fold\" \"Filter and Search\" \"Parallel Map\" \"Definitions\" \"Entry\")\n  (ctors \"MkTup2\" \"MkTup3\" \"MkTup4\" \"MkTup5\")\n  (eff-ops)\n  (grounds)\n  (type-defs\n  (var-def \"Tup2\" (tparams \"a\" \"b\") (ctors (var-ctor \"MkTup2\" (fields (a-named \"a\") (a-named \"b\")))))\n  (var-def \"Tup3\" (tparams \"a\" \"b\" \"c\") (ctors (var-ctor \"MkTup3\" (fields (a-named \"a\") (a-named \"b\") (a-named \"c\")))))\n  (var-def \"Tup4\" (tparams \"a\" \"b\" \"c\" \"d\") (ctors (var-ctor \"MkTup4\" (fields (a-named \"a\") (a-named \"b\") (a-named \"c\") (a-named \"d\")))))\n  (var-def \"Tup5\" (tparams \"a\" \"b\" \"c\" \"d\" \"e\") (ctors (var-ctor \"MkTup5\" (fields (a-named \"a\") (a-named \"b\") (a-named \"c\") (a-named \"d\") (a-named \"e\"))))))\n  (defs\n  (def \"opening\" \"Answer\" (params) int-default (binary mul-int (int-lit 6) (int-lit 7) int-default) 0 0)))\n"
+
+  console-ir : Text
+  console-ir = "(chapter \"Program\"\n  (title \"Hello\")\n  (prose \"\")\n  (pblocks)\n  (anns)\n  (sections \"Construction\" \"Slicing\" \"Slicing(extended)\" \"Map and Fold\" \"Filter and Search\" \"Parallel Map\" \"Definitions\" \"Entry\")\n  (ctors \"MkTup2\" \"MkTup3\" \"MkTup4\" \"MkTup5\")\n  (eff-ops)\n  (grounds)\n  (type-defs\n  (var-def \"Tup2\" (tparams \"a\" \"b\") (ctors (var-ctor \"MkTup2\" (fields (a-named \"a\") (a-named \"b\")))))\n  (var-def \"Tup3\" (tparams \"a\" \"b\" \"c\") (ctors (var-ctor \"MkTup3\" (fields (a-named \"a\") (a-named \"b\") (a-named \"c\")))))\n  (var-def \"Tup4\" (tparams \"a\" \"b\" \"c\" \"d\") (ctors (var-ctor \"MkTup4\" (fields (a-named \"a\") (a-named \"b\") (a-named \"c\") (a-named \"d\")))))\n  (var-def \"Tup5\" (tparams \"a\" \"b\" \"c\" \"d\" \"e\") (ctors (var-ctor \"MkTup5\" (fields (a-named \"a\") (a-named \"b\") (a-named \"c\") (a-named \"d\") (a-named \"e\"))))))\n  (defs\n  (def \"opening\" \"Hello\" (params) (effectful (effs \"Console\") (scopes \"\") nothing) (act (stmts (do-exec (apply (name \"print-line-uni\" (fn text nothing (row (labels (label \"Console.Write\" \"\")) \"\" 537))) (text-lit \"hi\") nothing))) nothing) 0 0)))\n"
+
+  edited : Text, Text -> Text
+  edited (old) (new) = text-replace console-ir old new
+
+Section: Entry
+
+  verdict : Text, Text -> [Console] Nothing
+  verdict (label) (ir) =
+    let a = ai-admit ir
+    in print-line-uni (label & " ok=" & (if a.ok then "yes" else "no") & " reason=" & a.reason & " row=" & ai-json-list (a.row) & " scopes=" & ai-json-list (a.scopes) & " needs=" & ai-json-list (ai-needs a))
+
+  opening : [Console] Nothing = act
+    verdict "pure" answer-ir
+    verdict "console" console-ir
+    verdict "network" (edited "(effs \"Console\") (scopes \"\")" "(effs \"Console\" \"Network.Read\") (scopes \"\" \"\")")
+    verdict "parameter" (edited "\"Hello\" (params)" "\"Hello\" (params (param \"x\" integer))")
+    verdict "list return" (edited "(scopes \"\") nothing)" "(scopes \"\") (list integer))")
+    verdict "duplicate effect" (edited "(effs \"Console\") (scopes \"\")" "(effs \"Console\" \"Console\") (scopes \"\" \"\")")
+    verdict "counts disagree" (edited "(effs \"Console\") (scopes \"\")" "(effs \"Console\") (scopes \"\" \"\")")
+    verdict "no opening" (edited "(def \"opening\"" "(def \"start\"")
+    verdict "truncated" (substring console-ir 0 (text-length console-ir / 2))
+  end

@@ -3,21 +3,8 @@ Chapter: WebSocket
   cites Foreword chapter Sha1
   cites Foreword chapter CCE
 
- WebSocket protocol (RFC 6455). Frame encoder/decoder for text and
- binary messages. Includes handshake header generation with
- Sec-WebSocket-Accept computation.
-
- The accept key is SHA-1, named by number in the specification. It was
- SHA-256, and the digest was handed to a byte encoder as the word list
- every hash here answers with, so the published example produced a run
- of padding characters instead of an accept key. No browser would have
- completed a handshake.
-
- A frame sent by a client is required to be masked, and the decoder did
- not unmask, so every message arriving from a browser decoded to the
- four-byte-keyed ciphertext rather than the payload.
-
- We say:
+ WebSocket protocol (RFC 6455). A frame sent by a client is required to
+ be masked.
 
 Section: Constants
   ws-opcode-text : Integer = 1
@@ -85,15 +72,8 @@ Section: Frame Encoding
 Section: Frame Decoding
   ws-decode-frame : List Integer -> WsFrame
   ws-decode-frame (bytes) =
-    if ws-frame-size bytes < 0 then
-      WsFrame {
-        ws-fin = False,
-        ws-opcode = 0,
-        ws-masked = False,
-        ws-payload = [],
-        ws-length = 0,
-        ws-ok = False
-      }
+    if ws-frame-size bytes < 0 then ws-frame-refused
+    else if ws-frame-legal bytes == False then ws-frame-refused
     else let byte0 = list-at bytes 0
     in let byte1 = list-at bytes 1
     in let fin = bit-and byte0 128 > 0
@@ -114,6 +94,37 @@ Section: Frame Decoding
       ws-ok = True
     }
 
+  ws-frame-refused : WsFrame
+  ws-frame-refused = WsFrame {
+    ws-fin = False,
+    ws-opcode = 0,
+    ws-masked = False,
+    ws-payload = [],
+    ws-length = 0,
+    ws-ok = False
+  }
+
+ RFC 6455 section 5.2: RSV1-3 are zero when no extension is negotiated, and
+ none is here; opcodes 3-7 and 11-15 are reserved; a length uses the fewest
+ bytes that hold it. Section 5.5: a control frame (opcode 8 and up) has FIN
+ set and a payload of at most 125 bytes. A frame breaking any of them fails
+ the connection (section 7.1.7).
+
+  ws-frame-legal : List Integer -> Boolean
+  ws-frame-legal (bytes) =
+    let byte0 = list-at bytes 0
+    in let op = bit-and byte0 15
+    in let len-code = bit-and (list-at bytes 1) 127
+    in let len = ws-read-length bytes len-code
+    in if bit-and byte0 112 /= 0 then False
+    else if op >= 3 & op <= 7 then False
+    else if op >= 11 then False
+    else if op >= 8 & bit-and byte0 128 == 0 then False
+    else if op >= 8 & len > 125 then False
+    else if len-code == 126 & len < 126 then False
+    else if len-code == 127 & len < 65536 then False
+    else True
+
  The bytes one frame occupies: -1 when the header or the payload is not all
  present yet, -2 when the 64-bit length has its top bit set, which RFC 6455
  section 5.2 forbids. The payload test subtracts, because a 63-bit length
@@ -132,10 +143,9 @@ Section: Frame Decoding
     in if payload-len > n - header-end then 0 - 1
     else header-end + payload-len
 
- Masking is a repeating four-byte exclusive-or, so it is its own
- inverse and one function serves the encoder and the decoder both.
- The key sits directly after the length, which is where the header
- would otherwise have ended.
+ Masking is a repeating four-byte exclusive-or, its own inverse. The key
+ sits directly after the length, which is where the header would
+ otherwise have ended.
 
   ws-apply-mask : List Integer, List Integer, Integer, List Integer -> List Integer
   ws-apply-mask (payload) (key) (i) (acc) =
@@ -163,7 +173,7 @@ Section: Handshake
 
  The accept key is the base64 of the SHA-1 of the client key joined to
  the fixed identifier, and the specification prints a worked example
- of it. That example is the test.
+ of it.
 
   ws-accept-key : Text -> Text
   ws-accept-key (client-key) =

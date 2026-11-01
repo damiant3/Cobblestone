@@ -7,8 +7,6 @@ Chapter: CompileRiscvScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
   workdir-doc : List Text =
@@ -28,7 +26,7 @@ Section: Parameters
      "same source against different compilers and disagreed. Pass -Kernel",
      "only to test a compiler that is not the seed, and say so in the CL."]
 
-  riscv-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit ""))]
+  riscv-params : List ShellParam = [sh-param "Src" SptString, sh-param "Out" SptString, sh-param-default "MemMB" SptInt (SeInt 3072), sh-doc workdir-doc (sh-param-default "WorkDir" SptString (SeLit "")), sh-doc kernel-doc (sh-param-default "Kernel" SptString (SeLit "")), sh-param-default "RawFlags" SptString (SeLit "")]
 
 Section: S00 -- Usage
 
@@ -50,19 +48,19 @@ Section: S01 -- Preamble
 Section: S02 -- Compile to IR
 
   s02-body : List ShellCmd =
-    let ir-fail = [ScWriteError (SeRaw "\"FAIL: IR compile step exited $LASTEXITCODE; see $LogFile\""), ScExit (SeInt 3)]
-    in [ScBlank, ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScAssign "KernelCdx" (SeRaw "if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }"), ScRaw "Write-Host \"[riscv-compile] Compiling $Src to IR...\"", ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx", ScIf (SeRaw "$LASTEXITCODE -ne 0") ir-fail []]
+    let ir-fail = [ScWriteError (SeText "FAIL: IR compile step exited $LASTEXITCODE; see $LogFile"), ScExit (SeInt 3)]
+    in [ScBlank, ScComment "Phase 1: compile to IR", ScAssign "IrFile" (SeRaw "Join-Path $OutDir 'last-compile.ir'"), ScAssign "LogFile" (SeRaw "Join-Path $OutDir 'compile-ir.log'"), ScAssign "compileScript" (SeRaw "Join-Path $Repo 'build' 'compile.ps1'"), ScAssign "KernelCdx" (SeRaw "if ($Kernel) { $Kernel } else { Join-Path $Repo 'seed' 'Codex.cdx' }"), ScEcho (SeText "[riscv-compile] Compiling $Src to IR..."), ScRaw "& pwsh -NoProfile -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce -MemMB $MemMB -Kernel $KernelCdx @(if ($RawFlags) { '-RawFlags', $RawFlags })", ScIf (SeBare (SeStringNeq SeLastExit (SeInt 0))) ir-fail []]
 
 Section: S03 -- RISC-V codegen plug
 
   s03-body : List ShellCmd =
-    let plug-fail = [ScWriteError (SeRaw "\"FAIL: RISC-V codegen plug exited $LASTEXITCODE\""), ScExit (SeInt 4)]
-    in [ScBlank, ScComment "Phase 2: codegen via RISC-V plug", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'last-compile.riscv.bin'"), ScAssign "RunScript" (SeRaw "Join-Path $PlugDir 'run.ps1'"), ScRaw "Write-Host \"[riscv-compile] Running RISC-V codegen plug...\"", ScRaw "& pwsh -NoProfile -File $RunScript -IrInput $IrFile -Out $WireFile", ScIf (SeRaw "$LASTEXITCODE -ne 0") plug-fail []]
+    let plug-fail = [ScWriteError (SeText "FAIL: RISC-V codegen plug exited $LASTEXITCODE"), ScExit (SeInt 4)]
+    in [ScBlank, ScComment "Phase 2: codegen via RISC-V plug", ScAssign "WireFile" (SeRaw "Join-Path $OutDir 'last-compile.riscv.bin'"), ScAssign "RunScript" (SeRaw "Join-Path $PlugDir 'run.ps1'"), ScEcho (SeText "[riscv-compile] Running RISC-V codegen plug..."), ScRaw "& pwsh -NoProfile -File $RunScript -IrInput $IrFile -Out $WireFile", ScIf (SeBare (SeStringNeq SeLastExit (SeInt 0))) plug-fail []]
 
 Section: S04 -- Parse wire header
 
   s04-body : List ShellCmd =
-    [ScBlank, ScComment "Phase 3: parse wire protocol and build ELF64", ScReadBytes "rawWire" (SeVar "WireFile"), ScAssign "wireOff" (SeInt 0), ScForLoop "wi" (SeInt 0) (SeRaw "$wi -lt [Math]::Min(64, $rawWire.Length - 12)") (SeRaw "$wi++") [ScRaw "$cl = [BitConverter]::ToInt32($rawWire, $wi)", ScRaw "$dl = [BitConverter]::ToInt32($rawWire, $wi + 4)", ScRaw "$fc = [BitConverter]::ToInt32($rawWire, $wi + 8)", ScIf (SeRaw "$cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64") [ScAssign "wireOff" (SeVar "wi"), ScBreak] []], ScRaw "$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)", ScRaw "[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)", ScRaw "$codeLen = [BitConverter]::ToInt32($wireBytes, 0)", ScRaw "$dataLen = [BitConverter]::ToInt32($wireBytes, 4)", ScRaw "$funcCount = [BitConverter]::ToInt32($wireBytes, 8)", ScRaw "Write-Host \"[riscv-compile] Wire: code=$codeLen data=$dataLen funcs=$funcCount\""]
+    [ScBlank, ScComment "Phase 3: parse wire protocol and build ELF64", ScReadBytes "rawWire" (SeVar "WireFile"), ScAssign "wireOff" (SeInt 0), ScForLoop "wi" (SeInt 0) (SeRaw "$wi -lt [Math]::Min(64, $rawWire.Length - 12)") (SePostIncrement "wi") [ScRaw "$cl = [BitConverter]::ToInt32($rawWire, $wi)", ScRaw "$dl = [BitConverter]::ToInt32($rawWire, $wi + 4)", ScRaw "$fc = [BitConverter]::ToInt32($rawWire, $wi + 8)", ScIf (SeRaw "$cl -gt 0 -and $cl -lt 16000000 -and $dl -ge 0 -and $dl -lt 1000000 -and $fc -gt 0 -and $fc -lt 10000 -and ($wi + 12 + $cl + $dl) -le $rawWire.Length + 64") [ScAssign "wireOff" (SeVar "wi"), ScBreak] []], ScRaw "$wireBytes = New-Object byte[] ($rawWire.Length - $wireOff)", ScRaw "[Array]::Copy($rawWire, $wireOff, $wireBytes, 0, $wireBytes.Length)", ScRaw "$codeLen = [BitConverter]::ToInt32($wireBytes, 0)", ScRaw "$dataLen = [BitConverter]::ToInt32($wireBytes, 4)", ScRaw "$funcCount = [BitConverter]::ToInt32($wireBytes, 8)", ScEcho (SeText "[riscv-compile] Wire: code=$codeLen data=$dataLen funcs=$funcCount")]
 
 Section: S05 -- Extract code and data
 
@@ -73,8 +71,8 @@ Section: S06 -- Parse function table
 
   s06-body : List ShellCmd =
     let inner = [ScAssign "nameLen" (SeStaticCall "BitConverter" "ToInt16" [SeVar "wireBytes", SeVar "funcOff"]), ScComment "nameLen is a BYTE count, not a character count. The offset arithmetic below", ScComment "advances by it either way, but the name is a CCE stream, and reading it one", ScComment "byte per character answers '?' for everything above tier 0.", ScComment "The $nameLen -gt 0 guard is not defensive padding: PowerShell's range operator", ScComment "counts DOWN when the end is below the start, so a zero-length name would slice", ScComment "$wireBytes[n+2..n+1] and yield two bytes rather than none.", ScRaw "$fname = if ($nameLen -gt 0) { ConvertFrom-CceBytes $wireBytes[($funcOff + 2)..($funcOff + 1 + $nameLen)] } else { '' }", ScAssign "foff" (SeStaticCall "BitConverter" "ToInt32" [SeVar "wireBytes", SeRaw "$funcOff + 2 + $nameLen"]), ScRaw "$funcEntries.Add([PSCustomObject]@{ Name = $fname; Offset = $foff })", ScAssign "funcOff" (SeRaw "$funcOff + 2 + $nameLen + 4")]
-    in let manifest = [ScComment "The plug appends a Unicode name manifest (FUNCMAP-BEGIN .. FUNCMAP-END,", ScComment "rows \"<byte-offset> <name>\") after the binary wire. Prefer those names --", ScComment "they are correct Unicode and need no CCE decoding. Match by byte offset.", ScRaw "$manifestText = [System.Text.Encoding]::UTF8.GetString($rawWire)", ScRaw "$nameByOffset = @{}", ScRaw "$inFuncMap = $false", ScRaw "foreach ($mline in ($manifestText -split \"`n\")) {", ScRaw "    $mline = $mline.TrimEnd(\"`r\")", ScRaw "    if ($mline -match 'FUNCMAP-BEGIN') { $inFuncMap = $true; continue }", ScRaw "    if ($mline -match 'FUNCMAP-END') { break }", ScRaw "    if ($inFuncMap -and $mline -match '^(\\d+)\\s+(.+)$') { $nameByOffset[[int]$matches[1]] = $matches[2] }", ScRaw "}", ScIf (SeRaw "$nameByOffset.Count -gt 0") [ScRaw "foreach ($fe in $funcEntries) { if ($nameByOffset.ContainsKey([int]$fe.Offset)) { $fe.Name = $nameByOffset[[int]$fe.Offset] } }"] []]
-    in [ScBlank, ScComment "Parse function table (entry point + symbol map).", ScAssign "funcOff" (SeRaw "$dataStart + $dataLen"), ScAssign "entryOffset" (SeInt 0), ScRaw "$funcEntries = [System.Collections.Generic.List[PSObject]]::new()", ScForLoop "fi" (SeInt 0) (SeRaw "$fi -lt $funcCount -and $funcOff + 2 -lt $wireBytes.Length") (SeRaw "$fi++") inner, ScBlank, ScSequence manifest, ScIf (SeRaw "$funcEntries.Count -gt 0") [ScAssign "entryOffset" (SeRaw "$funcEntries[0].Offset")] []]
+    in let manifest = [ScComment "The plug appends a Unicode name manifest (FUNCMAP-BEGIN .. FUNCMAP-END,", ScComment "rows \"<byte-offset> <name>\") after the binary wire. Prefer those names --", ScComment "they are correct Unicode and need no CCE decoding. Match by byte offset.", ScRaw "$manifestText = [System.Text.Encoding]::UTF8.GetString($rawWire)", ScAssign "nameByOffset" (SeHashLiteral), ScAssign "inFuncMap" (SeBool False), ScRaw "foreach ($mline in ($manifestText -split \"`n\")) {", ScRaw "    $mline = $mline.TrimEnd(\"`r\")", ScRaw "    if ($mline -match 'FUNCMAP-BEGIN') { $inFuncMap = $true; continue }", ScRaw "    if ($mline -match 'FUNCMAP-END') { break }", ScRaw "    if ($inFuncMap -and $mline -match '^(\\d+)\\s+(.+)$') { $nameByOffset[[int]$matches[1]] = $matches[2] }", ScRaw "}", ScIf (SeBare (SeIntGt (SeProperty (SeVar "nameByOffset") "Count") (SeInt 0))) [ScRaw "foreach ($fe in $funcEntries) { if ($nameByOffset.ContainsKey([int]$fe.Offset)) { $fe.Name = $nameByOffset[[int]$fe.Offset] } }"] []]
+    in [ScBlank, ScComment "Parse function table (entry point + symbol map).", ScAssign "funcOff" (SeRaw "$dataStart + $dataLen"), ScAssign "entryOffset" (SeInt 0), ScRaw "$funcEntries = [System.Collections.Generic.List[PSObject]]::new()", ScForLoop "fi" (SeInt 0) (SeRaw "$fi -lt $funcCount -and $funcOff + 2 -lt $wireBytes.Length") (SePostIncrement "fi") inner, ScBlank, ScSequence manifest, ScIf (SeBare (SeIntGt (SeProperty (SeVar "funcEntries") "Count") (SeInt 0))) [ScAssign "entryOffset" (SeRaw "$funcEntries[0].Offset")] []]
 
 Section: S07 -- Build ELF64 header
 
@@ -94,24 +92,24 @@ Section: S09 -- Write ELF header tail and program header
 Section: S10 -- Write ELF segments and finalize
 
   s10-body : List ShellCmd =
-    [ScBlank, ScRaw "$bw.Write([uint64]$segFilesz)", ScRaw "$bw.Write([uint64]$segMemsz)", ScRaw "$bw.Write([uint64]0x1000)", ScBlank, ScRaw "$padding = $textStart - $headersEnd", ScIf (SeRaw "$padding -gt 0") [ScRaw "$bw.Write([byte[]]::new($padding))"] [], ScRaw "$bw.Write($code)", ScRaw "$rodataPad = $rodataStart - $textEnd", ScIf (SeRaw "$rodataPad -gt 0") [ScRaw "$bw.Write([byte[]]::new($rodataPad))"] [], ScRaw "$bw.Write($data)", ScBlank, ScRaw "$bw.Flush()", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$elf.ToArray()"], ScRaw "$bw.Close()"]
+    [ScBlank, ScRaw "$bw.Write([uint64]$segFilesz)", ScRaw "$bw.Write([uint64]$segMemsz)", ScRaw "$bw.Write([uint64]0x1000)", ScBlank, ScRaw "$padding = $textStart - $headersEnd", ScIf (SeBare (SeIntGt (SeVar "padding") (SeInt 0))) [ScRaw "$bw.Write([byte[]]::new($padding))"] [], ScRaw "$bw.Write($code)", ScRaw "$rodataPad = $rodataStart - $textEnd", ScIf (SeBare (SeIntGt (SeVar "rodataPad") (SeInt 0))) [ScRaw "$bw.Write([byte[]]::new($rodataPad))"] [], ScRaw "$bw.Write($data)", ScBlank, ScRaw "$bw.Flush()", ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "Out", SeRaw "$elf.ToArray()"], ScRaw "$bw.Close()"]
 
 Section: S11 -- Flat binary
 
   s11-body : List ShellCmd =
     let copy-data = [ScRaw "$rodataPadFlat = $rodataStart - $textEnd", ScRaw "[Array]::Copy($data, 0, $flatData, $codeLen + $rodataPadFlat, $dataLen)"]
-    in [ScBlank, ScComment "Also produce a flat binary for -bios none (QEMU jumps to 0x80000000 regardless of ELF entry)", ScDotNetCallAssign "flatOut" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".bin"], ScRaw "$flatData = New-Object byte[] ($codeLen + ($rodataStart - $textEnd) + $dataLen)", ScRaw "[Array]::Copy($code, 0, $flatData, 0, $codeLen)", ScIf (SeRaw "$dataLen -gt 0") copy-data [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "flatOut", SeVar "flatData"]]
+    in [ScBlank, ScComment "Also produce a flat binary for -bios none (QEMU jumps to 0x80000000 regardless of ELF entry)", ScDotNetCallAssign "flatOut" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".bin"], ScRaw "$flatData = New-Object byte[] ($codeLen + ($rodataStart - $textEnd) + $dataLen)", ScRaw "[Array]::Copy($code, 0, $flatData, 0, $codeLen)", ScIf (SeBare (SeIntGt (SeVar "dataLen") (SeInt 0))) copy-data [], ScDotNetCall "System.IO.File" "WriteAllBytes" [SeVar "flatOut", SeVar "flatData"]]
 
 Section: S12 -- Symbol map
 
   s12-body : List ShellCmd =
     let map-entry = [ScComment "The map describes the flat .bin the bed boots (-bios none, loaded at", ScComment "0x80000000 with code at offset 0, which rv-load-base assumes), not the", ScComment "ELF, whose .text sits $textStart bytes into the file.", ScRaw "[uint64]$addr = $loadAddr + [uint64]$fe.Offset", ScRaw "$nextOff = if ($mi + 1 -lt $funcEntries.Count) { $funcEntries[$mi + 1].Offset } else { $codeLen }", ScRaw "$fsize = $nextOff - $fe.Offset", ScRaw "[void]$mapLines.Add(\"0x$($addr.ToString('X8').PadLeft(8,'0')) $fsize $($fe.Name)\")"]
-    in [ScBlank, ScComment "Write symbol map", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScRaw "$mapLines = [System.Collections.Generic.List[string]]::new()", ScRaw "[void]$mapLines.Add('# RISC-V Symbol Map')", ScRaw "[void]$mapLines.Add('# Address         Size  Name')", ScForLoop "mi" (SeInt 0) (SeRaw "$mi -lt $funcEntries.Count") (SeRaw "$mi++") [ScAssign "fe" (SeRaw "$funcEntries[$mi]"), ScSequence map-entry], ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"]]
+    in [ScBlank, ScComment "Write symbol map", ScDotNetCallAssign "mapFile" "System.IO.Path" "ChangeExtension" [SeVar "Out", SeLit ".map"], ScRaw "$mapLines = [System.Collections.Generic.List[string]]::new()", ScRaw "[void]$mapLines.Add('# RISC-V Symbol Map')", ScRaw "[void]$mapLines.Add('# Address         Size  Name')", ScForLoop "mi" (SeInt 0) (SeBare (SeIntLt (SeVar "mi") (SeProperty (SeVar "funcEntries") "Count"))) (SePostIncrement "mi") [ScAssign "fe" (SeRaw "$funcEntries[$mi]"), ScSequence map-entry], ScDotNetCall "System.IO.File" "WriteAllLines" [SeVar "mapFile", SeVar "mapLines"]]
 
 Section: S12b -- The remap window
 
   s12b-fail : List ShellCmd =
-    [ScRaw "Write-Host ''", ScRaw "Write-Host 'FAIL: the RISC-V image has grown into the address-remap window.'", ScRaw "Write-Host (\"  image      {0} bytes, loaded at 0x{1:X}\" -f $flatData.Length, $loadAddr)", ScRaw "Write-Host (\"  remap window 0x{0:X} bytes (rv-remap-addr-insns shifts by {1})\" -f $rvRemapWindow, $rvShiftM.Groups[1].Value)", ScRaw "Write-Host (\"  overrun    {0} bytes\" -f ([uint64]$flatData.Length - $rvRemapWindow))", ScRaw "Write-Host ''", ScRaw "Write-Host '  Every address below the window is remapped to 0x80000000 + addr, which is'", ScRaw "Write-Host '  now inside this image: a low peek reads the guest own code instead of the'", ScRaw "Write-Host '  cell it asked for, silently. Raise the shift in rv-remap-addr-insns and the'", ScRaw "Write-Host '  matching rule in docs/Designs/Done/Compiler/RiscVProcessKernel.md, or shrink'", ScRaw "Write-Host '  the image.'", ScRaw "exit 8"]
+    [ScEcho (SeLit ""), ScEcho (SeLit "FAIL: the RISC-V image has grown into the address-remap window."), ScRaw "Write-Host (\"  image      {0} bytes, loaded at 0x{1:X}\" -f $flatData.Length, $loadAddr)", ScRaw "Write-Host (\"  remap window 0x{0:X} bytes (rv-remap-addr-insns shifts by {1})\" -f $rvRemapWindow, $rvShiftM.Groups[1].Value)", ScRaw "Write-Host (\"  overrun    {0} bytes\" -f ([uint64]$flatData.Length - $rvRemapWindow))", ScEcho (SeLit ""), ScEcho (SeLit "  Every address below the window is remapped to 0x80000000 + addr, which is"), ScEcho (SeLit "  now inside this image: a low peek reads the guest own code instead of the"), ScEcho (SeLit "  cell it asked for, silently. Raise the shift in rv-remap-addr-insns and the"), ScEcho (SeLit "  matching rule in docs/Designs/Done/Compiler/RiscVProcessKernel.md, or shrink"), ScEcho (SeLit "  the image."), ScExit (SeInt 8)]
 
   s12b-body : List ShellCmd =
     [ScBlank, ScComment "The remap window. rv-remap-addr-insns adds 0x80000000 to any address whose",
@@ -127,9 +125,9 @@ Section: S12b -- The remap window
      ScComment "stopped asking (build/build-arm64-img.ps1 states the same rule for the DMA",
      ScComment "floor, and check-doc-counts.ps1 before it).",
      ScAssign "rvRuntime" (SeRaw "Join-Path $PSScriptRoot 'RiscVRuntime.codex'"),
-     ScIf (SeRaw "-not (Test-Path -PathType Leaf $rvRuntime)") [ScRaw "Write-Host \"FAIL: remap window check cannot read $rvRuntime\"", ScRaw "exit 8"] [],
+     ScIf (SeRaw "-not (Test-Path -PathType Leaf $rvRuntime)") [ScEcho (SeText "FAIL: remap window check cannot read $rvRuntime"), ScExit (SeInt 8)] [],
      ScRaw "$rvShiftM = [regex]::Match([System.IO.File]::ReadAllText($rvRuntime), 'rv-srli rv-t0 addr-reg (\\d+)')",
-     ScIf (SeRaw "-not $rvShiftM.Success") [ScRaw "Write-Host \"FAIL: the remap shift in $rvRuntime no longer matches this check's pattern.\"", ScRaw "Write-Host '      A check whose regex stopped matching has quietly stopped asking. Fix the pattern.'", ScRaw "exit 8"] [],
+     ScIf (SeRaw "-not $rvShiftM.Success") [ScEcho (SeText "FAIL: the remap shift in $rvRuntime no longer matches this check's pattern."), ScEcho (SeLit "      A check whose regex stopped matching has quietly stopped asking. Fix the pattern."), ScExit (SeInt 8)] [],
      ScRaw "$rvRemapWindow = [uint64]1 -shl [int]$rvShiftM.Groups[1].Value",
      ScIf (SeRaw "[uint64]$flatData.Length -ge $rvRemapWindow") s12b-fail [],
      ScRaw "Write-Host (\"[riscv-compile] Remap window ok: image {0} bytes, window 0x{1:X}, {2} bytes clear\" -f $flatData.Length, $rvRemapWindow, ($rvRemapWindow - [uint64]$flatData.Length))"]
@@ -137,7 +135,7 @@ Section: S12b -- The remap window
 Section: S13 -- Summary
 
   s13-body : List ShellCmd =
-    [ScBlank, ScRaw "$sz = (Get-Item $Out).Length", ScRaw "Write-Host \"[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))\"", ScRaw "Write-Host \"[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)\"", ScRaw "Write-Host \"[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)\""]
+    [ScBlank, ScRaw "$sz = (Get-Item $Out).Length", ScEcho (SeText "[riscv-compile] OK: $Out ($sz bytes, entry=0x$($entry.ToString('X')))"), ScEcho (SeText "[riscv-compile] Flat: $flatOut ($($flatData.Length) bytes)"), ScEcho (SeText "[riscv-compile] Map: $mapFile ($($funcEntries.Count) functions)")]
 
 Section: Assembly
 

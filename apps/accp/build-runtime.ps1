@@ -64,7 +64,7 @@ foreach($relative in @('codex/compiler/Core/Name.codex','codex/compiler/Core/Sou
     if($relative -like '*AstNodes.codex'){$strip+='Syntax Nodes'}
     Add-PlugChapter -Lines $lines -Path (Join-Path $repo $relative) -Quire Wasm -DropSections $drop -StripCites $strip
 }
-foreach($relative in @('codex/plugs/common/PlugTypes.codex','codex/plugs/common/IRTextParser.codex','codex/plugs/common/HandlerLift.codex','codex/plugs/wasm/WasmEmitter.codex','codex/plugs/wasm/WasmStdio.codex','codex/plugs/common/PlugStdio.codex')){
+foreach($relative in @('codex/plugs/common/PlugTypes.codex','codex/plugs/common/IRTextParser.codex','codex/plugs/common/HandlerLift.codex','codex/plugs/wasm/WasmEmitter.codex','codex/plugs/wasm/WasmStdio.codex','codex/compiler/Core/Utf8Cce.codex','codex/plugs/common/PlugStdio.codex')){
     Add-PlugChapter -Lines $lines -Path (Join-Path $repo $relative) -Quire Wasm
 }
 $prelude=Resolve-PlugForewords $lines

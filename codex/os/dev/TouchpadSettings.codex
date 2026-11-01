@@ -1,6 +1,7 @@
 Chapter: TouchpadSettings
   cites UI chapter Widget
   cites UI chapter Layout
+  cites Kernel chapter Mouse
 
 Section: Scroll Direction
 
@@ -49,7 +50,8 @@ Section: State
     tp-three-finger-tap : GestureAction,
     tp-four-finger-swipe : GestureAction,
     tp-pinch-zoom : Boolean,
-    tp-disable-while-typing : Boolean
+    tp-disable-while-typing : Boolean,
+    tp-report-rate : Integer
   }
 
   touchpad-new : TouchpadState
@@ -66,7 +68,8 @@ Section: State
     tp-three-finger-tap = GestMissionControl,
     tp-four-finger-swipe = GestShowDesktop,
     tp-pinch-zoom = True,
-    tp-disable-while-typing = True
+    tp-disable-while-typing = True,
+    tp-report-rate = 100
   }
 
 Section: Actions
@@ -111,6 +114,41 @@ Section: Actions
 
   tp-set-four-finger-swipe : TouchpadState, GestureAction -> TouchpadState
   tp-set-four-finger-swipe (st) (g) = __record-set st "tp-four-finger-swipe" g
+
+  tp-set-report-rate : TouchpadState, Integer -> TouchpadState
+  tp-set-report-rate (st) (val) = __record-set st "tp-report-rate" (tp-snap-rate val)
+
+ The PS/2 device takes 10, 20, 40, 60, 80, 100 or 200 samples per second; a
+ request snaps to the nearest, the lower on a tie.
+
+  tp-snap-rate : Integer -> Integer
+  tp-snap-rate (v) =
+    if v <= 15 then 10 else if v <= 30 then 20 else if v <= 50 then 40
+    else if v <= 70 then 60 else if v <= 90 then 80 else if v <= 150 then 100 else 200
+
+Section: The PS/2 Device
+
+ A touchpad in legacy mode is the i8042 aux device. Sensitivity 1-10 selects
+ the resolution (0-3: 1, 2, 4, 8 counts/mm) and acceleration above 50 selects
+ the device's 2:1 scaling, so the defaults (5, 50, 100/s) are the device's own
+ power-on settings.
+
+  tp-ps2-resolution : TouchpadState -> Integer
+  tp-ps2-resolution (st) =
+    if st.tp-sensitivity <= 2 then 0 else if st.tp-sensitivity <= 4 then 1
+    else if st.tp-sensitivity <= 7 then 2 else 3
+
+  tp-ps2-scaling : TouchpadState -> Boolean
+  tp-ps2-scaling (st) = st.tp-acceleration > 50
+
+  tp-apply : TouchpadState, MouseState -> [Device.Port] MouseState
+  tp-apply (st) (ms) = act
+    if st.tp-enabled then mouse-configure ms (tp-snap-rate (st.tp-report-rate)) (tp-ps2-resolution st) (tp-ps2-scaling st)
+    else act
+      d <- mouse-send 245
+      mouse-mark-ready ms False
+    end
+  end
 
 Section: Widget
 

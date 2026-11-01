@@ -1,7 +1,38 @@
 Chapter: FwdWorldGenTest
   cites Engine chapter WorldGen
 
+Section: Fixtures
+
+  wgt-in-range : List Integer, Integer, Integer -> Integer
+  wgt-in-range (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else wgt-in-range xs (i + 1) (acc + (if list-at xs i >= 0 & list-at xs i <= 255 then 1 else 0))
+
+  wgt-same : List Integer, List Integer, Integer -> Boolean
+  wgt-same (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else wgt-same a b (i + 1)
+
+  wgt-alpine : Integer, Integer -> Integer
+  wgt-alpine (face) (acc) =
+    if face >= 6 then acc
+    else wgt-alpine (face + 1) (acc + (when (wg-generate-tile ws-small (ta-root face)).wt-biome
+      is BioAlpine -> 1
+      is otherwise -> 0))
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Engine/WorldGen OK"
-  end
+
+  opening : [Console] Nothing =
+    let hm = wg-generate-heightmap 9 5 80
+    in let child = ta-child (ta-child (ta-root 2) 1 0) 1 1
+    in let tile = wg-generate-tile ws-small (ta-root 0)
+    in act
+      print-line-uni ("hash 5 8000: " & show (wg-hash 5 8000) & ", pow2 10: " & show (wg-pow2 10))
+      print-line-uni ("heightmap 9 seed 5: " & show (list-length hm) & " cells, in 0..255 " & show (wgt-in-range hm 0 0) & ", corners " & show (list-at hm 0) & " " & show (list-at hm 8) & " " & show (list-at hm 72) & " " & show (list-at hm 80) & ", same seed same map " & (if wgt-same hm (wg-generate-heightmap 9 5 80) 0 then "yes" else "no"))
+      print-line-uni (format-tile-addr child & ", size at radius 1000: lod 0 " & show (ta-tile-size (ta-root 0) 1000) & ", this " & show (ta-tile-size child 1000))
+      print-line-uni ("root tile: grid " & show (tile.wt-grid-size) & ", verts " & show (tile.wt-mesh-vert-count) & ", altitude " & show (tile.wt-climate.clim-altitude) & ", alpine roots of 6: " & show (wgt-alpine 0 0))
+      print-line-uni ("subdivide at lod 6 of 6 " & (if wg-should-subdivide (TileAddr { ta-face = 0, ta-lod = 6, ta-x = 0, ta-z = 0 }) 1 100 6 then "T" else "F") & ", dist 100 size 100 " & (if wg-should-subdivide (ta-root 0) 100 100 6 then "T" else "F") & ", dist 300 " & (if wg-should-subdivide (ta-root 0) 300 100 6 then "T" else "F"))
+      print-line-uni ("sim at 5 20 40 of radius 10: " & format-sim-bucket (wg-sim-bucket 5 10) & " " & format-sim-bucket (wg-sim-bucket 20 10) & " " & format-sim-bucket (wg-sim-bucket 40 10) & ", tick rates " & show (wg-sim-tick-rate SimFull) & " " & show (wg-sim-tick-rate SimReduced) & " " & show (wg-sim-tick-rate SimSleeping))
+      print-line-uni (format-world-sphere ws-default)
+    end

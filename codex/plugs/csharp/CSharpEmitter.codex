@@ -148,13 +148,22 @@ Section: Type Definition Emission
       in if idx >= 0 then "T" & integer-to-text idx
       else when-type-name (name.value)
      is AFunType (p) (r) (s) -> "Func<" & emit-type-expr-tp p tparams & ", " & emit-type-expr-tp r tparams & ">"
-     is AAppType (base) (args) (s) -> emit-type-expr-tp base tparams & "<" & emit-type-expr-list-tp args tparams 0 & ">"
+     is AAppType (base) (args) (s) ->
+      if atype-head-name base == "SizedVec" then "List<" & emit-type-expr-tp (list-at args (list-length args - 1)) tparams & ">"
+      else emit-type-expr-tp base tparams & "<" & emit-type-expr-list-tp args tparams 0 & ">"
      is AEffectType (effs) (scopes) (efftail) (r) (s) -> emit-type-expr-tp r tparams
      is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-type-expr-tp b tparams
      is ALinearType (b) (s) -> emit-type-expr-tp b tparams
      is AConstrainedType (ctcls) (ctparam) (b) (s) -> emit-type-expr-tp b tparams
      is AForallType (fav) (favt) (b) (s) -> emit-type-expr-tp b tparams
      is APropEqType (b) (peright) (s) -> emit-type-expr-tp b tparams
+
+  atype-head-name : ATypeExpr -> Text
+  atype-head-name (te) =
+    when te
+     is ANamedType (name) (s) -> name.value
+     is AAppType (base) (args) (s) -> atype-head-name base
+     is otherwise -> ""
 
   find-tparam-index : List Name, Text, Integer -> Integer
   find-tparam-index (tparams) (name) (i) =
@@ -530,8 +539,41 @@ Section: Definition Emission
     in if dyn-lam then
       "    public static " & cs-type-lam ret & " " & sanitize (d.name) & lam-generic-suffix (d.params) & "(" & emit-def-params-lam (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
     else let gen = generic-suffix (d.type-val)
-    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & emit-expr (d.body) dctx & ";\n"
+    in "    public static " & cs-type ret & " " & sanitize (d.name) & gen & "(" & emit-def-params (d.params) 0 & ") => " & cs-guarded-body d (emit-expr (d.body) dctx) & ";\n"
 
+  cs-bounded-trap : CodexType -> Boolean
+  cs-bounded-trap (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> lo > i64-min | hi < i64-max
+       is otherwise -> False
+     is otherwise -> False
+
+  cs-long-lit : Integer -> Text
+  cs-long-lit (n) = if n == i64-min then "long.MinValue" else if n == i64-max then "long.MaxValue" else integer-to-text n & "L"
+
+  cs-bound-args : CodexType -> Text
+  cs-bound-args (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) -> ", " & cs-long-lit lo & ", " & cs-long-lit hi
+     is otherwise -> ""
+
+  cs-param-guard-cond : List IRParam, Integer -> Text
+  cs-param-guard-cond (params) (i) =
+    if i >= list-length params then ""
+    else let p = list-at params i
+    in let rest = cs-param-guard-cond params (i + 1)
+    in if cs-bounded-trap (p.type-val) == False then rest
+    else let g = "_Buf.cx_bound_ok(" & sanitize (p.name) & cs-bound-args (p.type-val) & ")"
+    in if rest == "" then g else g & " && " & rest
+
+  cs-guarded-body : IRDef, Text -> Text
+  cs-guarded-body (d) (body) =
+    let rt = get-return-type (d.type-val) (list-length (d.params))
+    in let b = if cs-bounded-trap rt then "_Buf.cx_bound_ret(" & body & cs-bound-args rt & ")" else body
+    in let g = cs-param-guard-cond (d.params) 0
+    in if g == "" then b else "(" & g & " ? " & b & " : default)"
   get-return-type : CodexType, Integer -> CodexType
   get-return-type (ty) (n) =
     if n == 0 then strip-forall ty
@@ -554,22 +596,9 @@ Section: Definition Emission
     else let p = list-at params i
     in cs-type (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params params (i + 1)
 
- A lifted lambda reaches this plug with UNRESOLVED type variables in its
- signature: the compiler's IR-CCE lift runs after the resolve pass, so a
- `__lam_N` def carries the expected types its lambda was handed, not the
- resolved ones. C# generics are not templates -- a generic method may not
- access fields of its type parameter -- so the generic rendering of such a
- def refuses to compile the moment its body reads a field. `dynamic` is
- the C# construct for exactly this: the IR is well-typed, so the runtime
- dispatch always finds the member.
-
   is-lam-def : Text -> Boolean
   is-lam-def (n) =
     text-length n >= 6 & substring n 0 6 == "__lam_"
-
- An identity lambda reads no field of its parameter, so it takes the
- generic rendering: `dynamic` there would erase the element type of
- `for x in xs -> x` and leave the enclosing call uninferable (CS0411).
 
   is-identity-lam : IRDef -> Boolean
   is-identity-lam (d) =
@@ -590,9 +619,6 @@ Section: Definition Emission
      is TypeVar (id) -> "dynamic"
      is otherwise -> cs-type ty
 
- A type variable nested in a lifted lambda's parameter (`Func<T39, T40>`, `List<T39>`) names a type parameter of the
- enclosing generic method, which the lambda's own method does not have (CS0246); the lambda's method takes those as its
- own type parameters, inferred at its call from the arguments.
   lam-generic-suffix : List IRParam -> Text
   lam-generic-suffix (params) = let ids = lam-nested-tvar-ids params 0 []
     in if list-length ids == 0 then "" else "<" & emit-type-params ids 0 & ">"
@@ -609,12 +635,6 @@ Section: Definition Emission
     in cs-type-lam (p.type-val) & " " & sanitize (p.name) & (if i < list-length params - 1 then ", " else "") & emit-def-params-lam params (i + 1)
 
 Section: Chapter Emission
-
- Only a scalar crosses the __heap-restore in the streaming emitters, so which
- _Cce members a program reached is carried as a bitmask rather than as
- accumulated text. FromUnicodeArr, FromUnicodeList and FromUnicodeRows all
- contain "FromUnicode", so a member's own bit implies the bit of the helper it
- calls, except Rows to List, which is closed by hand.
 
   cs-cce-mask : Text -> Integer
   cs-cce-mask (t) =
@@ -776,6 +796,12 @@ Section: Chapter Emission
     "        return r;\n",
     "    }\n",
     "}\n",
+    "static class _Shf {\n",
+    "    static long _n(long n) { if (n < 0) throw new InvalidOperationException(\"negative shift count\"); return n; }\n",
+    "    public static long Shl(long v, long n) { return _n(n) >= 64 ? 0 : v << (int)n; }\n",
+    "    public static long Shr(long v, long n) { return _n(n) >= 64 ? (v < 0 ? -1 : 0) : v >> (int)n; }\n",
+    "    public static long Shru(long v, long n) { return _n(n) >= 64 ? 0 : (long)((ulong)v >> (int)n); }\n",
+    "}\n",
     "static class _Buf {\n",
     "    static byte[] _mem_;\n",
     "    static long _need = 0;\n",
@@ -832,6 +858,8 @@ Section: Chapter Emission
     "        return r;\n",
     "    }\n",
     "    public static dynamic list_with_capacity(object cap) => new List<object>((int)(long)cap);\n",
+    "    public static bool cx_bound_ok(long v, long lo, long hi) { if (v < lo || v > hi) throw new System.OverflowException(\"CODEX_TRAP_bound\"); return true; }\n",
+    "    public static long cx_bound_ret(long v, long lo, long hi) { cx_bound_ok(v, lo, hi); return v; }\n",
     "    static System.IO.Stream _so_;\n",
     "    static System.IO.Stream _so { get { if (_so_ == null) _so_ = Console.OpenStandardOutput(); return _so_; } }\n",
     "    public static long alloc_bytes(object n) { long p = _ptr; _ptr += (long)n; _want(_ptr); return p; }\n",
@@ -841,6 +869,9 @@ Section: Chapter Emission
     "    public static long poke_16(object b, object off, object v) { long a = (long)b + (long)off; long w = (long)v; _mem[a] = (byte)w; _mem[a + 1] = (byte)(w >> 8); return 0; }\n",
     "    public static long peek_byte(object b, object off) { return _mem[(long)b + (long)off]; }\n",
     "    public static long peek_qword(object b, object off) { long a = (long)b + (long)off; long v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | _mem[a + i]; return v; }\n",
+    "    public static List<double> vec_load_d(object b) { int a = (int)(long)b; return new List<double> { BitConverter.ToDouble(_mem, a), BitConverter.ToDouble(_mem, a + 8) }; }\n",
+    "    public static List<long> vec_load_q(object b) { int a = (int)(long)b; return new List<long> { BitConverter.ToInt64(_mem, a), BitConverter.ToInt64(_mem, a + 8) }; }\n",
+    "    public static long poke_qword(object b, object off, object v) { long a = (long)b + (long)off; long w = (long)v; for (int i = 0; i < 8; i++) _mem[a + i] = (byte)(w >> (8 * i)); return 0; }\n",
     "    public static long poke_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return 0; }\n",
     "    public static object memset(object b, object v, object n) { long a = (long)b; byte x = (byte)(long)v; long c = (long)n; for (long i = 0; i < c; i++) _mem[a + i] = x; return null; }\n",
     "    public static System.IO.Stream out_stream() { return _so; }\n",
@@ -1013,12 +1044,14 @@ Section: Chapter Emission
       arities = build-arity-map (m.defs) 0 [],
       type-defs = type-defs,
       locals = [],
-      dyn-locals = []
+      dyn-locals = [],
+      ops = m.effect-op-names,
+      resume-names = []
     }
     in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
     in let class-name = "Codex_" & sanitize (m.name.value)
     in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
-    in let rest = [emit-buf-runtime, emit-state-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value), cs-ipow-runtime] & emit-defs-list (m.defs) 0 ctx & ["}\n"]
+    in let rest = [emit-buf-runtime, emit-state-runtime, cs-handler-runtime, emit-seam-runtimes (ctx.arities), emit-type-defs type-defs 0 muts, emit-class-header (m.name.value), cs-ipow-runtime, cs-real-runtime] & emit-defs-list (m.defs) 0 ctx & ["}\n"]
     in let mask = cs-cce-mask (entry & text-concat-list rest)
     in [header, entry, emit-cce-runtime mask] & rest
 
@@ -1029,6 +1062,20 @@ Section: Chapter Emission
   cs-ipow-runtime : Text
   cs-ipow-runtime =
     "    public static long _cx_ipow(long b, long e) { if (e < 0) return 0L; long r = 1L; long x = b; long n = e; unchecked { while (n > 0) { if ((n & 1L) != 0L) r *= x; x *= x; n >>= 1; } } return r; }\n\n"
+
+  cs-real-runtime : Text
+  cs-real-runtime =
+    text-concat-list [
+      "    public static double _cxr_b2ra(long b) { return (double)BitConverter.Int32BitsToSingle(unchecked((int)b)); }\n",
+      "    public static long _cxr_ra2b(double v) { return (long)(uint)BitConverter.SingleToInt32Bits((float)v); }\n",
+      "    public static long _cxr_r2i(double v) { if (double.IsNaN(v) || v >= 9223372036854775808.0 || v < -9223372036854775808.0) return long.MinValue; return (long)Math.Truncate(v); }\n",
+      "    public static double _cxr_trap(double v) { if (!double.IsFinite(v)) { Console.Out.Flush(); Console.Error.WriteLine(\"CODEX_TRAP_real_not_finite\"); Environment.Exit(255); } return v; }\n",
+      "    public static double _cxr_sat(double v, bool w32) { if (double.IsNaN(v)) return 0.0; if (double.IsFinite(v)) return v; double m = w32 ? 3.4028234663852886e38 : double.MaxValue; return v > 0 ? m : -m; }\n",
+      "    public static long _cxr_ord(double v, bool w32) { unchecked { long x = w32 ? (long)((ulong)(uint)BitConverter.SingleToInt32Bits((float)v) << 32) : BitConverter.DoubleToInt64Bits(v); long t = x < 0 ? -1L : 0L; long o = (x ^ (t != 0 ? long.MaxValue : 0L)) - t; return w32 ? (o >> 32) : o; } }\n",
+      "    public static bool _cxr_near(double a, double b, bool w32, long tol) { long oa = _cxr_ord(a, w32); long ob = _cxr_ord(b, w32); ulong d = unchecked(oa >= ob ? (ulong)(oa - ob) : (ulong)(ob - oa)); return d <= (ulong)tol; }\n",
+      "    public static long _cxr_t2db(string s) { bool neg = s.StartsWith(\"-\"); string r = neg ? s.Substring(1) : s; if (r.IndexOfAny(\"123456789\".ToCharArray()) < 0) return neg ? long.MinValue : 0L; double v; if (!double.TryParse(r, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v)) v = 0.0; return BitConverter.DoubleToInt64Bits(neg ? -v : v); }\n",
+      "    public static string _cxr_show(double v) { string neg = BitConverter.DoubleToInt64Bits(v) < 0 ? \"-\" : \"\"; double e = Math.Abs(v); double acc = double.IsFinite(e) ? Math.Truncate(e) : e; string s = _cxr_r2i(acc).ToString(); double f = e - acc; string d = \"\"; int last = 0; for (int k = 1; k <= 15; k++) { f *= 10; double x = double.IsFinite(f) ? Math.Truncate(f) : 0; f -= x; d += ((long)x).ToString(); if (x != 0) last = k; } return neg + s + \".\" + (last > 0 ? d.Substring(0, last) : \"0\"); }\n\n"
+    ]
 
   emit-defs-list : List IRDef, Integer, CsCtx -> List Text
   emit-defs-list (defs) (i) (ctx) =

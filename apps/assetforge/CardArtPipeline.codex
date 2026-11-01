@@ -1,11 +1,7 @@
 Chapter: CardArtPipeline
-  cites AI chapter DiffusionPipeline
+  cites AssetForge chapter AssetForge
+  cites AI chapter ClipBpe
   cites AI chapter ImageTo3d
-  cites AI chapter ImageTensor
-  cites Encode chapter Png
-  cites Foreword chapter Maybe
-
- We say:
 
 Section: Types
   CardSpec = record {
@@ -19,10 +15,7 @@ Section: Types
 
   CardArtResult = record {
     car-card : CardSpec,
-    car-prompt : Text,
-    car-image-bytes : List Integer,
-    car-mesh-bytes : List Integer,
-    car-has-mesh : Boolean
+    car-forge : ForgeResult
   }
 
 Section: Card Types
@@ -91,42 +84,19 @@ Section: Prompt Construction
     in card-keywords-to-text keywords (i + 1) n (acc & ", " & kw)
 
 Section: Pipeline Integration
-  card-generate-art : CardSpec, PipelineState, Recon3dState, Boolean -> CardArtResult
-  card-generate-art (card) (pipe-state) (recon-state) (gen-3d) =
-    let prompt = card-art-prompt card
-    in let output = pipeline-generate prompt pipe-state
-    in let png = pipeline-to-png output
-    in if gen-3d then
-      let img = card-output-to-image output
-      in let glb = image-to-glb img recon-state
-      in CardArtResult { car-card = card, car-prompt = prompt, car-image-bytes = png, car-mesh-bytes = glb, car-has-mesh = True }
-    else CardArtResult { car-card = card, car-prompt = prompt, car-image-bytes = png, car-mesh-bytes = [], car-has-mesh = False }
-
-  card-output-to-image : PipelineOutput -> ImageData
-  card-output-to-image (output) =
-    let pixels = card-unpack-pixels (output.po-pixels) 0 (output.po-width * output.po-height) []
-    in image-new (output.po-width) (output.po-height) pixels
-
-  card-unpack-pixels : List Integer, Integer, Integer, List Rgb -> List Rgb
-  card-unpack-pixels (packed) (i) (n) (acc) =
-    if i >= n then acc
-    else let p = list-at packed i
-    in let r = bit-and (bit-shru p 16) 255
-    in let g = bit-and (bit-shru p 8) 255
-    in let b = bit-and p 255
-    in card-unpack-pixels packed (i + 1) n (list-push acc (Rgb { cr = r, cg = g, cb = b }))
+  card-generate-art : ClipBpe, CardSpec, ForgeConfig, Recon3dState -> CardArtResult
+  card-generate-art (bpe) (card) (config) (recon) =
+    CardArtResult { car-card = card, car-forge = forge-generate bpe (card-art-prompt card) config recon }
 
 Section: Batch Card Generation
-  card-generate-batch : List CardSpec, PipelineState, Recon3dState, Boolean -> List CardArtResult
-  card-generate-batch (cards) (pipe-state) (recon-state) (gen-3d) =
-    card-batch-loop cards pipe-state recon-state gen-3d 0 (list-length cards) []
+  card-generate-batch : ClipBpe, List CardSpec, ForgeConfig, Recon3dState -> List CardArtResult
+  card-generate-batch (bpe) (cards) (config) (recon) = card-batch-loop bpe cards config recon 0 []
 
-  card-batch-loop : List CardSpec, PipelineState, Recon3dState, Boolean, Integer, Integer, List CardArtResult -> List CardArtResult
-  card-batch-loop (cards) (pipe-state) (recon-state) (gen-3d) (i) (n) (acc) =
-    if i >= n then acc
-    else let card = list-at cards i
-    in let result = card-generate-art card pipe-state recon-state gen-3d
-    in card-batch-loop cards pipe-state recon-state gen-3d (i + 1) n (list-push acc result)
+  card-batch-loop : ClipBpe, List CardSpec, ForgeConfig, Recon3dState, Integer, List CardArtResult -> List CardArtResult
+  card-batch-loop (bpe) (cards) (config) (recon) (i) (acc) =
+    if i >= list-length cards then acc
+    else let ci = forge-with-seed config (config.fc-seed + i * 7919) (show i & "-" & config.fc-out)
+    in card-batch-loop bpe cards config recon (i + 1) (list-push acc (card-generate-art bpe (list-at cards i) ci recon))
 
 Section: Preset Cards (for testing)
   test-card-dragon : CardSpec
@@ -186,6 +156,6 @@ Section: Queries
 
   format-card-result : CardArtResult -> Text
   format-card-result (r) =
-    format-card-spec (r.car-card) & " -> png=" & show (list-length (r.car-image-bytes)) & "B" & (if r.car-has-mesh then " glb=" & show (list-length (r.car-mesh-bytes)) & "B" else "")
+    format-card-spec (r.car-card) & " -> " & format-forge-result (r.car-forge)
 
 Page 1

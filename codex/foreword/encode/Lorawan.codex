@@ -45,7 +45,7 @@ Section: FRMPayload Encryption
  LoRaWAN encrypts the frame payload with an AES-128 keystream. For each
  16-byte block i (1-based) it encrypts a counter block Ai and XORs the
  result into the payload. FPort 0 payloads use the NwkSKey; all others
- use the AppSKey (the caller passes the right key).
+ use the AppSKey.
 
   lw-block-ai : Integer, Integer, Integer, Integer -> List Integer
   lw-block-ai (devaddr) (dir) (fcnt) (i) =
@@ -177,8 +177,13 @@ Section: Join-Accept
 
   lw-ja-verify : List Integer, List Integer -> Boolean
   lw-ja-verify (appkey) (dec) =
-    let computed = lw-take4 (aes-cmac appkey ([lw-mhdr-join-accept] & lw-slice dec 0 12))
-    in if list-at computed 0 /= list-at dec 12 then False
+    if list-length appkey /= 16 then False
+    else if list-length dec /= 16 then False
+    else lw-ja-mic-ok (lw-take4 (aes-cmac appkey ([lw-mhdr-join-accept] & lw-slice dec 0 12))) dec
+
+  lw-ja-mic-ok : List Integer, List Integer -> Boolean
+  lw-ja-mic-ok (computed) (dec) =
+    if list-at computed 0 /= list-at dec 12 then False
     else if list-at computed 1 /= list-at dec 13 then False
     else if list-at computed 2 /= list-at dec 14 then False
     else list-at computed 3 == list-at dec 15

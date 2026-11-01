@@ -58,6 +58,36 @@ Chapter: GameVendor
         in let g = __record-set q "lot" serial
         in let n = __record-set p "count" (p.count + 1)
         in gv-fill-from v p vendor side next
+ UOAIX-229: an empty buy menu names why each of the vendor's lots stayed off it, in gv-fill-from's order.
+  gv-census : GvWorld, GvVendor, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  gv-census (v) (vendor) (serial) (lots) (unowned) (empty) (placed) (material) (unpriced) (first) = if serial == 0
+    then " census vendor=" & show vendor.serial & " actor=" & show vendor.actor & " stock=" & show vendor.stock & " lots=" & show lots
+      & " unowned=" & show unowned & " empty=" & show empty & " placed=" & show placed & " material=" & show material & " unpriced=" & show unpriced & " first-item=" & show first
+    else let l = ep-lot v.currency.world.goods serial
+    in let next = ep-lot-next v.currency.world.goods serial
+    in let item = if first == 0 then l.item else first
+    in if l.actor /= vendor.actor | not (gv-owned v.game.world l.serial vendor.serial 65) then
+      (if unowned == 0 then " held-by " & gv-root-note v.game.world l.serial 65 else "") & gv-census v vendor next (lots + 1) (unowned + 1) empty placed material unpriced item
+    else when world-get v.game.world l.serial
+      is Err (_) -> gv-census v vendor next (lots + 1) (unowned + 1) empty placed material unpriced item
+      is Ok (obj) -> if obj.amount <= 0 | world-child-count v.game.world obj.serial > 0 then gv-census v vendor next (lots + 1) unowned (empty + 1) placed material unpriced item
+        else if obj.container /= vendor.stock & obj.container /= vendor.extra then gv-census v vendor next (lots + 1) unowned empty (placed + 1) material unpriced item
+        else if obj.container == vendor.extra & gvb-material (gvb-role (gv-vendor v vendor.serial 0)) l.item then gv-census v vendor next (lots + 1) unowned empty placed (material + 1) unpriced first
+        else if ep-price v.currency.world vendor.actor l.item < 1 then gv-census v vendor next (lots + 1) unowned empty placed material (unpriced + 1) item
+        else gv-census v vendor next (lots + 1) unowned empty placed material unpriced first
+  gv-root-note : WorldTable, Integer, Integer -> Text
+  gv-root-note (world) (serial) (depth) = when world-get world serial
+    is Err (_) -> "missing " & show serial
+    is Ok (o) -> if o.container == 0 | depth == 0 then "serial=" & show o.serial & " art=" & show o.graphic & " at=" & show o.x & "," & show o.y & " tag=" & show o.health & " kind=" & show o.kind
+        & " strongbox " & gv-box-note world (world-tile-first world o.x o.y) 0
+      else gv-root-note world o.container (depth - 1)
+ The ShopStock strong box (0x0E80) on a tile, with its container and tag, or none (ss-store and ss-fill need it).
+  gv-box-note : WorldTable, Integer, Integer -> Text
+  gv-box-note (world) (serial) (seen) = if serial == 0 then "none tile-items=" & show seen
+    else when world-get world serial
+      is Err (_) -> "unreadable " & show serial
+      is Ok (o) -> if o.kind == 2 & o.graphic == #0E80 then "serial=" & show o.serial & " container=" & show o.container & " tag=" & show o.health & " z=" & show o.z
+        else gv-box-note world (world-tile-next world serial) (seen + 1)
  A quote rounded to two coins (gvp-round); the sell window carries 16 bits a price, so a rounding past that steps down a silver.
   gv-round-quote : GvWorld, Integer -> Integer
   gv-round-quote (v) (n) = let r = gvp-round n v.currency.copper-rate v.currency.silver-rate
@@ -120,7 +150,7 @@ Chapter: GameVendor
       gvp-buy v.currency.world.catalog stock (list-length stock) vendor.stock v.currency.copper-rate v.currency.silver-rate,
       gvp-contents extra (list-length extra) vendor.extra,
       gvp-buy v.currency.world.catalog extra (list-length extra) vendor.extra v.currency.copper-rate v.currency.silver-rate,
-      gvp-open vendor.serial, gv-status-packet v p, gvp-speech npc "Vendor" ("Take a look at my goods. " & gv-price-note v)]) "vendor buy menu"
+      gvp-open vendor.serial, gv-status-packet v p, gvp-speech npc "Vendor" ("Take a look at my goods. " & gv-price-note v)]) ("vendor buy menu" &(if list-length stock + list-length extra == 0 then gv-census v vendor (ep-lot-first v.currency.world.goods vendor.actor) 0 0 0 0 0 0 0 else ""))
  The client's window totals the price numbers, which count copper; the note says what a silver and a gold are worth.
   gv-price-note : GvWorld -> Text
   gv-price-note (v) = let cr = v.currency.copper-rate

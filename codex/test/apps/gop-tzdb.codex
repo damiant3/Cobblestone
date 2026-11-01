@@ -1,0 +1,74 @@
+Chapter: GopTzdbTest
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone (Zone, tz-db-build, tz-db-zone)
+  cites Foreword chapter TzCompile (TzTrans)
+  cites Works chapter GopRtc
+  cites Works chapter GopZone (ZoneMachine)
+  cites Works chapter GopRtcZone
+  cites Works chapter GopTzdb
+
+Section: Fixtures
+
+  to-buf : List Integer -> Integer
+  to-buf (bs) =
+    let b = alloc-bytes (list-length bs + 8)
+    in let w = fill b bs 0
+    in b
+
+  fill : Integer, List Integer, Integer -> Integer
+  fill (b) (bs) (i) =
+    if i >= list-length bs then 0
+    else let w = poke-byte b i (list-at bs i)
+    in fill b bs (i + 1)
+
+  same-trans : List TzTrans, List TzTrans, Integer -> Boolean
+  same-trans (x) (y) (i) =
+    if i >= list-length x then list-length x == list-length y
+    else if i >= list-length y then False
+    else let p = list-at x i
+    in let q = list-at y i
+    in if p.at /= q.at | p.kind.utoff /= q.kind.utoff | p.kind.abbr /= q.kind.abbr then False
+    else same-trans x y (i + 1)
+
+Section: Arms
+
+  look : Integer, Integer, List Integer, Text -> Text
+  look (buf) (len) (bs) (name) =
+    when gtz-zone-of buf len name
+      is None -> name & " none" & (when tz-db-zone bs name is None -> ", list reader none too" is Just (z) -> ", LIST READER FOUND IT")
+      is Just (z) ->
+        (when tz-db-zone bs name
+          is None -> name & " found, LIST READER DID NOT"
+          is Just (want) -> name & " as " & z.name & " " & show (list-length (z.trans)) & " transitions, same as the list reader " & (if same-trans (z.trans) (want.trans) 0 & list-length (z.footer.rules) == list-length (want.footer.rules) & z.name == want.name then "yes" else "NO"))
+
+  summer : Maybe Zone -> Text
+  summer (mz) =
+    let c = RtcCivil { rc-ok = True, rc-year = 2026, rc-month = 7, rc-day = 1, rc-hour = 12, rc-minute = 0, rc-second = 0 }
+    in when rtc-utc-of c (ZoneMachine { zm-name = "Europe/London", zm-rtc-local = True }) mz
+      is None -> "none"
+      is Just (u) -> "offset " & show (rtc-civil-seconds c - u)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let bs = tz-db-build (tz-parse tz-sources)
+    in let buf = to-buf bs
+    in let len = list-length bs
+    in let bad = to-buf bs
+    in let w = poke-byte bad 3 65
+    in act
+      print-line-uni ("bytes " & show len)
+      print-line-uni (look buf len bs "Europe/London")
+      print-line-uni (look buf len bs "US/Eastern")
+      print-line-uni (look buf len bs "Australia/Lord_Howe")
+      print-line-uni (look buf len bs "Europe/Londo")
+      print-line-uni (look buf len bs "Nowhere/Missing")
+      print-line-uni ("cut to 100 bytes: " & (when gtz-zone-of buf 100 "Europe/London" is None -> "none" is Just (z) -> "FOUND"))
+      print-line-uni ("cut where the records begin: " & (when gtz-zone-of buf (gtz-entries-end buf len 8 (gtz-be buf 4 4 0)) "Europe/London" is None -> "none" is Just (z) -> "FOUND"))
+      print-line-uni ("wrong magic: " & (when gtz-zone-of bad len "Europe/London" is None -> "none" is Just (z) -> "FOUND"))
+      print-line-uni ("london summer through the file: " & summer (gtz-zone-of buf len "Europe/London"))
+    end

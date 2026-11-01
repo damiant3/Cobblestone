@@ -5,27 +5,12 @@ Chapter: TlsCvSchemesTest
   cites Foreword chapter Maybe
   cites Foreword chapter Console
 
- Until this chapter existed, ECDSA P-256 and RSASSA-PSS were both
- implemented, both tested against published vectors, and both unreachable
- from a handshake: TlsCert accepted ed25519 and nothing else. So the two
- things a real server actually sends could not be verified, and no test in
- the tree could see that, because every TLS test here is a loopback
- against our own Ed25519 fixture -- both halves agreeing on the one scheme
- neither the web nor anybody else uses.
-
  THE SIGNED CONTENT IS BUILT OUTSIDE CODEX, from the RFC 8446 section
  4.4.3 text: 64 bytes of 0x20, the ASCII context string, one 0x00, then
  the transcript hash. OpenSSL 3.2.4 signed exactly those 130 bytes, and
  .NET verified the results independently from the same SubjectPublicKeyInfo
  DER that Codex parses below. Neither half of this test was produced by
  the other.
-
- The keys arrive as SubjectPublicKeyInfo and go through x509-spki, which
- is how a real handshake gets them -- out of the peer's certificate. So the
- key type is decided by the parser rather than asserted here, and an ECDSA
- signature can only be checked against a key X509 agreed was P-256.
-
- We say:
 
 Section: Vectors
   w-th : List Integer =
@@ -255,30 +240,11 @@ Section: The Guards, Asserted Where They Can Fail
 
 Section: P-384
 
- THE POSITIVE IS THE LINE THAT MATTERS, and it is the one that pins the
- DIGEST. ecdsa_secp384r1_sha384 binds SHA-384 into the code point, and
- EcdsaP256 exports both ecdsa-p384-verify and ecdsa-p384-verify-sha384 --
- two entry points differing only in which digest they take. A verifier
- wired to the SHA-256 one accepts nothing a real peer sends, and every
- negative line below stays False while it does so. Only this line moves.
-
   r-p384-good : Text = "p384 cv as server = " & cv p384-key w-p384-cv True w-th
 
   r-p384-role : Text = "p384 cv as client = " & cv p384-key w-p384-cv False w-th
   r-p384-tx : Text = "p384 cv, other transcript = " & cv p384-key w-p384-cv True other-th
   r-p384-wrongkey : Text = "p384 cv against the p256 key = " & cv ec-key w-p384-cv True w-th
-
- The two EC schemes must not be interchangeable, and these two lines are
- what says the dispatch reads the scheme rather than trying whatever the
- key can do. Route 0x0503 to the P-256 arm by mistake and r-p384-good goes
- False; let either EC arm take the other's key and the matching line here
- goes True.
-
- As with the RSA pair above, the key-type check inside each arm is
- redundant against this parser's own output -- a P-256 point is 65 bytes
- and a P-384 point is 97, so the arithmetic refuses on width whichever arm
- it lands in. These lines are evidence about the DISPATCH, not about those
- checks.
 
   r-p384-as-p256 : Text =
     "p384 signature labelled p256 = " & cv p384-key w-p384-as-p256 True w-th

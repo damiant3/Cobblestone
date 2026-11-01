@@ -26,10 +26,10 @@ wording. Provision 5.5 is the worked precedent (`docs/KingsAndCourts.md`).
 
 | Provision | Title | Class | Mechanism | Gap |
 |-----------|-------|-------|-----------|-----|
-| 5.1-1 | No universal default passwords | Security | Trust lattice generates per-device identity at provisioning; no shared secrets in CDX binaries | Partial |
-| 5.1-2 | No easily guessable default passwords | Security | Capability manifests bind credentials to device key pairs (Ed25519); no password-based auth by default | Satisfied |
-| 5.1-3 | Passwords shall be unique per device | Security | Trust lattice derives per-device keys from hardware identity; key material never duplicated across devices | Partial |
-| 5.1-4 | Authentication not based on universal credentials | Security | Ed25519 per-device signing keys; trust lattice enforces unique identity chain | Satisfied |
+| 5.1-1 | No universal default passwords | Security | `IdentityManager` (`idm-first-boot`) generates a per-device identity, but no device application or provisioning path calls it yet; no shared secrets in CDX binaries | Partial |
+| 5.1-2 | No easily guessable default passwords | Security | No password scheme exists, so there is no default password; capability manifests carry no key or credential field | Satisfied |
+| 5.1-3 | Passwords shall be unique per device | Security | `IdentityManager` derives per-device keys from the hardware-random device seed (`idm-read-device-seed`), but no device application or provisioning path calls it yet | Partial |
+| 5.1-4 | Authentication not based on universal credentials | Security | `IdentityManager` generates Ed25519 per-device signing keys (`idm-generate-keypair`, exercised by `codex/test/idm-key-tests`); no device application or provisioning path calls it yet | Satisfied |
 
 ## 5.2 -- Vulnerability Disclosure
 
@@ -41,14 +41,14 @@ wording. Provision 5.5 is the worked precedent (`docs/KingsAndCourts.md`).
 
 | Provision | Title | Class | Mechanism | Gap |
 |-----------|-------|-------|-----------|-----|
-| 5.3-1 | Software shall be securely updateable | Security | OTA via LwM2M Object 5; signed CDX images verified by Ed25519 + SHA-256 before application | Satisfied |
+| 5.3-1 | Software shall be securely updateable | Security | OTA via LwM2M Object 5; signed CDX images verified by Ed25519 + SHA-256 before application (Gate B, `fw-execute-update`); no device application calls it yet, exercised by `codex/test/apps/ota-lwm2m-loopback` | Satisfied |
 | 5.3-2 | Updates shall be timely | Process | Fact store tracks proposals/verdicts with timestamps; manufacturer sets cadence | Manufacturer |
-| 5.3-3 | Automatic update mechanism | Security | LwM2M Object 5 supports pull-based and push-based update; capability manifest declares update channel | Partial |
-| 5.3-4 | Check for latest update on init | Security | Boot sequence queries update endpoint via LwM2M; trust lattice validates server identity | Partial |
+| 5.3-3 | Automatic update mechanism | Security | Pull-based only: `codex/os/net/Lwm2mFirmware.codex` fetches the LwM2M Object 5 package it is pointed at, graded by its tests, and no device application calls it yet. Server push is not built (LwM2M Observe/Notify, `ProtocolStack.md`), no manifest declares an update channel, and the OTA boot side has no production caller (`codex/os/os-backlog.md`) | Partial |
+| 5.3-4 | Check for latest update on init | Security | `Lwm2mClient` registers with an LwM2M server, but no boot sequence calls it yet (only `tools/lwm2m-client.codex` and tests); nothing validates the server identity through the trust lattice | Partial |
 | 5.3-5 | Notify user of security update | UX | Effect types force I/O declaration; notification side-effect must be declared in manifest | Partial |
-| 5.3-6 | Easy to apply updates | UX | CDX binary is single-image; no dependency resolution needed; signed swap is atomic | Satisfied |
+| 5.3-6 | Easy to apply updates | UX | CDX binary is single-image; no dependency resolution needed; the signed swap (`fw-activate`) is atomic, no device application calls it yet, exercised by `codex/test/apps/ota-lwm2m-loopback` | Satisfied |
 | 5.3-7 | Updates use integrity verification | Security | Signed CDX (Ed25519 + SHA-256); CDX header contains content hash verified at boot | Satisfied |
-| 5.3-8 | Update over untrusted network | Security | CDX signature verification is independent of transport; no TLS dependency for integrity | Satisfied |
+| 5.3-8 | Update over untrusted network | Security | CDX signature verification is independent of transport; no TLS dependency for integrity. On the update path it is Gate B, which no device application calls yet, exercised by `codex/test/apps/ota-lwm2m-loopback` | Satisfied |
 
 ## 5.4 -- Secure Storage of Credentials
 
@@ -57,7 +57,7 @@ wording. Provision 5.5 is the worked precedent (`docs/KingsAndCourts.md`).
 | 5.4-1 | Credentials stored securely | Security | Linear types (CDX2061/2063) prevent credential duplication; bare-metal has no swap/tmpfs leak surface | Satisfied |
 | 5.4-2 | Hard-coded credentials prohibited | Security | **Nothing in the compiler rejects a hard-coded credential.** A `Text` or `List Integer` constant is an ordinary literal | **Withdrawn** |
 | 5.4-3 | Credentials in transit encrypted | Security | Effect types declare all I/O; credential-bearing channels require encryption capability | Partial |
-| 5.4-4 | Device identity credentials unique | Security | Trust lattice per-device key derivation; Ed25519 keypair generated at provisioning | Satisfied |
+| 5.4-4 | Device identity credentials unique | Security | `IdentityManager` derives a per-device Ed25519 keypair (`idm-generate-keypair`, exercised by `codex/test/idm-key-tests`); no device application or provisioning path calls it yet | Satisfied |
 
 **THIS DOCUMENT AND THE CODE DO NOT SHARE A NUMBERING SCHEME.** The
 provisions here follow the standard's clause numbering (5.3 keep software
@@ -134,7 +134,7 @@ dynamic loader. The exposure is the symbol table, not a live channel.
 | Provision | Title | Class | Mechanism | Gap |
 |-----------|-------|-------|-----------|-----|
 | 5.7-1 | Verify software integrity at boot | Security | Signed CDX (Ed25519 + SHA-256); boot verifies content hash against embedded signature | Satisfied |
-| 5.7-2 | Alert on unauthorized changes | Security | Fact store records expected hashes; runtime hash mismatch triggers alert via declared effect | Partial |
+| 5.7-2 | Alert on unauthorized changes | Security | NOT BUILT: no verification failure is written to the fact store or raised as an alert; the boot-time `WakeCeremony` reports its refusal on screen only | Partial |
 
 ## 5.8 -- Personal Data Protection
 

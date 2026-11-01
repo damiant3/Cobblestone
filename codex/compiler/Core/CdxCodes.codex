@@ -46,6 +46,10 @@ Section: Infrastructure
 
   cdx-deck-grown : Integer = 9014
 
+  cdx-ir-check-violation : Integer = 9015
+
+  cdx-ir-fidelity : Integer = 9016
+
 Section: Lexer
   cdx-invalid-tab-escape : Integer = 5
 
@@ -136,12 +140,6 @@ Section: Type checker and Codegen
 
   cdx-emit-not-implemented : Integer = 2042
 
- CDX2043 was a second code for that same refusal, raised by
- emit-no-target-impl. Both are gone: emit-no-target-impl had no call
- site, so 2043 could not be raised by any program, and a code that
- cannot fire is a promise the compiler does not keep -- the same thing
- this paragraph exists to forbid. CDX2042 covers the case and is live.
-
   cdx-narrowing-record-set-literal : Integer = 2050
 
   cdx-narrowing-record-set : Integer = 2051
@@ -199,6 +197,8 @@ Section: Type checker and Codegen
   cdx-class-dict-by-hand : Integer = 2098
   cdx-structural-eq-withheld : Integer = 2099
   cdx-eq-on-type-variable : Integer = 2100
+  cdx-record-set-field-not-literal : Integer = 2101
+  cdx-handler-shadows-builtin : Integer = 2102
 
   cdx-non-exhaustive-match : Integer = 2070
 
@@ -207,6 +207,8 @@ Section: Type checker and Codegen
   cdx-unknown-pattern-ctor : Integer = 2072
 
   cdx-real-literal-overflow : Integer = 2073
+
+  cdx-negative-shift-count : Integer = 2074
 
 Section: Name resolver
   cdx-duplicate-definition : Integer = 3001
@@ -230,12 +232,6 @@ Section: Name resolver
  concatenated without Console.codex is the second and not the first. They
  are separate codes because they have separate fixes: correct the name or
  the quire for 3010, include the chapter or drop the cite for 3007.
-
- 3007 is a WARNING, and deliberately. Measured when it was first written as
- an error: it halts the sign tool's build, because that tool cites Console
- and its unit does not carry it. Whether each such cite is a real defect or
- a harmless leftover is exactly what nobody has measured, and shipping it as
- an error would have decided that question by breaking the build.
 
   cdx-cite-not-in-unit : Integer = 3007
 
@@ -283,6 +279,8 @@ Section: Proof
 
   cdx-non-grammatical-proof : Integer = 4024
   cdx-proof-undecided : Integer = 4025
+
+  cdx-occ-report : Integer = 4030
 
 Section: Hard Realtime
   cdx-rt-calls-unsafe : Integer = 6001
@@ -370,7 +368,7 @@ Section: Registry
     in mk-cdx cdx-missing-cite "MissingCite" sev-error phase-name-resolver summary,
     mk-cdx cdx-class-shadows-derived "ClassShadowsDerived" sev-error phase-name-resolver "A class declaration uses the name of a derived class (Eq, Show or Ord). A constraint naming one of these is always compiled as the derived class, so the user class and its instances would never be consulted. Rename the class.",
     mk-cdx cdx-applied-local-is-builtin "AppliedLocalIsBuiltin" sev-error phase-name-resolver "A parameter, let, lambda or pattern binding with a builtin's name is applied as a function. The call does not say which one it means, and the backends disagreed with lexical scope: an applied parameter named abs called the builtin. A local with a builtin's name used as a value is not refused. Rename the local.",
-    mk-cdx cdx-cite-not-in-unit "CiteNotInUnit" sev-warning phase-name-resolver "A cited chapter is not present in this compilation unit. The file may exist and resolve on disk; this unit was assembled without it, so nothing the cite selects can be reached. Include the chapter in the unit, or drop the cite.",
+    mk-cdx cdx-cite-not-in-unit "CiteNotInUnit" sev-error phase-name-resolver "A cited chapter is not present in this compilation unit. The file may exist and resolve on disk; this unit was assembled without it, so nothing the cite selects can be reached. Include the chapter in the unit, or drop the cite.",
     mk-cdx cdx-undefined-type-name "UndefinedTypeName" sev-error phase-type-checker "A type name in an annotation is defined nowhere in the compilation unit. CDX3002 covers value names; until 2026-08-17 nothing covered type names, because CDX3002 is raised walking EXPRESSIONS and an annotation is type syntax that never enters that walk. lookup-type-def answers an unknown name by fabricating an opaque ConstructedTy, so the phantom unified with itself and the unit compiled clean, ran, and answered correctly around it: a subset build sailed through and the mistake surfaced somewhere else or never, while a monolithic build hid it entirely by always carrying every definition. Only an uppercase name absent from both the type-def map and the builtin set reaches here, so lowercase type variables, generic parameters and Vector's numeric argument are out of scope by construction. Found by Steve Howell as finding 9 of GitHub PR 66.",
     let summary = "A quoted work was not supplied. No definition with that content hash was offered to the compiler."
     in mk-cdx cdx-quotation-missing "QuotationMissing" sev-error phase-name-resolver summary,
@@ -411,6 +409,7 @@ Section: Registry
     mk-cdx cdx-unreachable-match-arm "UnreachableMatchArm" sev-error phase-type-checker "An arm follows an unguarded catch-all, so nothing can reach it. The catch-all matches every remaining value, and an arm written after it is either a mistake about the order or a case the author believed was still open.",
     mk-cdx cdx-int-literal-overflow "IntLiteralOverflow" sev-error phase-type-checker "An integer literal exceeds 64 bits (decimal max 9223372036854775807, hash form max 16 hex digits); the value would be silently truncated. Split the constant or compute it from smaller parts.",
     mk-cdx cdx-real-literal-overflow "RealLiteralOverflow" sev-error phase-type-checker "A Real literal carries more decimal digits than fit an i64. The parser accumulates every digit, on both sides of the point, into one wrapping i64 before it scales by the place count, so a literal past that width reads back as a different and often negative number with no fault. Split the constant or compute it from smaller parts.",
+    mk-cdx cdx-negative-shift-count "NegativeShiftCount" sev-error phase-type-checker "A bit-shl, bit-shr or bit-shru count is a negative constant. A negative count is refused (COMPILER-158): computed, it traps at run time. Shift the other way, or by its magnitude.",
     mk-cdx cdx-unknown-pattern-ctor "UnknownPatternCtor" sev-error phase-type-checker "A pattern names a constructor that is not in scope; the arm could never match and the when would fall through silently at runtime. Check the constructor names of the scrutinee's type.",
     mk-cdx cdx-nothing-as-value "NothingAsValue" sev-error phase-type-checker "'Nothing' is a type, not a value. The empty Maybe value is 'None' (cite Foreword chapter Maybe); 'Nothing' is only the return type of effectful procedures such as [Console] Nothing.",
     mk-cdx cdx-leading-dot-continuation "LeadingDotContinuation" sev-error phase-parser "A line begins with '.', continuing a field access from the previous line. Field access must follow its receiver on the same line (receiver.field) or be bound with a let; otherwise the continuation is silently dropped.",
@@ -464,6 +463,8 @@ Section: Registry
     mk-cdx cdx-class-dict-by-hand "ClassDictByHand" sev-error phase-type-checker "A record expression builds the dictionary of a class whose methods are generic in type variables of their own. Each use of such a method chooses those variables afresh, so only an instance declaration, whose methods are checked to answer every choice, may build the dictionary.",
     mk-cdx cdx-structural-eq-withheld "StructuralEqWithheld" sev-error phase-type-checker "== or /= was applied to a record or sum with a Real, Vector or SizedVec field, or an equality operator to a packed Vector, which has no structural equality; it compared the two values' addresses. Compare the fields or lanes you mean.",
     mk-cdx cdx-eq-on-type-variable "EqOnTypeVariable" sev-error phase-type-checker "== or /= was applied to a value whose type is, or holds, a type variable of the definition's own signature; the body cannot see the type, so it compared the two values' words, which for Text, a list, a vector or a record are their addresses. Take the comparison as a parameter or declare the concrete type.",
+    mk-cdx cdx-record-set-field-not-literal "RecordSetFieldNotLiteral" sev-error phase-type-checker "__record-set was given a field name that is not a text literal. The field is fixed at compile time, so a name computed at run time selects no field; name the field as a literal, one store per field.",
+    mk-cdx cdx-handler-shadows-builtin "HandlerShadowsBuiltin" sev-error phase-type-checker "A handler clause names an effect operation that a builtin implements. Every call of that operation compiles to the builtin, so the clause would never run; handle an operation of your own effect instead.",
     mk-cdx cdx-field-on-unit-type "FieldOnUnitType" sev-error phase-type-checker "A field access or assignment names a field through a unit wrapper. The wrapper is a distinct type and has no fields, and a unit over a record has no accessor and is not accepted where the record is expected, so the field cannot be reached through it.",
     let summary = "A [HardRealtime] function calls a function that is not [HardRealtime]-safe."
     in mk-cdx cdx-rt-calls-unsafe "RtCallsUnsafe" sev-error phase-type-checker summary,
@@ -508,6 +509,9 @@ Section: Registry
     mk-cdx cdx-order-compare-on-text "OrderCompareOnText" sev-error phase-codegen "The ordering comparator was handed a Text or character operand. On Text a machine cmp compares ADDRESSES, so the answer depends on allocation order and not on content; the build halts rather than emit it.",
     mk-cdx cdx-image-overlaps-serial-ring "ImageOverlapsSerialRing" sev-error phase-codegen "A bare-metal program's code and rodata, loaded at bare-metal-load-addr, reach serial-ring-buf-addr. The host preloads input there and the serial interrupt writes there, so code past that address is overwritten at the first input byte; the build halts rather than emit it.",
     mk-cdx cdx-deck-grown "DeckGrown" sev-info phase-infrastructure "A phase ran again with a doubled deck after its deck overflowed.",
+    mk-cdx cdx-ir-check-violation "IrCheckViolation" sev-error phase-infrastructure "The ir-check pass found malformed IR: a node carrying ErrorTy, a name no scope binds, or a shape the lowering never produces (a let of the empty name, a literal applied as a function). The IR is the compiler's own output, so this is a compiler fault, never the program's.",
+    mk-cdx cdx-ir-fidelity "IrFidelity" sev-warning phase-infrastructure "Under the fidelity mode flag, a typed IR node disagrees with the type checker's answer for it, and one FIDELITY summary line counts the walk.",
+    mk-cdx cdx-occ-report "OccReport" sev-info phase-codegen "An informational report on well-formed IR: the occurrence census (OCC lines), the pass pipeline in force (PIPELINE), or a LIR dump. Info does not set the error flag, so the compile still emits its binary.",
     mk-cdx cdx-vec-lane-out-of-range "VecLaneOutOfRange" sev-error phase-type-checker "A literal lane index is outside the vector. vec-extract takes a Vector 2 and vec4-extract a Vector 4, so the lane count is fixed by the builtin's own type and the index is decidable here rather than at runtime."
   ]
 

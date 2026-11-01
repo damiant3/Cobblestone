@@ -2,17 +2,19 @@ Chapter: AccpMcpProtocol
   cites Accp chapter AccpProtocol
   cites Accp chapter AccpMcpCard
   cites Accp chapter AccpExperimentCard
+  cites Accp chapter AccpClarify
 
 Section: Tool Discovery
 
   mc-limits-schema : Text
   mc-limits-schema = "{\"type\":\"object\",\"properties\":{\"ms\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":10000},\"stdout_bytes\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":65536}},\"additionalProperties\":false}"
 
-  mc-source-schema : Boolean -> Text
-  mc-source-schema (input) =
+  mc-source-schema : Boolean, Boolean -> Text
+  mc-source-schema (input) (prose) =
     "{\"type\":\"object\",\"properties\":{\"source\":{\"type\":\"string\",\"maxLength\":65536,\"description\":\"Complete Codex compilation unit with opening, not Python or JavaScript.\"},\"limits\":" & mc-limits-schema
-      & ",\"library\":{\"type\":\"string\",\"enum\":[\"none\",\"math\",\"physics\",\"experiment\"],\"description\":\"Bundled library. Physics includes math; experiment adds checked quantities, structured results, coupled ODEs, sweeps and SVG. Read codex://accp/science or codex://accp/experiments.\"}"
-      & (if input then ",\"output\":{\"type\":\"string\",\"enum\":[\"text\",\"json\"],\"description\":\"json requires one object on stdout and exposes result. Result fields are program-reported, not independently certified.\"},\"input\":{\"type\":\"string\",\"maxLength\":65536,\"description\":\"Buffered program stdin.\"}" else "")
+      & ",\"library\":{\"type\":\"string\",\"enum\":[\"none\",\"math\",\"physics\",\"experiment\",\"exact\"],\"description\":\"Bundled library. Physics includes math; experiment adds checked quantities, structured results, coupled ODEs, sweeps and SVG; exact gives integers past 64 bits and exact decimals. Read codex://accp/science or codex://accp/experiments.\"}"
+      & (if input then ",\"output\":{\"type\":\"string\",\"enum\":[\"text\",\"json\"],\"description\":\"json requires one object on stdout and exposes result. Result fields are program-reported, not independently certified.\"},\"input\":{\"type\":\"string\",\"maxLength\":65536,\"description\":\"Buffered program stdin.\"},\"lease\":{\"type\":\"string\",\"maxLength\":16384,\"pattern\":\"^[0-9a-f]*$\",\"description\":\"A sealed grant (lowercase hex of encode-grant-body) for a row outside ambient authority. Admitted only on a bound instance whose held policy allows the row now; a refusal names the failed check.\"}" else "")
+      & (if prose then ",\"prose\":{\"type\":\"boolean\",\"description\":\"Also run the compiler's Codex Prose Language checks over We say: blocks; their CDX1101 to CDX1110 warnings are returned as prose_findings.\"}" else "")
       & "},\"required\":[\"source\"],\"additionalProperties\":false}"
 
   mc-tool : Text, Text, Text -> Text
@@ -22,11 +24,15 @@ Section: Tool Discovery
 
   mc-tools : Text
   mc-tools = "{\"tools\":["
-    & mc-tool "codex_run" "Compute arithmetic, text counts, numerical math and physics from supplied inputs. Write and execute Codex source. Read codex://accp/language for syntax; read codex://accp/science before selecting library math or physics. Numerical Real answers are approximate. Check execution status and MathError results; repair diagnostics and report refusals, failures or nonconvergence explicitly." (mc-source-schema True)
-    & "," & mc-tool "codex_check" "Compile a complete Codex unit without executing it. Returns diagnostics or the opening effect row and effects outside ambient authority. Use diagnostics to repair source before retrying." (mc-source-schema False)
-    & "," & mc-tool "codex_lens" "Compile a complete Codex unit and return WebAssembly text. Only pure and buffered Console effects are admitted. This tool emits WAT; codex_run computes an answer." (mc-source-schema False)
+    & mc-tool "codex_run" "Compute arithmetic, text counts, numerical math and physics from supplied inputs. Write and execute Codex source. Read codex://accp/language for syntax; read codex://accp/science before selecting library math or physics. Numerical Real answers are approximate. Check execution status and MathError results; repair diagnostics and report refusals, failures or nonconvergence explicitly." (mc-source-schema True False)
+    & "," & mc-tool "codex_check" "Compile a complete Codex unit without executing it. Returns diagnostics or the opening effect row and effects outside ambient authority. Use diagnostics to repair source before retrying. prose: true also returns the Codex Prose Language findings (implicit referent, quantity or order) of We say: blocks as prose_findings." (mc-source-schema False True)
+    & "," & mc-tool "codex_lens" "Compile a complete Codex unit and return WebAssembly text. Only pure and buffered Console effects are admitted. This tool emits WAT; codex_run computes an answer." (mc-source-schema False False)
     & "," & mc-tool "codex_describe" "Identify the actual Codex compiler, conduit, host, ambient effects and resource ceilings. Artifact hashes identify bytes and do not claim parity or attestation." "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
+    & "," & mc-tool "codex_clarify" "Find the implicit bindings in English text before acting on it: pronouns and first-mention noun phrases with no named antecedent, back-references (like we talked about), unbound quantities (some, most, always), comparisons with no baseline (more, slow), unstated domains, unfixed times, open modality (should, may) and open connectives (so). Returns the SOLID sentences, every UNRESOLVED word with its sentence and a question, and next_question, the referent question first, phrased for the register (child, casual, technical, formal; detected when omitted). A lexical scan: it flags words, not meaning, and executes nothing." mc-clarify-schema
     & "]}"
+
+  mc-clarify-schema : Text
+  mc-clarify-schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"maxLength\":16384,\"description\":\"English text to clarify.\"},\"register\":{\"type\":\"string\",\"enum\":[\"child\",\"casual\",\"technical\",\"formal\"],\"description\":\"Question register. Omit to detect from word and sentence length.\"}},\"required\":[\"text\"],\"additionalProperties\":false}"
 
   mc-resources : Text
   mc-resources = "{\"resources\":[{\"uri\":\"codex://accp/language\",\"name\":\"codex-language-card\",\"title\":\"Codex computation language card\",\"description\":\"Syntax, complete examples, effects and failure handling for codex_run.\",\"mimeType\":\"text/markdown\"},{\"uri\":\"codex://accp/science\",\"name\":\"codex-science-card\",\"title\":\"Numerical math and physics\",\"description\":\"Bundled library API, units, numerical limits, domain errors and complete examples.\",\"mimeType\":\"text/markdown\"},{\"uri\":\"codex://accp/experiments\",\"name\":\"codex-experiment-card\",\"title\":\"Structured experiments\",\"description\":\"Checked quantities, structured results, coupled ODEs, sweeps and SVG export.\",\"mimeType\":\"text/markdown\"}]}"
@@ -67,16 +73,27 @@ Section: Invocation
     if name == "codex_run" then "run"
     else if name == "codex_check" then "check"
     else if name == "codex_lens" then "lens"
-    else if name == "codex_describe" then "describe" else ""
+    else if name == "codex_describe" then "describe"
+    else if name == "codex_clarify" then "clarify" else ""
 
   mc-args-known : List AccpField, Text, Integer -> Boolean
   mc-args-known (fs) (op) (i) =
     if i >= list-length fs then True
     else let k = (list-at fs i).key
     in if op == "describe" then False
-    else if k == "source" | k == "limits" | k == "library" | ((k == "input" | k == "output") & op == "run") then
+    else if op == "clarify" then
+      (if k == "text" | k == "register" then mc-args-known fs op (i + 1) else False)
+    else if k == "source" | k == "limits" | k == "library" | ((k == "input" | k == "output" | k == "lease") & op == "run") | (k == "prose" & op == "check") then
       mc-args-known fs op (i + 1)
     else False
+
+  mc-clarify : Text, AccpObject -> Text
+  mc-clarify (id) (args) =
+    let answer = ac-clarify (aj-text args "text") (aj-text args "register")
+    in if aj-is (aj-get args "text") 0 "\"" == False then mc-error id -32602 "text must be a string"
+    else if aj-get args "register" /= "" & aj-is (aj-get args "register") 0 "\"" == False then mc-error id -32602 "register must be a string"
+    else if answer.ok == False then mc-error id -32602 (answer.body)
+    else mc-result id ("{\"content\":[{\"type\":\"text\",\"text\":" & aj-quote (answer.body) & "}],\"structuredContent\":" & answer.body & ",\"isError\":false}")
 
   mc-tool-call : Text, Text, AccpObject, Text, Integer -> [Console] Text
   mc-tool-call (meta) (header) (params) (id) (heap-base) = act
@@ -86,6 +103,7 @@ Section: Invocation
     in if op == "" then mc-error id -32602 "unknown tool"
     else if args.ok == False | mc-args-known args.fields op 0 == False then
       mc-error id -32602 "invalid tool arguments"
+    else if op == "clarify" then mc-clarify id args
     else let fields = if raw == "" then "" else ap-fields raw
     in let request = "{\"op\":" & aj-quote op & (if op == "lens" then ",\"plug\":\"wasm\"" else "") & (if fields == "" then "" else "," & fields) & "}"
     in act

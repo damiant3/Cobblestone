@@ -402,7 +402,12 @@ tree, its data helpers, and its click/input handlers.
 - **Persistence** -- `local-storage-get/set`, `save-theme`, `load-theme`,
   `save-layout`, `load-layout`, `download-text`
 - **Misc** -- `random-int`, `play-tone`, `set-timeout`, `next-card-id`,
-  `generate-image`, `check-sd-status`
+  `generate-image`, `check-sd-status`. `random-int lo hi` keeps its bounds and
+  result as BigInt and draws by rejection sampling over `Math.random` words, so
+  inclusive bounds beyond Number precision hold; reversed bounds throw. Expected
+  constant time for a fixed-width range, with no worst-case bound on retries.
+  `codex/plugs/html/arms/random-int.mjs` grades composition with bit operations
+  and the bounds; the compiled draw is controlled, so it is not a distribution grade
 - **Host** -- `page-data key` reads `window.__DATA[key]`, a data block a
   page's build script injects beside the plug output (a string as is, anything
   else as JSON); `wasm-run-then name input cb` runs the base64 WASI module
@@ -414,6 +419,14 @@ tree, its data helpers, and its click/input handlers.
   `pick-file-text accept cb`. `apps/modbuilder/page/ModBuilderApp.codex` is
   the page that uses all of them.
 
+After an HTML plug change, rebuild with `pwsh codex/plugs/html/build.ps1`, then
+run every `.mjs` directly under `codex/plugs/html/arms` serially with `node`;
+every process must exit 0. The GPU and model arms need their named local
+checkpoints and fixtures, and the SDXL arms print the HTML, base and extra-WGSL
+arguments they need. The XL graders stop only Edge processes carrying their own
+profile and check none remain, so numerical checks passing before that cleanup
+are not a pass: the process exit is the verdict.
+
 ### Values, as natively
 
 - A top-level definition with no parameters is evaluated at every use, as
@@ -424,6 +437,10 @@ tree, its data helpers, and its click/input handlers.
   and arithmetic and `==` on it behave as natively.
 - A Real is a JavaScript Number; a Real literal is decoded from the f64 bits
   the IR carries (`__real`).
+- A `when` arm on a nested constructor checks every inner tag before binding:
+  `Just (JsonInt n)` refuses `Just (JsonNum value)`.
+  `codex/plugs/html/arms/nested-ctor.mjs` grades wrong inner and outer tags,
+  three nested constructors, a literal leaf and the fallback binding.
 - A definition applied to fewer arguments than it takes (a lambda that
   captures is one, once lifted) becomes `__pa`, which takes the rest together
   or one at a time; surplus arguments go to the result only when it is a
@@ -468,11 +485,14 @@ tree, its data helpers, and its click/input handlers.
   `file-sha256-then name cb` answers a picked file's SHA256 as
   `{"ok":true,"sha256":"<upper-case hex>"}`, read in 4 MiB slices (the plug's
   own JavaScript, graded against OpenSSL by `apps/spark/lora-hash.mjs`),
-  `audio-analyze-then name cb` answers a picked 16-bit PCM WAV's MusicAnalyzer
-  reading (sample rate, duration, peak and RMS in dB, BPM, RMS envelope,
-  spectral centroid, the 64-band spectrogram by FFT, and the 2000-point waveform) in
-  float32 as the WPF Spark computes it (graded by
-  `apps/spark/audio-analyze.mjs`), and
+  `audio-analyze-then name cb` answers a picked 16-bit PCM or finite IEEE-f32
+  WAV's MusicAnalyzer reading (sample rate, duration, peak and RMS in dB, BPM,
+  RMS envelope, spectral centroid, the 64-band spectrogram by FFT, and the
+  2000-point waveform) in float32 as the WPF Spark computes it, with f32
+  amplitudes unclipped; a bad header, truncated chunk, invalid alignment, empty
+  data, unsupported format or nonfinite sample refuses (graded by
+  `codex/plugs/html/arms/wave-analyze.mjs` and `apps/spark/audio-analyze.mjs`,
+  with `--float32` for the f32 path), and
   `file-delete-then path cb` removes one; `clock-utc-text ms` is
   the time now plus `ms` as ISO 8601 UTC text, which .NET reads as a
   `DateTime`. A headless test cannot answer the directory picker, so it replaces
@@ -488,6 +508,18 @@ tree, its data helpers, and its click/input handlers.
   otherwise hold every temporary at once. `gpu-buf-show-then` draws an f32
   3 x h x w buffer into a canvas; `real-from-int`, `real-to-int`,
   `real-to-bits` and `bits-to-real` run in a page.
+- `gpu-trim-then cb` releases that pool: at the call it detaches the current
+  free-buffer pool, submits pending work and destroys the snapshot once the
+  queue completes, so active handles and buffers freed after the call survive.
+  `cb` runs once, with empty text on success or the error text. Close a model
+  and await the trim before loading another. Cost is O(pooled-buffer count);
+  driver-reported memory need not fall at once, and live buffers and shader
+  caches remain. `codex/plugs/html/arms/callback-once.mjs` grades it.
+  `gpu-buf-copy-range` copies aligned, bounded bytes between two distinct live
+  buffers without passing the words through floating-point arithmetic.
+  `gpu-noise-bank-then` runs the packaged `sdxl-noise` Wasm module in a fresh
+  worker, transfers the f32 bank, terminates the worker before the callback
+  and uploads the bytes; its contract and grade are in `InBrowserDiffusion.md`.
 - WebGPU dispatches at most 65,535 workgroups a dimension, and a 256 x 256 VAE
   decode needs 262,144 in x. The html bridge folds a one-dimensional `gx` past
   the limit into `gx` by `gy`, and the WGSL plug's entry reads `gid` (and a

@@ -1,8 +1,7 @@
 Chapter: NetworkStack
   cites Net chapter Tcp
   cites Net chapter Ethernet
-
- We say:
+  cites Foreword chapter Maybe
 
 Section: ARP Cache
   ArpEntry = record {
@@ -12,11 +11,12 @@ Section: ARP Cache
 
   ArpCache = record {
     entries : List ArpEntry,
-    count : Integer between 0 and 255
+    count : Integer between 0 and 255,
+    pending : List (List Integer)
   }
 
   arp-cache-empty : ArpCache
-  arp-cache-empty = ArpCache { entries = [], count = 0 }
+  arp-cache-empty = ArpCache { entries = [], count = 0, pending = [] }
 
   arp-cache-lookup : ArpCache, List Integer -> List Integer
   arp-cache-lookup (cache) (ip) = arp-cache-search (cache.entries) ip 0 (cache.count)
@@ -47,14 +47,48 @@ Section: ARP Cache
     in if at >= 0 then
       ArpCache {
         entries = list-set-at (cache.entries) at (ArpEntry { ip = ip, mac = mac }),
-        count = cache.count
+        count = cache.count,
+        pending = cache.pending
       }
     else if cache.count >= arp-cache-max then cache
     else
       ArpCache {
         entries = list-push (cache.entries) (ArpEntry { ip = ip, mac = mac }),
-        count = cache.count + 1
+        count = cache.count + 1,
+        pending = cache.pending
       }
+
+ A reply is learned only for an address we solicited and have not yet heard
+ from: an unsolicited reply naming our address as its target is the ARP
+ poisoning shape. At most arp-cache-max solicitations wait; a new one drops the
+ oldest, so requests nobody answers cannot stop later learning.
+
+  arp-pending-has : List (List Integer), List Integer, Integer -> Boolean
+  arp-pending-has (ps) (ip) (i) =
+    if i >= list-length ps then False
+    else if ip-equal (list-at ps i) ip then True
+    else arp-pending-has ps ip (i + 1)
+
+  arp-pending-drop : List (List Integer), List Integer, Integer, List (List Integer) -> List (List Integer)
+  arp-pending-drop (ps) (ip) (i) (acc) =
+    if i >= list-length ps then acc
+    else if ip-equal (list-at ps i) ip then arp-pending-drop ps ip (i + 1) acc
+    else arp-pending-drop ps ip (i + 1) (acc & [list-at ps i])
+
+  arp-cache-expected : ArpCache, List Integer -> Boolean
+  arp-cache-expected (cache) (ip) = arp-pending-has (cache.pending) ip 0
+
+  arp-cache-expect : ArpCache, List Integer -> ArpCache
+  arp-cache-expect (cache) (ip) =
+    if arp-cache-expected cache ip then cache
+    else let kept = if list-length (cache.pending) >= arp-cache-max then arp-pending-drop (cache.pending) (list-at (cache.pending) 0) 0 [] else cache.pending
+    in ArpCache { entries = cache.entries, count = cache.count, pending = kept & [ip] }
+
+  arp-cache-learn : ArpCache, List Integer, List Integer -> ArpCache
+  arp-cache-learn (cache) (ip) (mac) =
+    if arp-cache-expected cache ip == False then cache
+    else let added = arp-cache-add cache ip mac
+    in ArpCache { entries = added.entries, count = added.count, pending = arp-pending-drop (cache.pending) ip 0 [] }
 
 Section: Network Session
   NetSession = record {
@@ -80,10 +114,6 @@ Section: Network Session
     rx-sent : Integer,
     rx-resent : Boolean
   }
-
- `net-session-new` opens with an unpredictable initial sequence number (`net-isn`),
- whatever `initial-seq` says; `net-session-new-at` keeps `initial-seq`, for a test
- that must choose the number (a sequence wrap).
 
   net-session-new : List Integer, List Integer, List Integer, Integer, Integer, List Integer, Integer -> NetSession
   net-session-new (local-mac) (local-ip) (gateway-ip) (local-port) (remote-port) (remote-ip) (initial-seq) =
@@ -143,9 +173,25 @@ Section: Frame Wrapping
 
   wrap-tcp-in-ip-eth : NetSession, List Integer, List Integer -> List Integer
   wrap-tcp-in-ip-eth (sess) (tcp-bytes) (dst-mac) =
-    let tcp-ck = tcp-with-checksum tcp-bytes (sess.local-ip) (sess.conn.remote-ip)
-    in let ip-pkt = ip-build-packet (sess.local-ip) (sess.conn.remote-ip) ip-proto-tcp tcp-ck
-    in eth-build-frame dst-mac (sess.local-mac) eth-type-ipv4 ip-pkt
+    let src-ip = sess.local-ip
+    in let dst-ip = sess.conn.remote-ip
+    in let tcp-len = list-length tcp-bytes
+    in let total-len = ip-header-size + tcp-len
+    in let ip-off = list-length dst-mac + list-length (sess.local-mac) + 2
+    in let tcp-off = ip-off + 12 + list-length src-ip + list-length dst-ip
+    in let f0 = net-push-all (net-push-all (__list-with-capacity (tcp-off + tcp-len)) dst-mac 0) (sess.local-mac) 0
+    in let f1 = net-push-all f0 (write-be16 eth-type-ipv4 & [ip-version-ihl, 0] & write-be16 total-len & [0, 0, 0, 0, 64, ip-proto-tcp, 0, 0]) 0
+    in let f2 = net-push-all (net-push-all f1 src-ip 0) dst-ip 0
+    in let ip-ck = ip-checksum f2 ip-off (ip-off + ip-header-size) 0
+    in let f3 = net-push-all (list-set-at (list-set-at f2 (ip-off + 10) (bit-shru ip-ck 8)) (ip-off + 11) (bit-and ip-ck 255)) tcp-bytes 0
+    in let pseudo = tcp-pseudo-header src-ip dst-ip tcp-len
+    in let tcp-ck = ip-checksum f3 tcp-off (tcp-off + tcp-len) (ip-sum pseudo 0 (list-length pseudo) 0)
+    in list-set-at (list-set-at f3 (tcp-off + 16) (bit-shru tcp-ck 8)) (tcp-off + 17) (bit-and tcp-ck 255)
+
+  net-push-all : List Integer, List Integer, Integer -> List Integer
+  net-push-all (dst) (src) (i) =
+    if i >= list-length src then dst
+    else net-push-all (list-push dst (list-at src i)) src (i + 1)
 
   resolve-dst-mac : NetSession -> List Integer
   resolve-dst-mac (sess) =
@@ -483,12 +529,26 @@ Section: Reliability Timers
  is predictable, as nothing else on the box is secret. Only xor and shifts mix, as
  they cannot overflow.
 
-  net-isn : List Integer, Integer, List Integer, Integer -> Integer
-  net-isn (lip) (lport) (rip) (rport) =
-    let w = __hardware-random-word
-    in let key = if w == 0 | w == 0 - 1 then get-ticks else w
-    in let tuple = bit-xor (net-ip-word lip * 65536 + lport) (bit-shl (net-ip-word rip * 65536 + rport) 13)
-    in tcp-seq-wrap (get-ticks * 4 + bit-and (net-isn-mix (net-isn-mix (bit-xor key tuple))) #FFFFFFFF)
+  net-isn : List Integer, Integer, List Integer, Integer -> Maybe Integer
+  net-isn (lip) (lport) (rip) (rport) = net-isn-from __hardware-random-word lip lport rip rport
+
+  net-isn-from : Integer, List Integer, Integer, List Integer, Integer -> Maybe Integer
+  net-isn-from (w) (lip) (lport) (rip) (rport) =
+    when net-entropy-word w
+      is None -> None
+      is Just (key) ->
+        (let tuple = bit-xor (net-ip-word lip * 65536 + lport) (bit-shl (net-ip-word rip * 65536 + rport) 13)
+         in Just (tcp-seq-wrap (get-ticks * 4 + bit-and (net-isn-mix (net-isn-mix (bit-xor key tuple))) #FFFFFFFF)))
+
+ The one source of the words the network stack must keep from an off-path guesser (the TCP initial sequence
+ number, the DNS query id and port, the DHCP xid). With no hardware word (the source answers 0 or -1) nothing on
+ the box is secret and a clock is a plausible guess, not entropy (root ruling 2026-11-01, L-BEDTRUE), so every
+ caller refuses rather than falling back.
+
+  net-entropy-word : Integer -> Maybe Integer
+  net-entropy-word (w) = if w == 0 | w == 0 - 1 then None else Just w
+
+  net-isn-refusal : Text = "no hardware random word to draw an unguessable value (RFC 6528, RFC 5452); refusing"
 
   net-isn-mix : Integer -> Integer
   net-isn-mix (x) =
@@ -501,15 +561,28 @@ Section: Reliability Timers
     if list-length ip < 4 then 0
     else ((list-at ip 0 * 256 + list-at ip 1) * 256 + list-at ip 2) * 256 + list-at ip 3
 
-  net-with-isn : NetSession, List Integer, Integer -> NetSession
+  net-with-isn : NetSession, List Integer, Integer -> Maybe NetSession
   net-with-isn (sess) (rip) (rport) =
-    if sess.isn-chosen then sess
-    else set-conn sess (set-send-next (sess.conn) (net-isn (sess.local-ip) ((sess.conn).local-port) rip rport))
+    if sess.isn-chosen then Just sess
+    else when net-isn (sess.local-ip) ((sess.conn).local-port) rip rport
+      is None -> None
+      is Just (n) -> Just (set-conn sess (set-send-next (sess.conn) n))
+
+  net-sess-or : Maybe NetSession, NetSession -> NetSession
+  net-sess-or (m) (d) = when m is None -> d is Just (s) -> s
+
+  net-sess-none : Maybe NetSession -> Boolean
+  net-sess-none (m) = when m is None -> True is Just (s) -> False
 
   net-connect : NetSession -> NetResult
   net-connect (fresh) =
-    let sess = net-with-isn fresh ((fresh.conn).remote-ip) ((fresh.conn).remote-port)
-    in let step = tcp-step (sess.conn) EvConnect
+    let m = net-with-isn fresh ((fresh.conn).remote-ip) ((fresh.conn).remote-port)
+    in if net-sess-none m then NetResult { session = fresh, output = "tcp: " & net-isn-refusal, data = [], data-off = 0, data-stop = 0 }
+    else net-connect-with (net-sess-or m fresh)
+
+  net-connect-with : NetSession -> NetResult
+  net-connect-with (sess) =
+    let step = tcp-step (sess.conn) EvConnect
     in let s1 = set-conn sess (step.conn)
     in let frame = when (step.action)
       is ActSend (seg) -> [wrap-tcp-in-ip-eth s1 seg (resolve-dst-mac s1)]
@@ -680,7 +753,9 @@ Section: Inbound Frame Processing
 
   net-process-arp : NetSession, List Integer -> NetResult
   net-process-arp (sess) (payload) =
-    let pkt = arp-parse payload
+    if arp-valid payload == False then
+      NetResult { session = sess, output = "bad-arp", data = [], data-off = 0, data-stop = 0 }
+    else let pkt = arp-parse payload
     in if (pkt.op == arp-op-request) & ip-equal (pkt.target-ip) (sess.local-ip) then
       let reply = arp-build-reply (sess.local-mac) (sess.local-ip) (pkt.sender-mac) (pkt.sender-ip) (sess.local-mac)
       in NetResult {
@@ -692,8 +767,8 @@ Section: Inbound Frame Processing
       }
     else if (pkt.op == arp-op-reply) & ip-equal (pkt.target-ip) (sess.local-ip) then
       NetResult {
-        session = set-arp sess (arp-cache-add (sess.arp) (pkt.sender-ip) (pkt.sender-mac)),
-        output = "arp-learned",
+        session = set-arp sess (arp-cache-learn (sess.arp) (pkt.sender-ip) (pkt.sender-mac)),
+        output = if arp-cache-expected (sess.arp) (pkt.sender-ip) then "arp-learned" else "arp-unsolicited",
         data = [],
         data-off = 0,
         data-stop = 0
@@ -703,7 +778,7 @@ Section: Inbound Frame Processing
 
   net-arp-solicit : NetSession, List Integer -> NetSession
   net-arp-solicit (sess) (target) =
-    set-outbox sess ((sess.outbox) & [arp-build-request (sess.local-mac) (sess.local-ip) target])
+    set-outbox (set-arp sess (arp-cache-expect (sess.arp) target)) ((sess.outbox) & [arp-build-request (sess.local-mac) (sess.local-ip) target])
 
   net-arp-known : NetSession, List Integer -> Boolean
   net-arp-known (sess) (target) = list-length (arp-cache-lookup (sess.arp) target) == 6
@@ -834,7 +909,9 @@ Section: Inbound Frame Processing
       else let fresh = when ((sess.conn).state)
         is TcpListening -> True
         is otherwise -> False
-      in let opening = if fresh & tcp-has-flag seg tcp-flag-syn then net-with-isn sess (ip-src-at pkt off) (seg.src-port) else sess
+      in let opening-m = if fresh & tcp-has-flag seg tcp-flag-syn then net-with-isn sess (ip-src-at pkt off) (seg.src-port) else Just sess
+      in if net-sess-none opening-m then NetResult { session = sess, output = "tcp: " & net-isn-refusal, data = [], data-off = 0, data-stop = 0 }
+      else let opening = net-sess-or opening-m sess
       in let r = net-receive-segment opening (if net-accepts-data sess then net-seg-trim sess seg else seg)
       in let updated = if fresh == False then r else when (r.session).conn.state
         is TcpSynReceived -> NetResult {

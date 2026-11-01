@@ -7,8 +7,6 @@ Chapter: VmConfigScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
   vm-content-param : ShellParam = ShellParam {
@@ -67,7 +65,78 @@ Section: Parameters
 
 Section: S01 -- Preamble + VM Binary
 
-  s01-body : List ShellCmd = [ScSetStrictMode, ScSetErrorStop, ScBlank, ScComment "Locate a VM host. codex-vm (the WHP hypervisor) is the primary and is", ScComment "Windows-only; QEMU is the fallback and the only host on Linux/WSL. Both", ScComment "paths are live: a missing codex-vm is not an error, and the hard failure", ScComment "is reserved for having NEITHER host. CODEX_VM_HOST=qemu forces the", ScComment "fallback on a box that HAS codex-vm, which is the only way to exercise", ScComment "the QEMU path from Windows without hiding the binary.", ScRaw "$script:CodexVmBin = Join-Path (Split-Path $PSScriptRoot) 'tools' 'codex-vm.exe'", ScRaw "$script:UseCodexVm = (Test-Path -PathType Leaf $script:CodexVmBin) -and ($env:CODEX_VM_HOST -ne 'qemu')", ScRaw "$script:FallbackVmBin = $env:QEMU_BIN", ScRaw "if ((-not $script:FallbackVmBin)) { $script:FallbackVmBin = $env:QEMU_BIN_WHPX }", ScRaw "if ((-not $script:FallbackVmBin)) {", ScRaw "    if ($IsWindows) {", ScIndent [ScIndent [ScComment "A side-loaded versioned install wins over the in-place one, newest"]], ScIndent [ScIndent [ScComment "first, so a new QEMU can be trialled without disturbing what the"]], ScIndent [ScIndent [ScComment "rest of the machine uses: D:\\qemu-11.1.0 beats D:\\Program Files\\qemu."]], ScIndent [ScIndent [ScComment "A directory whose suffix is not a version sorts last rather than"]], ScIndent [ScIndent [ScComment "throwing."]], ScRaw "        $sideload = @()", ScRaw "        foreach ($qroot in @('D:\\', 'C:\\')) {", ScRaw "            foreach ($d in (Get-ChildItem -Path $qroot -Directory -Filter 'qemu-*' -ErrorAction SilentlyContinue)) {", ScRaw "                $exe = Join-Path $d.FullName 'qemu-system-x86_64.exe'", ScRaw "                if (Test-Path -PathType Leaf $exe) {", ScRaw "                    $v = [version]'0.0'", ScRaw "                    if (-not [version]::TryParse(($d.Name -replace '^qemu-', ''), [ref]$v)) { $v = [version]'0.0' }", ScRaw "                    $sideload += [pscustomobject]@{ Exe = $exe; Ver = $v }", ScRaw "                }", ScRaw "            }", ScRaw "        }", ScRaw "        foreach ($s in ($sideload | Sort-Object Ver -Descending)) { $script:FallbackVmBin = $s.Exe; break }", ScRaw "        if ((-not $script:FallbackVmBin)) {", ScRaw "            foreach ($p in @('D:\\Program Files\\qemu\\qemu-system-x86_64.exe', 'C:\\Program Files\\qemu\\qemu-system-x86_64.exe')) {", ScRaw "                if (Test-Path -PathType Leaf $p) {", ScRaw "                    $script:FallbackVmBin = $p; break", ScRaw "                }", ScRaw "            }", ScRaw "        }", ScRaw "    } else {", ScRaw "        $qemuCmd = Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue", ScRaw "        if ($qemuCmd) { $script:FallbackVmBin = $qemuCmd.Source }", ScRaw "    }", ScRaw "}", ScRaw "if ((-not $script:UseCodexVm) -and (-not $script:FallbackVmBin)) {", ScRaw "    [Console]::Error.WriteLine(\"no VM host: codex-vm not at $($script:CodexVmBin) (build with tools/build-vm.ps1) and no qemu-system-x86_64 (install qemu or set QEMU_BIN).\")", ScRaw "    throw \"no VM host: codex-vm not at $($script:CodexVmBin) and no qemu-system-x86_64.\"", ScRaw "}", ScComment "The fallback accelerator: whpx on Windows, tcg on Linux, and CODEX_ACCEL", ScComment "overrides either. kvm is the opt-in rather than the Linux default because", ScComment "measured 2026-08-12 under WSL2 the nested-virt vmexit tax on byte-wise", ScComment "serial I/O makes it slower than plain TCG for small compiles (18-63s", ScComment "against ~11s). The name is kept, not just the flags: Start-VmRun's", ScComment "platform arguments depend on WHICH accelerator this is.", ScRaw "$script:FallbackAccel = if ($env:CODEX_ACCEL) { $env:CODEX_ACCEL } elseif ($IsWindows) { 'whpx' } else { 'tcg' }", ScRaw "$script:FallbackAccelFlags = @('-accel', $script:FallbackAccel)"]
+  s01-body : List ShellCmd =
+    [ ScSetStrictMode
+    , ScSetErrorStop
+    , ScBlank
+    , ScComment "Locate a VM host. codex-vm (the WHP hypervisor) is the primary and is"
+    , ScComment "Windows-only; QEMU is the fallback and the only host on Linux/WSL. Both"
+    , ScComment "paths are live: a missing codex-vm is not an error, and the hard failure"
+    , ScComment "is reserved for having NEITHER host. CODEX_VM_HOST=qemu forces the"
+    , ScComment "fallback on a box that HAS codex-vm, which is the only way to exercise"
+    , ScComment "the QEMU path from Windows without hiding the binary."
+    , ScRaw "$script:CodexVmBin = Join-Path (Split-Path $PSScriptRoot) 'tools' 'codex-vm.exe'"
+    , ScRaw "$script:UseCodexVm = (Test-Path -PathType Leaf $script:CodexVmBin) -and ($env:CODEX_VM_HOST -ne 'qemu')"
+    , ScAssign "script:FallbackVmBin" (SeVar "env:QEMU_BIN")
+    , ScRaw "if ((-not $script:FallbackVmBin)) { $script:FallbackVmBin = $env:QEMU_BIN_WHPX }"
+    , ScIf (SeNot (SeVar "script:FallbackVmBin")) [ScIf (SeVar "IsWindows") s01-if-windows s01-if-windows-else] []
+    , ScIf (SeBare (SeAnd (SeNot (SeVar "script:UseCodexVm")) (SeNot (SeVar "script:FallbackVmBin")))) s01-not-script-use-codex []
+    , ScComment "The fallback accelerator: whpx on Windows, tcg on Linux, and CODEX_ACCEL"
+    , ScComment "overrides either. kvm is the opt-in rather than the Linux default because"
+    , ScComment "measured 2026-08-12 under WSL2 the nested-virt vmexit tax on byte-wise"
+    , ScComment "serial I/O makes it slower than plain TCG for small compiles (18-63s"
+    , ScComment "against ~11s). The name is kept, not just the flags: Start-VmRun's"
+    , ScComment "platform arguments depend on WHICH accelerator this is."
+    , ScRaw "$script:FallbackAccel = if ($env:CODEX_ACCEL) { $env:CODEX_ACCEL } elseif ($IsWindows) { 'whpx' } else { 'tcg' }"
+    , ScRaw "$script:FallbackAccelFlags = @('-accel', $script:FallbackAccel)"
+    ]
+
+  s01-if-windows : List ShellCmd =
+    [ ScComment "A side-loaded versioned install wins over the in-place one, newest"
+    , ScComment "first, so a new QEMU can be trialled without disturbing what the"
+    , ScComment "rest of the machine uses: D:\\qemu-11.1.0 beats D:\\Program Files\\qemu."
+    , ScComment "A directory whose suffix is not a version sorts last rather than"
+    , ScComment "throwing."
+    , ScRaw "$sideload = @()"
+    , ScForEach "qroot" (SeArrayLiteral [SeLit "D:\\", SeLit "C:\\"]) s01-qroot
+    , ScRaw "foreach ($s in ($sideload | Sort-Object Ver -Descending)) { $script:FallbackVmBin = $s.Exe; break }"
+    , ScIf (SeNot (SeVar "script:FallbackVmBin")) s01-not-script-fallback-vm-2 []
+    ]
+
+  s01-qroot : List ShellCmd =
+    [ ScRaw "foreach ($d in (Get-ChildItem -Path $qroot -Directory -Filter 'qemu-*' -ErrorAction SilentlyContinue)) {"
+    , ScIndent s01-d-get-child-item
+    , ScRaw "}"
+    ]
+
+  s01-d-get-child-item : List ShellCmd =
+    [ ScRaw "$exe = Join-Path $d.FullName 'qemu-system-x86_64.exe'"
+    , ScIf (SeBare (SeFileExists (SeVar "exe"))) s01-if-test-type-exe []
+    ]
+
+  s01-if-test-type-exe : List ShellCmd =
+    [ ScRaw "$v = [version]'0.0'"
+    , ScRaw "if (-not [version]::TryParse(($d.Name -replace '^qemu-', ''), [ref]$v)) { $v = [version]'0.0' }"
+    , ScRaw "$sideload += [pscustomobject]@{ Exe = $exe; Ver = $v }"
+    ]
+
+  s01-not-script-fallback-vm-2 : List ShellCmd =
+    [ ScForEach "p" (SeArrayLiteral [SeLit "D:\\Program Files\\qemu\\qemu-system-x86_64.exe", SeLit "C:\\Program Files\\qemu\\qemu-system-x86_64.exe"]) s01-p
+    ]
+
+  s01-p : List ShellCmd =
+    [ ScIf (SeBare (SeFileExists (SeVar "p"))) [ScRaw "$script:FallbackVmBin = $p; break"] []
+    ]
+
+  s01-if-windows-else : List ShellCmd =
+    [ ScRaw "$qemuCmd = Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue"
+    , ScRaw "if ($qemuCmd) { $script:FallbackVmBin = $qemuCmd.Source }"
+    ]
+
+  s01-not-script-use-codex : List ShellCmd =
+    [ ScWriteError (SeText "no VM host: codex-vm not at $($script:CodexVmBin) (build with tools/build-vm.ps1) and no qemu-system-x86_64 (install qemu or set QEMU_BIN).")
+    , ScRaw "throw \"no VM host: codex-vm not at $($script:CodexVmBin) and no qemu-system-x86_64.\""
+    ]
 
 Section: S02 -- CCE Encode/Decode Tables
 
@@ -75,7 +144,10 @@ Section: S02 -- CCE Encode/Decode Tables
 
 Section: S02b -- CCE Tier Tables and Code Point Conversion
 
-  s02b-body : List ShellCmd = [ScBlank,ScRaw "function Get-CceTier1Block([int]$cp) {\n    $v = $cp - 128\n    if ($v -lt 0) { return -1 }\n    if ($v -lt 256) { return 0 }\n    if ($v -lt 1152) { return 1 + [int][math]::Floor(($v - 256) / 128) }\n    if ($v -lt 1664) { return 8 }\n    if ($v -lt 1920) { return 9 }\n    if ($v -lt 2048) { return 10 }\n    return -1\n}\n\nfunction Get-CceTier1Offset([int]$cp) {\n    $v = $cp - 128\n    if ($v -lt 256) { return $v }\n    if ($v -lt 1152) { return ($v - 256) % 128 }\n    if ($v -lt 1664) { return $v - 1152 }\n    if ($v -lt 1920) { return $v - 1664 }\n    return $v - 1920\n}\n\nfunction Get-CceTier2CceBase([int]$block) {\n    $acc = $script:CceTier2Base\n    for ($i = 0; $i -lt $block; $i++) { $acc += $script:CceTier2Table[$i * 2 + 1] }\n    return $acc\n}\n\n# CCE code point -> Unicode. 65533 (U+FFFD) means unmapped, matching to-unicode.\nfunction Convert-CceToUnicode([int]$cp) {\n    if ($cp -lt 0) { return 65533 }\n    if ($cp -lt 128) { return [int]$script:CceToUnicode[$cp] }\n    if ($cp -lt 2176) {\n        $b = Get-CceTier1Block $cp\n        if ($b -lt 0) { return 65533 }\n        return [int]$script:CceTier1Bases[$b * 2] + (Get-CceTier1Offset $cp)\n    }\n    if ($cp -lt 67712) {\n        for ($b = 0; $b -lt 11; $b++) {\n            $bb = Get-CceTier2CceBase $b\n            $bs = [int]$script:CceTier2Table[$b * 2 + 1]\n            if ($cp -ge $bb -and $cp -lt ($bb + $bs)) { return [int]$script:CceTier2Table[$b * 2] + ($cp - $bb) }\n        }\n        return 65533\n    }\n    return 65533\n}\n\n# Unicode -> CCE code point, -1 when unmapped. Tier order is load-bearing and not\n# an optimisation: U+4E00 and U+3040 sit in a tier 1 block AND a tier 2 block, and\n# from-unicode answers with the tier 1 code point. Searching tier 2 first would\n# produce a different, larger encoding for the same character.\nfunction Convert-UnicodeToCce([int]$u) {\n    for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {\n        if ([int]$script:CceToUnicode[$i] -eq $u) { return $i }\n    }\n    for ($b = 0; $b -lt 11; $b++) {\n        $base = [int]$script:CceTier1Bases[$b * 2]\n        $size = [int]$script:CceTier1Bases[$b * 2 + 1]\n        if ($u -ge $base -and $u -lt ($base + $size)) {\n            $start = if ($b -eq 0) { 128 } elseif ($b -lt 8) { 256 + $b * 128 } elseif ($b -eq 8) { 1280 } elseif ($b -eq 9) { 1792 } else { 2048 }\n            return $start + ($u - $base)\n        }\n    }\n    for ($b = 0; $b -lt 11; $b++) {\n        $base = [int]$script:CceTier2Table[$b * 2]\n        $size = [int]$script:CceTier2Table[$b * 2 + 1]\n        if ($u -ge $base -and $u -lt ($base + $size)) { return (Get-CceTier2CceBase $b) + ($u - $base) }\n    }\n    return -1\n}\n\nfunction Get-CceEncodeLength([int]$cp) {\n    if ($cp -lt 128) { return 1 }\n    if ($cp -lt 2176) { return 2 }\n    if ($cp -lt 67712) { return 3 }\n    return 4\n}"]
+  s02b-body : List ShellCmd =
+    [ ScBlank
+    , ScRaw "function Get-CceTier1Block([int]$cp) {\n    $v = $cp - 128\n    if ($v -lt 0) { return -1 }\n    if ($v -lt 256) { return 0 }\n    if ($v -lt 1152) { return 1 + [int][math]::Floor(($v - 256) / 128) }\n    if ($v -lt 1664) { return 8 }\n    if ($v -lt 1920) { return 9 }\n    if ($v -lt 2048) { return 10 }\n    return -1\n}\n\nfunction Get-CceTier1Offset([int]$cp) {\n    $v = $cp - 128\n    if ($v -lt 256) { return $v }\n    if ($v -lt 1152) { return ($v - 256) % 128 }\n    if ($v -lt 1664) { return $v - 1152 }\n    if ($v -lt 1920) { return $v - 1664 }\n    return $v - 1920\n}\n\nfunction Get-CceTier2CceBase([int]$block) {\n    $acc = $script:CceTier2Base\n    for ($i = 0; $i -lt $block; $i++) { $acc += $script:CceTier2Table[$i * 2 + 1] }\n    return $acc\n}\n\n# CCE code point -> Unicode. 65533 (U+FFFD) means unmapped, matching to-unicode.\nfunction Convert-CceToUnicode([int]$cp) {\n    if ($cp -lt 0) { return 65533 }\n    if ($cp -lt 128) { return [int]$script:CceToUnicode[$cp] }\n    if ($cp -lt 2176) {\n        $b = Get-CceTier1Block $cp\n        if ($b -lt 0) { return 65533 }\n        return [int]$script:CceTier1Bases[$b * 2] + (Get-CceTier1Offset $cp)\n    }\n    if ($cp -lt 67712) {\n        for ($b = 0; $b -lt 11; $b++) {\n            $bb = Get-CceTier2CceBase $b\n            $bs = [int]$script:CceTier2Table[$b * 2 + 1]\n            if ($cp -ge $bb -and $cp -lt ($bb + $bs)) { return [int]$script:CceTier2Table[$b * 2] + ($cp - $bb) }\n        }\n        return 65533\n    }\n    return 65533\n}\n\n# Unicode -> CCE code point, -1 when unmapped. Tier order is load-bearing and not\n# an optimisation: U+4E00 and U+3040 sit in a tier 1 block AND a tier 2 block, and\n# from-unicode answers with the tier 1 code point. Searching tier 2 first would\n# produce a different, larger encoding for the same character.\nfunction Convert-UnicodeToCce([int]$u) {\n    for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {\n        if ([int]$script:CceToUnicode[$i] -eq $u) { return $i }\n    }\n    for ($b = 0; $b -lt 11; $b++) {\n        $base = [int]$script:CceTier1Bases[$b * 2]\n        $size = [int]$script:CceTier1Bases[$b * 2 + 1]\n        if ($u -ge $base -and $u -lt ($base + $size)) {\n            $start = if ($b -eq 0) { 128 } elseif ($b -lt 8) { 256 + $b * 128 } elseif ($b -eq 8) { 1280 } elseif ($b -eq 9) { 1792 } else { 2048 }\n            return $start + ($u - $base)\n        }\n    }\n    for ($b = 0; $b -lt 11; $b++) {\n        $base = [int]$script:CceTier2Table[$b * 2]\n        $size = [int]$script:CceTier2Table[$b * 2 + 1]\n        if ($u -ge $base -and $u -lt ($base + $size)) { return (Get-CceTier2CceBase $b) + ($u - $base) }\n    }\n    return -1\n}\n\nfunction Get-CceEncodeLength([int]$cp) {\n    if ($cp -lt 128) { return 1 }\n    if ($cp -lt 2176) { return 2 }\n    if ($cp -lt 67712) { return 3 }\n    return 4\n}"
+    ]
 
 Section: S02c -- CCE Byte Encode/Decode
 
@@ -83,69 +155,1102 @@ Section: S02c -- CCE Byte Encode/Decode
 
 Section: S03 -- Symbol Resolution
 
-  s03-body : List ShellCmd = [ScBlank,ScComment "Symbol resolution.", ScComment "", ScComment "A CDX carries its own symbol map -- a MAP1 block the emitter writes into the", ScComment "data segment -- and that is the map these functions read. The text sidecar", ScComment "(seed/Codex.map) is a fallback and an explicit override, never the default.", ScComment "", ScComment "The reason is drift, and it is not hypothetical. A compiler build does emit a", ScComment "map (every CDX compile has since main 15088) and the build now carries it to", ScComment "build/output/Sut.map, but NOTHING installs it over seed/Codex.map except one", ScComment "release-gate step that routine work does not run. Measured 2026-08-15, the", ScComment "installed sidecar had 5,140 of its 5,187 rows at the wrong address while every", ScComment "name still resolved. So the sidecar silently describes an older binary than the seed beside", ScComment "it, and the resolver answered from it with total confidence: on 2026-07-16 it", ScComment "placed a crash in `sorted-builtin-names` when the faulting function was", ScComment "`find-effect-op-addr`, a different function entirely, and cost an hour. The", ScComment "sidecar's mtime was seven hours behind the seed's.", ScComment "", ScComment "An embedded map cannot drift from the binary it describes, because it ships", ScComment "inside it. That is the whole fix: not \"remember to refresh the map\", but a map", ScComment "with no opportunity to be stale.", ScComment "", ScComment "MAP1 layout (little-endian), as written by the emitter and read by", ScComment "apps/works/DevDebugger.codex:", ScComment "  +0  magic \"MAP1\" (le32 826361677)", ScComment "  +4  count", ScComment "  +8  string-table offset, always 12 + count*12 -- this is the validity check", ScComment "  +12 count x 12-byte entries: code-offset, code-size, name-offset", ScComment "  strings at (block + string-offset), NUL-terminated, CCE bytes.", ScComment "Names are CCE, not ASCII -- decode them with ConvertFrom-CceBytes or every symbol", ScComment "comes back as plausible garbage (\"III\", \"UU\") rather than as an error. The bytes", ScComment "are a CCE STREAM, not one byte per character: map-text-to-cce-bytes copies", ScComment "char-code-at over text-length, and both are byte-indexed, so a name holding any", ScComment "code point above 127 is written as a 2-4 byte sequence.", ScComment "Entry code-offsets are relative to the 1 MB load address.", ScBlank, ScRaw "$script:MapCache = @{}", ScRaw "$script:Map1Cache = @{}", ScBlank, ScRaw "function Get-DefaultKernel { Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.cdx' }", ScBlank, ScComment "Parse the MAP1 block out of a CDX. Returns $null when the file has none.", ScRaw "function Get-Map1Symbols {", ScRaw "    param([string]$CdxFile)", ScRaw "    if (-not $CdxFile -or -not (Test-Path -PathType Leaf $CdxFile)) { return $null }", ScRaw "    $key = (Resolve-Path $CdxFile).Path", ScRaw "    if ($script:Map1Cache.ContainsKey($key)) { return $script:Map1Cache[$key] }", ScBlank, ScRaw "    $b = [System.IO.File]::ReadAllBytes($key)", ScRaw "    $at = -1", ScRaw "    for ($i = 0; $i -lt $b.Length - 12; $i++) {", ScIndent [ScIndent [ScComment "\"MAP1\""]], ScRaw "        if ($b[$i] -eq 0x4D -and $b[$i+1] -eq 0x41 -and $b[$i+2] -eq 0x50 -and $b[$i+3] -eq 0x31) {", ScRaw "            $c = [BitConverter]::ToUInt32($b, $i + 4)", ScRaw "            $s = [BitConverter]::ToUInt32($b, $i + 8)", ScRaw "            if ($c -gt 0 -and $c -lt 100000 -and $s -eq (12 + $c * 12)) { $at = $i; break }", ScRaw "        }", ScRaw "    }", ScRaw "    if ($at -lt 0) { $script:Map1Cache[$key] = $null; return $null }", ScBlank, ScRaw "    $count   = [BitConverter]::ToUInt32($b, $at + 4)", ScRaw "    $strBase = $at + [BitConverter]::ToUInt32($b, $at + 8)", ScRaw "    $entries = [System.Collections.Generic.List[object]]::new()", ScRaw "    for ($e = 0; $e -lt $count; $e++) {", ScRaw "        $a  = $at + 12 + $e * 12", ScRaw "        $no = [BitConverter]::ToUInt32($b, $a + 8)", ScRaw "        $p  = $strBase + $no", ScRaw "        $nameBytes = [System.Collections.Generic.List[byte]]::new()", ScRaw "        while ($p -lt $b.Length -and $b[$p] -ne 0) {", ScRaw "            $nameBytes.Add($b[$p])", ScRaw "            $p++", ScRaw "        }", ScRaw "        $decoded = ConvertFrom-CceBytes $nameBytes.ToArray()", ScRaw "        $entries.Add(@{", ScRaw "            Addr = [long]0x100000 + [BitConverter]::ToUInt32($b, $a)", ScRaw "            Size = [int][BitConverter]::ToUInt32($b, $a + 4)", ScRaw "            Name = $decoded", ScRaw "        })", ScRaw "    }", ScRaw "    $script:Map1Cache[$key] = $entries", ScRaw "    return $entries", ScRaw "}", ScBlank, ScRaw "function Get-TextMapSymbols {", ScRaw "    param([string]$MapFile)", ScRaw "    if (-not (Test-Path $MapFile)) { return $null }", ScRaw "    if (-not $script:MapCache.ContainsKey($MapFile)) {", ScRaw "        $entries = [System.Collections.Generic.List[object]]::new()", ScRaw "        foreach ($line in [System.IO.File]::ReadAllLines($MapFile)) {", ScRaw "            if ($line -match '^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$') {", ScRaw "                $entries.Add(@{ Addr = [Convert]::ToInt64($matches[1], 16); Size = [int]$matches[2]; Name = $matches[3] })", ScRaw "            }", ScRaw "        }", ScRaw "        $script:MapCache[$MapFile] = $entries", ScRaw "    }", ScRaw "    return $script:MapCache[$MapFile]", ScRaw "}", ScBlank, ScComment "-MapFile forces the text sidecar. Otherwise the symbols come from -Kernel's", ScComment "embedded MAP1 (default: the seed), and the sidecar is used only if that CDX", ScComment "has no MAP1 -- in which case say so, because a stale answer is worse than none.", ScRaw "function Get-Symbols {", ScRaw "    param([string]$MapFile = '', [string]$Kernel = '')", ScRaw "    if ($MapFile) { return Get-TextMapSymbols $MapFile }", ScRaw "    if (-not $Kernel) { $Kernel = Get-DefaultKernel }", ScRaw "    $syms = Get-Map1Symbols $Kernel", ScRaw "    if ($syms) { return $syms }", ScRaw "    $fallback = Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.map'", ScRaw "    if (Test-Path $fallback) {", ScRaw "        Write-Warning \"no MAP1 in '$Kernel'; falling back to $fallback, which may describe a different binary.\"", ScRaw "        return Get-TextMapSymbols $fallback", ScRaw "    }", ScRaw "    return $null", ScRaw "}", ScBlank, ScRaw "function Resolve-Rip {", ScRaw "    param([long]$Rip, [string]$MapFile = '', [string]$Kernel = '')", ScRaw "    $syms = Get-Symbols -MapFile $MapFile -Kernel $Kernel", ScRaw "    if (-not $syms) { return $null }", ScRaw "    foreach ($e in $syms) {", ScRaw "        if ($Rip -ge $e.Addr -and $Rip -lt ($e.Addr + $e.Size)) {", ScRaw "            return \"$($e.Name)+0x$((($Rip - $e.Addr)).ToString('X'))\"", ScRaw "        }", ScRaw "    }", ScRaw "    return $null", ScRaw "}"]
+  s03-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "Symbol resolution."
+    , ScComment ""
+    , ScComment "A CDX carries its own symbol map -- a MAP1 block the emitter writes into the"
+    , ScComment "data segment -- and that is the map these functions read. The text sidecar"
+    , ScComment "(seed/Codex.map) is a fallback and an explicit override, never the default."
+    , ScComment ""
+    , ScComment "The reason is drift, and it is not hypothetical. A compiler build does emit a"
+    , ScComment "map (every CDX compile has since main 15088) and the build now carries it to"
+    , ScComment "build/output/Sut.map, but NOTHING installs it over seed/Codex.map except one"
+    , ScComment "release-gate step that routine work does not run. Measured 2026-08-15, the"
+    , ScComment "installed sidecar had 5,140 of its 5,187 rows at the wrong address while every"
+    , ScComment "name still resolved. So the sidecar silently describes an older binary than the seed beside"
+    , ScComment "it, and the resolver answered from it with total confidence: on 2026-07-16 it"
+    , ScComment "placed a crash in `sorted-builtin-names` when the faulting function was"
+    , ScComment "`find-effect-op-addr`, a different function entirely, and cost an hour. The"
+    , ScComment "sidecar's mtime was seven hours behind the seed's."
+    , ScComment ""
+    , ScComment "An embedded map cannot drift from the binary it describes, because it ships"
+    , ScComment "inside it. That is the whole fix: not \"remember to refresh the map\", but a map"
+    , ScComment "with no opportunity to be stale."
+    , ScComment ""
+    , ScComment "MAP1 layout (little-endian), as written by the emitter and read by"
+    , ScComment "apps/works/DevDebugger.codex:"
+    , ScComment "  +0  magic \"MAP1\" (le32 826361677)"
+    , ScComment "  +4  count"
+    , ScComment "  +8  string-table offset, always 12 + count*12 -- this is the validity check"
+    , ScComment "  +12 count x 12-byte entries: code-offset, code-size, name-offset"
+    , ScComment "  strings at (block + string-offset), NUL-terminated, CCE bytes."
+    , ScComment "Names are CCE, not ASCII -- decode them with ConvertFrom-CceBytes or every symbol"
+    , ScComment "comes back as plausible garbage (\"III\", \"UU\") rather than as an error. The bytes"
+    , ScComment "are a CCE STREAM, not one byte per character: map-text-to-cce-bytes copies"
+    , ScComment "char-code-at over text-length, and both are byte-indexed, so a name holding any"
+    , ScComment "code point above 127 is written as a 2-4 byte sequence."
+    , ScComment "Entry code-offsets are relative to the 1 MB load address."
+    , ScBlank
+    , ScAssign "script:MapCache" (SeHashLiteral)
+    , ScAssign "script:Map1Cache" (SeHashLiteral)
+    , ScBlank
+    , ScRaw "function Get-DefaultKernel { Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.cdx' }"
+    , ScBlank
+    , ScComment "Parse the MAP1 block out of a CDX. Returns $null when the file has none."
+    , ScFunctionBlock "Get-Map1Symbols" s03-get-map1-symbols
+    , ScBlank
+    , ScFunctionBlock "Get-TextMapSymbols" s03-get-text-map-symbols
+    , ScBlank
+    , ScComment "-MapFile forces the text sidecar. Otherwise the symbols come from -Kernel's"
+    , ScComment "embedded MAP1 (default: the seed), and the sidecar is used only if that CDX"
+    , ScComment "has no MAP1 -- in which case say so, because a stale answer is worse than none."
+    , ScFunctionBlock "Get-Symbols" s03-get-symbols
+    , ScBlank
+    , ScFunctionBlock "Resolve-Rip" s03-resolve-rip
+    ]
+
+  s03-get-map1-symbols : List ShellCmd =
+    [ ScRaw "param([string]$CdxFile)"
+    , ScRaw "if (-not $CdxFile -or -not (Test-Path -PathType Leaf $CdxFile)) { return $null }"
+    , ScRaw "$key = (Resolve-Path $CdxFile).Path"
+    , ScRaw "if ($script:Map1Cache.ContainsKey($key)) { return $script:Map1Cache[$key] }"
+    , ScBlank
+    , ScReadBytes "b" (SeVar "key")
+    , ScAssign "at" (SeInt -1)
+    , ScForLoop "i" (SeInt 0) (SeBare (SeIntLt (SeVar "i") (SeBare (SeSub (SeProperty (SeVar "b") "Length") ((SeInt 12)))))) (SePostIncrement "i") s03-i-b-length
+    , ScRaw "if ($at -lt 0) { $script:Map1Cache[$key] = $null; return $null }"
+    , ScBlank
+    , ScRaw "$count   = [BitConverter]::ToUInt32($b, $at + 4)"
+    , ScRaw "$strBase = $at + [BitConverter]::ToUInt32($b, $at + 8)"
+    , ScRaw "$entries = [System.Collections.Generic.List[object]]::new()"
+    , ScForLoop "e" (SeInt 0) (SeBare (SeIntLt (SeVar "e") (SeVar "count"))) (SePostIncrement "e") s03-e-count
+    , ScRaw "$script:Map1Cache[$key] = $entries"
+    , ScReturn (SeVar "entries")
+    ]
+
+  s03-i-b-length : List ShellCmd =
+    [ ScComment "\"MAP1\""
+    , ScRaw "if ($b[$i] -eq 0x4D -and $b[$i+1] -eq 0x41 -and $b[$i+2] -eq 0x50 -and $b[$i+3] -eq 0x31) {"
+    , ScIndent s03-b-i-x4-d
+    , ScRaw "}"
+    ]
+
+  s03-b-i-x4-d : List ShellCmd =
+    [ ScRaw "$c = [BitConverter]::ToUInt32($b, $i + 4)"
+    , ScRaw "$s = [BitConverter]::ToUInt32($b, $i + 8)"
+    , ScRaw "if ($c -gt 0 -and $c -lt 100000 -and $s -eq (12 + $c * 12)) { $at = $i; break }"
+    ]
+
+  s03-e-count : List ShellCmd =
+    [ ScRaw "$a  = $at + 12 + $e * 12"
+    , ScRaw "$no = [BitConverter]::ToUInt32($b, $a + 8)"
+    , ScRaw "$p  = $strBase + $no"
+    , ScRaw "$nameBytes = [System.Collections.Generic.List[byte]]::new()"
+    , ScWhile (SeBare (SeAnd (SeBare (SeIntLt (SeVar "p") (SeProperty (SeVar "b") "Length"))) (SeBare (SeStringNeq (SeIndex (SeVar "b") (SeVar "p")) ((SeInt 0)))))) [ScRaw "$nameBytes.Add($b[$p])", ScIncrement "p"]
+    , ScRaw "$decoded = ConvertFrom-CceBytes $nameBytes.ToArray()"
+    , ScRaw "$entries.Add(@{"
+    , ScIndent s03-entries-add
+    , ScRaw "})"
+    ]
+
+  s03-entries-add : List ShellCmd =
+    [ ScRaw "Addr = [long]0x100000 + [BitConverter]::ToUInt32($b, $a)"
+    , ScRaw "Size = [int][BitConverter]::ToUInt32($b, $a + 4)"
+    , ScRaw "Name = $decoded"
+    ]
+
+  s03-get-text-map-symbols : List ShellCmd =
+    [ ScRaw "param([string]$MapFile)"
+    , ScIfLine (SeBare (SeNot (SePathExists (SeVar "MapFile")))) [ScReturn (SeVar "null")] []
+    , ScRaw "if (-not $script:MapCache.ContainsKey($MapFile)) {"
+    , ScIndent s03-not-script-map-cache
+    , ScRaw "}"
+    , ScRaw "return $script:MapCache[$MapFile]"
+    ]
+
+  s03-not-script-map-cache : List ShellCmd =
+    [ ScRaw "$entries = [System.Collections.Generic.List[object]]::new()"
+    , ScRaw "foreach ($line in [System.IO.File]::ReadAllLines($MapFile)) {"
+    , ScIndent s03-line-system-io-file
+    , ScRaw "}"
+    , ScRaw "$script:MapCache[$MapFile] = $entries"
+    ]
+
+  s03-line-system-io-file : List ShellCmd =
+    [ ScIf (SeBare (SeMatch (SeVar "line") "^(0x[0-9a-fA-F]+)\\s+(\\d+)\\s+(.+)$")) s03-if-line []
+    ]
+
+  s03-if-line : List ShellCmd =
+    [ ScRaw "$entries.Add(@{ Addr = [Convert]::ToInt64($matches[1], 16); Size = [int]$matches[2]; Name = $matches[3] })"
+    ]
+
+  s03-get-symbols : List ShellCmd =
+    [ ScRaw "param([string]$MapFile = '', [string]$Kernel = '')"
+    , ScRaw "if ($MapFile) { return Get-TextMapSymbols $MapFile }"
+    , ScRaw "if (-not $Kernel) { $Kernel = Get-DefaultKernel }"
+    , ScRaw "$syms = Get-Map1Symbols $Kernel"
+    , ScRaw "if ($syms) { return $syms }"
+    , ScRaw "$fallback = Join-Path (Split-Path $PSScriptRoot) 'seed' 'Codex.map'"
+    , ScIf (SeBare (SePathExists (SeVar "fallback"))) s03-test-fallback []
+    , ScReturn (SeVar "null")
+    ]
+
+  s03-test-fallback : List ShellCmd =
+    [ ScRaw "Write-Warning \"no MAP1 in '$Kernel'; falling back to $fallback, which may describe a different binary.\""
+    , ScRaw "return Get-TextMapSymbols $fallback"
+    ]
+
+  s03-resolve-rip : List ShellCmd =
+    [ ScRaw "param([long]$Rip, [string]$MapFile = '', [string]$Kernel = '')"
+    , ScRaw "$syms = Get-Symbols -MapFile $MapFile -Kernel $Kernel"
+    , ScRaw "if (-not $syms) { return $null }"
+    , ScForEach "e" (SeVar "syms") s03-each-syms
+    , ScReturn (SeVar "null")
+    ]
+
+  s03-each-syms : List ShellCmd =
+    [ ScIf (SeBare (SeAnd (SeBare (SeIntGe (SeVar "Rip") (SeProperty (SeVar "e") "Addr"))) (SeBare (SeIntLt (SeVar "Rip") (SeAdd (SeProperty (SeVar "e") "Addr") (SeProperty (SeVar "e") "Size")))))) s03-rip-e-addr-size []
+    ]
+
+  s03-rip-e-addr-size : List ShellCmd =
+    [ ScRaw "return \"$($e.Name)+0x$((($Rip - $e.Addr)).ToString('X'))\""
+    ]
 
 Section: S04 -- Resolve-Name Function
 
-  s04-body : List ShellCmd = [ScBlank,ScRaw "function Resolve-Name {", ScRaw "    param([string]$Name, [string]$MapFile = '', [string]$Kernel = '')", ScRaw "    $syms = Get-Symbols -MapFile $MapFile -Kernel $Kernel", ScRaw "    if (-not $syms) { return 0 }", ScRaw "    foreach ($e in $syms) {", ScRaw "        if ($e.Name -eq $Name) { return [long]$e.Addr }", ScRaw "    }", ScRaw "    return 0", ScRaw "}"]
+  s04-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Resolve-Name" s04-resolve-name
+    ]
+
+  s04-resolve-name : List ShellCmd =
+    [ ScRaw "param([string]$Name, [string]$MapFile = '', [string]$Kernel = '')"
+    , ScRaw "$syms = Get-Symbols -MapFile $MapFile -Kernel $Kernel"
+    , ScRaw "if (-not $syms) { return 0 }"
+    , ScForEach "e" (SeVar "syms") [ScRaw "if ($e.Name -eq $Name) { return [long]$e.Addr }"]
+    , ScReturn (SeInt 0)
+    ]
 
 Section: S05 -- Format-CrashReport Function
 
-  s05-body : List ShellCmd = [ScBlank,ScComment "-Kernel names the CDX that crashed, so its own embedded MAP1 resolves the", ScComment "addresses. Without it the symbols come from the seed, which is the right answer", ScComment "only when the seed is what was running.", ScRaw "function Format-CrashReport {", ScRaw "    param([string[]]$ExcLines, [string]$Kernel = '')", ScRaw "    $report = [System.Collections.Generic.List[string]]::new()", ScRaw "    if ($ExcLines.Count -eq 0) { return $report }", ScRaw "    $excLine = $ExcLines[0]", ScRaw "    $vec = ''", ScRaw "    if ($excLine -match '!EXC=([0-9a-fA-F]+)') { $vec = $matches[1] }", ScRaw "    $vecInt = [Convert]::ToInt32($vec, 16)", ScRaw "    $vecName = switch ($vecInt) { 0 { 'divide error' } 6 { 'invalid opcode' } 13 { 'general protection' } 14 { 'page fault' } default { \"vector $vecInt\" } }", ScRaw "    $rip = 0", ScRaw "    if ($excLine -match 'RIP=([0-9a-fA-F]+)') { $rip = [Convert]::ToInt64($matches[1], 16) }", ScRaw "    $ripSym = Resolve-Rip -Rip $rip -Kernel $Kernel", ScRaw "    if (-not $ripSym) { $ripSym = \"0x$($rip.ToString('X8'))\" }", ScIndent [ScComment "CR2 is the faulting address of a PAGE FAULT and of nothing else. The guest"], ScIndent [ScComment "dumps the register on every vector, so on a #GP or a #UD it holds whatever"], ScIndent [ScComment "the last page fault left there -- a plausible heap address, pointing at"], ScIndent [ScComment "nothing to do with this crash. Printing it unconditionally is presenting"], ScIndent [ScComment "stale garbage as evidence, and it sent a 2026-07-16 investigation chasing an"], ScIndent [ScComment "address the faulting instruction never touched. Show it only for vector 14."], ScRaw "    $cr2 = ''", ScRaw "    if ($vecInt -eq 14 -and $excLine -match 'CR2=([0-9a-fA-F]+)') {", ScRaw "        $cr2val = [Convert]::ToInt64($matches[1], 16)", ScRaw "        if ($cr2val -ne 0) { $cr2 = \", CR2=0x$($cr2val.ToString('X12'))\" }", ScRaw "    }", ScRaw "    if ($vecInt -eq 13) { $cr2 = ', non-canonical or segment-limit; CR2 is not the faulting address here' }", ScRaw "    $header = \"CRASH in $ripSym ($vecName$cr2)\"", ScRaw "    $report.Add($header)", ScRaw "    $report.Add(\"  RIP   0x$($rip.ToString('X8').PadLeft(8,'0'))  $ripSym\")"]
+  s05-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "-Kernel names the CDX that crashed, so its own embedded MAP1 resolves the"
+    , ScComment "addresses. Without it the symbols come from the seed, which is the right answer"
+    , ScComment "only when the seed is what was running."
+    , ScRaw "function Format-CrashReport {"
+    , ScRaw "    param([string[]]$ExcLines, [string]$Kernel = '')"
+    , ScRaw "    $report = [System.Collections.Generic.List[string]]::new()"
+    , ScIndent [ScIfLine (SeBare (SeIntEq (SeProperty (SeVar "ExcLines") "Count") ((SeInt 0)))) [ScReturn (SeVar "report")] []]
+    , ScRaw "    $excLine = $ExcLines[0]"
+    , ScIndent [ScAssign "vec" (SeLit "")]
+    , ScRaw "    if ($excLine -match '!EXC=([0-9a-fA-F]+)') { $vec = $matches[1] }"
+    , ScRaw "    $vecInt = [Convert]::ToInt32($vec, 16)"
+    , ScRaw "    $vecName = switch ($vecInt) { 0 { 'divide error' } 6 { 'invalid opcode' } 13 { 'general protection' } 14 { 'page fault' } default { \"vector $vecInt\" } }"
+    , ScIndent [ScAssign "rip" (SeInt 0)]
+    , ScRaw "    if ($excLine -match 'RIP=([0-9a-fA-F]+)') { $rip = [Convert]::ToInt64($matches[1], 16) }"
+    , ScRaw "    $ripSym = Resolve-Rip -Rip $rip -Kernel $Kernel"
+    , ScRaw "    if (-not $ripSym) { $ripSym = \"0x$($rip.ToString('X8'))\" }"
+    , ScIndent [ScComment "CR2 is the faulting address of a PAGE FAULT and of nothing else. The guest"]
+    , ScIndent [ScComment "dumps the register on every vector, so on a #GP or a #UD it holds whatever"]
+    , ScIndent [ScComment "the last page fault left there -- a plausible heap address, pointing at"]
+    , ScIndent [ScComment "nothing to do with this crash. Printing it unconditionally is presenting"]
+    , ScIndent [ScComment "stale garbage as evidence, and it sent a 2026-07-16 investigation chasing an"]
+    , ScIndent [ScComment "address the faulting instruction never touched. Show it only for vector 14."]
+    , ScIndent [ScAssign "cr2" (SeLit "")]
+    , ScIndent [ScIf (SeBare (SeAnd (SeBare (SeIntEq (SeVar "vecInt") ((SeInt 14)))) (SeBare (SeMatch (SeVar "excLine") "CR2=([0-9a-fA-F]+)")))) s05-vec-int-exc-line []]
+    , ScIndent [ScIfLine (SeBare (SeIntEq (SeVar "vecInt") ((SeInt 13)))) [ScAssign "cr2" (SeLit ", non-canonical or segment-limit; CR2 is not the faulting address here")] []]
+    , ScRaw "    $header = \"CRASH in $ripSym ($vecName$cr2)\""
+    , ScRaw "    $report.Add($header)"
+    , ScRaw "    $report.Add(\"  RIP   0x$($rip.ToString('X8').PadLeft(8,'0'))  $ripSym\")"
+    ]
 
-  s05b-body : List ShellCmd = [ScIndent [ScComment "callR and RBP are stack addresses, not code addresses. callR in particular"], ScIndent [ScComment "is the interrupted RSP despite its name, read from offset 64 of the"], ScIndent [ScComment "handler's stack. Resolving either to a symbol can only ever be the value"], ScIndent [ScComment "landing inside some function's byte range by coincidence, and printing"], ScIndent [ScComment "that coincidence is the same failure the CR2 guard above exists to stop."], ScRaw "    foreach ($regName in @('callR','RBP','RBX','R12','R13','R14','R10','RDI','RSI','R15')) {", ScRaw "        if ($excLine -match \"$regName=([0-9a-fA-F]+)\") {", ScRaw "            $val = [Convert]::ToInt64($matches[1], 16)", ScRaw "            $isStackPtr = $regName -eq 'callR' -or $regName -eq 'RBP'", ScRaw "            $sym = if ($isStackPtr) { $null } else { Resolve-Rip -Rip $val -Kernel $Kernel }", ScRaw "            $hex = \"0x$($val.ToString('X8').PadLeft(8,'0'))\"", ScRaw "            $extra = ''", ScRaw "            if ($regName -eq 'callR') { $extra = '  (interrupted RSP)' }", ScRaw "            if ($regName -eq 'RBP')   { $extra = '  (frame chain root)' }", ScRaw "            if ($regName -eq 'R10') {", ScRaw "                $heapMB = [math]::Round(($val - 0x600000) / 1048576.0, 1)", ScRaw "                $extra = \"  (heap @ $heapMB MB)\"", ScRaw "            }", ScRaw "            if ($sym) { $report.Add(\"  $($regName.PadRight(5)) $hex  $sym$extra\") }", ScRaw "            else { $report.Add(\"  $($regName.PadRight(5)) $hex$extra\") }", ScRaw "        }", ScRaw "    }", ScIndent [ScComment "F[] lines are an exact walk of the RBP frame chain, emitted by the guest"], ScIndent [ScComment "(emit-exc-frame-walk). Every address is the return slot of a frame reached"], ScIndent [ScComment "by following the chain, so unlike the S[] scan below there is nothing to"], ScIndent [ScComment "filter: an entry that fails to resolve means the chain broke there, which"], ScIndent [ScComment "is a finding rather than noise, and saying so beats dropping it silently."], ScRaw "    $frames = [System.Collections.Generic.List[string]]::new()", ScRaw "    foreach ($sl in $ExcLines) {", ScRaw "        if ($sl -match 'F\\[([0-9a-fA-F]+)\\]=([0-9a-fA-F]+)') {", ScRaw "            $fidx = [Convert]::ToInt32($matches[1], 16)", ScRaw "            $fval = [Convert]::ToInt64($matches[2], 16)", ScRaw "            $fsym = Resolve-Rip -Rip $fval -Kernel $Kernel", ScRaw "            if (-not $fsym) { $fsym = '<unresolved -- frame chain broke here>' }", ScRaw "            $frames.Add(\"    #$fidx 0x$($fval.ToString('X8').PadLeft(8,'0'))  $fsym\")", ScRaw "        }", ScRaw "    }", ScRaw "    if ($frames.Count -gt 0) {", ScRaw "        $report.Add(\"  Stack trace (frame chain):\")", ScRaw "        foreach ($f in $frames) { $report.Add($f) }", ScRaw "        return $report", ScRaw "    }", ScIndent [ScComment "No frame chain in this dump, so fall back to the old scan. It prints any"], ScIndent [ScComment "stack qword that lands inside some function's byte range, which a stale"], ScIndent [ScComment "local or a plain integer can do by coincidence. Hence the label."], ScRaw "    for ($i = 1; $i -lt $ExcLines.Count; $i++) {", ScRaw "        $sl = $ExcLines[$i]", ScRaw "        if ($sl -match 'S\\[([0-9a-fA-F]+)\\]=([0-9a-fA-F]+)') {", ScRaw "            $soff = $matches[1]; $sval = [Convert]::ToInt64($matches[2], 16)", ScRaw "            $ssym = Resolve-Rip -Rip $sval -Kernel $Kernel", ScRaw "            if ($ssym) {", ScRaw "                if ($i -eq 1) { $report.Add(\"  Stack trace (heuristic):\") }", ScRaw "                $report.Add(\"    S[$soff] 0x$($sval.ToString('X8').PadLeft(8,'0'))  $ssym\")", ScRaw "            }", ScRaw "        }", ScRaw "    }", ScRaw "    return $report", ScRaw "}"]
+  s05-vec-int-exc-line : List ShellCmd =
+    [ ScRaw "$cr2val = [Convert]::ToInt64($matches[1], 16)"
+    , ScRaw "if ($cr2val -ne 0) { $cr2 = \", CR2=0x$($cr2val.ToString('X12'))\" }"
+    ]
+
+  s05b-body : List ShellCmd =
+    [ ScIndent [ScComment "callR and RBP are stack addresses, not code addresses. callR in particular"]
+    , ScIndent [ScComment "is the interrupted RSP despite its name, read from offset 64 of the"]
+    , ScIndent [ScComment "handler's stack. Resolving either to a symbol can only ever be the value"]
+    , ScIndent [ScComment "landing inside some function's byte range by coincidence, and printing"]
+    , ScIndent [ScComment "that coincidence is the same failure the CR2 guard above exists to stop."]
+    , ScIndent [ScRaw "foreach ($regName in @('callR','RBP','RBX','R12','R13','R14','R10','RDI','RSI','R15')) {"]
+    , ScIndent [ScIndent s05b-reg-name]
+    , ScIndent [ScRaw "}"]
+    , ScIndent [ScComment "F[] lines are an exact walk of the RBP frame chain, emitted by the guest"]
+    , ScIndent [ScComment "(emit-exc-frame-walk). Every address is the return slot of a frame reached"]
+    , ScIndent [ScComment "by following the chain, so unlike the S[] scan below there is nothing to"]
+    , ScIndent [ScComment "filter: an entry that fails to resolve means the chain broke there, which"]
+    , ScIndent [ScComment "is a finding rather than noise, and saying so beats dropping it silently."]
+    , ScRaw "    $frames = [System.Collections.Generic.List[string]]::new()"
+    , ScIndent [ScForEach "sl" (SeVar "ExcLines") s05b-each-exc-lines]
+    , ScIndent [ScIf (SeBare (SeIntGt (SeProperty (SeVar "frames") "Count") ((SeInt 0)))) s05b-frames-count []]
+    , ScIndent [ScComment "No frame chain in this dump, so fall back to the old scan. It prints any"]
+    , ScIndent [ScComment "stack qword that lands inside some function's byte range, which a stale"]
+    , ScIndent [ScComment "local or a plain integer can do by coincidence. Hence the label."]
+    , ScIndent [ScForLoop "i" (SeInt 1) (SeBare (SeIntLt (SeVar "i") (SeProperty (SeVar "ExcLines") "Count"))) (SePostIncrement "i") s05b-i-exc-lines-count]
+    , ScIndent [ScReturn (SeVar "report")]
+    , ScRaw "}"
+    ]
+
+  s05b-reg-name : List ShellCmd =
+    [ ScRaw "if ($excLine -match \"$regName=([0-9a-fA-F]+)\") {"
+    , ScIndent s05b-exc-line
+    , ScRaw "}"
+    ]
+
+  s05b-exc-line : List ShellCmd =
+    [ ScRaw "$val = [Convert]::ToInt64($matches[1], 16)"
+    , ScRaw "$isStackPtr = $regName -eq 'callR' -or $regName -eq 'RBP'"
+    , ScRaw "$sym = if ($isStackPtr) { $null } else { Resolve-Rip -Rip $val -Kernel $Kernel }"
+    , ScRaw "$hex = \"0x$($val.ToString('X8').PadLeft(8,'0'))\""
+    , ScAssign "extra" (SeLit "")
+    , ScRaw "if ($regName -eq 'callR') { $extra = '  (interrupted RSP)' }"
+    , ScRaw "if ($regName -eq 'RBP')   { $extra = '  (frame chain root)' }"
+    , ScIf (SeBare (SeIntEq (SeVar "regName") (SeLit "R10"))) s05b-if-reg-name []
+    , ScRaw "if ($sym) { $report.Add(\"  $($regName.PadRight(5)) $hex  $sym$extra\") }"
+    , ScRaw "else { $report.Add(\"  $($regName.PadRight(5)) $hex$extra\") }"
+    ]
+
+  s05b-if-reg-name : List ShellCmd =
+    [ ScRaw "$heapMB = [math]::Round(($val - 0x600000) / 1048576.0, 1)"
+    , ScRaw "$extra = \"  (heap @ $heapMB MB)\""
+    ]
+
+  s05b-each-exc-lines : List ShellCmd =
+    [ ScIf (SeBare (SeMatch (SeVar "sl") "F\\[([0-9a-fA-F]+)\\]=([0-9a-fA-F]+)")) s05b-if-sl []
+    ]
+
+  s05b-if-sl : List ShellCmd =
+    [ ScRaw "$fidx = [Convert]::ToInt32($matches[1], 16)"
+    , ScRaw "$fval = [Convert]::ToInt64($matches[2], 16)"
+    , ScRaw "$fsym = Resolve-Rip -Rip $fval -Kernel $Kernel"
+    , ScRaw "if (-not $fsym) { $fsym = '<unresolved -- frame chain broke here>' }"
+    , ScRaw "$frames.Add(\"    #$fidx 0x$($fval.ToString('X8').PadLeft(8,'0'))  $fsym\")"
+    ]
+
+  s05b-frames-count : List ShellCmd =
+    [ ScRaw "$report.Add(\"  Stack trace (frame chain):\")"
+    , ScRaw "foreach ($f in $frames) { $report.Add($f) }"
+    , ScReturn (SeVar "report")
+    ]
+
+  s05b-i-exc-lines-count : List ShellCmd =
+    [ ScRaw "$sl = $ExcLines[$i]"
+    , ScIf (SeBare (SeMatch (SeVar "sl") "S\\[([0-9a-fA-F]+)\\]=([0-9a-fA-F]+)")) s05b-if-sl-2 []
+    ]
+
+  s05b-if-sl-2 : List ShellCmd =
+    [ ScRaw "$soff = $matches[1]; $sval = [Convert]::ToInt64($matches[2], 16)"
+    , ScRaw "$ssym = Resolve-Rip -Rip $sval -Kernel $Kernel"
+    , ScIf (SeVar "ssym") s05b-if-ssym []
+    ]
+
+  s05b-if-ssym : List ShellCmd =
+    [ ScRaw "if ($i -eq 1) { $report.Add(\"  Stack trace (heuristic):\") }"
+    , ScRaw "$report.Add(\"    S[$soff] 0x$($sval.ToString('X8').PadLeft(8,'0'))  $ssym\")"
+    ]
 
 Section: S06 -- Write-SweepLog Function
 
-  s06-body : List ShellCmd = [ScBlank,ScRaw "function Write-SweepLog {", ScRaw "    param([string]$Message)", ScRaw "    $logPath = $env:CODEX_SWEEP_LOG", ScRaw "    if ($logPath) {", ScRaw "        $ts = (Get-Date).ToString('HH:mm:ss.fff')", ScRaw "        Add-Content -Path $logPath -Value \"$ts $Message\" -Encoding UTF8", ScRaw "    }", ScRaw "}"]
+  s06-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Write-SweepLog" s06-write-sweep-log
+    ]
+
+  s06-write-sweep-log : List ShellCmd =
+    [ ScRaw "param([string]$Message)"
+    , ScRaw "$logPath = $env:CODEX_SWEEP_LOG"
+    , ScIf (SeVar "logPath") s06-if-log []
+    ]
+
+  s06-if-log : List ShellCmd =
+    [ ScRaw "$ts = (Get-Date).ToString('HH:mm:ss.fff')"
+    , ScRaw "Add-Content -Path $logPath -Value \"$ts $Message\" -Encoding UTF8"
+    ]
 
 Section: S07 -- Normalize-TripleNewlines Function
 
-  s07-body : List ShellCmd = [ScBlank,ScRaw "function Normalize-TripleNewlines {", ScRaw "    param([byte[]]$Bytes)", ScRaw "    $out = [System.Collections.Generic.List[byte]]::new($Bytes.Length)", ScRaw "    $nlRun = 0", ScRaw "    foreach ($b in $Bytes) {", ScRaw "        if ($b -eq 10) {", ScRaw "            $nlRun++", ScRaw "            if ($nlRun -le 2) { $out.Add($b) }", ScRaw "        } else {", ScRaw "            $nlRun = 0", ScRaw "            $out.Add($b)", ScRaw "        }", ScRaw "    }", ScRaw "    return $out.ToArray()", ScRaw "}"]
+  s07-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Normalize-TripleNewlines" s07-normalize-triple-newlines
+    ]
+
+  s07-normalize-triple-newlines : List ShellCmd =
+    [ ScRaw "param([byte[]]$Bytes)"
+    , ScRaw "$out = [System.Collections.Generic.List[byte]]::new($Bytes.Length)"
+    , ScAssign "nlRun" (SeInt 0)
+    , ScForEach "b" (SeVar "Bytes") s07-each-bytes
+    , ScRaw "return $out.ToArray()"
+    ]
+
+  s07-each-bytes : List ShellCmd =
+    [ ScIf (SeBare (SeIntEq (SeVar "b") (SeInt 10))) s07-if-b [ScAssign "nlRun" (SeInt 0), ScRaw "$out.Add($b)"]
+    ]
+
+  s07-if-b : List ShellCmd =
+    [ ScIncrement "nlRun"
+    , ScRaw "if ($nlRun -le 2) { $out.Add($b) }"
+    ]
 
 Section: S08 -- TCP Socket Helpers: Globals + Port Helpers
 
-  s08-body : List ShellCmd = [ScBlank,ScComment "TCP socket helpers (for explorer server and legacy TCP plugs).", ScComment "Host discovery ($script:UseCodexVm, $script:FallbackVmBin, accel flags)", ScComment "happens once at the top of this file.", ScRaw "$script:AgentSlot = switch -Wildcard ((Split-Path -Leaf (Get-Location).Path)) { '*-nib' { 1 }; default { 0 } }", ScRaw "$script:PerSlot = 3700", ScBlank, ScRaw "function Get-VmPort {", ScRaw "    param([int]$Attempt = 0)", ScRaw "    $offset = ((Get-Random -Min 0 -Max 32768) + $Attempt * 991) % $script:PerSlot", ScRaw "    return 50200 + ($script:AgentSlot * $script:PerSlot + $offset) * 2", ScRaw "}", ScRaw "function Get-VmChardevData { param([int]$Port) \"socket,id=ch0,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on\" }", ScRaw "function Get-VmChardevCtrl { param([int]$Port) \"socket,id=ch1,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on\" }", ScBlank, ScComment "How many guests of $GuestMB the box can take right now. Answers a COUNT\n# rather than refusing, because the failure this exists to stop is a guest\n# killed for want of host RAM and then reported as a codegen defect\n# (OperatorsManual, the -Jobs 16 section; deck-headroom read a contended run\n# as 'a plug bundle has grown into its deck reservation', main 20381).\n#\n# Called at a FAN-OUT, before any guest starts, never per guest: a per-guest\n# wait deadlocks, because the slots already running hold the memory the\n# waiter is waiting for and nothing frees until they finish.\n#\n# GuestMB IS NOT THE -mem ASK, and using the ask is the trap this default\n# exists to close. codex-vm reserves its -mem as address space and commits\n# what it touches: measured 2026-08-28 on this box, a guest asking 3072\n# peaked at 1,093 MB working set for a single small compile and 1,098 MB for\n# a 30-chapter batch slot, so the footprint is the arena it touches and not\n# the workload. Budgeting the ask would have admitted ONE slot where four\n# demonstrably run green, quietly serialising every battery.\n#\n# Re-measure the figure on a box with different RAM rather than carrying it\n# (L-COUNT); the sampling recipe is a Get-Process loop on codex-vm's\n# WorkingSet64 while a compile runs.\n#\n# 1100 IS THE PER-TEST GUEST AND NOT EVERY GUEST, so the arithmetic above\n# sizes the wrong thing for a battery. `test.ps1` passes -GuestMB 2200 for\n# phase 1 batch compile (`test.ps1`, the Get-VmAdmittedSlots call), because a\n# batch slot holds an arena rather than one test: 1100 there admitted four\n# slots needing ~8.5 GB on a box with ~6.5 GB free and killed val's gate with\n# 1,110 tests reporting \"VM died EARLIER in the batch\". Size a battery at\n# 2200: 4 x 2200 = 8,800 MB, which is what the guard actually prints. Measured\n# 2026-09-07 (fester) by making this mistake in a box request, quoting 4 x 1100\n# for a 546-subject run whose real ask was double that.\n#\n# Reserve is host headroom, not a guess about the guest: Windows, the\n# harness's own pwsh children and the file cache all live in it.\nfunction Get-VmAdmittedSlots {\n    param([int]$Slots, [int]$GuestMB = 1100, [int]$ReserveMB = 1024, [string]$What = 'this phase')\n    if ($Slots -le 1) { return $Slots }\n    $freeMB = 0\n    try { $freeMB = [int]([double](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1024) } catch { return $Slots }\n    if ($freeMB -le 0) { return $Slots }\n    # Live guests are loads the free figure only half sees: a guest that just\n    # launched shows a small working set and grows, and a Renode\n    # instance is a VM load under another name (OperatorsManual, 'A Renode\n    # instance is a VM load'). Measured 2026-09-02: one freshly launched\n    # codex-vm moved free by 23 MB and the answer not at all. Reserve each\n    # one's remaining growth and name it in the line.\n    $liveMB = 0; $live = @()\n    try {\n        foreach ($p in @(Get-Process -Name codex-vm, Renode, renode -ErrorAction SilentlyContinue)) {\n            $ws = [int]($p.WorkingSet64 / 1MB)\n            # A live guest grows to the 1 GiB run-guest bar at most, whatever this\n            # caller's GuestMB (docs/Agents/box-*-2026-09-28.csv).\n            $grow = [Math]::Min($GuestMB, 1024) - $ws\n            if ($grow -gt 0) { $liveMB += $grow }\n            $live += \"$($p.ProcessName)#$($p.Id)=${ws}MB\"\n        }\n    } catch { }\n    $freeRawMB = $freeMB\n    if ($liveMB -gt 0) { $freeMB -= $liveMB }\n    $liveNote = if ($liveMB -gt 0) { \" and ${liveMB}MB for the growth of live guests (\" + ($live -join ' ') + ')' } else { '' }\n    $wantMB = $Slots * $GuestMB\n    if ($freeMB -ge ($wantMB + $ReserveMB)) { return $Slots }\n    $fit = [int][Math]::Floor(($freeMB - $ReserveMB) / [double]$GuestMB)\n    if ($fit -lt 1) { $fit = 1 }\n    if ($fit -ge $Slots) { return $Slots }\n    Write-Host \"  [vm admission] $What wants $Slots x ${GuestMB}MB = ${wantMB}MB; free is ${freeRawMB}MB less ${ReserveMB}MB reserved$liveNote, so admitting $fit. Overcommitting kills a guest and the verdict reads as codegen.\" -ForegroundColor Yellow\n    return $fit\n}"]
+  s08-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "TCP socket helpers (for explorer server and legacy TCP plugs)."
+    , ScComment "Host discovery ($script:UseCodexVm, $script:FallbackVmBin, accel flags)"
+    , ScComment "happens once at the top of this file."
+    , ScRaw "$script:AgentSlot = switch -Wildcard ((Split-Path -Leaf (Get-Location).Path)) { '*-nib' { 1 }; default { 0 } }"
+    , ScAssign "script:PerSlot" (SeInt 3700)
+    , ScBlank
+    , ScFunctionBlock "Get-VmPort" s08-get-vm-port
+    , ScRaw "function Get-VmChardevData { param([int]$Port) \"socket,id=ch0,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on\" }"
+    , ScRaw "function Get-VmChardevCtrl { param([int]$Port) \"socket,id=ch1,host=127.0.0.1,port=$Port,server=on,wait=on,nodelay=on\" }"
+    , ScBlank
+    , ScComment "How many guests of $GuestMB the box can take right now. Answers a COUNT\n# rather than refusing, because the failure this exists to stop is a guest\n# killed for want of host RAM and then reported as a codegen defect\n# (OperatorsManual, the -Jobs 16 section; deck-headroom read a contended run\n# as 'a plug bundle has grown into its deck reservation', main 20381).\n#\n# Called at a FAN-OUT, before any guest starts, never per guest: a per-guest\n# wait deadlocks, because the slots already running hold the memory the\n# waiter is waiting for and nothing frees until they finish.\n#\n# GuestMB IS NOT THE -mem ASK, and using the ask is the trap this default\n# exists to close. codex-vm reserves its -mem as address space and commits\n# what it touches: measured 2026-08-28 on this box, a guest asking 3072\n# peaked at 1,093 MB working set for a single small compile and 1,098 MB for\n# a 30-chapter batch slot, so the footprint is the arena it touches and not\n# the workload. Budgeting the ask would have admitted ONE slot where four\n# demonstrably run green, quietly serialising every battery.\n#\n# Re-measure the figure on a box with different RAM rather than carrying it\n# (L-COUNT); the sampling recipe is a Get-Process loop on codex-vm's\n# WorkingSet64 while a compile runs.\n#\n# 1100 IS THE PER-TEST GUEST AND NOT EVERY GUEST, so the arithmetic above\n# sizes the wrong thing for a battery. `test.ps1` passes -GuestMB 2200 for\n# phase 1 batch compile (`test.ps1`, the Get-VmAdmittedSlots call), because a\n# batch slot holds an arena rather than one test: 1100 there admitted four\n# slots needing ~8.5 GB on a box with ~6.5 GB free and killed val's gate with\n# 1,110 tests reporting \"VM died EARLIER in the batch\". Size a battery at\n# 2200: 4 x 2200 = 8,800 MB, which is what the guard actually prints. Measured\n# 2026-09-07 (fester) by making this mistake in a box request, quoting 4 x 1100\n# for a 546-subject run whose real ask was double that.\n#\n# Reserve is host headroom, not a guess about the guest: Windows, the\n# harness's own pwsh children and the file cache all live in it.\nfunction Get-VmAdmittedSlots {\n    param([int]$Slots, [int]$GuestMB = 1100, [int]$ReserveMB = 1024, [string]$What = 'this phase')\n    if ($Slots -le 1) { return $Slots }\n    $freeMB = 0\n    try { $freeMB = [int]([double](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1024) } catch { return $Slots }\n    if ($freeMB -le 0) { return $Slots }\n    # Live guests are loads the free figure only half sees: a guest that just\n    # launched shows a small working set and grows, and a Renode\n    # instance is a VM load under another name (OperatorsManual, 'A Renode\n    # instance is a VM load'). Measured 2026-09-02: one freshly launched\n    # codex-vm moved free by 23 MB and the answer not at all. Reserve each\n    # one's remaining growth and name it in the line.\n    $liveMB = 0; $live = @()\n    try {\n        foreach ($p in @(Get-Process -Name codex-vm, Renode, renode -ErrorAction SilentlyContinue)) {\n            $ws = [int]($p.WorkingSet64 / 1MB)\n            # A live guest grows to the 1 GiB run-guest bar at most, whatever this\n            # caller's GuestMB (docs/Agents/box-*-2026-09-28.csv).\n            $grow = [Math]::Min($GuestMB, 1024) - $ws\n            if ($grow -gt 0) { $liveMB += $grow }\n            $live += \"$($p.ProcessName)#$($p.Id)=${ws}MB\"\n        }\n    } catch { }\n    $freeRawMB = $freeMB\n    if ($liveMB -gt 0) { $freeMB -= $liveMB }\n    $liveNote = if ($liveMB -gt 0) { \" and ${liveMB}MB for the growth of live guests (\" + ($live -join ' ') + ')' } else { '' }\n    $wantMB = $Slots * $GuestMB\n    if ($freeMB -ge ($wantMB + $ReserveMB)) { return $Slots }\n    $fit = [int][Math]::Floor(($freeMB - $ReserveMB) / [double]$GuestMB)\n    if ($fit -lt 1) { $fit = 1 }\n    if ($fit -ge $Slots) { return $Slots }\n    Write-Host \"  [vm admission] $What wants $Slots x ${GuestMB}MB = ${wantMB}MB; free is ${freeRawMB}MB less ${ReserveMB}MB reserved$liveNote, so admitting $fit. Overcommitting kills a guest and the verdict reads as codegen.\" -ForegroundColor Yellow\n    return $fit\n}"
+    ]
+
+  s08-get-vm-port : List ShellCmd =
+    [ ScRaw "param([int]$Attempt = 0)"
+    , ScRaw "$offset = ((Get-Random -Min 0 -Max 32768) + $Attempt * 991) % $script:PerSlot"
+    , ScRaw "return 50200 + ($script:AgentSlot * $script:PerSlot + $offset) * 2"
+    ]
 
 Section: S09 -- Connect-Vm Function
 
-  s09-body : List ShellCmd = [ScBlank,ScRaw "function Connect-Vm {", ScRaw "    param([int]$DataPort, [int]$CtrlPort, [int]$TimeoutSec = 30)", ScRaw "    $deadline = (Get-Date).AddSeconds($TimeoutSec)", ScRaw "    while ((Get-Date) -lt $deadline) {", ScRaw "        $data = $null; $ctrl = $null", ScRaw "        try {", ScRaw "            $data = [System.Net.Sockets.TcpClient]::new()", ScRaw "            $data.Connect('127.0.0.1', $DataPort)", ScRaw "            $ctrl = [System.Net.Sockets.TcpClient]::new()", ScRaw "            $ctrl.Connect('127.0.0.1', $CtrlPort)", ScRaw "            return @{ Data = $data; Ctrl = $ctrl }", ScRaw "        } catch {", ScRaw "            if ($data) { $data.Dispose() }", ScRaw "            if ($ctrl) { $ctrl.Dispose() }", ScRaw "            Start-Sleep -Milliseconds 500", ScRaw "        }", ScRaw "    }", ScRaw "    return $null", ScRaw "}"]
+  s09-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Connect-Vm" s09-connect-vm
+    ]
+
+  s09-connect-vm : List ShellCmd =
+    [ ScRaw "param([int]$DataPort, [int]$CtrlPort, [int]$TimeoutSec = 30)"
+    , ScRaw "$deadline = (Get-Date).AddSeconds($TimeoutSec)"
+    , ScRaw "while ((Get-Date) -lt $deadline) {"
+    , ScIndent s09-get-date-deadline
+    , ScRaw "}"
+    , ScReturn (SeVar "null")
+    ]
+
+  s09-get-date-deadline : List ShellCmd =
+    [ ScRaw "$data = $null; $ctrl = $null"
+    , ScTry s09-try-body s09-try-body-catch []
+    ]
+
+  s09-try-body : List ShellCmd =
+    [ ScRaw "$data = [System.Net.Sockets.TcpClient]::new()"
+    , ScRaw "$data.Connect('127.0.0.1', $DataPort)"
+    , ScRaw "$ctrl = [System.Net.Sockets.TcpClient]::new()"
+    , ScRaw "$ctrl.Connect('127.0.0.1', $CtrlPort)"
+    , ScRaw "return @{ Data = $data; Ctrl = $ctrl }"
+    ]
+
+  s09-try-body-catch : List ShellCmd =
+    [ ScRaw "if ($data) { $data.Dispose() }"
+    , ScRaw "if ($ctrl) { $ctrl.Dispose() }"
+    , ScRaw "Start-Sleep -Milliseconds 500"
+    ]
 
 Section: S10 -- Read-StreamLine Function
 
-  s10-body : List ShellCmd = [ScBlank,ScRaw "function Read-StreamLine {", ScRaw "    param([System.IO.Stream]$Stream, [int]$TimeoutSec = 60)", ScRaw "    $buf = [System.Collections.Generic.List[byte]]::new()", ScRaw "    $one = New-Object byte[] 1", ScRaw "    $deadline = (Get-Date).AddSeconds($TimeoutSec)", ScRaw "    while ($true) {", ScRaw "        $remainMs = [int][math]::Max(100, ($deadline - (Get-Date)).TotalMilliseconds)", ScRaw "        if ($Stream.CanTimeout) { $Stream.ReadTimeout = $remainMs }", ScRaw "        try { $n = $Stream.Read($one, 0, 1) } catch { return $null }", ScRaw "        if ($n -le 0) { return $null }", ScRaw "        if ($one[0] -eq 10) {", ScRaw "            $bytes = $buf.ToArray()", ScRaw "            return [System.Text.Encoding]::UTF8.GetString($bytes).TrimEnd(\"`r\")", ScRaw "        }", ScRaw "        $buf.Add($one[0])", ScRaw "    }", ScRaw "}"]
+  s10-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Read-StreamLine" s10-read-stream-line
+    ]
+
+  s10-read-stream-line : List ShellCmd =
+    [ ScRaw "param([System.IO.Stream]$Stream, [int]$TimeoutSec = 60)"
+    , ScRaw "$buf = [System.Collections.Generic.List[byte]]::new()"
+    , ScRaw "$one = New-Object byte[] 1"
+    , ScRaw "$deadline = (Get-Date).AddSeconds($TimeoutSec)"
+    , ScWhile (SeVar "true") s10-while
+    ]
+
+  s10-while : List ShellCmd =
+    [ ScRaw "$remainMs = [int][math]::Max(100, ($deadline - (Get-Date)).TotalMilliseconds)"
+    , ScRaw "if ($Stream.CanTimeout) { $Stream.ReadTimeout = $remainMs }"
+    , ScRaw "try { $n = $Stream.Read($one, 0, 1) } catch { return $null }"
+    , ScRaw "if ($n -le 0) { return $null }"
+    , ScIf (SeBare (SeIntEq (SeIndex (SeVar "one") ((SeInt 0))) ((SeInt 10)))) s10-one []
+    , ScRaw "$buf.Add($one[0])"
+    ]
+
+  s10-one : List ShellCmd =
+    [ ScRaw "$bytes = $buf.ToArray()"
+    , ScRaw "return [System.Text.Encoding]::UTF8.GetString($bytes).TrimEnd(\"`r\")"
+    ]
 
 Section: S11 -- Read-VmReady Function
 
-  s11-body : List ShellCmd = [ScBlank,ScRaw "function Read-VmReady {", ScRaw "    param($Conn, [int]$TimeoutSec = 60)", ScRaw "    if (-not $Conn -or -not $Conn.Ctrl) { return $false }", ScRaw "    $stream = $Conn.Ctrl.GetStream()", ScRaw "    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)", ScRaw "    while ([DateTime]::UtcNow -lt $deadline) {", ScRaw "        $remaining = [int]($deadline - [DateTime]::UtcNow).TotalSeconds", ScRaw "        if ($remaining -le 0) { return $false }", ScRaw "        $line = Read-StreamLine -Stream $stream -TimeoutSec $remaining", ScRaw "        if ($line -and $line.StartsWith('READY')) { return $true }", ScRaw "        if (-not $line) { return $false }", ScRaw "    }", ScRaw "    return $false", ScRaw "}"]
+  s11-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Read-VmReady" s11-read-vm-ready
+    ]
+
+  s11-read-vm-ready : List ShellCmd =
+    [ ScRaw "param($Conn, [int]$TimeoutSec = 60)"
+    , ScIfLine (SeBare (SeOr (SeBare (SeNot (SeVar "Conn"))) (SeBare (SeNot (SeProperty (SeVar "Conn") "Ctrl"))))) [ScReturn (SeVar "false")] []
+    , ScRaw "$stream = $Conn.Ctrl.GetStream()"
+    , ScRaw "$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)"
+    , ScRaw "while ([DateTime]::UtcNow -lt $deadline) {"
+    , ScIndent s11-date-time-utc-now
+    , ScRaw "}"
+    , ScReturn (SeVar "false")
+    ]
+
+  s11-date-time-utc-now : List ShellCmd =
+    [ ScRaw "$remaining = [int]($deadline - [DateTime]::UtcNow).TotalSeconds"
+    , ScRaw "if ($remaining -le 0) { return $false }"
+    , ScRaw "$line = Read-StreamLine -Stream $stream -TimeoutSec $remaining"
+    , ScRaw "if ($line -and $line.StartsWith('READY')) { return $true }"
+    , ScRaw "if (-not $line) { return $false }"
+    ]
 
 Section: S12 -- Stop-VmGraceful Function
 
-  s12-body : List ShellCmd = [ScBlank,ScRaw "function Stop-VmGraceful {", ScRaw "    param([int]$ProcessId, [int]$TimeoutMs = 5000)", ScRaw "    $evtName = \"Global\\CodexVmShutdown_$ProcessId\"", ScRaw "    $evt = $null", ScRaw "    try { $evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName) } catch {}", ScRaw "    if ($evt) {", ScRaw "        $evt.Set() | Out-Null", ScRaw "        $evt.Dispose()", ScRaw "        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue", ScRaw "        if ($proc -and -not $proc.HasExited) { $proc.WaitForExit($TimeoutMs) | Out-Null }", ScRaw "        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue", ScRaw "        if ($proc -and -not $proc.HasExited) {", ScRaw "            try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}", ScRaw "        }", ScRaw "    } else {", ScRaw "        try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}", ScRaw "    }", ScRaw "}"]
+  s12-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Stop-VmGraceful" s12-stop-vm-graceful
+    ]
+
+  s12-stop-vm-graceful : List ShellCmd =
+    [ ScRaw "param([int]$ProcessId, [int]$TimeoutMs = 5000)"
+    , ScRaw "$evtName = \"Global\\CodexVmShutdown_$ProcessId\""
+    , ScAssign "evt" (SeVar "null")
+    , ScRaw "try { $evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName) } catch {}"
+    , ScIf (SeVar "evt") s12-if-evt s12-if-evt-else
+    ]
+
+  s12-if-evt : List ShellCmd =
+    [ ScRaw "$evt.Set() | Out-Null"
+    , ScRaw "$evt.Dispose()"
+    , ScRaw "$proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue"
+    , ScRaw "if ($proc -and -not $proc.HasExited) { $proc.WaitForExit($TimeoutMs) | Out-Null }"
+    , ScRaw "$proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue"
+    , ScIf (SeBare (SeAnd (SeVar "proc") (SeBare (SeNot (SeProperty (SeVar "proc") "HasExited"))))) s12-proc-not-has-exited []
+    ]
+
+  s12-proc-not-has-exited : List ShellCmd =
+    [ ScRaw "try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}"
+    ]
+
+  s12-if-evt-else : List ShellCmd =
+    [ ScRaw "try { Stop-Process -Id $ProcessId -Force -ErrorAction Stop } catch {}"
+    ]
 
 Section: S13 -- Close-Vm Function
 
-  s13-body : List ShellCmd = [ScBlank,ScRaw "function Close-Vm {", ScRaw "    param($Conn, $Process)", ScRaw "    if ($Conn) {", ScRaw "        if ($Conn.Data) { try { $Conn.Data.Dispose() } catch {} }", ScRaw "        if ($Conn.Ctrl) { try { $Conn.Ctrl.Dispose() } catch {} }", ScRaw "    }", ScRaw "    if ($Process -and -not $Process.HasExited) {", ScRaw "        for ($i = 0; $i -lt 50 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }", ScRaw "        if (-not $Process.HasExited) {", ScRaw "            Stop-VmGraceful -ProcessId $Process.Id", ScRaw "        }", ScRaw "    }", ScRaw "}"]
+  s13-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Close-Vm" s13-close-vm
+    ]
+
+  s13-close-vm : List ShellCmd =
+    [ ScRaw "param($Conn, $Process)"
+    , ScIf (SeVar "Conn") s13-if-conn []
+    , ScIf (SeBare (SeAnd (SeVar "Process") (SeBare (SeNot (SeProperty (SeVar "Process") "HasExited"))))) s13-process-not-has-exited []
+    ]
+
+  s13-if-conn : List ShellCmd =
+    [ ScRaw "if ($Conn.Data) { try { $Conn.Data.Dispose() } catch {} }"
+    , ScRaw "if ($Conn.Ctrl) { try { $Conn.Ctrl.Dispose() } catch {} }"
+    ]
+
+  s13-process-not-has-exited : List ShellCmd =
+    [ ScRaw "for ($i = 0; $i -lt 50 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }"
+    , ScIf (SeBare (SeNot (SeProperty (SeVar "Process") "HasExited"))) [ScRaw "Stop-VmGraceful -ProcessId $Process.Id"] []
+    ]
 
 Section: S14 -- Start-VmRun Function
 
-  s14-body : List ShellCmd = [ScBlank,ScRaw "function Start-VmRun {", ScRaw "    param(", ScRaw "        [string]$Kernel, [int]$ConnectTimeoutSec = 30,", ScRaw "        [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()", ScRaw "    )", ScIndent [ScComment "THIS MODE IS QEMU'S, whichever host is preferred elsewhere. The"], ScIndent [ScComment "contract here is a LIVE ctrl/data serial pair and codex-vm cannot"], ScIndent [ScComment "serve one: its serial is file-based (-input preloads a ring buffer,"], ScIndent [ScComment "-output dumps at exit) and it has never parsed -data-port or"], ScIndent [ScComment "-ctrl-port in any revision. Routing here by host preference booted a"], ScIndent [ScComment "guest with nothing on the wire, which exited inside 500 ms and read"], ScIndent [ScComment "as a failed launch; codex-vm now REFUSES the first unrecognised flag"], ScIndent [ScComment "by name and exits 2, so that cannot recur in silence (L-ACCEPTED)."], ScRaw "    if (-not $script:FallbackVmBin) {", ScRaw "        Write-Host \"No QEMU: Start-VmRun needs a live ctrl/data serial pair, which codex-vm cannot serve. Set QEMU_BIN.\"", ScRaw "        return $null", ScRaw "    }", ScIndent [ScComment "QEMU needs two things pre-boot that codex-vm does for the guest, and"], ScIndent [ScComment "both track the ACCELERATOR, not the host OS. Measured on Windows"], ScIndent [ScComment "2026-08-13, seed 9B84FA86, qemu 11.0.0, boot to READY on the ctrl serial:"], ScIndent [ScComment ""], ScIndent [ScComment "  accel  -cpu max  0xfe8 loader   boots"], ScIndent [ScComment "  whpx   no        no             no     <- what this path shipped before"], ScIndent [ScComment "  whpx   yes       yes            no"], ScIndent [ScComment "  whpx   no        yes            YES"], ScIndent [ScComment "  tcg    no        no             no"], ScIndent [ScComment "  tcg    no        yes            no"], ScIndent [ScComment "  tcg    yes       yes            YES"], ScIndent [ScComment ""], ScIndent [ScComment "The 0xFE8 cell is the guest RAM size (\"dynamic RSP\", ram-size-addr in"], ScIndent [ScComment "Emit/X86_64Boot.codex); without it the boot stub computes RSP from"], ScIndent [ScComment "zeroed memory and triple-faults before the first serial byte. Every"], ScIndent [ScComment "accelerator needs it. (data-len=4 not 8: QEMU's generic loader asserts"], ScIndent [ScComment "data_len < 8, and -m stays under 4 GB.)"], ScIndent [ScComment ""], ScIndent [ScComment "-cpu max is required under TCG, whose default qemu64 model lacks"], ScIndent [ScComment "features the seed uses, and is FATAL under WHPX. WHPX takes -cpu host:"], ScIndent [ScComment "its default model has no RDRAND, so the guest prints 'no entropy'."], ScIndent [ScComment ""], ScIndent [ScComment "kernel-irqchip=off is what WHPX needs. Under KVM the userspace-APIC"], ScIndent [ScComment "path it forces is deprecated and the guest dies before READY, while"], ScIndent [ScComment "the in-kernel irqchip boots clean -- so drop the flag exactly there."], ScRaw "    $ramBytes = [long]$MemMB * 1048576", ScRaw "    $platformArgs = @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))", ScRaw "    if ($script:FallbackAccel -notmatch 'whpx') { $platformArgs = @('-cpu', 'max') + $platformArgs } else { $platformArgs = @('-cpu', 'host') + $platformArgs }", ScRaw "    $machineArgs = @('-machine', 'kernel-irqchip=off')", ScRaw "    if ($script:FallbackAccel -match 'kvm') { $machineArgs = @() }", ScRaw "    $stdoutFile = [System.IO.Path]::GetTempFileName()", ScRaw "    $stderrFile = [System.IO.Path]::GetTempFileName()", ScRaw "    for ($attempt = 0; $attempt -lt 4; $attempt++) {", ScRaw "        $dataPort = Get-VmPort -Attempt $attempt", ScRaw "        $ctrlPort = $dataPort + 1", ScRaw "        $args = @($script:FallbackAccelFlags) + $machineArgs + $platformArgs + @(", ScRaw "            '-kernel', $Kernel,", ScRaw "            '-chardev', (Get-VmChardevData -Port $dataPort), '-chardev', (Get-VmChardevCtrl -Port $ctrlPort),", ScRaw "            '-serial', 'chardev:ch0', '-serial', 'chardev:ch1',", ScRaw "            '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',", ScRaw "            '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56',", ScRaw "            '-display', 'none', '-no-reboot', '-m', \"$MemMB\"", ScRaw "        )", ScRaw "        if ($ExtraArgs.Count -gt 0) { $args += $ExtraArgs }", ScRaw "        $startArgs = @{", ScRaw "            FilePath = $script:FallbackVmBin; ArgumentList = $args; PassThru = $true", ScRaw "            RedirectStandardOutput = $stdoutFile; RedirectStandardError = $stderrFile", ScRaw "        }", ScIndent [ScIndent [ScComment "-WindowStyle throws on non-Windows editions of pwsh."]], ScRaw "        if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }", ScRaw "        $proc = Start-Process @startArgs", ScRaw "        Start-Sleep -Milliseconds 500", ScRaw "        if ($proc.HasExited) { continue }", ScRaw "        $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec", ScRaw "        if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }", ScRaw "        Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000", ScRaw "        Start-Sleep -Milliseconds 500", ScRaw "    }", ScRaw "    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue", ScRaw "    return $null", ScRaw "}"]
+  s14-body : List ShellCmd =
+    [ ScBlank
+    , ScFunctionBlock "Start-VmRun" s14-start-vm-run
+    ]
+
+  s14-start-vm-run : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [string]$Kernel, [int]$ConnectTimeoutSec = 30,"
+    , ScRaw "    [int]$MemMB = 3072, [int]$PCore = 1, [string[]]$ExtraArgs = @()"
+    , ScRaw ")"
+    , ScComment "THIS MODE IS QEMU'S, whichever host is preferred elsewhere. The"
+    , ScComment "contract here is a LIVE ctrl/data serial pair and codex-vm cannot"
+    , ScComment "serve one: its serial is file-based (-input preloads a ring buffer,"
+    , ScComment "-output dumps at exit) and it has never parsed -data-port or"
+    , ScComment "-ctrl-port in any revision. Routing here by host preference booted a"
+    , ScComment "guest with nothing on the wire, which exited inside 500 ms and read"
+    , ScComment "as a failed launch; codex-vm now REFUSES the first unrecognised flag"
+    , ScComment "by name and exits 2, so that cannot recur in silence (L-ACCEPTED)."
+    , ScIf (SeBare (SeNot (SeVar "script:FallbackVmBin"))) s14-not-script-fallback-vm []
+    , ScComment "QEMU needs two things pre-boot that codex-vm does for the guest, and"
+    , ScComment "both track the ACCELERATOR, not the host OS. Measured on Windows"
+    , ScComment "2026-08-13, seed 9B84FA86, qemu 11.0.0, boot to READY on the ctrl serial:"
+    , ScComment ""
+    , ScComment "  accel  -cpu max  0xfe8 loader   boots"
+    , ScComment "  whpx   no        no             no     <- what this path shipped before"
+    , ScComment "  whpx   yes       yes            no"
+    , ScComment "  whpx   no        yes            YES"
+    , ScComment "  tcg    no        no             no"
+    , ScComment "  tcg    no        yes            no"
+    , ScComment "  tcg    yes       yes            YES"
+    , ScComment ""
+    , ScComment "The 0xFE8 cell is the guest RAM size (\"dynamic RSP\", ram-size-addr in"
+    , ScComment "Emit/X86_64Boot.codex); without it the boot stub computes RSP from"
+    , ScComment "zeroed memory and triple-faults before the first serial byte. Every"
+    , ScComment "accelerator needs it. (data-len=4 not 8: QEMU's generic loader asserts"
+    , ScComment "data_len < 8, and -m stays under 4 GB.)"
+    , ScComment ""
+    , ScComment "-cpu max is required under TCG, whose default qemu64 model lacks"
+    , ScComment "features the seed uses, and is FATAL under WHPX. WHPX takes -cpu host:"
+    , ScComment "its default model has no RDRAND, so the guest prints 'no entropy'."
+    , ScComment ""
+    , ScComment "kernel-irqchip=off is what WHPX needs. Under KVM the userspace-APIC"
+    , ScComment "path it forces is deprecated and the guest dies before READY, while"
+    , ScComment "the in-kernel irqchip boots clean -- so drop the flag exactly there."
+    , ScRaw "$ramBytes = [long]$MemMB * 1048576"
+    , ScRaw "$platformArgs = @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))"
+    , ScRaw "if ($script:FallbackAccel -notmatch 'whpx') { $platformArgs = @('-cpu', 'max') + $platformArgs } else { $platformArgs = @('-cpu', 'host') + $platformArgs }"
+    , ScRaw "$machineArgs = @('-machine', 'kernel-irqchip=off')"
+    , ScRaw "if ($script:FallbackAccel -match 'kvm') { $machineArgs = @() }"
+    , ScTempFile "stdoutFile"
+    , ScTempFile "stderrFile"
+    , ScForLoop "attempt" (SeInt 0) (SeBare (SeIntLt (SeVar "attempt") ((SeInt 4)))) (SePostIncrement "attempt") s14-attempt
+    , ScRaw "Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue"
+    , ScReturn (SeVar "null")
+    ]
+
+  s14-not-script-fallback-vm : List ShellCmd =
+    [ ScEcho (SeText "No QEMU: Start-VmRun needs a live ctrl/data serial pair, which codex-vm cannot serve. Set QEMU_BIN.")
+    , ScReturn (SeVar "null")
+    ]
+
+  s14-attempt : List ShellCmd =
+    [ ScRaw "$dataPort = Get-VmPort -Attempt $attempt"
+    , ScRaw "$ctrlPort = $dataPort + 1"
+    , ScRaw "$args = @($script:FallbackAccelFlags) + $machineArgs + $platformArgs + @("
+    , ScRaw "    '-kernel', $Kernel,"
+    , ScRaw "    '-chardev', (Get-VmChardevData -Port $dataPort), '-chardev', (Get-VmChardevCtrl -Port $ctrlPort),"
+    , ScRaw "    '-serial', 'chardev:ch0', '-serial', 'chardev:ch1',"
+    , ScRaw "    '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',"
+    , ScRaw "    '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56',"
+    , ScRaw "    '-display', 'none', '-no-reboot', '-m', \"$MemMB\""
+    , ScRaw ")"
+    , ScRaw "if ($ExtraArgs.Count -gt 0) { $args += $ExtraArgs }"
+    , ScRaw "$startArgs = @{"
+    , ScIndent s14-start-args
+    , ScRaw "}"
+    , ScComment "-WindowStyle throws on non-Windows editions of pwsh."
+    , ScRaw "if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }"
+    , ScRaw "$proc = Start-Process @startArgs"
+    , ScRaw "Start-Sleep -Milliseconds 500"
+    , ScIfLine (SeProperty (SeVar "proc") "HasExited") [ScContinue] []
+    , ScRaw "$conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec"
+    , ScRaw "if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }"
+    , ScRaw "Stop-VmGraceful -ProcessId $proc.Id -TimeoutMs 3000"
+    , ScRaw "Start-Sleep -Milliseconds 500"
+    ]
+
+  s14-start-args : List ShellCmd =
+    [ ScRaw "FilePath = $script:FallbackVmBin; ArgumentList = $args; PassThru = $true"
+    , ScRaw "RedirectStandardOutput = $stdoutFile; RedirectStandardError = $stderrFile"
+    ]
 
 Section: S16 -- Get-SizePayloadEnd Function
 
-  s16-body : List ShellCmd = [ScBlank,ScComment "The total byte length of a complete compile answer, or -1 while one has", ScComment "not arrived yet: everything up to the first line starting SIZE:<n>, plus", ScComment "n payload bytes after that line's newline. The trailer (MAP/PROF/HEAP", ScComment "lines) comes after this point and is drained separately.", ScRaw "function Get-SizePayloadEnd {", ScRaw "    param([byte[]]$Bytes)", ScIndent [ScComment "ASCII decoding turns each byte into exactly one char (bytes beyond"], ScIndent [ScComment "ASCII become '?'), so an index into this string is also an index"], ScIndent [ScComment "into $Bytes -- which is what makes string matching safe on a buffer"], ScIndent [ScComment "that is part text, part binary."], ScRaw "    $text = [System.Text.Encoding]::ASCII.GetString($Bytes)", ScIndent [ScComment "The size line matches at a line start only, the same way the output"], ScIndent [ScComment "parser in compile.ps1 matches it."], ScRaw "    $sizeLine = [regex]::Match($text, '(?m)^SIZE:(\\d+)')", ScRaw "    if (-not $sizeLine.Success) { return -1 }", ScRaw "    $lineEnd = $text.IndexOf(\"`n\", $sizeLine.Index)", ScRaw "    if ($lineEnd -lt 0) { return -1 }   # the SIZE line itself is still streaming in", ScRaw "    $payloadStart = $lineEnd + 1", ScRaw "    $payloadLength = [long]$sizeLine.Groups[1].Value", ScRaw "    return $payloadStart + $payloadLength", ScRaw "}", ScBlank, ScComment "The same line read as its two halves: where the payload would start on the", ScComment "serial wire, and how many bytes SIZE declared. -1 for both while no", ScComment "complete SIZE line has arrived.", ScRaw "function Get-SizePayload {", ScRaw "    param([byte[]]$Bytes)", ScRaw "    $text = [System.Text.Encoding]::ASCII.GetString($Bytes)", ScRaw "    $sizeLine = [regex]::Match($text, '(?m)^SIZE:(\\d+)')", ScRaw "    if (-not $sizeLine.Success) { return @{ Start = -1; Length = -1 } }", ScRaw "    $lineEnd = $text.IndexOf(\"`n\", $sizeLine.Index)", ScRaw "    if ($lineEnd -lt 0) { return @{ Start = -1; Length = -1 } }", ScRaw "    return @{ Start = ($lineEnd + 1); Length = [long]$sizeLine.Groups[1].Value }", ScRaw "}", ScBlank, ScComment "The debug console's file while QEMU still holds it open for writing. The", ScComment "length comes from the handle rather than the directory entry, which Windows", ScComment "updates lazily for a file another process is writing.", ScRaw "function Get-DebugconLength {", ScRaw "    param([string]$Path)", ScRaw "    try {", ScRaw "        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))", ScRaw "        try { return [long]$fs.Length } finally { $fs.Dispose() }", ScRaw "    } catch { return -1 }", ScRaw "}", ScBlank, ScRaw "function Read-DebugconBytes {", ScRaw "    param([string]$Path, [long]$Count)", ScRaw "    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))", ScRaw "    try {", ScRaw "        $b = New-Object byte[] $Count", ScRaw "        $got = 0", ScRaw "        while ($got -lt $Count) {", ScRaw "            $n = $fs.Read($b, $got, $Count - $got)", ScRaw "            if ($n -le 0) { break }", ScRaw "            $got += $n", ScRaw "        }", ScRaw "        if ($got -ne $Count) { return $null }", ScRaw "        return $b", ScRaw "    } finally { $fs.Dispose() }", ScRaw "}"]
+  s16-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "The total byte length of a complete compile answer, or -1 while one has"
+    , ScComment "not arrived yet: everything up to the first line starting SIZE:<n>, plus"
+    , ScComment "n payload bytes after that line's newline. The trailer (MAP/PROF/HEAP"
+    , ScComment "lines) comes after this point and is drained separately."
+    , ScFunctionBlock "Get-SizePayloadEnd" s16-get-size-payload-end
+    , ScBlank
+    , ScComment "The same line read as its two halves: where the payload would start on the"
+    , ScComment "serial wire, and how many bytes SIZE declared. -1 for both while no"
+    , ScComment "complete SIZE line has arrived."
+    , ScFunctionBlock "Get-SizePayload" s16-get-size-payload
+    , ScBlank
+    , ScComment "The debug console's file while QEMU still holds it open for writing. The"
+    , ScComment "length comes from the handle rather than the directory entry, which Windows"
+    , ScComment "updates lazily for a file another process is writing."
+    , ScFunctionBlock "Get-DebugconLength" s16-get-debugcon-length
+    , ScBlank
+    , ScFunctionBlock "Read-DebugconBytes" s16-read-debugcon-bytes
+    ]
+
+  s16-get-size-payload-end : List ShellCmd =
+    [ ScRaw "param([byte[]]$Bytes)"
+    , ScComment "ASCII decoding turns each byte into exactly one char (bytes beyond"
+    , ScComment "ASCII become '?'), so an index into this string is also an index"
+    , ScComment "into $Bytes -- which is what makes string matching safe on a buffer"
+    , ScComment "that is part text, part binary."
+    , ScRaw "$text = [System.Text.Encoding]::ASCII.GetString($Bytes)"
+    , ScComment "The size line matches at a line start only, the same way the output"
+    , ScComment "parser in compile.ps1 matches it."
+    , ScRaw "$sizeLine = [regex]::Match($text, '(?m)^SIZE:(\\d+)')"
+    , ScRaw "if (-not $sizeLine.Success) { return -1 }"
+    , ScRaw "$lineEnd = $text.IndexOf(\"`n\", $sizeLine.Index)"
+    , ScRaw "if ($lineEnd -lt 0) { return -1 }   # the SIZE line itself is still streaming in"
+    , ScRaw "$payloadStart = $lineEnd + 1"
+    , ScRaw "$payloadLength = [long]$sizeLine.Groups[1].Value"
+    , ScRaw "return $payloadStart + $payloadLength"
+    ]
+
+  s16-get-size-payload : List ShellCmd =
+    [ ScRaw "param([byte[]]$Bytes)"
+    , ScRaw "$text = [System.Text.Encoding]::ASCII.GetString($Bytes)"
+    , ScRaw "$sizeLine = [regex]::Match($text, '(?m)^SIZE:(\\d+)')"
+    , ScRaw "if (-not $sizeLine.Success) { return @{ Start = -1; Length = -1 } }"
+    , ScRaw "$lineEnd = $text.IndexOf(\"`n\", $sizeLine.Index)"
+    , ScRaw "if ($lineEnd -lt 0) { return @{ Start = -1; Length = -1 } }"
+    , ScRaw "return @{ Start = ($lineEnd + 1); Length = [long]$sizeLine.Groups[1].Value }"
+    ]
+
+  s16-get-debugcon-length : List ShellCmd =
+    [ ScRaw "param([string]$Path)"
+    , ScRaw "try {"
+    , ScIndent s16-block
+    , ScRaw "} catch { return -1 }"
+    ]
+
+  s16-block : List ShellCmd =
+    [ ScRaw "$fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))"
+    , ScRaw "try { return [long]$fs.Length } finally { $fs.Dispose() }"
+    ]
+
+  s16-read-debugcon-bytes : List ShellCmd =
+    [ ScRaw "param([string]$Path, [long]$Count)"
+    , ScRaw "$fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))"
+    , ScRaw "try {"
+    , ScIndent s16-block-2
+    , ScRaw "} finally { $fs.Dispose() }"
+    ]
+
+  s16-block-2 : List ShellCmd =
+    [ ScRaw "$b = New-Object byte[] $Count"
+    , ScAssign "got" (SeInt 0)
+    , ScWhile (SeBare (SeIntLt (SeVar "got") (SeVar "Count"))) s16-while-got-count
+    , ScRaw "if ($got -ne $Count) { return $null }"
+    , ScReturn (SeVar "b")
+    ]
+
+  s16-while-got-count : List ShellCmd =
+    [ ScRaw "$n = $fs.Read($b, $got, $Count - $got)"
+    , ScRaw "if ($n -le 0) { break }"
+    , ScRaw "$got += $n"
+    ]
 
 Section: S17 -- Invoke-VmCompileFallback Function
 
-  s17-body : List ShellCmd = [ScBlank,ScComment "One compile through the QEMU fallback's serial wire, honouring codex-vm's", ScComment "-input/-output file contract so compile.ps1 parses the result the same", ScComment "way for both hosts: InputFile (mode line + assembled unit + EOT) streams", ScComment "to the data serial once the guest says READY, and everything the guest", ScComment "answers -- log lines, SIZE:<n>, the binary, the MAP/PROF/HEAP trailer --", ScComment "lands byte-for-byte in OutputFile.", ScComment "", ScComment "The read stops when the SIZE payload is complete plus a short trailer", ScComment "drain, not on idle alone: the guest stays running after a compile, so a", ScComment "purely idle-based read always pays the full idle timeout.", ScComment "", ScComment "Returns $true when OutputFile holds a complete answer, INCLUDING a", ScComment "compiler error report or crash dump -- those are the caller's to judge,", ScComment "exactly as they are when codex-vm writes the file. $false means boot", ScComment "failure, no READY, or deadline with no answer.", ScRaw "function Invoke-VmCompileFallback {", ScRaw "    param(", ScRaw "        [string]$Kernel, [string]$InputFile, [string]$OutputFile,", ScRaw "        [int]$MemMB = 3072, [int]$TimeoutSec = 600, [string]$DiskFile = ''", ScRaw "    )", ScRaw "    $extra = @()", ScRaw "    if ($DiskFile) { $extra = @('-drive', \"file=$DiskFile,format=raw,if=ide,index=0\") }", ScIndent [ScComment "The Bochs debug console at 0xE9. A guest whose __write_binary helpers"], ScIndent [ScComment "carry the probe (seeds from 2026-08-21) reads 0xE9 back from it and"], ScIndent [ScComment "sends the SIZE payload there in ONE rep outsb, no LSR poll and no"], ScIndent [ScComment "16-byte FIFO bound; an older guest reads 0xFF from the same port under"], ScIndent [ScComment "every other bed and never touches it, so its payload still arrives on"], ScIndent [ScComment "the serial wire. The reader below accepts either, because the gate's"], ScIndent [ScComment "stage0 is the depot seed and may be the older kind. Wired here and"], ScIndent [ScComment "nowhere else: every other Start-VmRun consumer reads the serial wire"], ScIndent [ScComment "alone, and a device they did not ask for would move their payload"], ScIndent [ScComment "somewhere they do not look."], ScRaw "    $dbgFile = [System.IO.Path]::GetTempFileName()", ScRaw "    $extra += @('-chardev', \"file,id=dbg,path=$dbgFile\", '-device', 'isa-debugcon,iobase=0xe9,chardev=dbg')", ScRaw "    $vm = Start-VmRun -Kernel $Kernel -MemMB $MemMB -ExtraArgs $extra", ScRaw "    if (-not $vm) { Remove-Item -Force $dbgFile -ErrorAction SilentlyContinue; return $false }", ScRaw "    try {", ScRaw "        if (-not (Read-VmReady -Conn $vm.Conn -TimeoutSec 120)) {", ScRaw "            [Console]::Error.WriteLine(\"  qemu fallback: no READY from guest\")", ScRaw "            return $false", ScRaw "        }", ScRaw "        $stream = $vm.Conn.Data.GetStream()", ScRaw "        $blob = [System.IO.File]::ReadAllBytes($InputFile)", ScIndent [ScIndent [ScComment "Sending the unit in one burst stalls intermittently on large"]], ScIndent [ScIndent [ScComment "units: the guest ends up waiting for bytes it never saw -- and a"]], ScIndent [ScIndent [ScComment "lost EOT is a hang on both sides -- while small compiles never"]], ScIndent [ScIndent [ScComment "hit it. codex-vm is immune because it preloads the input into"]], ScIndent [ScIndent [ScComment "guest RAM before boot. So give the guest's reader a moment after"]], ScIndent [ScIndent [ScComment "READY, then pace the stream in small flushed chunks; the cost is"]], ScIndent [ScIndent [ScComment "well under a second on a 500 KB unit."]], ScRaw "        Start-Sleep -Milliseconds 200", ScRaw "        $chunkSize = 8192", ScRaw "        for ($off = 0; $off -lt $blob.Length; $off += $chunkSize) {", ScRaw "            $len = [Math]::Min($chunkSize, $blob.Length - $off)", ScRaw "            $stream.Write($blob, $off, $len)", ScRaw "            $stream.Flush()", ScRaw "            Start-Sleep -Milliseconds 5", ScRaw "        }", ScBlank, ScRaw "        $out = [System.IO.MemoryStream]::new()", ScRaw "        $buf = New-Object byte[] 65536", ScRaw "        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)", ScRaw "        $needed = [long](-1)", ScRaw "        $payloadStart = [long](-1)", ScRaw "        $payloadLen = [long](-1)", ScRaw "        $viaDebugcon = $false", ScRaw "        $complete = $false", ScRaw "        $sawTerminalReport = $false", ScRaw "        while ([DateTime]::UtcNow -lt $deadline) {", ScIndent [ScIndent [ScIndent [ScComment "Once SIZE's declared payload is fully in hand the loop is only"]]], ScIndent [ScIndent [ScIndent [ScComment "draining a trailer that in practice is never there, and the"]]], ScIndent [ScIndent [ScIndent [ScComment "read below blocks for the whole timeout before breaking. At"]]], ScIndent [ScIndent [ScIndent [ScComment "2000ms that was a flat two seconds on every QEMU compile,"]]], ScIndent [ScIndent [ScIndent [ScComment "measured as roughly half the fixed floor."]]], ScIndent [ScIndent [ScIndent [ScComment "Complete means one of two things once SIZE is known: the debug"]]], ScIndent [ScIndent [ScIndent [ScComment "console holds the declared bytes (a guest with the 0xE9 arm), or"]]], ScIndent [ScIndent [ScIndent [ScComment "it holds NOTHING and the serial wire carries them (an older"]]], ScIndent [ScIndent [ScIndent [ScComment "guest). A console with some bytes but not all is still"]]], ScIndent [ScIndent [ScIndent [ScComment "streaming, whatever the serial side says: the trailer can be"]]], ScIndent [ScIndent [ScIndent [ScComment "longer than a small payload, so the serial count alone would"]]], ScIndent [ScIndent [ScIndent [ScComment "read a half-written console as done."]]], ScRaw "            if ($needed -ge 0 -and -not $complete) {", ScRaw "                $dbgLen = Get-DebugconLength -Path $dbgFile", ScRaw "                if ($dbgLen -ge $payloadLen) { $viaDebugcon = $true; $complete = $true }", ScRaw "                elseif ($dbgLen -le 0 -and $out.Length -ge $needed) { $complete = $true }", ScRaw "            }", ScRaw "            $stream.ReadTimeout = if ($complete) { 250 } else { 5000 }", ScRaw "            $n = 0", ScRaw "            try { $n = $stream.Read($buf, 0, $buf.Length) } catch { $n = -1 }", ScRaw "            if ($n -eq 0) { break }", ScRaw "            if ($n -lt 0) {", ScIndent [ScIndent [ScIndent [ScIndent [ScComment "Idle. Done if the payload is complete (the short pass above"]]]], ScIndent [ScIndent [ScIndent [ScIndent [ScComment "was the trailer drain), or if the guest sent a terminal"]]]], ScIndent [ScIndent [ScIndent [ScIndent [ScComment "report that has no SIZE line and never will."]]]], ScRaw "                if ($complete) { break }", ScRaw "                if ($sawTerminalReport) { break }", ScIndent [ScIndent [ScIndent [ScIndent [ScComment "A read timeout and an abortive socket close both arrive"]]]], ScIndent [ScIndent [ScIndent [ScIndent [ScComment "here as an exception. A dead guest has nothing more to"]]]], ScIndent [ScIndent [ScIndent [ScIndent [ScComment "send, and without this the second case spins the loop hot"]]]], ScIndent [ScIndent [ScIndent [ScIndent [ScComment "until the full deadline."]]]], ScRaw "                if ($vm.Process.HasExited) { break }", ScRaw "                continue", ScRaw "            }", ScRaw "            $out.Write($buf, 0, $n)", ScRaw "            if ($needed -lt 0) {", ScRaw "                $bytes = $out.ToArray()", ScRaw "                $needed = Get-SizePayloadEnd -Bytes $bytes", ScRaw "                if ($needed -ge 0) {", ScRaw "                    $sp = Get-SizePayload -Bytes $bytes", ScRaw "                    $payloadStart = [long]$sp.Start", ScRaw "                    $payloadLen = [long]$sp.Length", ScRaw "                } else {", ScRaw "                    $txt = [System.Text.Encoding]::ASCII.GetString($bytes)", ScRaw "                    if ($txt.Contains('!EXC') -or $txt.Contains('CODEGEN-HALTED') -or $txt.Contains('CODEGEN-ERRORS')) {", ScRaw "                        $sawTerminalReport = $true", ScRaw "                    }", ScRaw "                }", ScRaw "            }", ScRaw "        }", ScIndent [ScIndent [ScComment "A payload that travelled by the debug console is spliced back in where"]], ScIndent [ScIndent [ScComment "it would have sat on the wire, so OutputFile reads the same to"]], ScIndent [ScIndent [ScComment "compile.ps1 whichever channel the guest chose."]], ScRaw "        if ($viaDebugcon) {", ScRaw "            $serial = $out.ToArray()", ScRaw "            $payload = Read-DebugconBytes -Path $dbgFile -Count $payloadLen", ScIndent [ScIndent [ScIndent [ScIf (SeBare (SeIntEq (SeVar "null") (SeVar "payload"))) [ScWriteError (SeText "  qemu fallback: debug console declared complete and then read short"), ScReturn (SeVar "false")] []]]], ScRaw "            $joined = [System.IO.MemoryStream]::new()", ScRaw "            $joined.Write($serial, 0, $payloadStart)", ScRaw "            $joined.Write($payload, 0, $payload.Length)", ScRaw "            $joined.Write($serial, $payloadStart, $serial.Length - $payloadStart)", ScRaw "            [System.IO.File]::WriteAllBytes($OutputFile, $joined.ToArray())", ScRaw "            [Console]::Error.WriteLine(\"  qemu fallback: $payloadLen payload bytes via the debug console\")", ScRaw "            return $true", ScRaw "        }", ScRaw "        [System.IO.File]::WriteAllBytes($OutputFile, $out.ToArray())", ScRaw "        if ($complete -or $sawTerminalReport) { return $true }", ScRaw "        [Console]::Error.WriteLine(\"  qemu fallback: deadline (${TimeoutSec}s) with no complete answer ($($out.Length) bytes so far)\")", ScRaw "        return $false", ScRaw "    } finally {", ScRaw "        if ($vm.Conn) {", ScRaw "            if ($vm.Conn.Data) { try { $vm.Conn.Data.Dispose() } catch {} }", ScRaw "            if ($vm.Conn.Ctrl) { try { $vm.Conn.Ctrl.Dispose() } catch {} }", ScRaw "        }", ScIndent [ScIndent [ScComment "The guest never exits on its own after a compile; kill it now"]], ScIndent [ScIndent [ScComment "rather than paying Close-Vm's five-second wait for an exit that"]], ScIndent [ScIndent [ScComment "is not coming."]], ScRaw "        if ($vm.Process -and -not $vm.Process.HasExited) {", ScRaw "            Stop-VmGraceful -ProcessId $vm.Process.Id -TimeoutMs 1000", ScRaw "        }", ScRaw "        Remove-Item -Force $vm.StdoutFile, $vm.StderrFile, $dbgFile -ErrorAction SilentlyContinue", ScRaw "    }", ScRaw "}"]
+  s17-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "One compile through the QEMU fallback's serial wire, honouring codex-vm's"
+    , ScComment "-input/-output file contract so compile.ps1 parses the result the same"
+    , ScComment "way for both hosts: InputFile (mode line + assembled unit + EOT) streams"
+    , ScComment "to the data serial once the guest says READY, and everything the guest"
+    , ScComment "answers -- log lines, SIZE:<n>, the binary, the MAP/PROF/HEAP trailer --"
+    , ScComment "lands byte-for-byte in OutputFile."
+    , ScComment ""
+    , ScComment "The read stops when the SIZE payload is complete plus a short trailer"
+    , ScComment "drain, not on idle alone: the guest stays running after a compile, so a"
+    , ScComment "purely idle-based read always pays the full idle timeout."
+    , ScComment ""
+    , ScComment "Returns $true when OutputFile holds a complete answer, INCLUDING a"
+    , ScComment "compiler error report or crash dump -- those are the caller's to judge,"
+    , ScComment "exactly as they are when codex-vm writes the file. $false means boot"
+    , ScComment "failure, no READY, or deadline with no answer."
+    , ScFunctionBlock "Invoke-VmCompileFallback" s17-invoke-vm-compile-fallback
+    ]
+
+  s17-invoke-vm-compile-fallback : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [string]$Kernel, [string]$InputFile, [string]$OutputFile,"
+    , ScRaw "    [int]$MemMB = 3072, [int]$TimeoutSec = 600, [string]$DiskFile = ''"
+    , ScRaw ")"
+    , ScRaw "$extra = @()"
+    , ScRaw "if ($DiskFile) { $extra = @('-drive', \"file=$DiskFile,format=raw,if=ide,index=0\") }"
+    , ScComment "The Bochs debug console at 0xE9. A guest whose __write_binary helpers"
+    , ScComment "carry the probe (seeds from 2026-08-21) reads 0xE9 back from it and"
+    , ScComment "sends the SIZE payload there in ONE rep outsb, no LSR poll and no"
+    , ScComment "16-byte FIFO bound; an older guest reads 0xFF from the same port under"
+    , ScComment "every other bed and never touches it, so its payload still arrives on"
+    , ScComment "the serial wire. The reader below accepts either, because the gate's"
+    , ScComment "stage0 is the depot seed and may be the older kind. Wired here and"
+    , ScComment "nowhere else: every other Start-VmRun consumer reads the serial wire"
+    , ScComment "alone, and a device they did not ask for would move their payload"
+    , ScComment "somewhere they do not look."
+    , ScTempFile "dbgFile"
+    , ScRaw "$extra += @('-chardev', \"file,id=dbg,path=$dbgFile\", '-device', 'isa-debugcon,iobase=0xe9,chardev=dbg')"
+    , ScRaw "$vm = Start-VmRun -Kernel $Kernel -MemMB $MemMB -ExtraArgs $extra"
+    , ScRaw "if (-not $vm) { Remove-Item -Force $dbgFile -ErrorAction SilentlyContinue; return $false }"
+    , ScTry s17-try-body [] s17-try-body-finally
+    ]
+
+  s17-try-body : List ShellCmd =
+    [ ScRaw "if (-not (Read-VmReady -Conn $vm.Conn -TimeoutSec 120)) {"
+    , ScIndent s17-not-read-vm-ready
+    , ScRaw "}"
+    , ScRaw "$stream = $vm.Conn.Data.GetStream()"
+    , ScReadBytes "blob" (SeVar "InputFile")
+    , ScComment "Sending the unit in one burst stalls intermittently on large"
+    , ScComment "units: the guest ends up waiting for bytes it never saw -- and a"
+    , ScComment "lost EOT is a hang on both sides -- while small compiles never"
+    , ScComment "hit it. codex-vm is immune because it preloads the input into"
+    , ScComment "guest RAM before boot. So give the guest's reader a moment after"
+    , ScComment "READY, then pace the stream in small flushed chunks; the cost is"
+    , ScComment "well under a second on a 500 KB unit."
+    , ScRaw "Start-Sleep -Milliseconds 200"
+    , ScAssign "chunkSize" (SeInt 8192)
+    , ScRaw "for ($off = 0; $off -lt $blob.Length; $off += $chunkSize) {"
+    , ScIndent s17-off-blob-length-chunk
+    , ScRaw "}"
+    , ScBlank
+    , ScRaw "$out = [System.IO.MemoryStream]::new()"
+    , ScRaw "$buf = New-Object byte[] 65536"
+    , ScRaw "$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)"
+    , ScRaw "$needed = [long](-1)"
+    , ScRaw "$payloadStart = [long](-1)"
+    , ScRaw "$payloadLen = [long](-1)"
+    , ScAssign "viaDebugcon" (SeVar "false")
+    , ScAssign "complete" (SeVar "false")
+    , ScAssign "sawTerminalReport" (SeVar "false")
+    , ScRaw "while ([DateTime]::UtcNow -lt $deadline) {"
+    , ScIndent s17-date-time-utc-now
+    , ScRaw "}"
+    , ScComment "A payload that travelled by the debug console is spliced back in where"
+    , ScComment "it would have sat on the wire, so OutputFile reads the same to"
+    , ScComment "compile.ps1 whichever channel the guest chose."
+    , ScIf (SeVar "viaDebugcon") s17-if-via-debugcon []
+    , ScRaw "[System.IO.File]::WriteAllBytes($OutputFile, $out.ToArray())"
+    , ScIfLine (SeBare (SeOr (SeVar "complete") (SeVar "sawTerminalReport"))) [ScReturn (SeVar "true")] []
+    , ScWriteError (SeText "  qemu fallback: deadline (${TimeoutSec}s) with no complete answer ($($out.Length) bytes so far)")
+    , ScReturn (SeVar "false")
+    ]
+
+  s17-not-read-vm-ready : List ShellCmd =
+    [ ScWriteError (SeText "  qemu fallback: no READY from guest")
+    , ScReturn (SeVar "false")
+    ]
+
+  s17-off-blob-length-chunk : List ShellCmd =
+    [ ScRaw "$len = [Math]::Min($chunkSize, $blob.Length - $off)"
+    , ScRaw "$stream.Write($blob, $off, $len)"
+    , ScRaw "$stream.Flush()"
+    , ScRaw "Start-Sleep -Milliseconds 5"
+    ]
+
+  s17-date-time-utc-now : List ShellCmd =
+    [ ScComment "Once SIZE's declared payload is fully in hand the loop is only"
+    , ScComment "draining a trailer that in practice is never there, and the"
+    , ScComment "read below blocks for the whole timeout before breaking. At"
+    , ScComment "2000ms that was a flat two seconds on every QEMU compile,"
+    , ScComment "measured as roughly half the fixed floor."
+    , ScComment "Complete means one of two things once SIZE is known: the debug"
+    , ScComment "console holds the declared bytes (a guest with the 0xE9 arm), or"
+    , ScComment "it holds NOTHING and the serial wire carries them (an older"
+    , ScComment "guest). A console with some bytes but not all is still"
+    , ScComment "streaming, whatever the serial side says: the trailer can be"
+    , ScComment "longer than a small payload, so the serial count alone would"
+    , ScComment "read a half-written console as done."
+    , ScIf (SeBare (SeAnd (SeBare (SeIntGe (SeVar "needed") ((SeInt 0)))) (SeBare (SeNot (SeVar "complete"))))) s17-needed-not-complete []
+    , ScRaw "$stream.ReadTimeout = if ($complete) { 250 } else { 5000 }"
+    , ScAssign "n" (SeInt 0)
+    , ScRaw "try { $n = $stream.Read($buf, 0, $buf.Length) } catch { $n = -1 }"
+    , ScRaw "if ($n -eq 0) { break }"
+    , ScIf (SeBare (SeIntLt (SeVar "n") (SeInt 0))) s17-if-n []
+    , ScRaw "$out.Write($buf, 0, $n)"
+    , ScIf (SeBare (SeIntLt (SeVar "needed") (SeInt 0))) s17-if-needed []
+    ]
+
+  s17-needed-not-complete : List ShellCmd =
+    [ ScRaw "$dbgLen = Get-DebugconLength -Path $dbgFile"
+    , ScRaw "if ($dbgLen -ge $payloadLen) { $viaDebugcon = $true; $complete = $true }"
+    , ScRaw "elseif ($dbgLen -le 0 -and $out.Length -ge $needed) { $complete = $true }"
+    ]
+
+  s17-if-n : List ShellCmd =
+    [ ScComment "Idle. Done if the payload is complete (the short pass above"
+    , ScComment "was the trailer drain), or if the guest sent a terminal"
+    , ScComment "report that has no SIZE line and never will."
+    , ScRaw "if ($complete) { break }"
+    , ScRaw "if ($sawTerminalReport) { break }"
+    , ScComment "A read timeout and an abortive socket close both arrive"
+    , ScComment "here as an exception. A dead guest has nothing more to"
+    , ScComment "send, and without this the second case spins the loop hot"
+    , ScComment "until the full deadline."
+    , ScRaw "if ($vm.Process.HasExited) { break }"
+    , ScContinue
+    ]
+
+  s17-if-needed : List ShellCmd =
+    [ ScRaw "$bytes = $out.ToArray()"
+    , ScRaw "$needed = Get-SizePayloadEnd -Bytes $bytes"
+    , ScIf (SeBare (SeIntGe (SeVar "needed") (SeInt 0))) s17-if-needed-2 s17-if-needed-2-else
+    ]
+
+  s17-if-needed-2 : List ShellCmd =
+    [ ScRaw "$sp = Get-SizePayload -Bytes $bytes"
+    , ScRaw "$payloadStart = [long]$sp.Start"
+    , ScRaw "$payloadLen = [long]$sp.Length"
+    ]
+
+  s17-if-needed-2-else : List ShellCmd =
+    [ ScRaw "$txt = [System.Text.Encoding]::ASCII.GetString($bytes)"
+    , ScRaw "if ($txt.Contains('!EXC') -or $txt.Contains('CODEGEN-HALTED') -or $txt.Contains('CODEGEN-ERRORS')) {"
+    , ScIndent [ScAssign "sawTerminalReport" (SeVar "true")]
+    , ScRaw "}"
+    ]
+
+  s17-if-via-debugcon : List ShellCmd =
+    [ ScRaw "$serial = $out.ToArray()"
+    , ScRaw "$payload = Read-DebugconBytes -Path $dbgFile -Count $payloadLen"
+    , ScIf (SeBare (SeIntEq (SeVar "null") (SeVar "payload"))) [ScWriteError (SeText "  qemu fallback: debug console declared complete and then read short"), ScReturn (SeVar "false")] []
+    , ScRaw "$joined = [System.IO.MemoryStream]::new()"
+    , ScRaw "$joined.Write($serial, 0, $payloadStart)"
+    , ScRaw "$joined.Write($payload, 0, $payload.Length)"
+    , ScRaw "$joined.Write($serial, $payloadStart, $serial.Length - $payloadStart)"
+    , ScRaw "[System.IO.File]::WriteAllBytes($OutputFile, $joined.ToArray())"
+    , ScWriteError (SeText "  qemu fallback: $payloadLen payload bytes via the debug console")
+    , ScReturn (SeVar "true")
+    ]
+
+  s17-try-body-finally : List ShellCmd =
+    [ ScIf (SeProperty (SeVar "vm") "Conn") s17-vm-conn []
+    , ScComment "The guest never exits on its own after a compile; kill it now"
+    , ScComment "rather than paying Close-Vm's five-second wait for an exit that"
+    , ScComment "is not coming."
+    , ScIf (SeBare (SeAnd (SeProperty (SeVar "vm") "Process") (SeBare (SeNot (SeProperty (SeProperty (SeVar "vm") "Process") "HasExited"))))) s17-vm-process-not-has []
+    , ScRaw "Remove-Item -Force $vm.StdoutFile, $vm.StderrFile, $dbgFile -ErrorAction SilentlyContinue"
+    ]
+
+  s17-vm-conn : List ShellCmd =
+    [ ScRaw "if ($vm.Conn.Data) { try { $vm.Conn.Data.Dispose() } catch {} }"
+    , ScRaw "if ($vm.Conn.Ctrl) { try { $vm.Conn.Ctrl.Dispose() } catch {} }"
+    ]
+
+  s17-vm-process-not-has : List ShellCmd =
+    [ ScRaw "Stop-VmGraceful -ProcessId $vm.Process.Id -TimeoutMs 1000"
+    ]
 
 Section: S18 -- Start-PlugVm Function
 
-  s18-body : List ShellCmd = [ScBlank,ScComment "The plug launch, in ONE place. A plug boots a CDX, prints to a console file", ScComment "and talks to the host over TCP; that is the same shape for every plug that", ScComment "does not preload serial, so the host CHOICE belongs here rather than copied", ScComment "into each runner. Until plugs 1.73 no runner read the choice at all and no", ScComment "plug could run without codex-vm; eight hardcoded the path and ten read", ScComment "$script:CodexVmBin while skipping $script:UseCodexVm, which LOOKS like", ScComment "consulting the config.", ScComment "", ScComment "The QEMU arm is Start-VmRun's measured boot recipe minus its ctrl/data", ScComment "sockets: the 0xfe8 loader cell carries guest RAM size, -cpu max is required", ScComment "under TCG and fatal under WHPX, kernel-irqchip=off is WHPX's and not KVM's,", ScComment "and the NIC is ne2k_isa at irq 9 / iobase 0x300 with the MAC the plug guests", ScComment "expect. A plug dials 127.0.0.1 through gateway 10.0.2.2 and QEMU's user", ScComment "networking carries that unchanged, which was measured rather than reasoned:", ScComment "the reasoning said SLIRP would drop it and the reasoning was wrong.", ScComment "", ScComment "THIS DOES NOT SERVE A PLUG THAT PRELOADS ITS INPUT. codex-vm's -input is a", ScComment "ring buffer filled before boot and QEMU has no such flag; the eleven runners", ScComment "that pass -input need the live-serial route Invoke-VmCompileFallback takes,", ScComment "which is a different piece of work.", ScRaw "function Start-PlugVm {", ScRaw "    param(", ScRaw "        [Parameter(Mandatory=$true)][string]$Kernel,", ScRaw "        [Parameter(Mandatory=$true)][string]$ConsoleFile,", ScRaw "        [Parameter(Mandatory=$true)][string]$StderrFile,", ScRaw "        [int]$MemMB = 3072,", ScRaw "        [int]$GuestPort = 0,", ScRaw "        [int]$HostPort = 0", ScRaw "    )", ScRaw "    if ($script:UseCodexVm) {", ScRaw "        $bin = $script:CodexVmBin", ScRaw "        $vmArgs = @('-kernel', $Kernel, '-mem', \"$MemMB\", '-headless', '-output', $ConsoleFile)", ScRaw "        if ($HostPort -gt 0 -and $HostPort -ne $GuestPort) { $vmArgs += @('-natmap', \"${GuestPort}:$HostPort\") }", ScRaw "    } else {", ScRaw "        $bin = $script:FallbackVmBin", ScRaw "        $ramBytes = [long]$MemMB * 1048576", ScRaw "        $vmArgs = @($script:FallbackAccelFlags)", ScRaw "        if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }", ScRaw "        if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') } else { $vmArgs += @('-cpu', 'host') }", ScRaw "        $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))", ScRaw "        $vmArgs += @('-kernel', $Kernel, '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56', '-display', 'none', '-no-reboot', '-m', \"$MemMB\", '-serial', \"file:$ConsoleFile\")", ScIndent [ScIndent [ScComment "isa-debug-exit is what makes QEMU LEAVE. codex-vm exits when the guest"]], ScIndent [ScIndent [ScComment "halts; QEMU treats a halted CPU as an idle one and sits there, so a"]], ScIndent [ScIndent [ScComment "runner that waits on process exit and then reads the console waits"]], ScIndent [ScIndent [ScComment "forever. Measured: the csharp plug ran its full 1800s timeout without"]], ScIndent [ScIndent [ScComment "it and finishes in seconds with it. The guest already writes the port"]], ScIndent [ScIndent [ScComment "-- that is where codex-vm's debug_exit_code comes from -- so this only"]], ScIndent [ScIndent [ScComment "gives QEMU the device that listens. Note the exit CODE is then"]], ScIndent [ScIndent [ScComment "(value << 1) | 1 and never 0, which is why no caller reads it."]], ScRaw "        $vmArgs += @('-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')", ScRaw "    }", ScRaw "    $startArgs = @{ FilePath = $bin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }", ScIndent [ScComment "-WindowStyle throws on non-Windows editions of pwsh, and Linux is the host"], ScIndent [ScComment "this selection exists for."], ScRaw "    if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }", ScRaw "    return Start-Process @startArgs", ScRaw "}"]
+  s18-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "The plug launch, in ONE place. A plug boots a CDX, prints to a console file"
+    , ScComment "and talks to the host over TCP; that is the same shape for every plug that"
+    , ScComment "does not preload serial, so the host CHOICE belongs here rather than copied"
+    , ScComment "into each runner. Until plugs 1.73 no runner read the choice at all and no"
+    , ScComment "plug could run without codex-vm; eight hardcoded the path and ten read"
+    , ScComment "$script:CodexVmBin while skipping $script:UseCodexVm, which LOOKS like"
+    , ScComment "consulting the config."
+    , ScComment ""
+    , ScComment "The QEMU arm is Start-VmRun's measured boot recipe minus its ctrl/data"
+    , ScComment "sockets: the 0xfe8 loader cell carries guest RAM size, -cpu max is required"
+    , ScComment "under TCG and fatal under WHPX, kernel-irqchip=off is WHPX's and not KVM's,"
+    , ScComment "and the NIC is ne2k_isa at irq 9 / iobase 0x300 with the MAC the plug guests"
+    , ScComment "expect. A plug dials 127.0.0.1 through gateway 10.0.2.2 and QEMU's user"
+    , ScComment "networking carries that unchanged, which was measured rather than reasoned:"
+    , ScComment "the reasoning said SLIRP would drop it and the reasoning was wrong."
+    , ScComment ""
+    , ScComment "THIS DOES NOT SERVE A PLUG THAT PRELOADS ITS INPUT. codex-vm's -input is a"
+    , ScComment "ring buffer filled before boot and QEMU has no such flag; the eleven runners"
+    , ScComment "that pass -input need the live-serial route Invoke-VmCompileFallback takes,"
+    , ScComment "which is a different piece of work."
+    , ScFunctionBlock "Start-PlugVm" s18-start-plug-vm
+    ]
+
+  s18-start-plug-vm : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$Kernel,"
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$ConsoleFile,"
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$StderrFile,"
+    , ScRaw "    [int]$MemMB = 3072,"
+    , ScRaw "    [int]$GuestPort = 0,"
+    , ScRaw "    [int]$HostPort = 0"
+    , ScRaw ")"
+    , ScIf (SeVar "script:UseCodexVm") s18-script-use-codex-vm s18-block
+    , ScRaw "$startArgs = @{ FilePath = $bin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }"
+    , ScComment "-WindowStyle throws on non-Windows editions of pwsh, and Linux is the host"
+    , ScComment "this selection exists for."
+    , ScRaw "if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }"
+    , ScRaw "return Start-Process @startArgs"
+    ]
+
+  s18-script-use-codex-vm : List ShellCmd =
+    [ ScRaw "$bin = $script:CodexVmBin"
+    , ScRaw "$vmArgs = @('-kernel', $Kernel, '-mem', \"$MemMB\", '-headless', '-output', $ConsoleFile)"
+    , ScRaw "if ($HostPort -gt 0 -and $HostPort -ne $GuestPort) { $vmArgs += @('-natmap', \"${GuestPort}:$HostPort\") }"
+    ]
+
+  s18-block : List ShellCmd =
+    [ ScRaw "$bin = $script:FallbackVmBin"
+    , ScRaw "$ramBytes = [long]$MemMB * 1048576"
+    , ScRaw "$vmArgs = @($script:FallbackAccelFlags)"
+    , ScRaw "if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }"
+    , ScRaw "if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') } else { $vmArgs += @('-cpu', 'host') }"
+    , ScRaw "$vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))"
+    , ScRaw "$vmArgs += @('-kernel', $Kernel, '-netdev', 'user,id=net0', '-device', 'ne2k_isa,netdev=net0,irq=9,iobase=0x300,mac=52:54:00:12:34:56', '-display', 'none', '-no-reboot', '-m', \"$MemMB\", '-serial', \"file:$ConsoleFile\")"
+    , ScComment "isa-debug-exit is what makes QEMU LEAVE. codex-vm exits when the guest"
+    , ScComment "halts; QEMU treats a halted CPU as an idle one and sits there, so a"
+    , ScComment "runner that waits on process exit and then reads the console waits"
+    , ScComment "forever. Measured: the csharp plug ran its full 1800s timeout without"
+    , ScComment "it and finishes in seconds with it. The guest already writes the port"
+    , ScComment "-- that is where codex-vm's debug_exit_code comes from -- so this only"
+    , ScComment "gives QEMU the device that listens. Note the exit CODE is then"
+    , ScComment "(value << 1) | 1 and never 0, which is why no caller reads it."
+    , ScRaw "$vmArgs += @('-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')"
+    ]
 
 Section: S19 -- Invoke-PlugVmFileSerial Function
 
-  s19-body : List ShellCmd = [ScBlank,ScComment "The OTHER plug shape: no TCP at all, the whole exchange on ONE serial wire.", ScComment "codex-vm spells it -input (a ring filled before boot) and -output (dumped at", ScComment "exit); eleven runners use it and none could run without codex-vm.", ScComment "", ScComment "QEMU HAS NO -input, and the flag that looks like it is a trap: QEMU 11.1.0", ScComment "does carry -chardev file,input-path= and REFUSES it on Windows with", ScComment "'input-path not supported on Windows'. The route that works on every host is", ScComment "the one Invoke-VmCompileFallback already takes -- a SOCKET chardev on the", ScComment "guest's only serial port, with the host writing the input and reading the", ScComment "answer back off the same wire. server=on,wait=on holds the guest at reset", ScComment "until we have connected, which is what makes a preloaded ring and a live", ScComment "socket interchangeable from the guest's side.", ScComment "", ScComment "The port comes from Get-VmPort, never a literal: a fixed port silently", ScComment "reports another agent's run as yours (L-SHARED).", ScComment "", ScComment "Proven byte-identical against the codex-vm arm on wasm/hello, 69,368 chars", ScComment "sha CB709BEB, after the runner's own HEAP/WD/STACK/PM filter.", ScRaw "function Invoke-PlugVmFileSerial {", ScRaw "    param(", ScRaw "        [Parameter(Mandatory=$true)][string]$Kernel,", ScRaw "        [Parameter(Mandatory=$true)][string]$InputFile,", ScRaw "        [Parameter(Mandatory=$true)][string]$OutputFile,", ScRaw "        [Parameter(Mandatory=$true)][string]$StderrFile,", ScRaw "        [int]$MemMB = 3072,", ScRaw "        [int]$TimeoutSec = 300,", ScRaw "        [string]$DiskFile = ''", ScRaw "    )", ScRaw "    if ($script:UseCodexVm) {", ScRaw "        $vmArgs = @('-kernel', $Kernel, '-input', $InputFile, '-output', $OutputFile, '-mem', \"$MemMB\", '-headless')", ScRaw "        if ($DiskFile) { $vmArgs += @('-disk', $DiskFile) }", ScRaw "        $startArgs = @{ FilePath = $script:CodexVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }", ScRaw "        if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }", ScRaw "        $proc = Start-Process @startArgs", ScRaw "        $null = $proc.WaitForExit($TimeoutSec * 1000)", ScRaw "        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; return $false }", ScRaw "        return $true", ScRaw "    }", ScRaw "    $port = Get-VmPort", ScRaw "    $ramBytes = [long]$MemMB * 1048576", ScRaw "    $vmArgs = @($script:FallbackAccelFlags)", ScRaw "    if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }", ScRaw "    if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') } else { $vmArgs += @('-cpu', 'host') }", ScRaw "    $vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))", ScRaw "    $vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', \"$MemMB\", '-chardev', (Get-VmChardevData -Port $port), '-chardev', (Get-VmChardevCtrl -Port ($port + 1)), '-serial', 'chardev:ch0', '-serial', 'chardev:ch1', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')", ScRaw "    if ($DiskFile) { $vmArgs += @('-drive', \"file=$DiskFile,format=raw,if=ide,index=0\") }", ScRaw "    $startArgs = @{ FilePath = $script:FallbackVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }", ScRaw "    if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }", ScRaw "    $proc = Start-Process @startArgs", ScRaw "    $client = $null", ScRaw "    $deadline = [DateTime]::UtcNow.AddSeconds(30)", ScRaw "    while ([DateTime]::UtcNow -lt $deadline) {", ScRaw "        if ($proc.HasExited) { break }", ScRaw "        try { $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port); break } catch { Start-Sleep -Milliseconds 200 }", ScRaw "    }", ScRaw "    if (-not $client) {", ScRaw "        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }", ScRaw "        [Console]::Error.WriteLine(\"FAIL: could not reach the QEMU serial socket on port $port\")", ScRaw "        return $false", ScRaw "    }", ScIndent [ScComment "COM1 init writes FCR = 0xC7, which clears the 16550 receive FIFO, so a byte"], ScIndent [ScComment "written before it is lost. The guest sends READY on COM2 after COM1 init."], ScRaw "    $ctrl = $null", ScRaw "    while ([DateTime]::UtcNow -lt $deadline -and -not $proc.HasExited) {", ScRaw "        try { $ctrl = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port + 1); break } catch { Start-Sleep -Milliseconds 200 }", ScRaw "    }", ScRaw "    if (-not $ctrl -or -not (Read-VmReady -Conn @{ Ctrl = $ctrl } -TimeoutSec $TimeoutSec)) {", ScRaw "        $client.Close(); if ($ctrl) { $ctrl.Close() }", ScRaw "        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }", ScRaw "        [Console]::Error.WriteLine(\"FAIL: the guest sent no READY on COM2, so its input was not written\")", ScRaw "        return $false", ScRaw "    }", ScRaw "    $ok = $true", ScRaw "    $trapped = $false", ScRaw "    try {", ScRaw "        $stream = $client.GetStream()", ScRaw "        $stream.ReadTimeout = $TimeoutSec * 1000", ScRaw "        $blob = [System.IO.File]::ReadAllBytes($InputFile)", ScRaw "        $stream.Write($blob, 0, $blob.Length)", ScRaw "        $stream.Flush()", ScRaw "        $outMs = [System.IO.MemoryStream]::new(65536)", ScRaw "        $buf = New-Object byte[] 65536", ScIndent [ScIndent [ScComment "The guest closing the wire is the end of the answer. A read timeout is"]], ScIndent [ScIndent [ScComment "NOT, so it is reported rather than written out as a whole result."]], ScIndent [ScIndent [ScComment "A trap dump ends in cli; hlt, which QEMU never leaves, and carries no end"]], ScIndent [ScIndent [ScComment "marker, so the first two quiet seconds after !EXC= end it, as codex-vm's"]], ScIndent [ScIndent [ScComment "exit on the halt would."]], ScRaw "        $carry = ''", ScRaw "        try {", ScRaw "            while ($true) {", ScRaw "                $n = $stream.Read($buf, 0, $buf.Length)", ScRaw "                if ($n -le 0) { break }", ScRaw "                $outMs.Write($buf, 0, $n)", ScRaw "                if (-not $trapped) {", ScRaw "                    $tail = $carry + [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)", ScRaw "                    if ($tail.Contains('!EXC=')) { $trapped = $true; $stream.ReadTimeout = 2000 }", ScRaw "                    $carry = $tail.Substring([Math]::Max(0, $tail.Length - 4))", ScRaw "                }", ScRaw "            }", ScRaw "        } catch [System.IO.IOException] {", ScRaw "            if ($trapped) { [Console]::Error.WriteLine(\"FAIL: the guest trapped; its !EXC dump is the output\") }", ScRaw "            elseif (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine(\"FAIL: the QEMU serial read ended by timeout, so the capture may be short\") }", ScRaw "        }", ScRaw "        [System.IO.File]::WriteAllBytes($OutputFile, $outMs.ToArray())", ScRaw "    } finally {", ScRaw "        $client.Close()", ScRaw "        if ($ctrl) { $ctrl.Close() }", ScRaw "        if (-not $proc.HasExited -and -not $trapped) { $null = $proc.WaitForExit(20000) }", ScRaw "        if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; if (-not $trapped) { $ok = $false } }", ScRaw "    }", ScRaw "    return $ok", ScRaw "}"]
+  s19-body : List ShellCmd =
+    [ ScBlank
+    , ScComment "The OTHER plug shape: no TCP at all, the whole exchange on ONE serial wire."
+    , ScComment "codex-vm spells it -input (a ring filled before boot) and -output (dumped at"
+    , ScComment "exit); eleven runners use it and none could run without codex-vm."
+    , ScComment ""
+    , ScComment "QEMU HAS NO -input, and the flag that looks like it is a trap: QEMU 11.1.0"
+    , ScComment "does carry -chardev file,input-path= and REFUSES it on Windows with"
+    , ScComment "'input-path not supported on Windows'. The route that works on every host is"
+    , ScComment "the one Invoke-VmCompileFallback already takes -- a SOCKET chardev on the"
+    , ScComment "guest's only serial port, with the host writing the input and reading the"
+    , ScComment "answer back off the same wire. server=on,wait=on holds the guest at reset"
+    , ScComment "until we have connected, which is what makes a preloaded ring and a live"
+    , ScComment "socket interchangeable from the guest's side."
+    , ScComment ""
+    , ScComment "The port comes from Get-VmPort, never a literal: a fixed port silently"
+    , ScComment "reports another agent's run as yours (L-SHARED)."
+    , ScComment ""
+    , ScComment "Proven byte-identical against the codex-vm arm on wasm/hello, 69,368 chars"
+    , ScComment "sha CB709BEB, after the runner's own HEAP/WD/STACK/PM filter."
+    , ScFunctionBlock "Invoke-PlugVmFileSerial" s19-invoke-plug-vm-file
+    ]
+
+  s19-invoke-plug-vm-file : List ShellCmd =
+    [ ScRaw "param("
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$Kernel,"
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$InputFile,"
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$OutputFile,"
+    , ScRaw "    [Parameter(Mandatory=$true)][string]$StderrFile,"
+    , ScRaw "    [int]$MemMB = 3072,"
+    , ScRaw "    [int]$TimeoutSec = 300,"
+    , ScRaw "    [string]$DiskFile = ''"
+    , ScRaw ")"
+    , ScIf (SeVar "script:UseCodexVm") s19-script-use-codex-vm []
+    , ScRaw "$port = Get-VmPort"
+    , ScRaw "$ramBytes = [long]$MemMB * 1048576"
+    , ScRaw "$vmArgs = @($script:FallbackAccelFlags)"
+    , ScRaw "if ($script:FallbackAccel -notmatch 'kvm') { $vmArgs += @('-machine', 'kernel-irqchip=off') }"
+    , ScRaw "if ($script:FallbackAccel -notmatch 'whpx') { $vmArgs += @('-cpu', 'max') } else { $vmArgs += @('-cpu', 'host') }"
+    , ScRaw "$vmArgs += @('-device', ('loader,addr=0xfe8,data=0x{0:x},data-len=4' -f $ramBytes))"
+    , ScRaw "$vmArgs += @('-kernel', $Kernel, '-display', 'none', '-no-reboot', '-m', \"$MemMB\", '-chardev', (Get-VmChardevData -Port $port), '-chardev', (Get-VmChardevCtrl -Port ($port + 1)), '-serial', 'chardev:ch0', '-serial', 'chardev:ch1', '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04')"
+    , ScRaw "if ($DiskFile) { $vmArgs += @('-drive', \"file=$DiskFile,format=raw,if=ide,index=0\") }"
+    , ScRaw "$startArgs = @{ FilePath = $script:FallbackVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }"
+    , ScRaw "if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }"
+    , ScRaw "$proc = Start-Process @startArgs"
+    , ScAssign "client" (SeVar "null")
+    , ScRaw "$deadline = [DateTime]::UtcNow.AddSeconds(30)"
+    , ScRaw "while ([DateTime]::UtcNow -lt $deadline) {"
+    , ScIndent s19-date-time-utc-now
+    , ScRaw "}"
+    , ScIf (SeBare (SeNot (SeVar "client"))) s19-if-not-client []
+    , ScComment "COM1 init writes FCR = 0xC7, which clears the 16550 receive FIFO, so a byte"
+    , ScComment "written before it is lost. The guest sends READY on COM2 after COM1 init."
+    , ScAssign "ctrl" (SeVar "null")
+    , ScRaw "while ([DateTime]::UtcNow -lt $deadline -and -not $proc.HasExited) {"
+    , ScIndent s19-date-time-utc-now-2
+    , ScRaw "}"
+    , ScRaw "if (-not $ctrl -or -not (Read-VmReady -Conn @{ Ctrl = $ctrl } -TimeoutSec $TimeoutSec)) {"
+    , ScIndent s19-not-ctrl-read-vm
+    , ScRaw "}"
+    , ScAssign "ok" (SeVar "true")
+    , ScAssign "trapped" (SeVar "false")
+    , ScTry s19-try-body [] s19-try-body-finally
+    , ScReturn (SeVar "ok")
+    ]
+
+  s19-script-use-codex-vm : List ShellCmd =
+    [ ScRaw "$vmArgs = @('-kernel', $Kernel, '-input', $InputFile, '-output', $OutputFile, '-mem', \"$MemMB\", '-headless')"
+    , ScRaw "if ($DiskFile) { $vmArgs += @('-disk', $DiskFile) }"
+    , ScRaw "$startArgs = @{ FilePath = $script:CodexVmBin; ArgumentList = $vmArgs; PassThru = $true; RedirectStandardError = $StderrFile }"
+    , ScRaw "if ($IsWindows) { $startArgs.WindowStyle = 'Hidden' }"
+    , ScRaw "$proc = Start-Process @startArgs"
+    , ScRaw "$null = $proc.WaitForExit($TimeoutSec * 1000)"
+    , ScRaw "if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; return $false }"
+    , ScReturn (SeVar "true")
+    ]
+
+  s19-date-time-utc-now : List ShellCmd =
+    [ ScRaw "if ($proc.HasExited) { break }"
+    , ScRaw "try { $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port); break } catch { Start-Sleep -Milliseconds 200 }"
+    ]
+
+  s19-if-not-client : List ShellCmd =
+    [ ScRaw "if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }"
+    , ScWriteError (SeText "FAIL: could not reach the QEMU serial socket on port $port")
+    , ScReturn (SeVar "false")
+    ]
+
+  s19-date-time-utc-now-2 : List ShellCmd =
+    [ ScRaw "try { $ctrl = [System.Net.Sockets.TcpClient]::new('127.0.0.1', $port + 1); break } catch { Start-Sleep -Milliseconds 200 }"
+    ]
+
+  s19-not-ctrl-read-vm : List ShellCmd =
+    [ ScRaw "$client.Close(); if ($ctrl) { $ctrl.Close() }"
+    , ScRaw "if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }"
+    , ScWriteError (SeText "FAIL: the guest sent no READY on COM2, so its input was not written")
+    , ScReturn (SeVar "false")
+    ]
+
+  s19-try-body : List ShellCmd =
+    [ ScRaw "$stream = $client.GetStream()"
+    , ScRaw "$stream.ReadTimeout = $TimeoutSec * 1000"
+    , ScReadBytes "blob" (SeVar "InputFile")
+    , ScRaw "$stream.Write($blob, 0, $blob.Length)"
+    , ScRaw "$stream.Flush()"
+    , ScRaw "$outMs = [System.IO.MemoryStream]::new(65536)"
+    , ScRaw "$buf = New-Object byte[] 65536"
+    , ScComment "The guest closing the wire is the end of the answer. A read timeout is"
+    , ScComment "NOT, so it is reported rather than written out as a whole result."
+    , ScComment "A trap dump ends in cli; hlt, which QEMU never leaves, and carries no end"
+    , ScComment "marker, so the first two quiet seconds after !EXC= end it, as codex-vm's"
+    , ScComment "exit on the halt would."
+    , ScAssign "carry" (SeLit "")
+    , ScRaw "try {"
+    , ScIndent [ScWhile (SeVar "true") s19-while]
+    , ScRaw "} catch [System.IO.IOException] {"
+    , ScIndent s19-system-io-ioexception
+    , ScRaw "}"
+    , ScRaw "[System.IO.File]::WriteAllBytes($OutputFile, $outMs.ToArray())"
+    ]
+
+  s19-while : List ShellCmd =
+    [ ScRaw "$n = $stream.Read($buf, 0, $buf.Length)"
+    , ScRaw "if ($n -le 0) { break }"
+    , ScRaw "$outMs.Write($buf, 0, $n)"
+    , ScIf (SeBare (SeNot (SeVar "trapped"))) s19-if-not-trapped []
+    ]
+
+  s19-if-not-trapped : List ShellCmd =
+    [ ScRaw "$tail = $carry + [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)"
+    , ScRaw "if ($tail.Contains('!EXC=')) { $trapped = $true; $stream.ReadTimeout = 2000 }"
+    , ScRaw "$carry = $tail.Substring([Math]::Max(0, $tail.Length - 4))"
+    ]
+
+  s19-system-io-ioexception : List ShellCmd =
+    [ ScRaw "if ($trapped) { [Console]::Error.WriteLine(\"FAIL: the guest trapped; its !EXC dump is the output\") }"
+    , ScRaw "elseif (-not $proc.HasExited) { $ok = $false; [Console]::Error.WriteLine(\"FAIL: the QEMU serial read ended by timeout, so the capture may be short\") }"
+    ]
+
+  s19-try-body-finally : List ShellCmd =
+    [ ScRaw "$client.Close()"
+    , ScRaw "if ($ctrl) { $ctrl.Close() }"
+    , ScRaw "if (-not $proc.HasExited -and -not $trapped) { $null = $proc.WaitForExit(20000) }"
+    , ScRaw "if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; if (-not $trapped) { $ok = $false } }"
+    ]
 
 Section: Assembly
 

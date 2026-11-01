@@ -8,8 +8,6 @@ Chapter: BrowserClip
  so an operation the native encoder runs in place (the residual add into x,
  GELU, the causal softmax) goes through a temporary and back.
 
- We say:
-
 Section: Weights
 
   BcWeights = record {
@@ -27,7 +25,11 @@ Section: Weights
  LayerNorm (ClipEncoder's clip-l15-spec).
 
   bc-l15-spec : ClipSpec
-  bc-l15-spec = ClipSpec { cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = False, cs-prefix = "cond_stage_model.transformer.text_model.", cs-part = 1, cs-pad = 49407, cs-skip = 1, cs-final-norm = True }
+  bc-l15-spec =
+    ClipSpec {
+      cs-width = 768, cs-heads = 12, cs-layers = 12, cs-mlp = 3072, cs-erf-gelu = False, cs-open = False, cs-pool = False,
+      cs-prefix = "cond_stage_model.transformer.text_model.", cs-part = 1, cs-pad = 49407, cs-skip = 1, cs-final-norm = True
+    }
 
   bc-find : List Text, List Integer, Text, Integer -> Integer
   bc-find (ns) (hs) (name) (i) =
@@ -71,10 +73,6 @@ Section: Weights
     in if bc-layer-ok y then bc-layers s ns hs (i + 1) (list-push acc y)
     else acc
 
- ns and hs are the uploaded tensors' checkpoint names and handles. Status 0 is
- loaded; -1 a tensor missing. OpenCLIP tensors use the normalized names and
- split Q/K/V buffers supplied by BrowserClipLoad; projection is transposed.
-
   browser-clip-weights : ClipSpec, List Text, List Integer -> BcWeights
   browser-clip-weights (s) (ns) (hs) =
     let p = s.cs-prefix
@@ -89,8 +87,6 @@ Section: Weights
     in BcWeights { bc-spec = s, bc-status = status, bc-tok = tok, bc-pos = pos, bc-layers = ys, bc-final-g = fg, bc-final-b = fb, bc-proj = proj }
 
 Section: Launches
-
- Each answers 0, or -4 when a launch was refused, as ClipGraph's steps do.
 
   bc-rows : Text, Text, Integer, List GpuParam -> Integer
   bc-rows (code) (name) (rows) (ps) = if gpu-launch code name (GpuGrid { gx = rows, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }) ps < 0 then 0 - 4 else 0
@@ -125,7 +121,8 @@ Section: Launches
     let zb = if b == 0 then gpu-buf-alloc (n * 4) else 0
     in let bias = if b == 0 then zb else b
     in let g = GpuGrid { gx = ((m + 63) / 64) * ((n + 63) / 64), gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
-    in let r = if bias == 0 then 0 - 3 else if gpu-launch code "bk_linear_h_main" g [gpu-arg-buf x 0, gpu-arg-buf w 0, gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 m, gpu-arg-u32 n, gpu-arg-u32 k] < 0 then 0 - 4 else 0
+    in let r = if bias == 0 then 0 - 3 else if gpu-launch code "bk_linear_h_main" g [gpu-arg-buf x 0, gpu-arg-buf w 0,
+      gpu-arg-buf bias 0, gpu-arg-buf y 0, gpu-arg-u32 m, gpu-arg-u32 n, gpu-arg-u32 k] < 0 then 0 - 4 else 0
     in let f = if zb == 0 then True else gpu-buf-free zb
     in r
 
@@ -163,4 +160,26 @@ Section: Launches
     in [t * d * 4, t * d * 4, t * f * 4, t * d * 4, t * d * 4, t * d * 4, s.cs-heads * t * t * 4, t * d * 4, t * d * 4, t * f * 4, t * f * 4, t * 16, t * d * 4]
 
   browser-clip-ops : Text -> ClipOps BcWeights
-  browser-clip-ops (code) = ClipOps { norm = \w x g b d rows -> bc-norm code w x g b d rows, cast = \src dst n -> bc-copy code src 0 dst 0 n, linear = \x w b y m n k -> bc-linear code x w b y m n k, add = \a b out n -> bc-add code a b out n, attn-scores = \q k s heads sq sk dh scale -> bc-rows code "bk_attn_scores_main" (heads * ((sq + 63) / 64) * ((sk + 63) / 64)) [gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf s 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 dh, gpu-arg-f32 scale, gpu-arg-u32 (heads * sq * sk)], softmax-causal = \s cols sq rows -> bc-softmax-causal code s cols sq rows, attn-values = \s v o heads sq sk dh -> bc-rows code "bk_attn_values_main" (heads * ((sq + 63) / 64) * ((dh + 63) / 64)) [gpu-arg-buf s 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 dh, gpu-arg-u32 (sq * heads * dh)], gelu = \erf x n -> bc-gelu code erf x n, cast-at = \src off dst n -> bc-copy code src off dst 0 n, copy-row = \src off bytes dst -> bc-copy code src off dst 0 (bytes / 4) >= 0, alloc = gpu-buf-alloc, free = gpu-buf-free, embed = \cw x ids r -> bc-embed code cw x ids r, zero-fill = \h bytes -> (if gpu-buf-write-words h 0 (bc-zeros (bytes / 4) []) then 0 else 0 - 2), work-sizes = bc-work-sizes, spec = \cw -> cw.bc-spec, status = \cw -> cw.bc-status, pos = \cw -> cw.bc-pos, layers = \cw -> cw.bc-layers, final-g = \cw -> cw.bc-final-g, final-b = \cw -> cw.bc-final-b, proj = \cw -> cw.bc-proj }
+  browser-clip-ops (code) =
+    ClipOps {
+      norm = \w x g b d rows -> bc-norm code w x g b d rows,
+      cast = \src dst n -> bc-copy code src 0 dst 0 n,
+      linear = \x w b y m n k -> bc-linear code x w b y m n k,
+      add = \a b out n -> bc-add code a b out n,
+      attn-scores = \q k s heads sq sk dh scale -> bc-rows code "bk_attn_scores_main" (heads * ((sq + 63) / 64) * ((sk + 63) / 64)) [
+        gpu-arg-buf q 0, gpu-arg-buf k 0, gpu-arg-buf s 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 dh,
+        gpu-arg-f32 scale, gpu-arg-u32 (heads * sq * sk)],
+      softmax-causal = \s cols sq rows -> bc-softmax-causal code s cols sq rows,
+      attn-values = \s v o heads sq sk dh -> bc-rows code "bk_attn_values_main" (heads * ((sq + 63) / 64) * ((dh + 63) / 64)) [
+        gpu-arg-buf s 0, gpu-arg-buf v 0, gpu-arg-buf o 0, gpu-arg-u32 heads, gpu-arg-u32 sq, gpu-arg-u32 sk, gpu-arg-u32 dh,
+        gpu-arg-u32 (sq * heads * dh)],
+      gelu = \erf x n -> bc-gelu code erf x n,
+      cast-at = \src off dst n -> bc-copy code src off dst 0 n,
+      copy-row = \src off bytes dst -> bc-copy code src off dst 0 (bytes / 4) >= 0,
+      alloc = gpu-buf-alloc, free = gpu-buf-free,
+      embed = \cw x ids r -> bc-embed code cw x ids r,
+      zero-fill = \h bytes -> (if gpu-buf-write-words h 0 (bc-zeros (bytes / 4) []) then 0 else 0 - 2),
+      work-sizes = bc-work-sizes,
+      spec = \cw -> cw.bc-spec, status = \cw -> cw.bc-status, pos = \cw -> cw.bc-pos, layers = \cw -> cw.bc-layers,
+      final-g = \cw -> cw.bc-final-g, final-b = \cw -> cw.bc-final-b, proj = \cw -> cw.bc-proj
+    }

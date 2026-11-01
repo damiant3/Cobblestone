@@ -1,18 +1,7 @@
 # Works -- open capabilities
 
-## SdExplorer JSON strings
-
-Source-inspected 2026-10-01 at main 33668; separate from WebRoute's shared
-helper repair.
-
-| Source | Gap |
-|---|---|
-| `SdExplorer.codex:18` | `respond-error` quotes arbitrary message text without escaping. Caller reachability remains ungraded. |
-| `SdExplorer.codex:110-115` | The local `json-escape` handles quote/backslash but leaves NUL/LF raw. All local `jstr` consumers inherit the gap. |
-| `SdExplorer.codex:344` | `cache_url` quotes query-derived prompt hash and filename raw. Filename sanitization admits punctuation between ASCII A and z, including backslash. |
-
-App-domain backlog. There is no platform-wide register any more:
-`docs/PM/BACKLOG.md` was deleted 2026-07-23 and must not be recreated.
+App-domain backlog. There is no platform-wide register:
+`docs/PM/BACKLOG.md` must not be recreated.
 `docs/PM/CurrentPlan.md` carries the shape and the priority order for
 the platform. Anything that is this application's own behaviour lives
 here.
@@ -43,37 +32,27 @@ The remaining acceptance is a coordinated sitting with a newly built image:
 acquire the LAN's DHCP lease, display the actual binding, and load `/` from
 another machine during Aquarium animation. Confirm Start/Stop/Restart on
 the physical link and locate the request with the log's filters and search.
-The physical image `160653BC` failed on 2026-10-01 with PID -1 and
-"Service process unavailable", before DHCP. Main 33898 excludes the UEFI
-root heap from the fixed child-process pool; a controlled OVMF placement
-pair reproduces and repairs the spawn failure. ASUS placement remains
-unmeasured. Flashed `07A837D1` then failed input acceptance: stationary
-cursor on two boots, keyboard working through login, desktop keyboard
-delivery unmeasured. Main 33967 prevents idle-screen USB handback after
-decoded keyboard input; the ASUS mouse cause remains unconfirmed.
-Image `D5FD7CB6` also failed on metal: Damian reported no desktop mouse,
-no keyboard commands and no reset after three Ctrl+Alt+Delete presses.
-The earlier `160653BC` had working mouse input; its desktop CDX is identical
-to `07A837D1`, isolating that pair's change to the main 33898 PE stub.
-The active candidate uses `160653BC` desktop/input source with a separately
-owned child/FX pool and on-screen heap/DMA/PID facts. It excludes main 33967.
-Physical cause and acceptance remain unproved. See
+The candidate is `F0863CAF`: `160653BC` desktop/input source with an owned
+child/FX pool and on-screen heap/DMA/PID facts, not yet flashed. Images
+`160653BC`, `07A837D1` and `D5FD7CB6` failed on metal (the service spawn,
+then input); the physical cause and acceptance remain unproved. Every image,
+its hash and its report are in
 [the sitting record](../../docs/Hardware/HardwareSitting.md#works-81-owned-pool-diagnostic-candidate).
 
-The implementation contract is [Web Server administration](works-desk-contract.md#web-server-administration).
-Main 33787 contains the controls, DHCP binding and structured log. Its
-2026-10-01 proof covers 88 focused test subjects, six native/OVMF lifecycle
+The implementation contract is [Web Server administration](works-desk-contract.md#web-server-administration):
+the controls, the DHCP binding and the structured log. The 2026-10-01 proof
+(main 33787) covers 88 focused test subjects, six native/OVMF lifecycle
 and refusal/control cases, and OVMF GUI rehearsal at 1920x1080 with Aquarium
 and 78 HTTP requests. The emulator proof does not establish physical LAN
 acceptance. Detailed evidence and limits are in the implementation CL.
 
 ## WORKS-80: physical confirmation of the 3D View's absent-GPU refusal
 
-Main 33438 retains `desk-gpu-present` separately from the current rendering
+The desk keeps `desk-gpu-present` separately from the current rendering
 mode. When the boot probe found no host GPU, `GopScene` refuses `G`, keeps
 software work intact and shows "GPU unavailable: boot found no host GPU.
 Using software." The reason survives software repaint. The GPU itself
-remains the GSP campaign; this change supplies no hardware renderer.
+is the GSP campaign; the desk has no hardware renderer.
 
 `apps/works/proofs/scene-gpu-refusal.ps1 -Kernel seed/Codex.cdx` bundles the
 actual desk probe forced to zero and runs it in codex-vm. Five checks passed:
@@ -90,19 +69,16 @@ the next desk sitting rather than treating the VM result as metal proof.
 ## WORKS-79: System Info repaints without end on metal
 
 Sitting 18 (ASUS, 2026-09-30, Damian): opening Settings > System Info
-(`desk-focus-mon`) starts what looks like an endless repaint. The bed count
-(blu, 2026-09-30, 1600x900, a `-hwwatch-log` on the top-bar pixel 800,10 over
-two run lengths) was one FULL-DESK repaint per RTC second: `desk-mon-step`'s
-tick called `desk-mon-paint`, the wall fill and every window, 4 writes a second
-to that pixel with the pane open and 0 idle. At near a second per desk paint on
-metal (WORKS-78) that is a desk that never stops painting. The tick now paints
-the Monitor window and whatever is over it (`desk-wnd-paint-from`, as the Clock
-does): the top-bar pixel reads 0 writes a second and a pixel inside the window
-3, and a 10-second frame pair differs only in the clock row, the `it/s`
-readout and the taskbar clock. Open: a specific sustained System Info
-observation on metal. Damian's 2026-10-01 general GUI/repaint acceptance of
-`90B8CEFA` closes WORKS-78 but does not name System Info or an observation
-duration; `HardwareSitting.md` holds the report.
+(`desk-focus-mon`) starts what looks like an endless repaint. A full-desk
+repaint per RTC second, at near a second per desk paint on metal, is a desk
+that never stops painting, therefore `desk-mon-step`'s tick paints only the
+Monitor window and whatever is over it (`desk-wnd-paint-from`, as the Clock
+does). Bed reading (1600x900, `-hwwatch-log`): the top-bar pixel 800,10 takes
+0 writes a second and a pixel inside the window 3, and a 10-second frame pair
+differs only in the clock row, the `it/s` readout and the taskbar clock.
+Open: a sustained System Info observation on metal. Damian's 2026-10-01 GUI
+and repaint acceptance of `90B8CEFA` names neither System Info nor a duration
+(`HardwareSitting.md`).
 
 ## WORKS-68: a light pane's open state is freed by the next root rebuild
 
@@ -113,16 +89,13 @@ dismiss, a hide, a pill restore) while `desk-loop` still carries it; with no
 marks at all, any other window's close restores to the base mark and takes it
 too.
 
-**Sheets is FIXED 2026-09-23 (val)**: `desk-sheet-open` evicts the Browser and
-pushes its own mark, as `desk-edit-open` does. Measured at 1600x900 on seed
-1E936E74D45C317D, each arm one boot on head before and after: Sheets then the
-menu opened and dismissed faulted (`!EXC=0e` in `gsh-tree` under
-`desk-sheet-step`) and now renders the sheet and hit-tests a click; Sheets,
-then the Clock opened and closed over it, drew an EMPTY sheet body and now
-draws the sheet; close and reopen still returns to the desktop and back.
+**Sheets pushes its own mark**: `desk-sheet-open` evicts the Browser and
+pushes its own mark, as `desk-edit-open` does. Without the mark, the menu
+opened and dismissed over Sheets faults (`!EXC=0e` in `gsh-tree` under
+`desk-sheet-step`), and the Clock opened and closed over Sheets leaves an EMPTY
+sheet body (1600x900, seed 1E936E74D45C317D).
 
-**`desk-rev-open` has the same shape and NO ARM CAN REACH IT** (2026-09-23,
-val). It builds `grv-load`'s data above the root with no mark, but nothing
+**`desk-rev-open` has the same shape and NO ARM CAN REACH IT.** It builds `grv-load`'s data above the root with no mark, but nothing
 rebuilds the root while Review is live: `desk-root-reclaim` runs only from
 the three close paths, `desk-menu-dismiss`, `desk-app-hide`,
 `desk-pill-restore` and the Edit and 3D re-entries; `desk-rev-step` answers
@@ -203,12 +176,12 @@ running, and `usb-walk-stop` (`-xhci-two`, a disk on `ctl0`) must leave `ctl1`
 never opened.
 
 **What is still unobservable, and it is the reason to keep this row.** The
-keyboard and camera walks have no such arm. A keyboard on `ctl0` stops the old
-walk and the new one at the same place, and codex-vm has no flag that removes
-every keyboard (`-xhci-no-root-kbd` leaves the hub one), so no bed reaches
-`kbd-hosts`' second ordinal. Until a device can sit behind `ctl1`, or a flag
-unplugs every keyboard, an arm asserting "the keyboard was found" agrees with
-both the old code and the new one (L-VACUOUS).
+keyboard and camera walks have no such arm. A keyboard on `ctl0` stops a
+first-controller walk and the found-device walk at the same place, and codex-vm
+has no flag that removes every keyboard (`-xhci-no-root-kbd` leaves the hub
+one), therefore no bed reaches `kbd-hosts`' second ordinal. Until a device can
+sit behind `ctl1`, or a flag unplugs every keyboard, an arm asserting "the
+keyboard was found" agrees with both walks (L-VACUOUS).
 
 ## Standing check: every chapter must compile on its own cites
 
@@ -226,21 +199,23 @@ and the glob build cannot see it. The gate does NOT run it.
 
 **Read the coverage line, not the verdict.** A unit that does not compile is a
 chapter that was not judged, and a run can have failures above a clean verdict.
-Since 2026-08-21 the script names them and says INCOMPLETE rather than OK.
+The script names them and says INCOMPLETE rather than OK.
 
 | # | Capability | State of the gap |
 |---|---|---|
-
-**THE FLUSH IS IN (blu, 2026-09-07), so what remains is the flight.** `scsi-op-sync-cache` (0x35) with LBA 0 and a block count of 0, stamped like TEST UNIT READY with a 10-byte block and IMMED left clear so the device cannot answer before committing; `msc-sync-cache`, then `usb-sync-cache` and `disk-sync-cache` on the dispatch layer. Those two answer THREE states and not a Boolean, because a medium we cannot flush must not read identically to one we did (L-BAILVALUE): 1 flushed, 0 no flush primitive for this medium, -1 issued and refused. `diag-bank-write-text` and the note writer both call it BETWEEN `gfat-write-file` and the `gfat-file-size` readback, which is the ordering the whole finding turns on: the readback is only a statement about flash if the commit precedes it. A -1 fails the bank rather than reporting a success nobody can trust; a 0 is neither a failure nor a certification. **The separator is now a FLIGHT and it is Damian's**: re-fly with the flush in, and if the bank survives the cache reading is the cause, while if it still dies at the same stage the fault is ours. **THE BED CAN NOW ANSWER PART OF IT, so "no bed can answer it, because codex-vm's BOT model commits in one step" no longer holds** (reek, 2026-09-07, plugs 2.46, main 23233): codex-vm accepts 0x35 and `-usb-writeback` makes a BOT write durable only at that commit, dropping what is uncommitted when the machine stops. Measured by hand on that flag: with the flush, 16 commits and `DIAG.TXT` whole; on a kernel six minutes older than the flush, 0 commits, 4,618,240 bytes pending, **`DIAG.TXT` ABSENT from the image while the guest still reported `bank=ok medium=usb`**. That is the mechanism demonstrated and shown to be invisible from inside the guest. It is NOT the cause of sittings 13 and 14, whose media died mid-run rather than at power-off (blu's precision, L-MECHANISM), and the flight remains the separator for that.
-
-**THE `-usb-writeback` PAIR UNDER `diag-arm` DOES NOT SEPARATE YET, and the cause is the ABLATION, not the flag or the harness** (reek, 2026-09-07, from blu's shelf 23298, verified against blu's own census files rather than reasoned). Both arms: 186 `USB WRITEBACK: cached` lines and 186 `BOT-CENSUS: write` lines, so the flag reached the BOT write path and the medium is `usb` in both. Commits: `bank-writeback` 16, matching the hand run exactly; `bank-writeback-noflush` **1, not 0** -- `USB WRITEBACK: commit n=1 off=1049088 len=781824 pending-was=109568`. One commit is enough to leave `DIAG.TXT` on the medium, which is why both arms come back with the file present. **Two theories are refuted by that count.** The kill theory is wrong: `diag-arm` killing codex-vm at END cannot skip the drop, because the drop is the ABSENCE of `ide_flush` and uncommitted bytes never reach the image at all. And the summary line being absent from the console is BY DESIGN, not a symptom: the instrument is the per-write census lines, `fflush`ed one at a time, and `Invoke-Vm` sends the census to a FILE, never to stderr. **What is left for the next blu** is blu's own diagnosis: the ablation cell is set only after the ESP cfg is read and an unset cell reads as flush-wanted, so every bank write before the cfg is parsed still commits; carrying `flush off` in the STUB RING via `stdinCfg`, which is live before the first bank, is the fix. |
-| WORKS-61 | **The identity is an ESP file and is absent from the fact store. PRICED 2026-09-07 AND IT BUYS NOTHING YET: do not take it until a CONSUMER exists.** | Priced by measurement rather than argument, and the answer is that the missing piece is not a representation. **Nothing in the desk consumes the identity at all**: no chapter under `apps/works` outside `GopWizard` references `Keypair` or `sign-content`, none loads a keypair from the stored identity, and `GopReview` and `GopEdit` (the two panes that write signed-looking things) reference neither. The only readers are `GopWizard` itself, for the unlock flow, and `GopBoot`'s `key-zero` for locking. So promoting the identity to a fact would add a second representation with no reader, which is the exact shape that made WORKS-46 closeable: a path nothing calls (L-UNCALLED). The prerequisite is something that needs to SIGN with the identity, and when that lands it will say what shape it wants. Until then this row is a note, not work. The identity IS taken and IS persisted. `GopWizard`'s `wizard-run` runs the full ceremony (passphrase, entropy, Ed25519 keygen) and `wz-save-identity` writes salt, IV, public key, the wrapped private key and the vouch to `IDENTITY.DAT` through `gfat-mount-esp`, on the desk-selected medium, with `wz-identity-present` and `wz-load-identity` reading it back. What `GopBoot.codex:389` means by "Persisting your identity here arrives with B3.5" is only that the identity is not a FACT in the store shown on that Storage screen, so nothing in the trust lattice or the repository protocol can reference it as one. The `sysdb-kind-identity` record in `IdentityManager` is a written format for exactly that, stranded on the kernel road layering forbids the desk to reach; a fact write would go beside `gfs-write-and-checkpoint`, the way `GopReview` persists a verdict. Found 2026-09-07 (red) auditing WORKS-46. B3.5 is named in the source and registered nowhere else. |
+| WORKS-82 | **An in-box sweep grades a sample by its output regardless of the sidecar's line endings** | `vm-grade-run` (`VmSweep.codex`) passes the run when `evaluate-expected` (`SweepHarness.codex`) finds the sidecar text `==` the guest's serial text. `classify-sample` takes the sidecar as `read-text` returns it, with no CR handling, and the depot's `.expected` files are CRLF while serial output is LF. Unmeasured: whether the bytes `read-text` returns from the image carry the CR. If they do, every `ExpectedOutput` sample of an in-box sweep reads `FailOutput`. `codex/test/apps/vm-sweep` grades only LF-only inputs. |
+| WORKS-62 | **A diag bank write survives the medium's write-back cache, and the bed's flush pair separates** | Each bank write (`diag-bank-write-text` and the note writer) issues SYNCHRONIZE CACHE (0x35, LBA 0, block count 0, IMMED clear; `msc-sync-cache`, `usb-sync-cache`, `disk-sync-cache`) between `gfat-write-file` and the `gfat-file-size` readback, therefore the readback is a statement about flash. The flush answers three states (L-BAILVALUE): 1 flushed, 0 no flush primitive for this medium (neither a failure nor a certification), -1 issued and refused, which fails the bank. **The separator for sittings 13 and 14 is a flight, and the flight is Damian's** (`docs/Designs/Active/OS/DiagnosticStick.md`, the FLUSH arm): a bank that survives the flush image establishes the write-back-cache reading, and a bank that dies at the same stage puts the fault in our code. Those media died mid-run, not at power-off, therefore the bed's power-off drop below is a mechanism and not their cause (L-MECHANISM). **The bed answers its half**: under `-usb-writeback` (`OperatorsManual.md`) codex-vm makes a BOT write durable only at a 0x35 commit, and the `diag-arm` pair separates (2026-10-31, image sha256 CC4F28F8): `bank-writeback` keeps `DIAG.TXT` through power-off, and `bank-writeback-noflush` (`flush off` on the stub ring, so `dg-open`'s first write is ablated too) loses it while the guest still says `bank=ok`. The per-write census lines (`USB WRITEBACK:`, `BOT-CENSUS: write`) go to the file `Invoke-Vm` names, not to stderr. |
+| WORKS-61 | **The identity is an ESP file and is absent from the fact store. Do not take it until a CONSUMER exists.** | The missing piece is not a representation. **Nothing in the desk consumes the identity at all**: no chapter under `apps/works` outside `GopWizard` references `Keypair` or `sign-content`, none loads a keypair from the stored identity, and `GopReview` and `GopEdit` (the two panes that write signed-looking things) reference neither. The only readers are `GopWizard` itself, for the unlock flow, and `GopBoot`'s `key-zero` for locking. So promoting the identity to a fact would add a second representation with no reader: a path nothing calls (L-UNCALLED). The prerequisite is something that needs to SIGN with the identity, and when that lands it will say what shape it wants. Until then this row is a note, not work. The identity IS taken and IS persisted. `GopWizard`'s `wizard-run` runs the full ceremony (passphrase, entropy, Ed25519 keygen) and `wz-save-identity` writes salt, IV, public key, the wrapped private key and the vouch to `IDENTITY.DAT` through `gfat-mount-esp`, on the desk-selected medium, with `wz-identity-present` and `wz-load-identity` reading it back. What `GopBoot.codex:389` means by "Persisting your identity here arrives with B3.5" is only that the identity is not a FACT in the store shown on that Storage screen, so nothing in the trust lattice or the repository protocol can reference it as one. The `sysdb-kind-identity` record in `IdentityManager` is a written format for exactly that, stranded on the kernel road layering forbids the desk to reach; a fact write would go beside `gfs-write-and-checkpoint`, the way `GopReview` persists a verdict. B3.5 is named in the source and registered nowhere else. |
 | WORKS-24 | **The Clock's RTC write works on metal; no bed can grade it** | The Clock accessory sets the time by writing the MC146818 inside a Status-B SET window. On the ASUS the diag ladder's `rtcw` stage (`build/boot/diag/DiagRtcW.codex`) read `accepted` (sitting 16, 2026-09-25, `HardwareSitting.md`): the seconds register took a write thirty away from its reading and read it back. `tools/codex-vm.c` drops every CMOS write, so the bed reads `ignored` and a regression in the write is visible only on metal; `codex/test/apps/clock-encode-test` grades the encoding in the bed. |
 | WORKS-76 | **VMX entry hangs on the ASUS, so the desk's `compile <path>` launch cannot run there** | The launch (`vm-compile-cdx` and below; `docs/Designs/Active/OS/DeskBuildLoop.md`) needs VMXON and VMLAUNCH. On the ASUS, with `vmx=on hypervisor=n`, the diag ladder's `vmx` stage hung before its first note: its row read `running` on the glass and `DIAG.TXT` holds no `vmx` line (sitting 16, 2026-09-25, `HardwareSitting.md`). The stage notes only when the guest run returns, and `vm-device-loop` counts exits only, so a guest that never exits is bounded by the VMX-preemption timer alone: `vmcs-setup-controls` arms the VMX-preemption timer at its maximum count when IA32_VMX_PINBASED_CTLS allows it, so such a guest returns `crashed ... reason=preemption-timer` (exit 52), and the row head carries `ptimer=on|off`. **The bed proves** the control-word decision and the reason text (`codex/test/apps/vmx-preempt-control`, synthetic MSRs) and the `vmx-off` and `vmx-noguest` rows; it cannot reach VMX at all: codex-vm reads IA32_FEATURE_CONTROL as 1, and WHP nested virtualization fails `WHvSetupPartition` with 0xC0350005 (fester 2026-09-24). **Sitting 18** (2026-09-30, `HardwareSitting.md` row `diag18-returned-20260930`): the ASUS offers the timer (`vmx-hold ok guest=94046 fc=5 ptimer=on`, against the bed's `fc=1 ptimer=off`), and the launch still wedged at `vmx running` and banked no row. With the timer armed, a guest that never exits returns `preemption-timer`; the sitting row does not record how long the glass was watched, so a wedge before or inside VMLAUNCH is the reading only if `running` held past about a minute, and the next sitting's card must ask for that duration. **Not done:** external-interrupt exiting. It needs the VMM to end each interrupt itself (`acknowledge interrupt on exit`, then an EOI), which is port I/O and so a `Device.Port` effect through `vm-device-loop` and every caller; and after any exit the host runs with IF clear and its GDTR and IDTR bases at 0, because `vmcs-setup-host-state` writes neither. Without it a host PIT interrupt taken inside the guest is ended by the guest's `out 0x20`, which the VMM swallows as an unowned port, so the host PIC stays in service after the run. |
-| WORKS-16 | **An editor crash that went away, with no proof of what fixed it** | 2026-08-11: Damian opened `SOURCE.SRC` in the Edit pane on the interactive VM, saw the first screen render, and the VM died. **It does not happen any more** -- he opened the whole file and navigated it on the same path after main 14685. Four headless beds never reproduced it at any point (28 keys over 70 s, 50 keys at 300 ms, an open/close/reopen cycle, 120 scripted mouse samples across the list), so **the two defects fixed in 14683 are a plausible cause and not a demonstrated one.** The plausible half: he picked the file with the pointer, and until 14683 every hovered-row change ran a two-function cycle that both left stack frames behind and skipped its `__heap-restore`. That is the one path his run exercised heavily and the bed did not, because the bed's mouse never moved until the last arm. **New evidence 2026-08-11, and it argues against the fix explaining it.** Three headless runs that day ended with codex-vm exiting early, no frame captured, **and no `!EXC=` line, no "Guest halted", no watchpoint** -- the stderr simply stops mid-word. That is not the shape of a guest fault; it is the shape of the HOST process dying, which is also what "crashed the whole vm" describes. Other runs with the same command line and the same guest completed normally, so it is intermittent. Nobody has looked at whether codex-vm can fault on the host side under this load. **Left open deliberately.** If it stays gone through real use, delete this row; if it returns, the guest's own `!EXC=` line is the thing to capture (`build/desk.ps1 -Wait -Force -Disk seed/Codex.img` prints it to the launching console) rather than another headless arm. |
-| WORKS-19 | **A keystroke at the top of a large file costs 114 ms in the desk editor on metal, past a 60 ms keystroke interval** | The buffer is flat, so an insert at offset 0 shifts the whole tail and reindexes every line. Sitting 18 (ASUS, 2026-09-30, `HardwareSitting.md` row `diag18-returned-20260930`): at the top of the 72,922-line `SOURCE.SRC` the ladder's `edit` stage read `shift-us=14652 reindex-us=16702` (31.4 ms, the buffer alone), and the desk editor's last keystroke read `key 114248 us`. About 83 ms of the keystroke is therefore outside the buffer and unattributed; WORKS-78's full repaint is the candidate, unmeasured. What is missing: a gap buffer, which removes the shift and the reindex, and a split of the 83 ms before any claim that the gap buffer alone brings a keystroke under 60 ms. Probe: `docs/Probes/edit-keystroke-cost.codex`. |
-| WORKS-6 | **The boot path verifies under Secure Boot** | Re-homed from BootRoadmap.md (B5.1) when that design moved to Done 2026-08-05: the shipped stub boots with Secure Boot off; signing the PE for Secure Boot has no design and no owner. It blocks no current flight. |
+| WORKS-16 | **An Edit-pane crash on the interactive VM has no demonstrated cause** | Damian, 2026-08-11: opening `SOURCE.SRC` in the Edit pane rendered the first screen and the VM died; the same path has not crashed since (main 14685 onward). Four headless beds never reproduced the crash (28 keys over 70 s, 50 keys at 300 ms, an open/close/reopen cycle, 120 scripted mouse samples across the list). Three headless runs the same day ended with codex-vm exiting early with no frame, **no `!EXC=` line, no "Guest halted" and no watchpoint**, the stderr stopping mid-word: the shape of the HOST process dying, which is also what "crashed the whole vm" describes, and intermittent under the same command line. Nobody has looked at whether codex-vm can fault on the host side under this load. If the crash returns, capture the guest's own `!EXC=` line (`build/desk.ps1 -Wait -Force -Disk seed/Codex.img` prints it to the launching console) rather than another headless arm; if it stays gone through real use, delete this row. |
+| WORKS-19 | **A keystroke at the top of a large file costs 114 ms in the desk editor on metal, past a 60 ms keystroke interval** | The buffer is flat, so an insert at offset 0 shifts the whole tail and reindexes every line. Sitting 18 (ASUS, 2026-09-30, `HardwareSitting.md` row `diag18-returned-20260930`): at the top of the 72,922-line `SOURCE.SRC` the ladder's `edit` stage read `shift-us=14652 reindex-us=16702` (31.4 ms, the buffer alone), and the desk editor's last keystroke read `key 114248 us`. About 83 ms of the keystroke is therefore outside the buffer and unattributed; a full repaint is the candidate, unmeasured. What is missing: a gap buffer, which removes the shift and the reindex, and a split of the 83 ms before any claim that the gap buffer alone brings a keystroke under 60 ms. Probe: `docs/Probes/edit-keystroke-cost.codex`. |
+| WORKS-6 | **The boot path verifies under Secure Boot** | The shipped stub boots with Secure Boot off; signing the PE for Secure Boot has no design and no owner. It blocks no current flight. |
 | WORKS-7 | **DevDebugger hardware watchpoints and VGA split-screen** | The x86-64 bare-metal #DB (vector 1) handler records a hit and resumes: count at 36360, DR6 at 36368, RIP at 36376 (`ArchitectsSketchbook.md`). `Dev chapter HwWatch` arms debug register 0 as an eight-byte write watch and reads the cells, and the debugger's "Watch Here" arms it beside the software watch, "Check Watches" reports the write count and the last writing RIP, "Clear Watches" disarms it. `codex/test/apps/cpu-debug-watch` and `hw-watch` are the arms; both measure data watchpoints only, so the RF path an execution breakpoint needs is unmeasured, and one hardware slot of the four is used. **Open:** the split-screen half waits for a spec: the console now draws on the GOP grid, not VGA text, and nothing says what the split holds. |
 | WORKS-5 | **Serial REPL is reachable from the boot menu, and the Dev Console indexes the stick's tree** | **The Dev Console row works** (2026-09-24, OVMF under `test-ovmf.ps1 -UsbKbd -NoPs2`, seed 0291C387): GopBoot's `menu-dev` turns on `UefiConsole`'s GOP grid (`ugc-block`, 0x1E000: output, a 32-slot key ring, `ugc-yield`), spawns `enter-dev-console` at 8 MB, and feeds the USB keyboard into the ring while the console's idle pass yields; Down moves the console's selection, and Boot Cobblestone returns to the menu. Arms: `codex/test/apps/uefi-gop-console`, `-keys`, `-keys-proc`, `-keys-yield`. The telemetry at `ugc-block` 36 to 56 (pid, spawn status, child progress, pump passes, scancodes, console yields) reads with `-MonCmds "xp/16wx 0x1E000"`. The walk that reaches the console is one run, because the bed does not keep the identity the wizard writes: keys 28,28,28, the passphrase twice (20,18,31,20,28 each), entropy 30,48,46,32,28, twenty 57s over the keygen, 28 x4, six 57s, 28, 80, 28 at `-KeyDelayMs 1500 -Seconds 25`. **What remains.** Serial REPL means chaining from the payload into the REPL the compiler serves (the seed on the stick, built `-Repl`): design `docs/Designs/Active/OS/SerialRepl.md`. The chain itself is built (`apps/works/CdxChain.codex`, arm `codex/test/apps/cdx-chain`: refuses a flipped byte and an unsigned image, then hands codex-vm to a second CDX whose line prints); the GopBoot row, the xHCI quiesce, the cell-4072 stack top and the OVMF arm are open. **PARKED** (Damian, 2026-09-25): the REPL serves COM1 at 0x3F8, which the ASUS and most laptops do not have. Unpark trigger: a target machine with a UART, or a USB serial console. The Dev Console indexes the stick (2026-09-24, same OVMF walk plus Enter twice): GopBoot's child calls `enter-dev-console-stick`, which mounts the ESP and builds `StickSource` over `SOURCE.SRC` (serial: "Indexed 6610 definitions from SOURCE.SRC (66445 lines)"; the 6,610 are every indexed entry, 88 chapters + 632 sections + 5,890 signatures, and the signatures are 5,014 functions and 876 values, census of the 2026-09-07 build), and Browse Source, the viewer, search and `sym` read it, lines on demand. UefiBoot keeps the built-in list. Arms: `codex/test/apps/stick-source-index` (the real 3.1 MB file in an 8 MB spawned slot, a fragmented chain) and `dev-console-stick` (browse, viewer, search and `sym` through the console's dispatch). |
-| WORKS-2 | **A GGUF this app WRITES is readable by llama.cpp** | The read direction is closed and measured (main 10603): `build/gguf-foreign-test.ps1` parses four real llama.cpp models, up to a 3.2 GB gemma3 with a 15.7 MB metadata block, agreeing with an independent host parse on version, tensor count, KV count, architecture, tensor-table offset and first tensor name. Nothing checks the other direction. `build/make-agent-bundle.ps1` writes the bundled model and `Foreword chapter Gguf` reads it, so a green `agent-bundle-test` still says only that the two halves agree with each other. Ollama is installed on this box, so the instrument exists: feed it a Codex-written GGUF and see whether it loads. Deferred by Damian 2026-07-26, not blocked. |
+| WORKS-2 | **A GGUF this app WRITES is readable by llama.cpp** | The read direction is closed and measured: `build/gguf-foreign-test.ps1` parses four real llama.cpp models, up to a 3.2 GB gemma3 with a 15.7 MB metadata block, agreeing with an independent host parse on version, tensor count, KV count, architecture, tensor-table offset and first tensor name. Nothing checks the other direction. `build/make-agent-bundle.ps1` writes the bundled model and `Foreword chapter Gguf` reads it, so a green `agent-bundle-test` still says only that the two halves agree with each other. Ollama is installed on this box, so the instrument exists: feed it a Codex-written GGUF and see whether it loads. Deferred by Damian 2026-07-26, not blocked. |
 | WORKS-3 | **The diffusion app is finished** | `apps/works/GopDiffusion.codex` (ported from `apps/guios/DiffusionApp.codex`; the port closed the GuiDisplay/GuiTimer/GopRender gating) is an unfinished AssetForge UI: the Generate button dispatches to nothing. `df-draw-generating` fills a progress bar from a counter to 20 and produces no image; there is no model load, no sampler, no inference. Finishing it means the button doing something, which is a capability question and not a UI one -- the foreword has `ai/` (NeuralNet, Tensor, Activation) at the scale of `inference-demo` and `neural-test`, which is a long way from a latent diffusion sampler. Weights are on this box (`D:\AI\DiffusionForge\webui\models\Stable-diffusion\dreamshaperXL_lightningDPMSDE.safetensors`, SDXL, 6.46 GB, all 2,516 tensors F16), and `codex/foreword/ai/SafeTensors.codex` reads its header, offsets past 4 GB included, graded by `build/safetensors-foreign-test.ps1` against a host parse (2026-09-29). The reader takes the whole file as a `List Integer`, about 8 bytes per byte, so a loader must read one tensor's byte range at a time rather than the file. |
+
+## Test coverage
+
+7 of 128 library chapters are reached by no computing test (2026-10-31). `pwsh build/coverage-census.ps1 -Tree apps/works -List` names them. Open: a computing test for each, or a deletion.

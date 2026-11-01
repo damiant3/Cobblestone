@@ -54,7 +54,8 @@ Section: Helpers
 
   resign : List Integer -> List Integer
   resign (bin) =
-    let hash-bytes = cdxb-hash-words-to-bytes (sha256 (list-slice bin cdx-header-fixed-size (list-length bin)))
+    let body = cdxb-hash-words-to-bytes (sha256 (list-slice bin cdx-header-fixed-size (list-length bin)))
+    in let hash-bytes = cdxb-hash-words-to-bytes (cdx-bound-hash bin body)
     in let sig = ed25519-sign test-sk (ed25519-public-key test-sk) hash-bytes
     in list-slice bin 0 8 & hash-bytes & list-slice bin 40 72 & sig & list-slice bin 136 (list-length bin)
 
@@ -132,6 +133,20 @@ Section: Helpers
     else if c >= 65 & c <= 70 then c - 55
     else 0
 
+  same-bytes : Integer, List Integer, Integer -> Boolean
+  same-bytes (addr) (bs) (i) =
+    if i >= list-length bs then True
+    else if peek-byte addr i /= list-at bs i then False
+    else same-bytes addr bs (i + 1)
+
+  after-load-write : List Integer, TrustLattice, Policy -> Text
+  after-load-write (bin) (lat) (policy) =
+    let buf = copy-to-buf bin
+    in let d = evaluate-load-at buf (list-length bin) lat policy 0 fact-store-empty 100
+    in let f = poke-byte buf 1000 (bit-xor (peek-byte buf 1000) 1)
+    in let run = load-image d
+    in "after-load write approved=" & show-bool (load-approved d) & " run-is-copy=" & show-bool ((run /= 0) & (run /= buf)) & " run-unchanged=" & show-bool ((run /= 0) & same-bytes run bin 0)
+
   net-scope-of : LoadDecision -> Text
   net-scope-of (d) = when d
     is LoadApproved (g) -> g.net-scope
@@ -174,7 +189,12 @@ Section: Body
       print-line-uni (both-paths "resigned" (resign good) n lat allow)
       print-line-uni (both-paths "cap-overrun" (resign (set-le32 good (read-le64 good 136 + 4) 60000)) n lat allow)
       print-line-uni (both-paths "eff-overrun" (resign (set-le16 good (read-le64 good 152 + 2) 60000)) n lat allow)
+      print-line-uni (both-paths "entry-edit" (flip-at good 200) n lat allow)
+      print-line-uni (both-paths "table-edit" (flip-at good 144) n lat allow)
+      print-line-uni (both-paths "version" (set-byte good 4 3) n lat allow)
       print-line-uni ("load list=" & show (load-bitmask d1) & " at=" & show (load-bitmask d2) & " scope=" & load-scope d2 & " net=" & net-scope-of d2 & " agree=" & show-bool ((load-bitmask d1 == load-bitmask d2) & (load-scope d1 == load-scope d2) & (net-scope-of d1 == net-scope-of d2)))
+      print-line-uni (after-load-write good lat allow)
+      print-line-uni ("no room: " & load-reason (evaluate-load-at (copy-to-buf good) 1099511627776 lat allow 0 fact-store-empty 100))
       print-line-uni ("at-heap accepted=" & show-bool ((a4 >= 0) & (a8 >= 0)) & " flat=" & show-bool (a8 == a4) & " under-64k=" & show-bool (a4 < 65536))
       print-line-uni ("list-heap grows=" & show-bool (l8 > l4) & " faster-than-at=" & show-bool ((l8 - l4) > (a8 - a4)) & " at-below-list=" & show-bool (a8 < l8))
     end

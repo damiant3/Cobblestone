@@ -42,28 +42,6 @@ Section: Primitives
     in let advanced = __heap-advance size
     in p
 
- The reservation's top, written here because this is where it is known, and
- NOT the value the per-allocation guard compares against. Those were the same
- cell until 2026-08-28 and that is the whole of what the re-point changes.
-
- R10 IS THE DECK CURSOR, BUT ONLY INSIDE AN EXTENT. `__deck-enter` copies the
- deck-pos cell into R10 and `__deck-exit` writes it back, on the zero crossings
- of the nesting counter (`emit-deck-enter-builtin` / `emit-deck-exit-builtin`,
- `Emit/X86_64Builtins.codex`), so within an extent every allocation moves R10
- down the deck and R10 against this top is exactly the question the row asks.
- Outside an extent R10 is the bivy frontier, which lives ABOVE the reservation
- and is SUPPOSED to: `build` advances the heap over the whole deck height, so
- the frontier parks on this top the instant the reservation is made and every
- ordinary allocation afterwards is legitimately past it.
-
- Arming the ceiling here is therefore the defect measured 2026-08-27: the guard
- fired on the first ordinary allocation after every reservation and the guarded
- compiler could not compile itself (`!EXC=06` at R10=0x14ADAECC, 324.9 MB). The
- ceiling is armed at `__deck-enter` and disarmed at `__deck-exit` instead, which
- is what makes the comparison a statement about the deck cursor rather than
- about the bivy, and it costs the 59 allocation sites nothing: they keep the
- same two compares, and zero still means unarmed.
-
  Byte-wise because poke-byte is the only poke primitive; build runs thirteen
  times per compile, so eight stores apiece is not a cost worth a new builtin.
 
@@ -129,11 +107,6 @@ Section: Phase Measurement
     let bivy = pitch 0
     in PhaseStart { bivy-origin = bivy, deck-origin = __deck-pos, started = bp-rtc-seconds 0 }
 
- The log row is banked as the phase closes: label, wall seconds (RTC,
- armed-guarded, zero everywhere but a flight), and megabytes of bivy growth.
- bp-log-phase also advances the painted phase strip, which is what keeps a
- long silent phase legible on a board whose only channel is the glass.
-
   phase-took : Integer, Integer -> Integer
   phase-took (started) (now) =
     if now >= started then now - started else now - started + 86400
@@ -154,24 +127,6 @@ Section: Phase Measurement
   deck-short-of : Integer, Integer -> Boolean
   deck-short-of (ceiling) (band) =
     if ceiling > 0 & __deck-pos + band >= ceiling then True else False
-
- __deck-pos reads the deck-pos cell. deck-record is compiled by
- emit-deck-record-wrapper into __deck-enter, the body, __deck-exit:
- enter copies the cell into R10 and exit writes R10 back, and the
- write-back happens only when the nesting counter returns to zero. So
- inside a phase-wide deck-record extent the cell is FROZEN at the
- deck's base for the whole phase, and every allocation in that extent
- moves R10 instead. A loop that sits inside such an extent and asks
- deck-short-of is asking whether base + band >= base + height -- a
- question about the FLOOR's width that never mentions the usage, true
- only when the floor is narrower than the band.
-
- Measured 2026-07-21: an in-loop probe through rewrite-ir-defs, over
- the 2.81 MB selfhost, printed __deck-pos as 0x168961a2 on every one
- of its iterations while the phase wrote 19.1 MB. Starving that floor
- to 16 MB did not raise CDX9002; it crashed in __text_compare on a
- garbage pointer, which is the failure the guard exists to prevent,
- with the guard present and compiled in.
 
   deck-bound-short-of : Integer, Integer -> Boolean
   deck-bound-short-of (ceiling) (band) =

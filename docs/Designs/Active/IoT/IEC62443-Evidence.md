@@ -13,11 +13,11 @@ withdrawal is ETSI provision 5.5 in `docs/KingsAndCourts.md`.
 
 **Requirement:** All users, processes, and devices must be identified and authenticated before access.
 
-**Codex mechanism:** Trust lattice assigns Ed25519 keypairs per device at provisioning. Capability manifests declare required identity before any I/O capability is granted. Effect types make unauthenticated code paths a compile-time error.
+**Codex mechanism:** `IdentityManager` (`idm-first-boot`) generates a per-device Ed25519 keypair, but no device application or provisioning path calls it yet. Capability manifests carry no identity field; a program reaching identity operations declares `[Identity]` instead. Effect types make unauthenticated code paths a compile-time error.
 
 **Evidence:**
 - CDX binary header contains an author public key (Ed25519, 32 bytes) at offset 40, and a 64-byte signature at offset 72 over the 32-byte SHA-256 content hash at offset 8
-- The verifier's phase 2 scores that key against the trust lattice and rejects below the binary's declared threshold
+- The verifier's phase 2 scores that key against the trust lattice and rejects below the binary's declared threshold; no device application or boot path calls phase 2 yet, and `codex/test/apps/verifier-identity-test` exercises it
 - A program reaching identity operations must declare `[Identity]`, which is capability id 7 and bit 15; an undeclared effect is CDX2031
 
 **Two things must not be claimed here.** **CDX2061 is `UseAfterConsume`**, a
@@ -36,7 +36,7 @@ which is false.
 
 **Requirement:** Enforce assigned privileges for authenticated entities; least privilege.
 
-**Codex mechanism:** Capability manifests whitelist permitted operations per function. Effect types partition I/O capabilities -- a function cannot perform undeclared effects. Linear types (CDX2061/2063) prevent capability duplication or escalation.
+**Codex mechanism:** The capability manifest whitelists permitted operations per binary, derived from the effect row the program declares; it has no per-function field. Effect types partition I/O capabilities -- a function cannot perform undeclared effects. Linear types (CDX2061/2063) prevent capability duplication or escalation.
 
 **Evidence:**
 - Effect type annotations are compiler-enforced; undeclared I/O is CDX2031, and laundering it through a plain `let` is CDX2033
@@ -104,11 +104,11 @@ explicitly. ETSI provision 5.11-1 carries the same withdrawal.
 
 **Requirement:** Segment and control data flow between zones.
 
-**Codex mechanism:** Effect types create static data-flow boundaries. Each function declares its I/O surface; the compiler enforces that data does not cross undeclared zone boundaries. Capability manifests define permitted communication partners.
+**Codex mechanism:** Effect types create static data-flow boundaries. Each function declares its I/O surface; the compiler enforces that data does not cross undeclared zone boundaries. Capability manifests carry cap-id, direction and scope only; they have no communication-partner field.
 
 **Evidence:**
 - Effect type system: compiler traces all data paths; undeclared flows are compile errors
-- Capability manifest: per-function whitelist of permitted I/O endpoints
+- Capability manifest: a per-binary list of cap-id, direction and scope, with no per-function or endpoint field
 - No ambient authority -- bare-metal binary has no implicit network stack or file system
 
 ---
@@ -123,7 +123,7 @@ explicitly. ETSI provision 5.11-1 carries the same withdrawal.
 - `punctual` enforces five restrictions as **hard errors**: no non-punctual callee (CDX6001), no heap allocation (CDX6002), no closure or lambda (CDX6003), no effect (CDX6004), no self-recursion (CDX6005). These are what make the bound exist: a function that cannot loop, recurse or allocate has a finite instruction sequence
 - CDX6010 reports that sequence's length, decoded from the finished bytes after NOP compaction, so it is exact rather than estimated
 - `build/wcet-validate.ps1` runs the binary under `codex-vm -wcet` with a hardware execution breakpoint per function and gates on **observed <= budget per invocation**. This is the step that turns a static count into a checked claim
-- Fact store records timestamped audit entries for all security-relevant events
+- `CapabilityAudit` and `Forensics` record timestamped audit entries, but no device application calls them yet and nothing routes every security-relevant event through them; `codex/test/apps/capability-audit-test` and `codex/test/apps/forensics-escalation-test` exercise them
 
 **A missed budget does not fail a build, and this document must not say
 otherwise.** Measured 2026-07-27: a nine-parameter `punctual 1` function

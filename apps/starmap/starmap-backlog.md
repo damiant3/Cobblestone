@@ -1,7 +1,7 @@
 # StarMap -- open capabilities
 
-App-domain backlog. There is no platform-wide register any more:
-`docs/PM/BACKLOG.md` was deleted 2026-07-23 and must not be recreated.
+App-domain backlog. There is no platform-wide register:
+`docs/PM/BACKLOG.md` must not be recreated.
 `docs/PM/CurrentPlan.md` carries the shape and the priority order for
 the platform. Anything that is this application's own behaviour lives
 here.

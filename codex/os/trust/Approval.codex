@@ -1,0 +1,561 @@
+Chapter: Approval
+  cites Trust chapter AgentProtocol
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+Section: Records
+
+  ApprovalField = record { name : Text, value : Text }
+
+  ApprovalCondition =
+    | CallIs (Text) (Text)
+    | TimeBetween (Integer) (Integer)
+    | WeekWindow (List Integer) (Integer) (Integer)
+    | FieldIs (Text) (Text)
+    | FieldHas (Text) (Text)
+    | FlagSet (Text)
+    | FieldAbove (Text) (Integer)
+    | FieldBelow (Text) (Integer)
+    | CondAll (List ApprovalCondition)
+    | CondAny (List ApprovalCondition)
+    | CondNot (ApprovalCondition)
+    | CondAlways
+
+  ApprovalRequest = record {
+    label : Text,
+    scope : Text,
+    argument-sha256 : List Integer,
+    fields : List ApprovalField,
+    lease-sha256 : List Integer,
+    request-fact : List Integer,
+    sequence : Integer,
+    expires : Integer
+  }
+
+  Approval = record {
+    request-digest : List Integer,
+    approver : List Integer,
+    verdict : Integer,
+    signature : List Integer
+  }
+
+  StandingApproval = record {
+    lease-sha256 : List Integer,
+    condition : ApprovalCondition,
+    not-before : Integer,
+    not-after : Integer,
+    max-uses : Integer,
+    approver : List Integer,
+    signature : List Integer
+  }
+
+  ApprovalVerdict =
+    | Approved (Text)
+    | Unapproved (Text)
+
+ week-minute is the call's local time as day times 1440 plus minute of day,
+ Monday 0, in the zone the grant names, or -1 when the caller has no zone
+ conversion. A week window over -1 is undecidable, never true or false.
+
+  ApprovalClock = record { now : Integer, week-minute : Integer }
+
+  ApprovalContext = record {
+    label : Text,
+    scope : Text,
+    fields : List ApprovalField,
+    now : Integer,
+    week-minute : Integer
+  }
+
+Section: Encoding
+
+ At this boundary text is UTF-8, every field is a 4-byte big-endian length
+ then its bytes, and an integer field is 8 bytes big-endian.
+
+  apv-be32 : Integer -> List Integer
+  apv-be32 (n) = [bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+
+  apv-be64 : Integer -> List Integer
+  apv-be64 (n) = apv-be32 (bit-shru n 32) & apv-be32 n
+
+  apv-bytes : List Integer -> List Integer
+  apv-bytes (bs) = apv-be32 (list-length bs) & bs
+
+  apv-text : Text -> List Integer
+  apv-text (t) = apv-bytes (text-to-utf8-bytes t)
+
+  apv-int : Integer -> List Integer
+  apv-int (n) = apv-bytes (apv-be64 n)
+
+  apv-fields : List ApprovalField, Integer, List Integer -> List Integer
+  apv-fields (fs) (i) (acc) =
+    if i >= list-length fs then acc
+    else let f = list-at fs i
+    in apv-fields fs (i + 1) (acc & apv-text f.name & apv-text f.value)
+
+  approval-request-bytes : ApprovalRequest -> List Integer
+  approval-request-bytes (r) =
+    apv-text r.label & apv-text r.scope & apv-bytes r.argument-sha256
+      & apv-bytes (apv-be32 (list-length r.fields) & apv-fields r.fields 0 [])
+      & apv-bytes r.lease-sha256 & apv-bytes r.request-fact & apv-int r.sequence & apv-int r.expires
+
+  approval-request-digest : ApprovalRequest -> List Integer
+  approval-request-digest (r) = sha256-bytes (approval-request-bytes r)
+
+ A condition is its tree in prefix order, one tag byte a node: 1 CallIs,
+ 2 TimeBetween, 3 WeekWindow, 4 FieldIs, 5 FieldHas, 6 FlagSet, 7 FieldAbove,
+ 8 FieldBelow, 9 CondAll, 10 CondAny, 11 CondNot, 12 CondAlways. A list node
+ carries its child count as 4 bytes big-endian.
+
+  apv-cond-bytes : ApprovalCondition -> List Integer
+  apv-cond-bytes (c) = when c
+    is CallIs (l) (s) -> [1] & apv-text l & apv-text s
+    is TimeBetween (a) (b) -> [2] & apv-int a & apv-int b
+    is WeekWindow (days) (a) (b) -> [3] & apv-bytes days & apv-int a & apv-int b
+    is FieldIs (n) (v) -> [4] & apv-text n & apv-text v
+    is FieldHas (n) (v) -> [5] & apv-text n & apv-text v
+    is FlagSet (n) -> [6] & apv-text n
+    is FieldAbove (n) (k) -> [7] & apv-text n & apv-int k
+    is FieldBelow (n) (k) -> [8] & apv-text n & apv-int k
+    is CondAll (cs) -> [9] & apv-be32 (list-length cs) & apv-conds cs 0 []
+    is CondAny (cs) -> [10] & apv-be32 (list-length cs) & apv-conds cs 0 []
+    is CondNot (x) -> [11] & apv-cond-bytes x
+    is CondAlways -> [12]
+
+  apv-conds : List ApprovalCondition, Integer, List Integer -> List Integer
+  apv-conds (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else apv-conds cs (i + 1) (acc & apv-cond-bytes (list-at cs i))
+
+Section: Decoding
+
+ The decoder answers a condition only when the bytes are exactly the
+ encoding of the condition they decode to, so a short field, trailing bytes
+ or a text that does not survive UTF-8 refuse. Nesting stops at depth 64.
+
+  ApvBytes = record { ok : Boolean, value : List Integer, next : Integer }
+
+  ApvRead = record { ok : Boolean, cond : ApprovalCondition, next : Integer }
+
+  ApvReads = record { ok : Boolean, conds : List ApprovalCondition, next : Integer }
+
+  apv-byte : List Integer, Integer -> Integer
+  apv-byte (bs) (i) = if i < 0 | i >= list-length bs then 0 else list-at bs i
+
+  apv-u32 : List Integer, Integer -> Integer
+  apv-u32 (bs) (i) = bit-or (bit-or (bit-shl (apv-byte bs i) 24) (bit-shl (apv-byte bs (i + 1)) 16)) (bit-or (bit-shl (apv-byte bs (i + 2)) 8) (apv-byte bs (i + 3)))
+
+  apv-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  apv-slice (bs) (i) (stop) (acc) = if i >= stop then acc else apv-slice bs (i + 1) stop (list-push acc (list-at bs i))
+
+  apv-read-bytes : List Integer, Integer -> ApvBytes
+  apv-read-bytes (bs) (i) =
+    let n = apv-u32 bs i
+    in if i < 0 | i + 4 > list-length bs | n > list-length bs - i - 4 then ApvBytes { ok = False, value = [], next = i }
+    else ApvBytes { ok = True, value = apv-slice bs (i + 4) (i + 4 + n) [], next = i + 4 + n }
+
+  apv-read-int : List Integer, Integer -> ApvBytes
+  apv-read-int (bs) (i) =
+    let r = apv-read-bytes bs i
+    in if r.ok == False | list-length r.value /= 8 then ApvBytes { ok = False, value = [], next = i }
+    else r
+
+  apv-int-of : List Integer -> Integer
+  apv-int-of (v) = bit-or (bit-shl (apv-u32 v 0) 32) (apv-u32 v 4)
+
+  apv-text-of : List Integer -> Text
+  apv-text-of (v) = utf8-bytes-to-text v
+
+  apv-fail : Integer -> ApvRead
+  apv-fail (i) = ApvRead { ok = False, cond = CondAlways, next = i }
+
+  apv-read-cond : List Integer, Integer, Integer -> ApvRead
+  apv-read-cond (bs) (i) (depth) =
+    if depth > 64 | i < 0 | i >= list-length bs then apv-fail i
+    else let tag = list-at bs i
+    in if tag == 12 then ApvRead { ok = True, cond = CondAlways, next = i + 1 }
+    else if tag == 11 then apv-read-not bs (apv-read-cond bs (i + 1) (depth + 1))
+    else if tag == 9 | tag == 10 then apv-read-list bs tag (i + 5) (apv-u32 bs (i + 1)) depth
+    else if tag == 2 then apv-read-two-ints bs (i + 1) 2
+    else if tag == 6 then apv-read-name bs (i + 1)
+    else if tag == 3 then apv-read-week bs (i + 1)
+    else if tag == 7 | tag == 8 then apv-read-name-int bs tag (i + 1)
+    else if tag == 1 | tag == 4 | tag == 5 then apv-read-two-texts bs tag (i + 1)
+    else apv-fail i
+
+  apv-read-not : List Integer, ApvRead -> ApvRead
+  apv-read-not (bs) (r) = if r.ok then ApvRead { ok = True, cond = CondNot r.cond, next = r.next } else r
+
+  apv-read-list : List Integer, Integer, Integer, Integer, Integer -> ApvRead
+  apv-read-list (bs) (tag) (i) (count) (depth) =
+    if i > list-length bs | count > list-length bs - i then apv-fail i
+    else let rs = apv-read-children bs i count depth []
+    in if rs.ok == False then apv-fail i
+    else ApvRead { ok = True, cond = if tag == 9 then CondAll rs.conds else CondAny rs.conds, next = rs.next }
+
+  apv-read-children : List Integer, Integer, Integer, Integer, List ApprovalCondition -> ApvReads
+  apv-read-children (bs) (i) (left) (depth) (acc) =
+    if left <= 0 then ApvReads { ok = True, conds = acc, next = i }
+    else let r = apv-read-cond bs i (depth + 1)
+    in if r.ok == False then ApvReads { ok = False, conds = acc, next = i }
+    else apv-read-children bs r.next (left - 1) depth (list-push acc r.cond)
+
+  apv-read-two-ints : List Integer, Integer, Integer -> ApvRead
+  apv-read-two-ints (bs) (i) (tag) =
+    let a = apv-read-int bs i
+    in let b = apv-read-int bs a.next
+    in if a.ok == False | b.ok == False then apv-fail i
+    else ApvRead { ok = True, cond = TimeBetween (apv-int-of a.value) (apv-int-of b.value), next = b.next }
+
+  apv-read-name : List Integer, Integer -> ApvRead
+  apv-read-name (bs) (i) =
+    let n = apv-read-bytes bs i
+    in if n.ok == False then apv-fail i
+    else ApvRead { ok = True, cond = FlagSet (apv-text-of n.value), next = n.next }
+
+  apv-read-week : List Integer, Integer -> ApvRead
+  apv-read-week (bs) (i) =
+    let d = apv-read-bytes bs i
+    in let a = apv-read-int bs d.next
+    in let b = apv-read-int bs a.next
+    in if d.ok == False | a.ok == False | b.ok == False then apv-fail i
+    else ApvRead { ok = True, cond = WeekWindow d.value (apv-int-of a.value) (apv-int-of b.value), next = b.next }
+
+  apv-read-name-int : List Integer, Integer, Integer -> ApvRead
+  apv-read-name-int (bs) (tag) (i) =
+    let n = apv-read-bytes bs i
+    in let k = apv-read-int bs n.next
+    in if n.ok == False | k.ok == False then apv-fail i
+    else let name = apv-text-of n.value
+    in let v = apv-int-of k.value
+    in ApvRead { ok = True, cond = if tag == 7 then FieldAbove name v else FieldBelow name v, next = k.next }
+
+  apv-read-two-texts : List Integer, Integer, Integer -> ApvRead
+  apv-read-two-texts (bs) (tag) (i) =
+    let a = apv-read-bytes bs i
+    in let b = apv-read-bytes bs a.next
+    in if a.ok == False | b.ok == False then apv-fail i
+    else let x = apv-text-of a.value
+    in let y = apv-text-of b.value
+    in ApvRead { ok = True, cond = if tag == 1 then CallIs x y else if tag == 4 then FieldIs x y else FieldHas x y, next = b.next }
+
+  approval-condition-decode : List Integer -> Maybe ApprovalCondition
+  approval-condition-decode (bs) =
+    let r = apv-read-cond bs 0 0
+    in if r.ok == False | r.next /= list-length bs then None
+    else if apv-bytes-equal (apv-cond-bytes r.cond) bs == False then None
+    else Just r.cond
+
+  approval-condition-bytes : ApprovalCondition -> List Integer
+  approval-condition-bytes (c) = apv-cond-bytes c
+
+Section: Reading a Condition
+
+  approval-fields-read : ApprovalCondition -> List Text
+  approval-fields-read (c) = apv-reads c []
+
+  apv-reads : ApprovalCondition, List Text -> List Text
+  apv-reads (c) (acc) = when c
+    is FieldIs (n) (v) -> apv-add-name acc n
+    is FieldHas (n) (v) -> apv-add-name acc n
+    is FlagSet (n) -> apv-add-name acc n
+    is FieldAbove (n) (k) -> apv-add-name acc n
+    is FieldBelow (n) (k) -> apv-add-name acc n
+    is CondAll (cs) -> apv-reads-list cs 0 acc
+    is CondAny (cs) -> apv-reads-list cs 0 acc
+    is CondNot (x) -> apv-reads x acc
+    is otherwise -> acc
+
+  approval-uses-clock : ApprovalCondition -> Boolean
+  approval-uses-clock (c) = when c
+    is WeekWindow (days) (a) (b) -> True
+    is CondAll (cs) -> apv-clock-any cs 0
+    is CondAny (cs) -> apv-clock-any cs 0
+    is CondNot (x) -> approval-uses-clock x
+    is otherwise -> False
+
+  apv-clock-any : List ApprovalCondition, Integer -> Boolean
+  apv-clock-any (cs) (i) = if i >= list-length cs then False else if approval-uses-clock (list-at cs i) then True else apv-clock-any cs (i + 1)
+
+  apv-reads-list : List ApprovalCondition, Integer, List Text -> List Text
+  apv-reads-list (cs) (i) (acc) = if i >= list-length cs then acc else apv-reads-list cs (i + 1) (apv-reads (list-at cs i) acc)
+
+  apv-add-name : List Text, Text -> List Text
+  apv-add-name (acc) (n) = if apv-has-text acc n 0 then acc else acc & [n]
+
+  apv-has-text : List Text, Text, Integer -> Boolean
+  apv-has-text (xs) (t) (i) = if i >= list-length xs then False else if list-at xs i == t then True else apv-has-text xs t (i + 1)
+
+  apv-clock : Integer -> Text
+  apv-clock (m) =
+    let h = m / 60
+    in let mm = m - h * 60
+    in (if h < 10 then "0" else "") & show h & ":" & (if mm < 10 then "0" else "") & show mm
+
+  apv-days-suffix : List Integer -> Text
+  apv-days-suffix (days) =
+    if apv-same-days days [0, 1, 2, 3, 4] then " on weekdays"
+    else if apv-same-days days [5, 6] then " on weekends"
+    else if list-length days == 7 then ""
+    else " on days " & apv-int-list days 0 ""
+
+  apv-same-days : List Integer, List Integer -> Boolean
+  apv-same-days (days) (want) = list-length days == list-length want & apv-all-in want days 0
+
+  apv-all-in : List Integer, List Integer, Integer -> Boolean
+  apv-all-in (want) (days) (i) = if i >= list-length want then True else if apv-has-int days (list-at want i) 0 then apv-all-in want days (i + 1) else False
+
+  apv-int-list : List Integer, Integer, Text -> Text
+  apv-int-list (xs) (i) (acc) = if i >= list-length xs then acc else apv-int-list xs (i + 1) (acc & (if i == 0 then "" else ",") & show (list-at xs i))
+
+  approval-condition-text : ApprovalCondition -> Text
+  approval-condition-text (c) = when c
+    is CallIs (l) (s) -> "call " & l & " " & s
+    is TimeBetween (a) (b) -> "from " & show a & " until " & show b
+    is WeekWindow (days) (a) (b) -> apv-window-text days a b
+    is FieldIs (n) (v) -> apv-field-is-text n v
+    is FieldHas (n) (v) -> n & " has " & v
+    is FlagSet (n) -> "marked " & n
+    is FieldAbove (n) (k) -> n & " above " & show k
+    is FieldBelow (n) (k) -> n & " below " & show k
+    is CondAll (cs) -> apv-join cs 0 " and " ""
+    is CondAny (cs) -> "(" & apv-join cs 0 " or " "" & ")"
+    is CondNot (x) -> apv-not-text x
+    is CondAlways -> "always"
+
+  apv-window-text : List Integer, Integer, Integer -> Text
+  apv-window-text (days) (a) (b) =
+    if a == 0 & b == 1440 then "on" & apv-after-on (apv-days-suffix days)
+    else "between " & apv-clock a & " and " & apv-clock b & apv-days-suffix days
+
+  apv-after-on : Text -> Text
+  apv-after-on (s) = if text-length s > 3 then substring s 3 (text-length s - 3) else " every day"
+
+  apv-field-is-text : Text, Text -> Text
+  apv-field-is-text (n) (v) = if n == "answering" | n == "to" then n & " " & v else n & " is " & v
+
+  apv-not-text : ApprovalCondition -> Text
+  apv-not-text (x) = when x
+    is WeekWindow (days) (a) (b) -> "outside " & apv-clock a & " to " & apv-clock b & apv-days-suffix days
+    is otherwise -> "not (" & approval-condition-text x & ")"
+
+  apv-join : List ApprovalCondition, Integer, Text, Text -> Text
+  apv-join (cs) (i) (sep) (acc) = if i >= list-length cs then acc else apv-join cs (i + 1) sep (acc & (if i == 0 then "" else sep) & approval-condition-text (list-at cs i))
+
+Section: Signatures
+
+ The tags are the ASCII texts codex-approval-v1 and codex-standing-v1. A
+ one-call approval signs the tag, the 32-byte request digest and the verdict
+ byte; a standing approval signs its tag and its encoding.
+
+  approval-tag : List Integer = [99, 111, 100, 101, 120, 45, 97, 112, 112, 114, 111, 118, 97, 108, 45, 118, 49]
+
+  standing-tag : List Integer = [99, 111, 100, 101, 120, 45, 115, 116, 97, 110, 100, 105, 110, 103, 45, 118, 49]
+
+  approval-message : Approval -> List Integer
+  approval-message (a) = approval-tag & a.request-digest & [a.verdict]
+
+  standing-bytes : StandingApproval -> List Integer
+  standing-bytes (s) =
+    apv-bytes s.lease-sha256 & apv-bytes (apv-cond-bytes s.condition) & apv-int s.not-before
+      & apv-int s.not-after & apv-int s.max-uses & apv-bytes s.approver
+
+  standing-message : StandingApproval -> List Integer
+  standing-message (s) = standing-tag & standing-bytes s
+
+  approval-sign : List Integer, Integer, List Integer, List Integer -> Approval
+  approval-sign (digest) (verdict) (private-key) (public-key) =
+    let unsigned = Approval { request-digest = digest, approver = public-key, verdict = verdict, signature = [] }
+    in Approval {
+      request-digest = digest,
+      approver = public-key,
+      verdict = verdict,
+      signature = ed25519-sign private-key public-key (approval-message unsigned)
+    }
+
+  standing-sign : StandingApproval, List Integer -> StandingApproval
+  standing-sign (s) (private-key) = StandingApproval {
+    lease-sha256 = s.lease-sha256,
+    condition = s.condition,
+    not-before = s.not-before,
+    not-after = s.not-after,
+    max-uses = s.max-uses,
+    approver = s.approver,
+    signature = ed25519-sign private-key s.approver (standing-message s)
+  }
+
+Section: Conditions
+
+  CondResult = record { known : Boolean, holds : Boolean, why : Text }
+
+  apv-truth : Boolean -> CondResult
+  apv-truth (b) = CondResult { known = True, holds = b, why = "" }
+
+  apv-unknown : Text -> CondResult
+  apv-unknown (why) = CondResult { known = False, holds = False, why = why }
+
+  approval-eval : ApprovalCondition, ApprovalContext -> CondResult
+  approval-eval (c) (ctx) = when c
+    is CallIs (l) (s) -> apv-truth (apv-label-covers l ctx.label & policy-scope-within ctx.label s ctx.scope)
+    is TimeBetween (a) (b) -> apv-truth (ctx.now >= a & ctx.now < b)
+    is WeekWindow (days) (a) (b) -> apv-week ctx.week-minute days a b
+    is FieldIs (n) (v) -> apv-truth (apv-field-test ctx.fields n v 0)
+    is FieldHas (n) (v) -> apv-truth (apv-field-test ctx.fields n v 1)
+    is FlagSet (n) -> apv-truth (apv-field-test ctx.fields n "true" 0)
+    is FieldAbove (n) (k) -> apv-truth (apv-field-compare ctx.fields n k 1)
+    is FieldBelow (n) (k) -> apv-truth (apv-field-compare ctx.fields n k 0)
+    is CondAll (cs) -> apv-all cs ctx 0 False ""
+    is CondAny (cs) -> apv-any cs ctx 0 False ""
+    is CondNot (x) -> apv-not (approval-eval x ctx)
+    is CondAlways -> apv-truth True
+
+  apv-not : CondResult -> CondResult
+  apv-not (r) = if r.known then apv-truth (r.holds == False) else r
+
+  apv-all : List ApprovalCondition, ApprovalContext, Integer, Boolean, Text -> CondResult
+  apv-all (cs) (ctx) (i) (unknown) (why) =
+    if i >= list-length cs then (if unknown then apv-unknown why else apv-truth True)
+    else let r = approval-eval (list-at cs i) ctx
+    in if r.known & r.holds == False then r
+    else if r.known then apv-all cs ctx (i + 1) unknown why
+    else apv-all cs ctx (i + 1) True r.why
+
+  apv-any : List ApprovalCondition, ApprovalContext, Integer, Boolean, Text -> CondResult
+  apv-any (cs) (ctx) (i) (unknown) (why) =
+    if i >= list-length cs then (if unknown then apv-unknown why else apv-truth False)
+    else let r = approval-eval (list-at cs i) ctx
+    in if r.known & r.holds then r
+    else if r.known then apv-any cs ctx (i + 1) unknown why
+    else apv-any cs ctx (i + 1) True r.why
+
+  apv-week : Integer, List Integer, Integer, Integer -> CondResult
+  apv-week (wm) (days) (a) (b) =
+    if wm < 0 then apv-unknown "no local clock for a week window"
+    else let d = wm / 1440
+    in let m = wm - d * 1440
+    in apv-truth (apv-has-int days d 0 & m >= a & m < b)
+
+  apv-has-int : List Integer, Integer, Integer -> Boolean
+  apv-has-int (xs) (x) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == x then True
+    else apv-has-int xs x (i + 1)
+
+  apv-label-covers : Text, Text -> Boolean
+  apv-label-covers (grant) (lbl) = lbl == grant | apv-family lbl 0 == grant
+
+  apv-family : Text, Integer -> Text
+  apv-family (s) (i) =
+    if i >= text-length s then ""
+    else if char-code (char-at s i) == char-code (char-at "." 0) then substring s 0 i
+    else apv-family s (i + 1)
+
+Section: Fields
+
+ Text comparisons ignore the case of ASCII letters and nothing else.
+
+  apv-find : List ApprovalField, Text, Integer -> Maybe Text
+  apv-find (fs) (n) (i) =
+    if i >= list-length fs then None
+    else if (list-at fs i).name == n then Just (list-at fs i).value
+    else apv-find fs n (i + 1)
+
+  apv-field-test : List ApprovalField, Text, Text, Integer -> Boolean
+  apv-field-test (fs) (n) (v) (mode) = when apv-find fs n 0
+    is None -> False
+    is Just (x) -> if mode == 0 then apv-fold-equal x v else apv-fold-contains x v 0
+
+  apv-fold-at : Text, Integer, Text, Integer, Integer -> Boolean
+  apv-fold-at (s) (i) (t) (j) (n) =
+    if j >= n then True
+    else if char-code (to-lower (char-at s (i + j))) /= char-code (to-lower (char-at t j)) then False
+    else apv-fold-at s i t (j + 1) n
+
+  apv-fold-equal : Text, Text -> Boolean
+  apv-fold-equal (s) (t) = text-length s == text-length t & apv-fold-at s 0 t 0 (text-length t)
+
+  apv-fold-contains : Text, Text, Integer -> Boolean
+  apv-fold-contains (s) (t) (i) =
+    if i + text-length t > text-length s then False
+    else if apv-fold-at s i t 0 (text-length t) then True
+    else apv-fold-contains s t (i + 1)
+
+ An integer field is an optional minus and 1 to 18 decimal digits; 18 digits
+ cannot overflow the 64-bit accumulator. Anything else compares false.
+
+  apv-field-compare : List ApprovalField, Text, Integer, Integer -> Boolean
+  apv-field-compare (fs) (n) (k) (upward) = when apv-find fs n 0
+    is None -> False
+    is Just (x) ->
+      let neg = text-length x > 0 & char-code (char-at x 0) == char-code (char-at "-" 0)
+      in let start = if neg then 1 else 0
+      in let digits = text-length x - start
+      in if digits < 1 | digits > 18 | apv-all-digits x start == False then False
+      else let v = apv-decimal x start 0
+      in let w = if neg then 0 - v else v
+      in if upward == 1 then w > k else w < k
+
+  apv-all-digits : Text, Integer -> Boolean
+  apv-all-digits (s) (i) =
+    if i >= text-length s then True
+    else let d = char-code (char-at s i) - char-code (char-at "0" 0)
+    in if d < 0 | d > 9 then False
+    else apv-all-digits s (i + 1)
+
+  apv-decimal : Text, Integer, Integer -> Integer
+  apv-decimal (s) (i) (acc) =
+    if i >= text-length s then acc
+    else apv-decimal s (i + 1) (acc * 10 + (char-code (char-at s i) - char-code (char-at "0" 0)))
+
+Section: Checks
+
+  apv-key-in : List Integer, List AgentIdentity, Integer -> Boolean
+  apv-key-in (k) (set) (i) =
+    if i >= list-length set then False
+    else if apv-bytes-equal k (list-at set i).public-key then True
+    else apv-key-in k set (i + 1)
+
+  apv-bytes-equal : List Integer, List Integer -> Boolean
+  apv-bytes-equal (a) (b) = list-length a == list-length b & apv-bytes-equal-at a b 0
+
+  apv-bytes-equal-at : List Integer, List Integer, Integer -> Boolean
+  apv-bytes-equal-at (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else apv-bytes-equal-at a b (i + 1)
+
+  approval-check : ApprovalRequest, Approval, List AgentIdentity, Integer -> ApprovalVerdict
+  approval-check (req) (a) (approvers) (now) =
+    if apv-key-in a.approver approvers 0 == False then Unapproved "key not in the set"
+    else if ed25519-verify a.approver (approval-message a) a.signature == False then Unapproved "signature invalid"
+    else if apv-bytes-equal a.request-digest (approval-request-digest req) == False then Unapproved "digest differs"
+    else if now >= req.expires then Unapproved "expired"
+    else if a.verdict /= 1 then Unapproved "denied"
+    else Approved ("one-call " & bytes-to-hex (sha256-bytes (approval-message a & a.signature)))
+
+  approval-context : ApprovalRequest, ApprovalClock -> ApprovalContext
+  approval-context (req) (clock) = ApprovalContext {
+    label = req.label,
+    scope = req.scope,
+    fields = req.fields,
+    now = clock.now,
+    week-minute = clock.week-minute
+  }
+
+  standing-check : ApprovalRequest, StandingApproval, Integer, List AgentIdentity, ApprovalClock -> ApprovalVerdict
+  standing-check (req) (s) (uses) (approvers) (clock) =
+    if apv-key-in s.approver approvers 0 == False then Unapproved "key not in the set"
+    else if ed25519-verify s.approver (standing-message s) s.signature == False then Unapproved "signature invalid"
+    else if apv-bytes-equal s.lease-sha256 req.lease-sha256 == False then Unapproved "lease differs"
+    else let r = approval-eval s.condition (approval-context req clock)
+    in if r.known == False then Unapproved ("condition undecidable: " & r.why)
+    else if r.holds == False then Unapproved "condition false"
+    else if clock.now < s.not-before then Unapproved "not yet valid"
+    else if clock.now >= s.not-after | clock.now >= req.expires then Unapproved "expired"
+    else if uses >= s.max-uses then Unapproved "uses spent"
+    else Approved ("standing " & bytes-to-hex (sha256-bytes (standing-message s & s.signature)))
+
+Page 1

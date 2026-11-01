@@ -1,24 +1,7 @@
 Chapter: Lz77Hostile
   cites Compress chapter Lz77
 
- Track D item 19, the Lz77 half, and the same three shapes as Lz4 one chapter
- over. `lz77-decompress` reads a back-reference distance and a match length
- straight out of the token list and hands the distance to `lz77-copy-match`
- as an index, so a hostile distance decides where a read lands.
-
- Guarded because it has a caller that RUNS it (red's ruling, 2026-08-16):
- `codex/test/apps/lz77-test` round trips through it, and `Deflate.codex` uses
- the chapter's table helpers. `lz77-decompress` itself pairs only with
- `lz77-compress`, which is what makes the length bound below exact rather
- than invented.
-
- Rows 1 to 4 are the positive controls. Rows 5 and 6 kill the guest without
- the guards. Row 7 is the discriminator: it never crashed, it allocated.
-
 Section: Helpers
-
- Computed inside the print statement, so a row that dies names itself by the
- rows that printed before it.
 
   list-equal : List Integer, List Integer, Integer, Integer -> Boolean
   list-equal (a) (b) (i) (len) =
@@ -43,28 +26,43 @@ Section: Helpers
     let out = lz77-decompress tokens
     in label & " len=" & show (list-length out) & " first=" & (if list-length out == 0 then "none" else show (list-at out 0))
 
+ Rows 8 and 9 are the output-cap layer. Row 8 is a seeded single-byte mutation
+ sweep over a token stream this encoder wrote, each position flipped and decoded
+ under a cap, every decode required to stop bounded. Row 9 decodes under a cap far
+ below the output and requires the cap to have limited it.
+
+  mutate-copy : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mutate-copy (xs) (pos) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else mutate-copy xs pos val (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) val else list-at xs i))
+
+  sweep-mut : List Integer, Integer, Integer, Integer, Integer -> Integer
+  sweep-mut (base) (n) (pos) (cap) (bad) =
+    if pos >= n then bad
+    else let m = mutate-copy base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in let d = lz77-decompress-capped m cap
+    in let ok = list-length d < 100000
+    in sweep-mut base n (pos + 1) cap (if ok then bad else bad + 1)
+
+  show-sweep : List Integer, Text -> Text
+  show-sweep (base) (label) =
+    label & " all-bounded=" & (if sweep-mut base (list-length base) 0 2000 0 == 0 then "True" else "False")
+
+  show-cap : List Integer, Integer, Text -> Text
+  show-cap (input) (cap) (label) =
+    label & " capped=" & (if list-length (lz77-decompress-capped input cap) < list-length (lz77-decompress input) then "True" else "False")
+
 Section: Hostile Token Lists
 
- A match token is the triple [1, off, mlen] and a literal is the pair [0, b],
- which is exactly what lz77-compress emits.
-
- Row 5. A back-reference of distance 5 against an empty output. `start` is
- -5 and `lz77-copy-match` indexes the output with it.
+ Row 5. A back-reference of distance 5 against an empty output.
 
   off-past-start : List Integer = [1, 5, 3]
 
- Row 6. A distance of 0 after one literal. `start` lands on
- `list-length output`, out of range by exactly one, which is the same
- off-by-one Lz4's distance-0 case had.
+ Row 6. A distance of 0 after one literal.
 
   off-zero : List Integer = [0, 65, 1, 0, 3]
 
- Row 7. A match length of 100000 from a single token. Unlike Lz4, where a
- long length has to be paid for one input byte per 255, ONE token here
- carries the whole count, so nothing structural bounds it: the unguarded
- decoder allocates 100001 bytes from a 5-element list and never faults.
- lz77-compress cannot emit this, because it caps every match it finds at
- lz77-max-match.
+ Row 7. A match length of 100000 from a single token.
 
   mlen-past-max : List Integer = [0, 65, 1, 1, 100000]
 
@@ -78,6 +76,8 @@ Section: Body
     print-line-uni (show-decode off-past-start "5-off-past-start")
     print-line-uni (show-decode off-zero "6-off-zero")
     print-line-uni (show-decode mlen-past-max "7-mlen-past-max")
+    print-line-uni (show-sweep (lz77-compress (make-repeated 42 400 0 [])) "8-mutation-sweep")
+    print-line-uni (show-cap (lz77-compress (make-repeated 42 2000 0 [])) 50 "9-output-cap")
   end
 
 Page 1

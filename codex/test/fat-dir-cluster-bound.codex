@@ -1,0 +1,141 @@
+Chapter: FatDirClusterBound
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ One zeroed 16 MiB disk. FAT32 is formatted at sector 2048 for 20480 sectors
+ and FAT16 is a BPB written at 26624 for 4096 sectors (512 bytes, 4 a cluster,
+ 1 reserved, 2 FATs of 4 sectors, 512 root entries), so both volumes end
+ before the disk does. Each root carries BADDIR, a directory entry naming a
+ cluster past its volume's last; the sector that cluster maps to lies past the
+ volume and holds a planted SECRET.TXT entry. FAT16's VICTIM.TXT names cluster
+ 1100, whose FAT slot lies in the second FAT at offset 152, where a marker
+ ABCD sits; replacing VICTIM frees its chain. GOODDIR on each is the
+ in-volume control.
+
+Section: Helpers
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-byte b i 0 in zero-fill b (i + 1) n
+
+  put-u16 : Integer, Integer, Integer -> Integer
+  put-u16 (b) (o) (v) =
+    let lo = poke-byte b o (bit-and v 255)
+    in poke-byte b (o + 1) (bit-and (bit-shru v 8) 255)
+
+  bpb16 : Integer -> Integer
+  bpb16 (b) =
+    let z = zero-fill b 0 512
+    in let w = put-u16 b 11 512 + poke-byte b 13 4 + put-u16 b 14 1 + poke-byte b 16 2 + put-u16 b 17 512 + put-u16 b 19 4096 + put-u16 b 22 4
+    in put-u16 b 510 43605
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  found : Maybe Fat16DirEntry -> Text
+  found (m) = when m
+    is Just (e) -> "found " & (e.de-name)
+    is None -> "none"
+
+  names : List Text -> Text
+  names (xs) = "[" & show (list-length xs) & "]" & (if list-length xs == 0 then "" else " " & list-at xs 0)
+
+  entry-names : List Fat16DirEntry -> Text
+  entry-names (xs) = "[" & show (list-length xs) & "]" & (if list-length xs == 0 then "" else " " & (list-at xs 0).de-name)
+
+  hex16 : Integer, Integer -> Integer
+  hex16 (buf) (off) = peek-byte buf off + peek-byte buf (off + 1) * 256
+
+Section: FAT32
+
+  arm32 : [Console, Device.Block] Nothing
+  arm32 = act
+    fmt <- fat32-format 2048 20480 "CODEX"
+    vol <- fat32-init 2048
+    let bad = fat32-last-cluster vol + 1 + 1024 / (vol.f32-sectors-per-cluster)
+    in let s = fat32-cluster-sector vol bad
+    in act
+      print-line-uni ("fat32 format " & show fmt & " last " & show (fat32-last-cluster vol) & " bad " & show bad
+        & " past-volume=" & yn (s >= 2048 + 20480) & " on-disk=" & yn (s < 26624))
+      p <- fat32-write-entry-at s 0 (fat32-to-83 "SECRET.TXT") 32 0 0
+      r <- fat32-add-dir-entry vol (vol.f32-root-cluster) "BADDIR" 16 bad 0
+      g <- fat32-mkdir vol (vol.f32-root-cluster) "GOODDIR"
+      gw <- fat32-write-file vol "GOODDIR/IN.TXT" [1, 2, 3]
+      print-line-uni ("fat32 control mkdir=" & yn (g >= 2) & " write=" & yn gw)
+      gr <- fat32-resolve-path vol "GOODDIR/IN.TXT"
+      print-line-uni ("fat32 control resolve " & found gr)
+      bl <- fat32-list-dir-cluster vol bad []
+      print-line-uni ("fat32 list bad " & names bl)
+      br <- fat32-resolve-path vol "BADDIR/SECRET.TXT"
+      print-line-uni ("fat32 resolve bad " & found br)
+      ns <- fat32-find-name-slot-in-dir vol bad "SECRET.TXT"
+      print-line-uni ("fat32 name-slot bad " & show ns)
+      f1 <- fat32-alloc-cluster vol 2
+      rs <- fat32-find-or-grow-run-in-dir vol bad 1
+      print-line-uni ("fat32 run-or-grow bad " & show rs)
+      md <- fat32-mkdir vol bad "SUB"
+      print-line-uni ("fat32 mkdir under bad " & show md)
+      bw <- fat32-write-file vol "BADDIR/NEW.TXT" [4, 5, 6]
+      buf <- block-read-sector s
+      print-line-uni ("fat32 write bad " & yn bw & " foreign slot1 byte " & show (peek-byte buf 32))
+      f2 <- fat32-alloc-cluster vol 2
+      print-line-uni ("fat32 clusters claimed by the refusals " & show (f2 - f1))
+    end
+  end
+
+Section: FAT16
+
+  arm16 : [Console, Device.Block] Nothing
+  arm16 = act
+    let b = alloc-bytes 512
+    in let w = bpb16 b
+    in act
+      bw <- block-write-sector 26624 b
+      vol <- fat16-init 26624
+      let bad = fat16-last-cluster vol + 1 + 64
+      in let s = fat16-cluster-sector vol bad
+      in act
+        print-line-uni ("fat16 last " & show (fat16-last-cluster vol) & " bad " & show bad
+          & " past-volume=" & yn (s >= 26624 + 4096) & " on-disk=" & yn (s < 32768))
+        p <- fat32-write-entry-at s 0 (fat32-to-83 "SECRET.TXT") 32 0 0
+        e1 <- fat32-write-entry-at (vol.vol-root-start) 0 (fat32-to-83 "BADDIR") 16 bad 0
+        e2 <- fat32-write-entry-at (vol.vol-root-start) 32 (fat32-to-83 "VICTIM.TXT") 32 1100 10
+        m <- block-read-sector (vol.vol-fat-start + 4)
+        let pk = poke-byte m 152 205 + poke-byte m 153 171
+        in act
+          mw <- block-write-sector (vol.vol-fat-start + 4) m
+          gd <- fat16-create-directory vol "GOODDIR"
+          gf <- fat16-create-file vol "GOODDIR/IN.TXT" fat16-src-empty
+          print-line-uni ("fat16 control mkdir=" & yn gd & " create=" & yn gf)
+          gr <- fat16-resolve-path vol "GOODDIR/IN.TXT"
+          print-line-uni ("fat16 control resolve " & found gr)
+          bl <- fat16-cluster-entries vol bad []
+          print-line-uni ("fat16 list bad " & entry-names bl)
+          br <- fat16-resolve-path vol "BADDIR/SECRET.TXT"
+          print-line-uni ("fat16 resolve bad " & found br)
+          ns <- fat16-find-name-slot-in-dir vol bad "SECRET.TXT"
+          print-line-uni ("fat16 name-slot bad " & show ns)
+          f1 <- fat16-find-free-from vol 2
+          rs <- fat16-find-or-grow-run-in-dir vol bad 1
+          print-line-uni ("fat16 run-or-grow bad " & show rs)
+          cf <- fat16-create-file vol "BADDIR/NEW.TXT" (fat16-src-of-list [1, 2, 3])
+          fb <- block-read-sector s
+          print-line-uni ("fat16 create bad " & yn cf & " foreign slot1 byte " & show (peek-byte fb 32))
+          f2 <- fat16-find-free-from vol 2
+          print-line-uni ("fat16 clusters claimed by the refusals " & show (f2 - f1))
+          vr <- fat16-create-file vol "VICTIM.TXT" fat16-src-empty
+          after <- block-read-sector (vol.vol-fat-start + 4)
+          print-line-uni ("fat16 replace victim " & yn vr & " fat2 marker " & show (hex16 after 152))
+        end
+      end
+    end
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    arm32
+    arm16
+  end

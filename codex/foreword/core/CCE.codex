@@ -1,7 +1,5 @@
 Chapter: CCE
 
- We say:
-
 Section: Definitions
 
   CharClass =
@@ -17,8 +15,7 @@ Section: Definitions
  Whitespace is the band 1..2, the line feed and the space. NUL is Tier 0's
  first slot and sits below them, and it is not whitespace: it is the absence
  of a character rather than a gap between two, and a trim that eats it
- shortens the text it was asked to tidy. This read `<= 2` until 2026-07-28,
- which took NUL in with the other two, and it was the CCE oracle's G1.
+ shortens the text it was asked to tidy.
 
   is-whitespace : Char -> Boolean
   is-whitespace (c) = if char-code c >= 1 then char-code c <= 2 else False
@@ -35,9 +32,7 @@ Section: Definitions
  accented Latin letters and 113..127 fifteen Cyrillic ones. Every one of
  those last 31 is a lowercase form, so both predicates take them.
 
- These read 13..38 and 13..64 until 2026-07-27, which refused every letter
- that is not ASCII. Extending the upper end to 127 instead is the obvious
- change and it is wrong: it would call all 32 punctuation characters
+ Extending the upper end to 127 would call all 32 punctuation characters
  letters. The band has a hole in the middle and the test has to have one too.
 
   is-lower : Char -> Boolean
@@ -61,21 +56,6 @@ Section: Definitions
 
   is-cyrillic : Char -> Boolean
   is-cyrillic (c) = if char-code c >= 113 then char-code c <= 127 else False
-
- Case conversion names its own band and no longer borrows is-lower and
- is-upper. The plus and minus 26 is arithmetic between the ASCII lowercase
- band and the ASCII uppercase band and it is meaningless anywhere else, so a
- predicate that legitimately grew to cover accented and Cyrillic letters
- must not be the thing that gates it. Measured while widening is-lower: with
- to-upper still asking is-lower, all 32 punctuation characters shift into the
- accented and Cyrillic bands, and an exclamation mark uppercases to a
- backtick. That is the historical minus-32 corruption with a different
- constant, and this decoupling is what stops it.
-
- The uppercase of an accented or Cyrillic letter is deliberately NOT produced
- here. Those forms are Tier 1 code points and a Char carries a Tier 0 byte,
- so the answer does not fit in the return type; the identity is the honest
- answer for a function of this shape rather than a wrong letter.
 
   to-lower : Char -> Char
   to-lower (c) =
@@ -238,12 +218,6 @@ Section: Tier 1 Classification
     if cp < 128 then is-letter (code-to-char cp)
     else let block = cce-tier1-block cp
     in if block >= 0 then block <= 5 else False
-
- The Tier 0 arm read `if c >= 13 then c <= 127`, which calls all 32
- punctuation code points letters. It has no caller anywhere in the tree, so
- it never bit; it is corrected rather than deleted because the answer it is
- supposed to give is exactly is-letter's, and having two spellings of one
- band is what let them drift apart.
 
   cce-is-letter-any : Integer -> Boolean
   cce-is-letter-any (cp) =
@@ -431,8 +405,7 @@ Section: UTF-8 Boundary
  continuation byte lies in 128..191, which is a range from-unicode answers for as
  though it were Latin Extended -- so a two-byte sequence does not fail to convert,
  it converts into two different characters. The text is not rejected; it is
- quietly replaced. That is why tools/cdx-store could only ever be honest about the
- single-byte range.
+ quietly replaced.
 
  A lead byte names the length of the sequence it starts. A byte that is a
  continuation, or announces more than four bytes, starts nothing.
@@ -521,9 +494,6 @@ Section: UTF-8 Boundary
     let out = utf8-to-text-loop bytes 0 (list-length bytes) []
     in cce-join-bytes out 0 (list-length out)
 
- The encoder is here so the boundary can be crossed in both directions and so a
- round-trip can be asserted. It takes a Unicode code point, not a CCE one.
-
   utf8-encode-cp : Integer -> List Integer
   utf8-encode-cp (u) =
     if u < 0 then []
@@ -557,10 +527,6 @@ Section: UTF-8 Boundary
 
 Section: Unicode Code Point Boundary
 
- These carry Unicode CODE POINTS, one integer per character, where the section
- above carries UTF-8 bytes. A caller that wants octets on a wire wants
- text-to-utf8-bytes; a caller that wants to name characters wants these.
-
   unicode-from-text-loop : List Integer, Text, Integer, Integer, List Integer -> List Integer
   unicode-from-text-loop (tbl) (t) (i) (len) (acc) =
     if i >= len then acc
@@ -578,8 +544,19 @@ Section: Unicode Code Point Boundary
     in if c < 0 then unicode-to-text-loop tbl us (i + 1) len acc
     else unicode-to-text-loop tbl us (i + 1) len (cce-encode-into acc c)
 
+  cce-encoded-length : Integer -> Integer
+  cce-encoded-length (cp) = if cp < 128 then 1 else if cp < 2176 then 2 else if cp < 67712 then 3 else 4
+
+  unicode-to-text-size : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  unicode-to-text-size (tbl) (us) (i) (len) (n) =
+    if i >= len then n
+    else let c = from-unicode-with tbl (list-at us i)
+    in unicode-to-text-size tbl us (i + 1) len (if c < 0 then n else n + cce-encoded-length c)
+
   unicode-bytes-to-text : List Integer -> Text
   unicode-bytes-to-text (us) =
-    raw-bytes-to-text (unicode-to-text-loop cce-to-unicode-table us 0 (list-length us) [])
+    let tbl = cce-to-unicode-table
+    in let len = list-length us
+    in raw-bytes-to-text (unicode-to-text-loop tbl us 0 len (__list-with-capacity (unicode-to-text-size tbl us 0 len 0 + 1)))
 
 Page 1

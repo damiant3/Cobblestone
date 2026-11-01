@@ -1,0 +1,59 @@
+Chapter: ClockWorldRows
+  cites Foreword chapter Console
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone (tz-db-build)
+  cites Works chapter GopClock
+  cites Works chapter GopZones (zone-find, zone-row-of, zone-base-mins)
+  cites Works chapter GopLocale
+
+Section: Fixtures
+
+  to-buf : List Integer -> Integer
+  to-buf (bs) =
+    let b = alloc-bytes (list-length bs + 8)
+    in let w = fill b bs 0
+    in b
+
+  fill : Integer, List Integer, Integer -> Integer
+  fill (b) (bs) (i) =
+    if i >= list-length bs then 0
+    else let w = poke-byte b i (list-at bs i)
+    in fill b bs (i + 1)
+
+  block : Integer -> Integer
+  block (stripe) =
+    let ks = alloc-zeroed clk-block-bytes 64
+    in let s = clk-set-stripe ks stripe
+    in ks
+
+  rows : Integer, List Integer, Integer, Text -> Text
+  rows (ks) (ids) (i) (acc) =
+    if i >= list-length ids then acc
+    else let id = list-at ids i
+    in rows ks ids (i + 1) (acc & (zone-row-of id).zr-city & " " & loc-utc-text (clk-world-mins ks i (zone-base-mins id)) & "  ")
+
+  shown : Integer -> Text
+  shown (ks) = rows ks (clk-stripe-list ks) 0 ""
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let bs = tz-db-build (tz-parse tz-sources)
+    in let buf = to-buf bs
+    in let len = list-length bs
+    in let july = clk-civil-seconds 12 0 0 2026 7 1
+    in let jan = clk-civil-seconds 12 0 0 2026 1 15
+    in let lon = block 0
+    in let syd = block 10
+    in let none = block 0
+    in act
+      print-line-uni ("unfilled london band : " & shown lon)
+      print-line-uni ("london band, july    : " & (let w = clk-world-mark lon buf len july 1 in shown lon))
+      print-line-uni ("london band, january : " & (let w = clk-world-mark lon buf len jan 2 in shown lon))
+      print-line-uni ("sydney band, july    : " & (let w = clk-world-mark syd buf len july 1 in shown syd))
+      print-line-uni ("sydney band, january : " & (let w = clk-world-mark syd buf len jan 2 in shown syd))
+      print-line-uni ("no TZDB.BIN, july    : " & (let w = clk-world-mark none 0 0 july 1 in shown none))
+      print-line-uni ("stripe moved, stale  : " & (let s = clk-set-stripe lon 1 in show (clk-world-valid lon)))
+    end

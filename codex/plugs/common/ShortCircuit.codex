@@ -1,0 +1,148 @@
+Chapter: Short Circuit
+
+Section: Short Circuit
+
+  sc-has : IRExpr -> Boolean
+  sc-has (e) =
+    when e
+     is IrBinary (op) (l) (r) (ty) (sp) -> sc-is-logic op | sc-has l | sc-has r
+     is IrNegate (x) (ty) (sp) -> sc-has x
+     is IrIf (c) (t) (el) (ty) (sp) -> sc-has c | sc-has t | sc-has el
+     is IrLet (n) (ty) (v) (b) (sp) -> sc-has v | sc-has b
+     is IrApply (f) (a) (ty) (sp) -> sc-has f | sc-has a
+     is IrLambda (ps) (b) (ty) (sp) -> sc-has b
+     is IrList (es) (ty) (sp) -> sc-has-list es 0
+     is IrMatch (s) (bs) (ty) (sp) -> sc-has s | sc-has-branches bs 0
+     is IrAct (ss) (ty) (sp) -> sc-has-stmts ss 0
+     is IrHandle (eff) (b) (cs) (ty) (sp) -> sc-has b | sc-has-clauses cs 0
+     is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> sc-has b
+     is IrRecord (n) (fs) (ty) (sp) -> sc-has-fields fs 0
+     is IrFieldAccess (r) (f) (ty) (sp) -> sc-has r
+     is IrFork (b) (ty) (sp) -> sc-has b
+     is IrAwait (b) (ty) (sp) -> sc-has b
+     is IrTry (mx) (b) (fb) (fl) (ty) (sp) -> sc-has-stmts b 0 | sc-has-stmts fb 0 | sc-has-stmts fl 0
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> sc-has r | sc-has v
+     is otherwise -> False
+
+  sc-is-logic : IRBinaryOp -> Boolean
+  sc-is-logic (op) =
+    when op
+     is IrAnd -> True
+     is IrOr -> True
+     is otherwise -> False
+
+  sc-has-list : List IRExpr, Integer -> Boolean
+  sc-has-list (es) (i) =
+    if i >= list-length es then False
+    else if sc-has (list-at es i) then True
+    else sc-has-list es (i + 1)
+
+  sc-has-stmts : List IRActStmt, Integer -> Boolean
+  sc-has-stmts (ss) (i) =
+    if i >= list-length ss then False
+    else if sc-has (ir-act-stmt-expr (list-at ss i)) then True
+    else sc-has-stmts ss (i + 1)
+
+  sc-has-branches : List IRBranch, Integer -> Boolean
+  sc-has-branches (bs) (i) =
+    if i >= list-length bs then False
+    else if sc-has ((list-at bs i).guard) then True
+    else if sc-has ((list-at bs i).body) then True
+    else sc-has-branches bs (i + 1)
+
+  sc-has-fields : List IRFieldVal, Integer -> Boolean
+  sc-has-fields (fs) (i) =
+    if i >= list-length fs then False
+    else if sc-has ((list-at fs i).value) then True
+    else sc-has-fields fs (i + 1)
+
+  sc-has-clauses : List IRHandleClause, Integer -> Boolean
+  sc-has-clauses (cs) (i) =
+    if i >= list-length cs then False
+    else if sc-has ((list-at cs i).body) then True
+    else sc-has-clauses cs (i + 1)
+
+  sc-expr : IRExpr -> IRExpr
+  sc-expr (e) = if sc-has e then sc-rebuild e else e
+
+  sc-rebuild : IRExpr -> IRExpr
+  sc-rebuild (e) =
+    when e
+     is IrBinary (op) (l) (r) (ty) (sp) -> sc-binary op (sc-expr l) (sc-expr r) ty sp
+     is IrNegate (x) (ty) (sp) -> IrNegate (sc-expr x) ty sp
+     is IrIf (c) (t) (el) (ty) (sp) -> IrIf (sc-expr c) (sc-expr t) (sc-expr el) ty sp
+     is IrLet (n) (ty) (v) (b) (sp) -> IrLet n ty (sc-expr v) (sc-expr b) sp
+     is IrApply (f) (a) (ty) (sp) -> IrApply (sc-expr f) (sc-expr a) ty sp
+     is IrLambda (ps) (b) (ty) (sp) -> IrLambda ps (sc-expr b) ty sp
+     is IrList (es) (ty) (sp) -> IrList (sc-list es 0 []) ty sp
+     is IrMatch (s) (bs) (ty) (sp) -> IrMatch (sc-expr s) (sc-branches bs 0 []) ty sp
+     is IrAct (ss) (ty) (sp) -> IrAct (sc-stmts ss 0 []) ty sp
+     is IrHandle (eff) (b) (cs) (ty) (sp) -> IrHandle eff (sc-expr b) (sc-clauses cs 0 []) ty sp
+     is IrWithTimeout (secs) (effs) (scopes) (b) (ty) (sp) -> IrWithTimeout secs effs scopes (sc-expr b) ty sp
+     is IrRecord (n) (fs) (ty) (sp) -> IrRecord n (sc-fields fs 0 []) ty sp
+     is IrFieldAccess (r) (f) (ty) (sp) -> IrFieldAccess (sc-expr r) f ty sp
+     is IrFork (b) (ty) (sp) -> IrFork (sc-expr b) ty sp
+     is IrAwait (b) (ty) (sp) -> IrAwait (sc-expr b) ty sp
+     is IrTry (mx) (b) (fb) (fl) (ty) (sp) -> IrTry mx (sc-stmts b 0 []) (sc-stmts fb 0 []) (sc-stmts fl 0 []) ty sp
+     is IrFieldStore (r) (f) (v) (ty) (sp) -> IrFieldStore (sc-expr r) f (sc-expr v) ty sp
+     is otherwise -> e
+
+  sc-binary : IRBinaryOp, IRExpr, IRExpr, CodexType, SourceSpan -> IRExpr
+  sc-binary (op) (l) (r) (ty) (sp) =
+    when op
+     is IrAnd -> IrIf l r (IrBoolLit False sp) ty sp
+     is IrOr -> IrIf l (IrBoolLit True sp) r ty sp
+     is otherwise -> IrBinary op l r ty sp
+
+  sc-list : List IRExpr, Integer, List IRExpr -> List IRExpr
+  sc-list (es) (i) (acc) =
+    if i >= list-length es then acc
+    else sc-list es (i + 1) (list-push acc (sc-expr (list-at es i)))
+
+  sc-stmts : List IRActStmt, Integer, List IRActStmt -> List IRActStmt
+  sc-stmts (ss) (i) (acc) =
+    if i >= list-length ss then acc
+    else sc-stmts ss (i + 1) (list-push acc (sc-stmt (list-at ss i)))
+
+  sc-stmt : IRActStmt -> IRActStmt
+  sc-stmt (s) =
+    when s
+     is IrDoBind (n) (t) (v) (sp) -> IrDoBind n t (sc-expr v) sp
+     is IrDoExec (v) (sp) -> IrDoExec (sc-expr v) sp
+
+  sc-branches : List IRBranch, Integer, List IRBranch -> List IRBranch
+  sc-branches (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else let b = list-at bs i
+    in sc-branches bs (i + 1) (list-push acc (IRBranch { pattern = b.pattern, body = sc-expr (b.body), guard = sc-expr (b.guard), span = b.span, alt-group = b.alt-group }))
+
+  sc-fields : List IRFieldVal, Integer, List IRFieldVal -> List IRFieldVal
+  sc-fields (fs) (i) (acc) =
+    if i >= list-length fs then acc
+    else let f = list-at fs i
+    in sc-fields fs (i + 1) (list-push acc (IRFieldVal { name = f.name, value = sc-expr (f.value), span = f.span }))
+
+  sc-clauses : List IRHandleClause, Integer, List IRHandleClause -> List IRHandleClause
+  sc-clauses (cs) (i) (acc) =
+    if i >= list-length cs then acc
+    else let c = list-at cs i
+    in sc-clauses cs (i + 1) (list-push acc (IRHandleClause { op-name = c.op-name, params = c.params, resume-name = c.resume-name, body = sc-expr (c.body), span = c.span }))
+
+  sc-defs : List IRDef, Integer, List IRDef -> List IRDef
+  sc-defs (ds) (i) (acc) =
+    if i >= list-length ds then acc
+    else let d = list-at ds i
+    in if sc-has (d.body) == False then sc-defs ds (i + 1) (list-push acc d)
+    else sc-defs ds (i + 1) (list-push acc (IRDef {
+      name = d.name,
+      params = d.params,
+      type-val = d.type-val,
+      body = sc-rebuild (d.body),
+      chapter-slug = d.chapter-slug,
+      is-punctual = d.is-punctual,
+      wcet-budget = d.wcet-budget,
+      unique-params = d.unique-params,
+      span = d.span
+    }))
+
+Page 1

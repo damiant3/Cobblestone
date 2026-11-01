@@ -1,6 +1,8 @@
 Chapter: MatchedNoise
   cites Diffusion chapter Pcg64
   cites Diffusion chapter Sampler
+  cites Kernel chapter GpuBridge
+  cites Gpu chapter ReduceKernelsPtx
 
  get_matched_noise of Forge's outpainting mk2 (scripts/outpainting_mk_2.py,
  from g-diffuser-bot), in f64 over an H x W x 3 picture of byte / 255 and a
@@ -22,8 +24,6 @@ Chapter: MatchedNoise
  Every size here is a multiple of 64, therefore even, and fftshift and
  ifftshift are both a roll by half. The FFT is mixed-radix
  decimation in time over a table of the length's roots of unity.
-
- We say:
 
 Section: Doubles
 
@@ -47,8 +47,6 @@ Section: Roots
     rt-im : Integer
   }
 
- exp (-2 pi i j / n) for j below n.
-
   md-roots : Integer -> Roots
   md-roots (n) = md-roots-fill n (md-new n) (md-new n) 0
 
@@ -63,9 +61,6 @@ Section: Roots
   md-least-factor (n) (p) = if p * p > n then n else if n - n / p * p == 0 then p else md-least-factor n (p + 1)
 
 Section: FFT
-
- One transform of length n from (ire, iim) at ioff every istride into
- (ore, oim) at ooff contiguous; inv conjugates the roots; tmp holds 2 p.
 
   md-fft : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   md-fft (rt) (inv) (ire) (iim) (ioff) (istride) (ore) (oim) (ooff) (n) (tmp) =
@@ -101,9 +96,6 @@ Section: FFT
     in let s = md-set ore (ooff + idx) (md-acc rt inv n p idx 0 tmp True 0.0) + md-set oim (ooff + idx) (md-acc rt inv n p idx 0 tmp False 0.0)
     in md-butterfly rt inv ore oim ooff n m p k (q + 1) tmp
 
- The real (re) or imaginary part of the sum over r of t_r times the root of
- n to the r idx.
-
   md-acc : Roots, Boolean, Integer, Integer, Integer, Integer, Integer, Boolean, Real -> Real
   md-acc (rt) (inv) (n) (p) (idx) (r) (tmp) (re) (acc) =
     if r >= p then acc
@@ -116,9 +108,6 @@ Section: FFT
     in let ti = md-get tmp (2 * r + 1)
     in md-acc rt inv n p idx (r + 1) tmp re (acc + (if re then tr * wr - ti * wi else tr * wi + ti * wr))
 Section: Planes
-
- A 2-D transform in place over an H x W plane (re, im): every row, then every
- column, through the line buffers; then ortho normalization.
 
   Fft2 = record {
     ff-rows : Roots,
@@ -160,8 +149,6 @@ Section: Planes
     in let j = (y + h / 2 - (y + h / 2) / h * h) * w + (x + w / 2 - (x + w / 2) / w * w)
     in let s = md-set dre i (md-get re j) + md-set dim i (md-get im j)
     in md-roll re im h w dre dim (i + 1)
-
- _fft2 (or _ifft2 when inv) of the plane (re, im), as fresh planes.
 
   md-shifted-fft2 : Fft2, Boolean, Integer, Integer, Integer, Integer -> List Integer
   md-shifted-fft2 (f) (inv) (re) (im) (h) (w) =
@@ -226,8 +213,6 @@ Section: Noise
     in md-shape sre sim pre pim q (i + 1) n
 Section: Histogram Match
 
- Bottom-up merge sort of an index buffer by value; stable.
-
   md-merge : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   md-merge (v) (src) (dst) (lo) (mid) (hi) (i) (j) =
     md-merge-at v src dst lo mid hi i j lo
@@ -256,6 +241,73 @@ Section: Histogram Match
   md-iota : Integer, Integer, Integer -> Integer
   md-iota (dst) (i) (n) = if i >= n then dst else let s = poke-32 dst (i * 4) i in md-iota dst (i + 1) n
 
+ The GPU order is md-sort-from's: ascending by value, ties by index. An f64
+ is a signed key in the same order once a negative's magnitude bits are
+ flipped; -0.0 keys as 0.0, which the CPU merge also treats as equal.
+
+  md-sort-order : Integer, Integer -> Integer
+  md-sort-order (v) (m) =
+    let g = md-gpu-sort v m
+    in if g /= 0 then g else md-sort-from v (md-iota (alloc-bytes (m * 4)) 0 m) (alloc-bytes (m * 4)) 1 m
+
+  md-sort-key : Real -> Integer
+  md-sort-key (x) =
+    let b = real-to-bits x
+    in if b == bit-shl 1 63 then 0
+    else if b < 0 then bit-xor b #7FFFFFFFFFFFFFFF else b
+
+  md-pow2 : Integer, Integer -> Integer
+  md-pow2 (p) (m) = if p >= m then p else md-pow2 (p * 2) m
+
+  md-gpu-sort : Integer, Integer -> Integer
+  md-gpu-sort (v) (m) =
+    let p = md-pow2 1 m
+    in let hk = gpu-buf-alloc (p * 8)
+    in let hi = gpu-buf-alloc (p * 8)
+    in let got = if hk == 0 | hi == 0 then 0 else md-gpu-sort-run v m p hk hi
+    in let f1 = if hk == 0 then False else gpu-buf-free hk
+    in let f2 = if hi == 0 then False else gpu-buf-free hi
+    in got
+
+  md-gpu-sort-run : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-gpu-sort-run (v) (m) (p) (hk) (hi) =
+    let buf = alloc-bytes (p * 8)
+    in let fk = md-fill-keys v buf 0 m p
+    in let wk = gpu-buf-write hk 0 (p * 8) buf
+    in let fi = md-fill-idx buf 0 p
+    in let wi = gpu-buf-write hi 0 (p * 8) buf
+    in if wk == False | wi == False then 0
+    else if md-bitonic hk hi p 2 == False then 0
+    else if gpu-buf-read hi 0 (p * 8) buf == False then 0
+    else md-take-order buf (alloc-bytes (m * 4)) 0 m
+
+  md-fill-keys : Integer, Integer, Integer, Integer, Integer -> Integer
+  md-fill-keys (v) (buf) (i) (m) (p) =
+    if i >= p then 0
+    else let s = poke-qword buf (i * 8) (if i < m then md-sort-key (md-get v i) else #7FFFFFFFFFFFFFFF)
+    in md-fill-keys v buf (i + 1) m p
+
+  md-fill-idx : Integer, Integer, Integer -> Integer
+  md-fill-idx (buf) (i) (p) = if i >= p then 0 else let s = poke-qword buf (i * 8) i in md-fill-idx buf (i + 1) p
+
+  md-bitonic : Integer, Integer, Integer, Integer -> Boolean
+  md-bitonic (hk) (hi) (p) (k) =
+    if k > p then True
+    else if md-bitonic-j hk hi p k (k / 2) == False then False
+    else md-bitonic hk hi p (k * 2)
+
+  md-bitonic-j : Integer, Integer, Integer, Integer, Integer -> Boolean
+  md-bitonic-j (hk) (hi) (p) (k) (j) =
+    if j < 1 then True
+    else let code = gpu-launch reduce-kernels-ptx "kernel_bitonic_step" (GpuGrid { gx = (p + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) [gpu-arg-buf hk 0, gpu-arg-buf hi 0, gpu-arg-u64 j, gpu-arg-u64 k, gpu-arg-u64 p]
+    in if code < 0 then False else md-bitonic-j hk hi p k (j / 2)
+
+  md-take-order : Integer, Integer, Integer, Integer -> Integer
+  md-take-order (buf) (out) (i) (m) =
+    if i >= m then out
+    else let s = poke-32 out (i * 4) (peek-qword buf (i * 8))
+    in md-take-order buf out (i + 1) m
+
  The template: each byte value present among the reference bytes, its
  value byte / 255 and its cumulative count over the total.
 
@@ -268,6 +320,40 @@ Section: Histogram Match
 
   md-zeros : Integer, List Integer -> List Integer
   md-zeros (n) (acc) = if n <= 0 then acc else md-zeros (n - 1) (list-push acc 0)
+
+  md-counts : Integer, Integer, Integer, Integer -> List Integer
+  md-counts (bytes) (keep) (c) (n) =
+    let g = md-gpu-counts bytes keep c n
+    in if list-length g == 256 then g else md-byte-counts bytes keep c 0 n (md-zeros 256 [])
+
+  md-gpu-counts : Integer, Integer, Integer, Integer -> List Integer
+  md-gpu-counts (bytes) (keep) (c) (n) =
+    let hb = gpu-buf-alloc (n * 3)
+    in let hk = gpu-buf-alloc n
+    in let hc = gpu-buf-alloc 2048
+    in let got = if hb == 0 | hk == 0 | hc == 0 then [] else md-gpu-run hb hk hc bytes keep c n
+    in let f1 = if hb == 0 then False else gpu-buf-free hb
+    in let f2 = if hk == 0 then False else gpu-buf-free hk
+    in let f3 = if hc == 0 then False else gpu-buf-free hc
+    in got
+
+  md-gpu-run : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  md-gpu-run (hb) (hk) (hc) (bytes) (keep) (c) (n) =
+    let zero = md-zero-words (alloc-bytes 2048) 0
+    in let wb = gpu-buf-write hb 0 (n * 3) bytes
+    in let wk = gpu-buf-write hk 0 n keep
+    in let wc = gpu-buf-write hc 0 2048 zero
+    in if wb == False | wk == False | wc == False then []
+    else let code = gpu-launch reduce-kernels-ptx "kernel_histogram_bytes" (GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }) [gpu-arg-buf hb 0, gpu-arg-buf hk 0, gpu-arg-buf hc 0, gpu-arg-u64 3, gpu-arg-u64 c, gpu-arg-u64 n]
+    in if code < 0 then []
+    else if gpu-buf-read hc 0 2048 zero == False then []
+    else md-gpu-bins zero 0 []
+
+  md-zero-words : Integer, Integer -> Integer
+  md-zero-words (a) (i) = if i >= 512 then a else let s = poke-32 a (i * 4) 0 in md-zero-words a (i + 1)
+
+  md-gpu-bins : Integer, Integer, List Integer -> List Integer
+  md-gpu-bins (a) (k) (acc) = if k >= 256 then acc else md-gpu-bins a (k + 1) (list-push acc (bit-and (peek-32 a (k * 8)) #FFFFFFFF))
 
   Tmpl = record {
     tp-x : List Real,
@@ -353,9 +439,6 @@ Section: Matched Noise
   md-add-mean : Integer, Integer, Real, Real, Integer, Integer -> Integer
   md-add-mean (w) (mask) (mx) (avg) (i) (n) = if i >= n then w else let s = md-set w i (md-get w i / mx + avg * md-get mask i) in md-add-mean w mask mx avg (i + 1) n
 
- One channel's shaped noise: its noise plane windowed, back, forward again
- and shaped by the picture's transform, back to real.
-
   md-channel : Fft2, Integer, Integer, Integer, Integer, Integer, Real -> Integer
   md-channel (f) (h) (w) (win) (nz) (c) (q) =
     let n = h * w
@@ -367,9 +450,6 @@ Section: Matched Noise
     in let s3 = md-shifted-fft2 f False (list-at back 0) (md-fill (md-new n) 0.0 0 n) h w
     in let sh = md-shape (list-at s3 0) (list-at s3 1) (list-at p 0) (list-at p 1) q 0 n
     in list-at (md-shifted-fft2 f True (list-at s3 0) (list-at s3 1) h w) 0
-
- get_matched_noise over src and mask (H x W x 3 f64, the mask 0 or 1, equal
- across channels) and the picture's bytes; the result as fresh f64.
 
   matched-noise : Integer, Integer, Integer, Integer, Integer, Real, Real -> Integer
   matched-noise (src) (mask) (bytes) (h) (w) (q) (cv) =
@@ -411,10 +491,10 @@ Section: Matched Noise
     let v = md-new n
     in let m = md-pick out fillm c v 0 n 0
     in if m == 0 then 0
-    else let counts = md-byte-counts bytes refm c 0 n (md-zeros 256 [])
+    else let counts = md-counts bytes refm c n
     in let total = md-sum-counts counts 0 0
     in if total == 0 then 0
-    else let order = md-sort-from v (md-iota (alloc-bytes (m * 4)) 0 m) (alloc-bytes (m * 4)) 1 m
+    else let order = md-sort-order v m
     in let matched = md-new m
     in let g = md-groups v order matched m (md-template counts total 0 0 [] []) 0 0
     in md-drop out fillm c matched 0 n 0

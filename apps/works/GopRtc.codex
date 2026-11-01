@@ -2,8 +2,6 @@ Chapter: GopRtc
 
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Registers
 
   rtc-port-index : Integer = 112
@@ -67,4 +65,73 @@ Section: Reading
   rtc-seconds-unguarded (d) = act
     v <- rtc-read rtc-reg-seconds
     rtc-bcd-to-int v
+  end
+
+Section: The civil clock
+
+ MC146818 status register B: bit 1 set means 24-hour hours; clear means
+ 12-hour, with bit 7 of the hour register marking PM.
+
+  rtc-reg-minutes : Integer = 2
+  rtc-reg-hours : Integer = 4
+  rtc-reg-day : Integer = 7
+  rtc-reg-month : Integer = 8
+  rtc-reg-year : Integer = 9
+
+  rtc-h24-bit : Integer = 2
+  rtc-pm-bit : Integer = 128
+
+  rtc-decode-hour : Integer, Integer -> Integer
+  rtc-decode-hour (raw) (b) =
+    let pm = bit-and raw rtc-pm-bit /= 0
+    in let v = rtc-decode (bit-and raw 127) (bit-and b rtc-binary-bit)
+    in if bit-and b rtc-h24-bit /= 0 then v
+    else if pm then (if v == 12 then 12 else v + 12)
+    else (if v == 12 then 0 else v)
+
+  RtcCivil = record {
+    rc-ok : Boolean,
+    rc-year : Integer,
+    rc-month : Integer,
+    rc-day : Integer,
+    rc-hour : Integer,
+    rc-minute : Integer,
+    rc-second : Integer
+  }
+
+  rtc-civil-in : Integer, Integer, Integer -> Boolean
+  rtc-civil-in (v) (lo) (hi) = v >= lo & v <= hi
+
+  rtc-civil-of : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> RtcCivil
+  rtc-civil-of (b) (sec) (min) (hour) (day) (month) (year) =
+    let bin = bit-and b rtc-binary-bit
+    in let mo = rtc-decode month bin
+    in let d = rtc-decode day bin
+    in let h = rtc-decode-hour hour b
+    in let mi = rtc-decode min bin
+    in let s = rtc-decode sec bin
+    in RtcCivil {
+      rc-ok = rtc-civil-in mo 1 12 & rtc-civil-in d 1 31 & rtc-civil-in h 0 23 & rtc-civil-in mi 0 59 & rtc-civil-in s 0 59,
+      rc-year = 2000 + rtc-decode year bin,
+      rc-month = mo,
+      rc-day = d,
+      rc-hour = h,
+      rc-minute = mi,
+      rc-second = s
+    }
+
+  rtc-civil : Integer -> [Device.Port] RtcCivil
+  rtc-civil (dummy) = act
+    idle <- rtc-wait-idle rtc-uip-fuel
+    b <- rtc-read rtc-reg-status-b
+    s0 <- rtc-read rtc-reg-seconds
+    mi <- rtc-read rtc-reg-minutes
+    h <- rtc-read rtc-reg-hours
+    d <- rtc-read rtc-reg-day
+    mo <- rtc-read rtc-reg-month
+    y <- rtc-read rtc-reg-year
+    s1 <- rtc-read rtc-reg-seconds
+    let c = rtc-civil-of b s0 mi h d mo y
+    in if idle == 0 | s0 /= s1 then __record-set c "rc-ok" False
+    else c
   end

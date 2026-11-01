@@ -1,0 +1,101 @@
+Chapter: DtlsSessionTest
+  cites Encode chapter DtlsSession
+
+Section: Formatting
+
+  fmt-act : DtlsAction -> Text
+  fmt-act (a) =
+    when a
+      is ActSendFlight (f) -> "send" & show f
+      is ActSetTimer (d) -> "timer" & show d
+      is ActDeliverKeys -> "keys"
+      is ActAck -> "ack"
+      is ActAbort (x) -> "abort" & show x
+
+  fmt-acts : List DtlsAction -> Text
+  fmt-acts (as) = fmt-acts-loop as 0 (list-length as) ""
+
+  fmt-acts-loop : List DtlsAction, Integer, Integer, Text -> Text
+  fmt-acts-loop (as) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == 0 then fmt-acts-loop as (i + 1) n (fmt-act (list-at as i))
+    else fmt-acts-loop as (i + 1) n (acc & "," & fmt-act (list-at as i))
+
+  fmt-phase : DtlsHsPhase -> Text
+  fmt-phase (p) =
+    when p
+      is PhStart -> "start"
+      is PhWaitServerHello -> "wait-sh"
+      is PhWaitAck -> "wait-ack"
+      is PhConnected -> "connected"
+      is PhFailed -> "failed"
+
+  fmt-step : DtlsHsStep -> Text
+  fmt-step (s) = fmt-phase ((s.step-state).hs-phase) & "[" & fmt-acts (s.step-actions) & "]"
+
+Section: Direct
+
+  direct-1 : Integer -> Text
+  direct-1 (now) = direct-2 (session-peek (dtls-session-hello dtls-session-open now))
+
+  direct-2 : Peeked (SOffer (SRecv HelloRetry (SSend ClientHello (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd))))) (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd)))) DtlsHsStep -> Text
+  direct-2 (pk) =
+    when pk
+      is MkPeeked (v) (d1) -> fmt-step v & " " & direct-3 (session-peek (dtls-session-flight (session-right d1) 50))
+
+  direct-3 : Peeked (SRecv HandshakeAck SEnd) DtlsHsStep -> Text
+  direct-3 (pk) =
+    when pk
+      is MkPeeked (v) (d2) -> fmt-step v & " " & fmt-step (dtls-session-done (dtls-session-ack d2 90))
+
+  test-direct : Text = "session direct: " & direct-1 0
+
+Section: Cookie
+
+  cookie-1 : Integer -> Text
+  cookie-1 (now) = cookie-2 (session-peek (dtls-session-timeout (dtls-session-hello dtls-session-open now) 1000))
+
+  cookie-2 : Peeked (SOffer (SRecv HelloRetry (SSend ClientHello (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd))))) (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd)))) DtlsHsStep -> Text
+  cookie-2 (pk) =
+    when pk
+      is MkPeeked (v) (r1) -> fmt-step v & " " & cookie-3 (session-peek (dtls-session-retry (session-left r1) [9, 9, 9, 9] 1200))
+
+  cookie-3 : Peeked (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd))) DtlsHsStep -> Text
+  cookie-3 (pk) =
+    when pk
+      is MkPeeked (v) (r2) -> fmt-step v & " cookie=" & show (list-length ((v.step-state).hs-cookie)) & " " & direct-3 (session-peek (dtls-session-flight r2 1300))
+
+  test-cookie : Text = "session cookie: " & cookie-1 0
+
+Section: Server
+
+  sec : List Integer = [1, 2, 3, 4, 5, 6, 7, 8]
+  addr : List Integer = [10, 0, 0, 7]
+
+  server-run : Answered (SSend ServerFlight (SRecv ClientFinished (SSend HandshakeAck SEnd))) DtlsAction -> Text
+  server-run (a) =
+    when a
+      is Rejected (v) -> "rejected " & fmt-act v
+      is Accepted (s0) -> "admitted " & server-flight (session-peek s0)
+
+  server-flight : Peeked (SSend ServerFlight (SRecv ClientFinished (SSend HandshakeAck SEnd))) DtlsAction -> Text
+  server-flight (pk) =
+    when pk
+      is MkPeeked (v) (s0) -> fmt-act v & " " & server-fin (session-peek (dtls-session-server-flight s0))
+
+  server-fin : Peeked (SRecv ClientFinished (SSend HandshakeAck SEnd)) DtlsAction -> Text
+  server-fin (pk) =
+    when pk
+      is MkPeeked (v) (s1) -> fmt-act v & " " & fmt-act (dtls-session-server-done (dtls-session-client-fin s1))
+
+  test-server : Text =
+    "session server: none=" & server-run (dtls-session-admit sec addr []) & " bad=" & server-run (dtls-session-admit sec addr [1, 2, 3]) & " good=" & server-run (dtls-session-admit sec addr (dtls-cookie sec addr))
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-direct
+    print-line-uni test-cookie
+    print-line-uni test-server
+  end
+
+Page 1

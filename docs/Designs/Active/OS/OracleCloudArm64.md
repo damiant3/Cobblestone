@@ -38,7 +38,7 @@ QEMU in the foreground with no timeout, so it cannot serve as a test arm.
 | capability | chapter |
 |---|---|
 | ARM64 PE32+ writer, UEFI entry stub, 4-level page tables | `codex/plugs/pe/Arm64PeWriter.codex` |
-| GICv3, generic timer | `codex/os/kernel/Gic.codex`, `Arm64Timer.codex` |
+| GICv3, generic timer | `Arm64Timer.codex`; the GICv3 sketch was deleted uncompiled in CL 50335 (read it at `//Codex/main/codex/os/kernel/Gic.codex#5`), and it needs ICC system-register builtins in `Types/Builtins.codex` |
 | ECAM PCI, VirtIO-PCI transport | `codex/os/kernel/Arm64Pci.codex`, `VirtioPci.codex` |
 | VirtIO-net, VirtIO-blk | `codex/os/kernel/VirtioNet.codex`, `VirtioBlk.codex` |
 | ARM64 NetIO, drop-in for `NetIO.codex` | `codex/os/net/Arm64NetIO.codex` |

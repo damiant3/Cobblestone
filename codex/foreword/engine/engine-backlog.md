@@ -10,7 +10,7 @@ is still real is never quietly dropped.
 
 ## The shared mixer
 
-`Foreword chapter Random` supplies `mix-bits` and `rand-in-range` (CL 10493),
+`Foreword chapter Random` supplies `mix-bits` and `rand-in-range`,
 and its prose carries the whole account: why an unfolded multiply-add has no
 usable low bits, why that is invisible to a balance check, and -- the part
 that matters most -- **why it is only a defect where the consumer reads low
@@ -44,3 +44,4 @@ downstream to be re-recorded, and buys one shared definition in place of a
 private copy. Damian declined that trade on 2026-07-27. Its consumer was NOT
 measured, so if world generation is ever suspected on other grounds this is an
 open question again and this paragraph is not evidence about it.
+

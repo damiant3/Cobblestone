@@ -7,28 +7,24 @@ Chapter: CleanZombiesScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
- THE SEVENTH GENERATOR ON THE PIPELINE MODEL (PipelineModel.md). The emitted
- script is byte-identical to the one that shipped before the migration.
-
- THIS ONE CARRIES THE LEAST THE MODEL CAN HOLD, and the reason is worth stating
- once rather than rediscovering per generator: the body is almost entirely
- `ScRaw`, so a name inside a raw payload cannot be reached by `pipe-ref` and the
- declarations below bind only the three assignments that are not raw. A
- generator's raw count therefore bounds how much of it the model can ever
- describe, which is what makes `ShellDslReadability.md` the same campaign as
- this one rather than a neighbouring chore.
-
 Section: Parameters
 
-  cleanzombies-params : List ShellParam = [sh-doc ["Fleet-wide: kill every codex-vm and QEMU on the box and shut down WSL,", "the pre-2026-08-28 behaviour. WITHOUT it the sweep is scoped to VMs whose", "command line references THIS workspace, because a bare run during another", "agent's gate is friendly fire: it killed three gates in one day. A foreign", "agent's VM, a bare WSL bridge and vmmemWSL all survive a scoped run; your", "own GDB bridge names your repo path and is yours, so it does not."] (sh-switch "All")]
+  cleanzombies-params : List ShellParam = [sh-doc all-doc (sh-switch "All")]
+
+  all-doc : List Text =
+    [ "Fleet-wide: kill every codex-vm and QEMU on the box and shut down WSL,"
+    , "the pre-2026-08-28 behaviour. WITHOUT it the sweep is scoped to VMs whose"
+    , "command line references THIS workspace, because a bare run during another"
+    , "agent's gate is friendly fire: it killed three gates in one day. A foreign"
+    , "agent's VM, a bare WSL bridge and vmmemWSL all survive a scoped run; your"
+    , "own GDB bridge names your repo path and is yours, so it does not."
+    ]
 
 Section: The pipeline, declared before it is spelled
 
-  killed-art : PipeArtifact = PipeArtifact { pa-name = "killed", pa-kind = PkValue, pa-expr = SeVar "killed", pa-from = Just (SeRaw "$false") }
+  killed-art : PipeArtifact = PipeArtifact { pa-name = "killed", pa-kind = PkValue, pa-expr = SeVar "killed", pa-from = Just (SeBool False) }
 
-  repo-art : PipeArtifact = PipeArtifact { pa-name = "repo", pa-kind = PkDir, pa-expr = SeVar "repo", pa-from = Just (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path") }
+  repo-art : PipeArtifact = PipeArtifact { pa-name = "repo", pa-kind = PkDir, pa-expr = SeVar "repo", pa-from = Just (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))) }
 
   scope-art : PipeArtifact = PipeArtifact { pa-name = "scope", pa-kind = PkText, pa-expr = SeVar "scope", pa-from = Just (SeRaw "if ($All) { 'fleet-wide' } else { 'this workspace only' }") }
 
@@ -48,27 +44,89 @@ Section: S01 -- Init
 
 Section: S02 -- Kill VM and WSL Processes
 
-  s02-codexvm-signal : List ShellCmd = [ScForEach "p" (SeVar "procs") [ScRaw "$evtName = \"Global\\CodexVmShutdown_$($p.Id)\"", ScTry [ScRaw "$evt = [System.Threading.EventWaitHandle]::OpenExisting($evtName)", ScRaw "$evt.Set() | Out-Null", ScRaw "$evt.Dispose()"] [] []], ScRaw "Start-Sleep -Milliseconds 3000"]
+  s02-body : List ShellCmd =
+    [ ScBlank
+    , ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) s02-per-name
+    ]
 
-  s02-portfwd-spare : List ShellCmd = [ScComment "Spare long-running SERVER VMs (webservices booted with -portfwd,", ScComment "e.g. apps/ideas). Compile/test VMs never use -portfwd, so any", ScComment "codex-vm with it on the command line is deliberately serving,", ScComment "not an orphan. Killing it breaks another agent's live demo.", ScRaw "$procs = @($procs | Where-Object {", ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine", ScRaw "\"$cl\" -notlike '*-portfwd*'", ScRaw "})"]
+  s02-per-name : List ShellCmd =
+    [ ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue"
+    , ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare []
+    , ScIf (SeAnd (SeNot (pipe-ref cz-arts cleanzombies-params "All")) (SeVar "procs")) s02-own-scope []
+    , ScIf (SeVar "procs") s02-kill []
+    ]
 
-  s02-kill-remaining : List ShellCmd = [ScRaw "$procs | Where-Object { -not $_.HasExited } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }", ScAssign "killed" (SeRaw "$true")]
+  s02-portfwd-spare : List ShellCmd =
+    [ ScComment "Spare long-running SERVER VMs (webservices booted with -portfwd,"
+    , ScComment "e.g. apps/ideas). Compile/test VMs never use -portfwd, so any"
+    , ScComment "codex-vm with it on the command line is deliberately serving,"
+    , ScComment "not an orphan. Killing it breaks another agent's live demo."
+    , ScRaw "$procs = @($procs | Where-Object {"
+    , ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine"
+    , ScRaw "\"$cl\" -notlike '*-portfwd*'"
+    , ScRaw "})"
+    ]
 
-  s02-own-scope : List ShellCmd = [ScComment "Ownership scope (default): only processes whose command line names", ScComment "THIS workspace are ours to kill. Another agent's VM never matches;", ScComment "a bare wsl bridge never matches; your own GDB bridge does. -All", ScComment "restores the fleet-wide sweep.", ScRaw "$procs = @($procs | Where-Object {", ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine", ScRaw "\"$cl\" -like \"*$repo*\"", ScRaw "})"]
+  s02-own-scope : List ShellCmd =
+    [ ScComment "Ownership scope (default): only processes whose command line names"
+    , ScComment "THIS workspace are ours to kill. Another agent's VM never matches;"
+    , ScComment "a bare wsl bridge never matches; your own GDB bridge does. -All"
+    , ScComment "restores the fleet-wide sweep."
+    , ScRaw "$procs = @($procs | Where-Object {"
+    , ScRaw "$cl = (Get-CimInstance Win32_Process -Filter \"ProcessId=$($_.Id)\" -ErrorAction SilentlyContinue).CommandLine"
+    , ScRaw "\"$cl\" -like \"*$repo*\""
+    , ScRaw "})"
+    ]
 
-  s02-body : List ShellCmd = [ScBlank, ScForEach "name" (SeArrayLiteral [SeLit "qemu-system-x86_64", SeLit "codex-vm", SeLit "wsl"]) [ScRaw "$procs = Get-Process -Name $name -ErrorAction SilentlyContinue", ScIf (SeAnd (SeStringEq (SeVar "name") (SeLit "codex-vm")) (SeVar "procs")) s02-portfwd-spare [], ScIf (SeAnd (SeNot (pipe-ref cz-arts cleanzombies-params "All")) (SeVar "procs")) s02-own-scope [], ScIf (SeVar "procs") [ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal [], ScSequence s02-kill-remaining] []]]
+  s02-kill : List ShellCmd =
+    [ ScIf (SeStringEq (SeVar "name") (SeLit "codex-vm")) s02-codexvm-signal []
+    , ScSequence s02-kill-remaining
+    ]
+
+  s02-codexvm-signal : List ShellCmd =
+    [ ScForEach "p" (SeVar "procs") s02-signal-one
+    , ScSleepMs (SeInt 3000)
+    ]
+
+  s02-signal-one : List ShellCmd =
+    [ ScAssign "evtName" (SeText "Global\\CodexVmShutdown_$($p.Id)")
+    , ScTry s02-set-event [] []
+    ]
+
+  s02-set-event : List ShellCmd =
+    [ ScDotNetCallAssign "evt" "System.Threading.EventWaitHandle" "OpenExisting" [SeVar "evtName"]
+    , ScRaw "$evt.Set() | Out-Null"
+    , ScCallMethod (SeVar "evt") "Dispose" []
+    ]
+
+  s02-kill-remaining : List ShellCmd =
+    [ ScRaw "$procs | Where-Object { -not $_.HasExited } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }"
+    , ScAssign "killed" (SeBool True)
+    ]
 
   s02 : PipeStage = PipeStage { ps-name = "kill vm and wsl processes", ps-why = "signal each codex-vm to shut down, then stop what is left in scope", ps-in = ["All", "repo"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s02-body }
 
 Section: S03 -- WSL Shutdown
 
-  s03-body : List ShellCmd = [ScBlank, ScIf (SeAnd (pipe-ref cz-arts cleanzombies-params "All") (SeRaw "(Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue)")) [ScRaw "& wsl.exe --shutdown 2>$null | Out-Null", ScAssign "killed" (SeRaw "$true")] []]
+  s03-body : List ShellCmd =
+    [ ScBlank
+    , ScIf (SeAnd (pipe-ref cz-arts cleanzombies-params "All") (SeRaw "(Get-Process -Name vmmemWSL -ErrorAction SilentlyContinue)")) s03-shutdown []
+    ]
+
+  s03-shutdown : List ShellCmd =
+    [ ScRaw "& wsl.exe --shutdown 2>$null | Out-Null"
+    , ScAssign "killed" (SeBool True)
+    ]
 
   s03 : PipeStage = PipeStage { ps-name = "wsl shutdown", ps-why = "under -All only, take the WSL VM down as well", ps-in = ["All"], ps-out = [], ps-needs = [], ps-verdict = [], ps-body = s03-body }
 
 Section: S04 -- Summary
 
-  s04-body : List ShellCmd = [ScBlank, pipe-produce scope-art, ScIf (pipe-ref cz-arts cleanzombies-params "killed") [ScRaw "Write-Output \"clean-zombies: done ($scope)\""] [ScRaw "Write-Output \"clean-zombies: nothing to do ($scope)\""]]
+  s04-body : List ShellCmd =
+    [ ScBlank
+    , pipe-produce scope-art
+    , ScIf (pipe-ref cz-arts cleanzombies-params "killed") [ScRaw "Write-Output \"clean-zombies: done ($scope)\""] [ScRaw "Write-Output \"clean-zombies: nothing to do ($scope)\""]
+    ]
 
   s04 : PipeStage = PipeStage { ps-name = "summary", ps-why = "say which scope ran and whether anything was actually killed", ps-in = ["killed", "All"], ps-out = [scope-art], ps-needs = [], ps-verdict = [], ps-body = s04-body }
 

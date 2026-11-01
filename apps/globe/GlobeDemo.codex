@@ -10,8 +10,7 @@ Chapter: GlobeDemo
   cites Math chapter Matrix4
   cites Math chapter Quaternion
   cites Game chapter Color
-
- We say:
+  cites Kernel chapter Mouse
 
 Section: Constants
 
@@ -19,15 +18,10 @@ Section: Constants
   sw : Integer = 640
   sh : Integer = 480
   kb-addr : Integer = 28680
-  mouse-addr : Integer = 28684
   earth-r : Integer = 3000
   ico-subdivisions : Integer = 3
 
 Section: Entry
-
- Port I/O carries the Device.Port capability effect, so every port call is
- an act-bind and each function that reaches one declares the row. The
- texture upload, the light registers and the rasterizer fire are all ports.
 
   opening : [Console, Device.Port, Gpu.Compute, Gpu.Memory] Nothing = act
     result <- globe-main gpu-cmd
@@ -38,8 +32,9 @@ Section: Entry
   globe-main (cmd) = act
     loaded <- tg-load-earth-image
     tex <- globe-ensure-tex loaded
+    ms <- mouse-init (mouse-new sw sh)
     let sphere = globe-icosphere ico-subdivisions earth-r
-    in globe-loop cmd sphere 0 200 9000 0
+    in globe-loop cmd sphere ms 0 200 9000 0
   end
 
   globe-ensure-tex : Integer -> [Device.Port, Gpu.Compute] Integer
@@ -529,9 +524,20 @@ Section: Render Frame
     in let c0 = glit-color v0 light
     in let c1 = glit-color v1 light
     in let c2 = glit-color v2 light
-    in gtris-next (gpu-mem-write cmd off (p0.gp-sx) + gpu-mem-write cmd (off + 4) (p0.gp-sy) + gpu-mem-write cmd (off + 8) (p1.gp-sx) + gpu-mem-write cmd (off + 12) (p1.gp-sy) + gpu-mem-write cmd (off + 16) (p2.gp-sx) + gpu-mem-write cmd (off + 20) (p2.gp-sy) + gpu-mem-write cmd (off + 24) c0 + gpu-mem-write cmd (off + 28) c1 + gpu-mem-write cmd (off + 32) c2 + gpu-mem-write cmd (off + 36) (p0.gp-depth) + gpu-mem-write cmd (off + 40) (p1.gp-depth) + gpu-mem-write cmd (off + 44) (p2.gp-depth) + gpu-mem-write cmd (off + 48) (v0.vu) + gpu-mem-write cmd (off + 52) (v0.vv) + gpu-mem-write cmd (off + 56) (v1.vu) + gpu-mem-write cmd (off + 60) (v1.vv) + gpu-mem-write cmd (off + 64) (v2.vu) + gpu-mem-write cmd (off + 68) (v2.vv)) mesh vp light eye cmd i n tri-idx
+    in gtris-next (gtri-write cmd off p0 p1 p2 c0 c1 c2 v0 v1 v2) mesh vp light eye cmd i n tri-idx
 
-  gtris-next : Integer, Mesh, Mat4, Vec3, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
+  gtri-write : Integer, Integer, GProj, GProj, GProj, Integer, Integer, Integer, Vertex, Vertex, Vertex -> [Gpu.Memory] Integer
+  gtri-write (cmd) (off) (p0) (p1) (p2) (c0) (c1) (c2) (v0) (v1) (v2) = act
+    w1 <- gpu-mem-write cmd off (p0.gp-sx) + gpu-mem-write cmd (off + 4) (p0.gp-sy) + gpu-mem-write cmd (off + 8) (p1.gp-sx)
+    w2 <- gpu-mem-write cmd (off + 12) (p1.gp-sy) + gpu-mem-write cmd (off + 16) (p2.gp-sx) + gpu-mem-write cmd (off + 20) (p2.gp-sy)
+    w3 <- gpu-mem-write cmd (off + 24) c0 + gpu-mem-write cmd (off + 28) c1 + gpu-mem-write cmd (off + 32) c2
+    w4 <- gpu-mem-write cmd (off + 36) (p0.gp-depth) + gpu-mem-write cmd (off + 40) (p1.gp-depth)
+    w5 <- gpu-mem-write cmd (off + 44) (p2.gp-depth) + gpu-mem-write cmd (off + 48) (v0.vu) + gpu-mem-write cmd (off + 52) (v0.vv)
+    w6 <- gpu-mem-write cmd (off + 56) (v1.vu) + gpu-mem-write cmd (off + 60) (v1.vv) + gpu-mem-write cmd (off + 64) (v2.vu)
+    w1 + w2 + w3 + w4 + w5 + w6 + gpu-mem-write cmd (off + 68) (v2.vv)
+  end
+
+  gtris-next :Integer, Mesh, Mat4, Vec3, Vec3, Integer, Integer, Integer, Integer -> [Gpu.Memory] Integer
   gtris-next (w) (mesh) (vp) (light) (eye) (cmd) (i) (n) (tri-idx) =
     gtris mesh vp light eye cmd (i + 3) n (tri-idx + 1)
 
@@ -569,27 +575,22 @@ Section: Animation
  frame is two functions: __heap-restore has to run on the far side of an
  effectful call, and a let cannot bind one.
 
-  globe-loop : Integer, Mesh, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  globe-loop (cmd) (sphere) (yaw) (pitch) (dist) (frame) = act
-    dummy <- port-in-byte 96
+  globe-loop : Integer, Mesh, MouseState, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-loop (cmd) (sphere) (prev) (yaw) (pitch) (dist) (frame) = act
+    ms <- mouse-poll prev
     let sc = peek-byte kb-addr 0
-    in let mflags = peek-byte mouse-addr 0
-    in let mdx = peek-byte mouse-addr 1
-    in let mdy = peek-byte mouse-addr 2
-    in let mc0 = poke-byte mouse-addr 0 0
-    in let mc1 = poke-byte mouse-addr 1 0
-    in let mc2 = poke-byte mouse-addr 2 0
     in let ack = poke-byte kb-addr 0 0
-    in let mouse-dx = if mdx > 127 then mdx - 256 else mdx
-    in let mouse-dy = if mdy > 127 then mdy - 256 else mdy
-    in let dragging = mflags / 1 - mflags / 2 * 2
+    in let moved = ms.m-packets > prev.m-packets
+    in let mouse-dx = if moved then ms.mdx else 0
+    in let mouse-dy = if moved then ms.mdy else 0
+    in let dragging = if ms.m-left then 1 else 0
     in let yaw2 = if dragging == 1 then yaw - mouse-dx * 8 else yaw + 3
     in let pitch2 = if dragging == 1 then gc-clamp (pitch + mouse-dy * 8) (-1400) 1400 else pitch
     in if sc == 16 then "quit"
     else if sc == 1 then "quit"
-    else if sc == 18 then globe-regen cmd sphere PkEarth 42 yaw2 pitch2 dist frame
-    else if sc == 50 then globe-regen cmd sphere PkMars 77 yaw2 pitch2 dist frame
-    else if sc == 19 then globe-regen cmd sphere PkRandom (frame * 7 + 1337) yaw2 pitch2 dist frame
+    else if sc == 18 then globe-regen cmd sphere ms PkEarth 42 yaw2 pitch2 dist frame
+    else if sc == 50 then globe-regen cmd sphere ms PkMars 77 yaw2 pitch2 dist frame
+    else if sc == 19 then globe-regen cmd sphere ms PkRandom (frame * 7 + 1337) yaw2 pitch2 dist frame
     else let y3 = if sc == 75 then yaw2 - 120 else if sc == 77 then yaw2 + 120 else yaw2
     in let p2 = if sc == 72 then
       gc-clamp (pitch2 + 60) (-1400) 1400
@@ -597,25 +598,25 @@ Section: Animation
     in let d2 = if sc == 78 then
       gc-clamp (dist - 300) 4000 25000
     else if sc == 74 then gc-clamp (dist + 300) 4000 25000 else dist
-    in globe-step cmd sphere y3 p2 d2 frame
+    in globe-step cmd sphere ms y3 p2 d2 frame
   end
 
-  globe-regen : Integer, Mesh, PlanetKind, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  globe-regen (cmd) (sphere) (kind) (seed) (yaw) (pitch) (dist) (frame) = act
+  globe-regen : Integer, Mesh, MouseState, PlanetKind, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-regen (cmd) (sphere) (ms) (kind) (seed) (yaw) (pitch) (dist) (frame) = act
     gen <- tg-generate kind seed
-    globe-loop cmd sphere yaw pitch dist (frame + 1)
+    globe-loop cmd sphere ms yaw pitch dist (frame + 1)
   end
 
-  globe-step : Integer, Mesh, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  globe-step (cmd) (sphere) (yaw) (pitch) (dist) (frame) =
+  globe-step : Integer, Mesh, MouseState, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-step (cmd) (sphere) (ms) (yaw) (pitch) (dist) (frame) =
     let hp = __heap-save
-    in globe-step-done cmd sphere yaw pitch dist frame hp
+    in globe-step-done cmd sphere ms yaw pitch dist frame hp
 
-  globe-step-done : Integer, Mesh, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
-  globe-step-done (cmd) (sphere) (yaw) (pitch) (dist) (frame) (hp) = act
+  globe-step-done : Integer, Mesh, MouseState, Integer, Integer, Integer, Integer, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory] Text
+  globe-step-done (cmd) (sphere) (ms) (yaw) (pitch) (dist) (frame) (hp) = act
     w <- globe-frame cmd sphere yaw pitch dist
     let restored = __heap-restore hp
-    in globe-loop cmd sphere yaw pitch dist (frame + 1)
+    in globe-loop cmd sphere ms yaw pitch dist (frame + 1)
   end
 
 Section: Camera

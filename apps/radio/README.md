@@ -6,7 +6,7 @@ A two-deck internet radio station for a DJ, with a mixer/crossfader, EQ, playlis
 
 - **RadioTypes** -- TrackState (6 states), Track with BPM/waveform, DeckId (A/B), EqBand (low/mid/high), DeckState with loop/cue/filter/pitch/mute, MixerState with crossfader/master/monitor/auto-crossfade, StationState with listener count and broadcast flag, PlaylistEntry, ChatMessage
 - **RadioStation** -- RadioApp aggregate state; deck load/volume; crossfader; playlist add/next; chat with 200-message ring buffer; broadcast toggle; now-playing derivation from crossfader position; full console widget composing all panels
-- **TestRadio** -- 5 test sections covering track state, deck init, mixer defaults, broadcast toggle, and time formatting
+- **codex/test/apps/radio-radio-suite** -- 5 test sections covering track state, deck init, mixer defaults, broadcast toggle, and time formatting
 
 ## Completeness
 

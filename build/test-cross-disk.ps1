@@ -68,8 +68,17 @@ if (-not (Test-Path -PathType Leaf $diskFile) -and (Test-Path -PathType Leaf "$d
 $devFile = Join-Path $dir "$name.qemudev"
 $hasDisk = Test-Path -PathType Leaf $diskFile
 $hasDev = Test-Path -PathType Leaf $devFile
-if (-not $hasDisk -and -not $hasDev) {
-    Write-Host "ERROR: $name has neither a .disk nor a .qemudev sidecar; this runner is for tests that need a QEMU device" -ForegroundColor Red
+# A .qemuboard sidecar names the QEMU machine in its first line. raspi4b is
+# the one board the arm64 plug emits a __start for besides virt (-Raspi4b);
+# the machine fixes its own CPU and RAM, so -cpu and -m are not passed.
+$boardFile = Join-Path $dir "$name.qemuboard"
+$board = if (Test-Path -PathType Leaf $boardFile) { (Get-Content -TotalCount 1 $boardFile).Trim() } else { '' }
+if ($board -and -not ($Arch -eq 'arm64' -and $board -eq 'raspi4b')) {
+    Write-Host "ERROR: $name names QEMU board '$board'; this runner boots only raspi4b, on arm64" -ForegroundColor Red
+    exit 1
+}
+if (-not $hasDisk -and -not $hasDev -and -not $board) {
+    Write-Host "ERROR: $name has no .disk, .qemudev or .qemuboard sidecar; this runner is for tests that need a QEMU device or board" -ForegroundColor Red
     exit 1
 }
 
@@ -85,7 +94,9 @@ Write-Host -NoNewline "  compile ... "
 $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 # No -Smp here: this is a single-core boot, and asking the ARM64 plug for the
 # CPU_ON sequence would issue HVC on a board without PSCI and park the guest.
-& pwsh -NoProfile -File $compileScript -Src $testFile.FullName -Out $elfOut 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
+$compileArgs = @('-NoProfile','-File',$compileScript,'-Src',$testFile.FullName,'-Out',$elfOut)
+if ($board -eq 'raspi4b') { $compileArgs += '-Raspi4b' }
+& pwsh @compileArgs 2>&1 | Out-File -FilePath $compileLog -Encoding UTF8
 $compileExit = $LASTEXITCODE
 $ErrorActionPreference = $prev
 if ($compileExit -ne 0) { Write-Host "FAIL (compile, exit=$compileExit)" -ForegroundColor Red; exit 1 }
@@ -145,7 +156,10 @@ if ($hasDev) {
         $driveArgs += ($t -split '\s+')
     }
 }
-$machArgs = if ($Arch -eq 'riscv64') {
+$machArgs = if ($board -eq 'raspi4b') {
+    @('-M','raspi4b','-display','none','-monitor','none',
+      '-kernel',$elfOut,'-serial',"file:$uartLog") + $driveArgs
+} elseif ($Arch -eq 'riscv64') {
     @('-M','virt','-m','1024M','-display','none','-monitor','none','-bios','none',
       '-device',"loader,file=$binFile,addr=0x80000000",'-serial',"file:$uartLog") + $driveArgs
 } else {

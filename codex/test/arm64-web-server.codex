@@ -90,16 +90,6 @@ Section: Serve Loop
     else let st1 = arm64-net-io-close (recv.state)
       in WsResult { ws-state = st1, ws-diag = "no-data" }
 
- The routed path came out `napinhealth` for a `/api/health` that the wire
- dump shows arriving intact, and `unicode-bytes-to-text` was measured clean
- on both lanes (`codex/test/bytes-to-text-2f.codex`). These two cells split
- what is left. `ws-codes` prints the CCE code point of every character
- beside the rendered text, so a path whose codes are right and whose
- rendering is wrong means the DIAGNOSTIC is at fault and the server is
- already correct; `/` is CCE 81 and `a` is 15. `ws-eq` prints the routing
- comparison itself, so a True beside a 404 moves the fault past the parse
- and into the route.
-
   ws-codes : Text, Integer, Integer, Text -> Text
   ws-codes (s) (i) (n) (acc) =
    if i >= n then acc
@@ -113,13 +103,6 @@ Section: Serve Loop
     if path == "/api/health" then Just (HttpResponse { status = http-200, content-type = "application/json", body = "{\"status\":\"ok\"}" })
     else if path == "/api/status" then Just (HttpResponse { status = http-200, content-type = "application/json", body = "{\"requests\":" & show count & "}" })
     else None
-
- The arm64 stub grants the heap and the stack one 32 MB region below the
- virtio DMA floor, and `transport-new`'s default 32 MB receive buffer fills
- all of it, so the transport takes WebServer's 64 KB. Every served connection
- returns the heap to one mark. The session is built fresh after the restore because
- `list-push` extends the base session's lists in place (L-ALIAS), leaving
- them pointing into reclaimed heap.
 
   ws-qdiag : Arm64NetIOState -> Text
   ws-qdiag (s) =
@@ -180,7 +163,8 @@ Section: Entry
             in let vnet = VirtioNetState { device = vd, rx-queue = rxq1, tx-queue = txq, mac = mac }
             in let arp-frame = arp-build-request ws-local-mac ws-local-ip ws-gateway-ip
             in let vnet1 = virtio-net-send-frame vnet arp-frame
-            in let sess = net-session-new ws-local-mac ws-local-ip ws-gateway-ip ws-port 0 ws-gateway-ip 1000
+            in let fresh-sess = net-session-new ws-local-mac ws-local-ip ws-gateway-ip ws-port 0 ws-gateway-ip 1000
+            in let sess = set-arp fresh-sess (arp-cache-expect (fresh-sess.arp) ws-gateway-ip)
             in let ts = transport-new-with-cap sess 65536
             in let pooled = transport-release (transport-arenas ts)
             in let st = arm64-net-io-calibrate (arm64-net-io-new vnet1 ts)

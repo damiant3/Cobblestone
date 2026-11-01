@@ -36,6 +36,22 @@ Section: Helpers
   nested (n) (acc) =
     if n <= 0 then acc & [1] else nested (n - 1) (list-push acc 129)
 
+ A seeded single-byte mutation sweep over a valid structured value: every byte
+ is flipped and run through cbor-decode, which must return (a value or None)
+ and never read past the input.
+
+  cg-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cg-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else cg-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  cg-sweep : List Integer, Integer, Integer, Integer -> Integer
+  cg-sweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else cg-sweep base (pos + 1) n (acc + (when cbor-decode (cg-mutate base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []) is None -> 0 is Just (v) -> 1))
+
+  cbor-doc : List Integer = cbor-encode (CborArray [CborUint 1, CborUint 2, CborText "hi", CborBytes [7, 9]])
+
 Section: Entry
 
   opening : [Console] Nothing = act
@@ -68,4 +84,5 @@ Section: Entry
     print-line-uni (arm "empty" [])
     print-line-uni (arm "cut-map" [162, 1, 2, 3])
     print-line-uni (arm "cut-bytes" [67, 7, 9])
+    print-line-uni ("cbor-sweep completed=" & (if cg-sweep cbor-doc 0 (list-length cbor-doc) 0 >= 0 then "True" else "False"))
   end

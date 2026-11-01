@@ -15,8 +15,6 @@ Chapter: Renderer3D
  and Phong lighting. Fixed-point (scale 1000 for geometry, scale
  1000000 for depth buffer precision).
 
- We say:
-
 Section: Flat Raster Target
 
  The colour and depth buffers are bump-allocated blocks written with
@@ -60,11 +58,9 @@ Section: Flat Raster Target
   r3d-far-depth : Integer = 999999999
 
  A FILL THROUGH A NULL BASE DESTROYS ADDRESS TRANSLATION AND CANNOT BE
- DIAGNOSED AFTERWARDS, which is WORKS-60: a target whose depth pointer read 0
- filled `r3d-far-depth` from address 0 upward, crossed the PML4 page at
- 0x8000, and the fault that followed could not be delivered because the
- tables it needed were the ones just overwritten. A triple fault names
- nothing. These four functions are the only writers, so the floor goes here
+ DIAGNOSED AFTERWARDS: a fill from address 0 upward crosses the PML4 page at
+ 0x8000, and the fault that follows cannot be delivered because the tables it
+ needs are the ones just overwritten. These four functions are the only writers, so the floor goes here
  rather than in each caller: a base below the address the kernel itself is
  loaded at is not a buffer, whatever produced it.
 
@@ -520,14 +516,6 @@ Section: Per-Pixel Shading
     in let min-x = r3d-max 0 (r3d-min3 (a.pv-sx) (b.pv-sx) (c.pv-sx))
     in let max-x = r3d-min (st.r3t-w - 1) (r3d-max3 (a.pv-sx) (b.pv-sx) (c.pv-sx))
     in r3d-scan-rows-sh st a b c ctx (r3d-slope-bias a b c ctx) min-y max-y min-x max-x
-
- The slope-scaled depth bias is a property of the TRIANGLE, not of the pixel:
- every term below reads only `a`, `b` and `c`. It was computed inside
- `r3d-shadow-lit`, which runs once per covered pixel, so a triangle covering
- ten thousand pixels paid for twelve minimums and maximums and a division ten
- thousand times to arrive at the same number. It is computed once here and
- carried down instead. The value is identical, so the picture is identical;
- this is a hoist and not a change of algorithm.
 
   r3d-slope-bias : ProjVert, ProjVert, ProjVert, R3dShadeCtx -> Integer
   r3d-slope-bias (a) (b) (c) (ctx) =
@@ -1094,13 +1082,6 @@ Section: Unlit Triangle Rendering
     in let color = rgb-to-packed (mat.emat-albedo)
     in let drawn = r3d-raster-fan st poly 1 color half-w half-h
     in r3d-render-tris-unlit st mesh mvp mat half-w half-h (i + 3) n
-
- The depth map is filled from the surfaces facing the light. Filling it from
- the far side instead removes self-shadowing for free, and it was tried, but
- it fails for any object RESTING on the surface that receives its shadow: the
- object's underside is then coplanar with the receiver, so the recorded depth
- equals the receiving fragment's own depth and no bias can separate them. A
- cube on a plane lost its whole contact shadow that way.
 
   r3d-render-tris-caster : R3dTriState, Mesh, Mat4, EngineMaterial, Integer, Integer, Integer, Integer -> Integer
   r3d-render-tris-caster (st) (mesh) (mvp) (mat) (half-w) (half-h) (i) (n) =

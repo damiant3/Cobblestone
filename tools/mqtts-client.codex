@@ -264,7 +264,11 @@ Section: Entry
       is None -> []
       is Just (c) -> [X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }]
 
-  opening : [Network.Read, Network.Write, Console.Write] Nothing = act
+  opening : [Network.Read, Network.Write, Console.Write] Nothing =
+    if list-length mqtts-anchors /= 1 then print-line-uni "mqtts: mqtts-ca does not parse; refusing to connect"
+    else mqtts-connect
+
+  mqtts-connect : [Network.Read, Network.Write, Console.Write] Nothing = act
     ts <- net-io-connect (mqtts-transport 0)
     when (ts.session).conn.state
       is TcpEstablished -> mqtts-open ts
@@ -278,6 +282,7 @@ Section: Entry
       ts1 <- mqtts-send-all ts (st0.tes-out) 0
       hs <- mqtts-drive ts1 (st0.tes-ep) [] 200
       print-line-uni ("mqtts tls done=" & show (tls-ep-done (hs.hs-ep)) & " authenticated=" & show (tls-ep-authenticated (hs.hs-ep)) & " anchors=" & show (list-length mqtts-anchors))
-      if tls-ep-done (hs.hs-ep) then mqtts-session hs
-      else print-line-uni "mqtts: TLS handshake did not complete"
+      if tls-ep-done (hs.hs-ep) == False then print-line-uni "mqtts: TLS handshake did not complete"
+      else if tls-ep-authenticated (hs.hs-ep) == False then print-line-uni "mqtts: server certificate not authenticated"
+      else mqtts-session hs
     end

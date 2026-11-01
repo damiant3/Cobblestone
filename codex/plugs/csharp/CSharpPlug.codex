@@ -16,11 +16,6 @@ Section: Helpers
 
 Section: Streaming Send
 
- Stream C# one def at a time to the output ring (print-uni, fire-and-
- forget) reclaiming the per-def parse + emit heap with __heap-restore
- between defs. Each def's IRDef is parsed from its raw S-expression only
- when it is emitted, so the whole IRChapter is never materialized.
-
   stream-defs-sexp : List SExp, CsCtx, Integer, Integer, Integer -> [Console] Nothing
   stream-defs-sexp (def-sexps) (ctx) (i) (n) (mask) =
     if i >= n then act
@@ -38,16 +33,6 @@ Section: Streaming Send
     end
 
 Section: Mutable Record Detection
-
- The wire carries the `mutable` marker as of 2026-08-08, and this plug
- deliberately does not read it. The set that must be settable in C# is
- derived from a STRICTER authority than the source marker: x86-64's
- `emit-field-store` writes destructively for every `field-store` node,
- so a record type that receives one must be assignable here to mean the
- same thing. A record declared `mutable` that is never stored to needs
- no settable field, and taking the marker instead would widen every such
- record for nothing. Read the store's own type slot, which lowering
- fills with the deep-resolved receiver type.
 
   collect-mut-names : List SExp, Integer, Integer, List Text -> List Text
   collect-mut-names (xs) (i) (n) (acc) =
@@ -191,11 +176,6 @@ Section: Spans
     else if ips-match t i pat 0 plen then i
     else ips-find t (i + 1) stop pat plen
 
- The arity map and the mutable-record set need every definition, and
- each entry is a Text. The Integers that locate it are read before the
- restore and the Text is cut after it, so nothing built inside the
- region is kept.
-
   ips-arities : Text, List IrSpan, Integer, Integer, List ArityEntry -> List ArityEntry
   ips-arities (t) (defs) (i) (n) (acc) =
     if i >= n then arity-sort acc 1 (list-length acc)
@@ -316,7 +296,9 @@ Section: Spans
     in let n = list-length defs
     in let arities = ips-arities t defs 1 n []
     in let muts = ips-muts t defs 1 n []
-    in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [] }
+    in let ops-sp = ips-named t kids 0 nk "eff-ops"
+    in let ops = if ops-sp.sp-hi == 0 then [] else walk-named-strs [ips-tree t ops-sp] "eff-ops"
+    in let ctx = CsCtx { arities = arities, type-defs = type-defs, locals = [], dyn-locals = [], ops = ops, resume-names = [] }
     in let class-name = "Codex_" & sanitize chap-name
     in act
      print-uni (render-usings [cs-using "System", cs-using "System.Collections.Generic", cs-using "System.IO", cs-using "System.Linq", cs-using "System.Threading.Tasks"] 0 5 "")
@@ -334,9 +316,12 @@ Section: Spans
       in act
        print-uni emit-buf-runtime
        print-uni emit-state-runtime
+       print-uni cs-handler-runtime
        print-uni seams
        print-uni tdefs
        print-uni (emit-class-header chap-name)
+       print-uni cs-ipow-runtime
+       print-uni cs-real-runtime
        let r1 = __heap-restore h1
        in ips-stream t defs ctx 1 n m1
       end

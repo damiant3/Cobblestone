@@ -17,8 +17,6 @@ Chapter: VaeDecoder
  groups, eps 1e-6), SiLU and a 3x3 conv to RGB. Activations are C x H x W
  f32; a convolution reads them cast to f16.
 
- We say:
-
 Section: Weights
 
   VaeWeights = record {
@@ -105,7 +103,8 @@ Section: Launches
   vd-linear (hx) (hw) (mm) (nn) (kk) =
     let hy = gpu-buf-alloc (mm * nn * 4)
     in let fast = kk - kk / 8 * 8 == 0
-    in let g = if fast then GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 } else GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let g = if fast then GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
+    else GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
     in let ps = [vd-buf hx, vd-buf hw, vd-int 0, vd-buf hy, vd-int mm, vd-int nn, vd-int kk, vd-int 0]
     in if hy == 0 then 0
     else if gm-launch gm-slot-gemm gemm-ptx (if fast then "kernel_linear_fast" else "kernel_linear_wmma") g (if fast then ps & [vd-int 0] else ps) < 0 then 0
@@ -120,11 +119,6 @@ Section: Launches
     else h
 
 Section: Op Set
-
- The decoder's graph (VaeGraph) does its GPU work through a VaeOps value, as
- UNet's does through UNetOps (docs/Designs/Active/Apps/InBrowserDiffusion.md,
- stage 3); the attention is one op, its f16 transposes being the native
- route's own.
 
   vd-has : VaeWeights, Text -> Boolean
   vd-has (w) (name) = vw-get w name /= 0
@@ -153,9 +147,12 @@ Section: Layers
     in let hy = gpu-buf-alloc (cout * hw * 4)
     in let g = GpuGrid { gx = (hw + 127) / 128, gy = (cout + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
     in let ok = if hx == 0 | xn == 0 | wp == 0 | hy == 0 then False
-       else if gm-launch gm-slot-gemm gemm-ptx "kernel_nchw_to_nhwc" (GpuGrid { gx = (hw + 31) / 32, gy = (x.ac + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }) [vd-buf hx, vd-buf xn, vd-int (x.ac), vd-int hw, vd-int n] < 0 then False
+       else if gm-launch gm-slot-gemm gemm-ptx "kernel_nchw_to_nhwc" (GpuGrid { gx = (hw + 31) / 32, gy = (x.ac + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }) [
+         vd-buf hx, vd-buf xn, vd-int (x.ac), vd-int hw, vd-int n] < 0 then False
        else if gm-launch gm-slot-gemm gemm-ptx "kernel_conv_weight_khwc" (vd-per256 nw) [vd-buf (vw-get w (p & ".weight")), vd-buf wp, vd-int (x.ac), vd-int k, vd-int k, vd-int nw] < 0 then False
-       else gm-launch gm-slot-gemm gemm-ptx "kernel_conv2d_fast" g [vd-buf xn, vd-buf wp, vd-buf (vw-get w (p & ".bias")), vd-buf hy, vd-int (x.ac), vd-int (x.ahh), vd-int (x.aww), vd-int cout, vd-int k, vd-int k, vd-int 1, vd-int pad, vd-int (x.ahh), vd-int (x.aww), vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0] >= 0
+       else gm-launch gm-slot-gemm gemm-ptx "kernel_conv2d_fast" g [vd-buf xn, vd-buf wp, vd-buf (vw-get w (p & ".bias")), vd-buf hy,
+         vd-int (x.ac), vd-int (x.ahh), vd-int (x.aww), vd-int cout, vd-int k, vd-int k, vd-int 1, vd-int pad, vd-int (x.ahh), vd-int (x.aww),
+         vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0, vd-int 0] >= 0
     in let f = (if hx == 0 then True else gpu-buf-free hx) & (if xn == 0 then True else gpu-buf-free xn) & (if wp == 0 then True else gpu-buf-free wp)
     in let g2 = if ok | hy == 0 then True else gpu-buf-free hy
     in vd-act hy cout (x.ahh) (x.aww) ok
@@ -166,7 +163,22 @@ Section: Layers
     in let hx = vd-cast x
     in let hy = gpu-buf-alloc (cout * hw * 4)
     in let g = GpuGrid { gx = (hw + 63) / 64, gy = (cout + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
-    in let ps = [vd-buf hx, vd-buf (vw-get w (p & ".weight")), vd-buf hy, vd-int (x.ac), vd-int (x.ahh), vd-int (x.aww), vd-int cout, vd-int k, vd-int k, vd-int 1, vd-int pad, vd-int (x.ahh), vd-int (x.aww), vd-int 0]
+    in let ps = [
+      vd-buf hx,
+      vd-buf (vw-get w (p & ".weight")),
+      vd-buf hy,
+      vd-int (x.ac),
+      vd-int (x.ahh),
+      vd-int (x.aww),
+      vd-int cout,
+      vd-int k,
+      vd-int k,
+      vd-int 1,
+      vd-int pad,
+      vd-int (x.ahh),
+      vd-int (x.aww),
+      vd-int 0
+    ]
     in let c1 = if hx == 0 | hy == 0 then 0 - 1 else gm-launch gm-slot-gemm gemm-ptx "kernel_conv2d_wmma" g ps
     in let f = if hx == 0 then True else gpu-buf-free hx
     in let c2 = if c1 < 0 then 0 - 1 else vd-layer "kernel_add_channel" (cout * hw) [vd-buf hy, vd-buf (vw-get w (p & ".bias")), vd-buf hy, vd-int hw, vd-int (cout * hw)]
@@ -179,7 +191,9 @@ Section: Layers
     in let part = gpu-buf-alloc (32 * 128 * 8)
     in let ho = gpu-buf-alloc (n * 4)
     in let c1 = if hs == 0 | part == 0 | ho == 0 then 0 - 1 else vd-rows "kernel_row_stats_wide" 32 [vd-buf (x.ah), vd-buf hs, vd-buf part, vd-int (n / 32), gpu-arg-u64 (real-to-bits 0.000001), vd-int 32]
-    in let c2 = if c1 < 0 then 0 - 1 else vd-layer "kernel_group_norm" n [vd-buf (x.ah), vd-buf hs, vd-buf (vw-get w (p & ".weight")), vd-buf (vw-get w (p & ".bias")), vd-buf ho, vd-int (x.ac), vd-int (x.ahh * x.aww), vd-int 32, vd-int n]
+    in let c2 = if c1 < 0 then 0 - 1
+    else vd-layer "kernel_group_norm" n [vd-buf (x.ah), vd-buf hs, vd-buf (vw-get w (p & ".weight")), vd-buf (vw-get w (p & ".bias")), vd-buf ho,
+      vd-int (x.ac), vd-int (x.ahh * x.aww), vd-int 32, vd-int n]
     in let c3 = if c2 < 0 then 0 - 1 else if silu then vd-layer "kernel_silu" n [vd-buf ho, vd-buf ho, vd-int n] else 0
     in let f = (if hs == 0 then True else gpu-buf-free hs) & (if part == 0 then True else gpu-buf-free part)
     in vd-act ho (x.ac) (x.ahh) (x.aww) (c3 >= 0)
@@ -200,10 +214,6 @@ Section: Layers
  1 / sqrt 512: the VAE's only attention is over 512 channels.
 
   vd-attn-scale : Real = 0.044194173824159216
-
- Single-head attention over the n = h w positions, softmax (q^T k / sqrt c) v:
- the scores are q^T (k^T)^T with q^T and k^T n x c; the output is v p^T with v
- c x n and p n x n, both through vd-linear.
 
   vd-attention : VaeWeights, Act, Text -> Act
   vd-attention (w) (x) (p) =

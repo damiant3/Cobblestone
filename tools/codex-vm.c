@@ -14,6 +14,8 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <ctype.h>
+#include <io.h>
 #include <WinHvPlatform.h>
 static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp);
 #include <winsock2.h>
@@ -36,6 +38,7 @@ static void *guest_mem;
 static size_t guest_mem_size;
 static WHV_PARTITION_HANDLE partition;
 static int smp_cores;  /* 0 or 1 = single-core (default); 2-16 = multi-core */
+static unsigned char *gptr(unsigned long long gpa, unsigned long long len, const char *who);
 
 /* MSR storage for guest-visible MSRs.
    Declared here rather than beside handle_msr because the boot paths that set a
@@ -111,6 +114,103 @@ static int kbd_dequeue(void) {
     return sc;
 }
 
+/* ══ PS/2 aux (mouse) port of the i8042 ══
+   Controller commands on 0x64: 0xA8 enables the aux port, 0xA7 disables it,
+   0xD4 sends the next byte written to 0x60 to the aux device. Aux device
+   commands: 0xFF reset (ACK 0xFA, self-test 0xAA, id 0x00), 0xF4 enable data
+   reporting, 0xF5 disable, 0xF6 defaults, 0xF2 get id (0xFA 0x00), 0xF3 and
+   0xE8 take one parameter byte (sample rate; resolution 0-3 = 1, 2, 4, 8
+   counts/mm), 0xE6 and 0xE7 set 1:1 and 2:1 scaling, 0xE9 answers three status
+   bytes (bit 5 reporting, bit 4 2:1 scaling, bits 2/1/0 left/middle/right;
+   resolution; sample rate); defaults are 100 samples/s, resolution 2, 1:1.
+   2:1 scaling maps a packet's per-axis count 1,2,3,4,5 to 1,1,3,6,9 and
+   anything larger to twice itself. Every byte is ACKed with 0xFA. A movement
+   packet is 3 bytes: flags (bit 3 always set, bits 0-2 left/right/middle,
+   bit 4 x sign, bit 5 y sign), dx, dy, with y positive upward. Status bit 0
+   is output buffer full and bit 5 marks the byte as the aux device's.
+   Keyboard bytes are delivered first, so a guest that reads 0x60 only when
+   bit 5 is set never takes a scancode from the IRQ1 path. */
+#define AUX_QUEUE_SIZE 192
+static unsigned char aux_queue[AUX_QUEUE_SIZE];
+static int aux_head = 0, aux_count = 0;
+static int i8042_aux_enabled = 0;
+static int i8042_next_to_aux = 0;
+static int aux_reporting = 0;
+static int aux_param_pending = 0;
+static int aux_last_x = 0, aux_last_y = 0, aux_last_btn = 0;
+static int aux_rate = 100, aux_res = 2, aux_scale21 = 0;
+
+static void aux_defaults(void) { aux_rate = 100; aux_res = 2; aux_scale21 = 0; }
+
+static int aux_scale(int d) {
+    int m = d < 0 ? -d : d, s;
+    if (!aux_scale21) return d;
+    s = m == 2 ? 1 : (m == 4 ? 6 : (m == 5 ? 9 : (m <= 3 ? m : 2 * m)));
+    if (s > 255) s = 255;
+    return d < 0 ? -s : s;
+}
+
+static void aux_enqueue(unsigned char b) {
+    if (aux_count < AUX_QUEUE_SIZE) {
+        aux_queue[(aux_head + aux_count) % AUX_QUEUE_SIZE] = b;
+        aux_count++;
+    }
+}
+
+static int aux_dequeue(void) {
+    if (aux_count <= 0) return -1;
+    unsigned char b = aux_queue[aux_head];
+    aux_head = (aux_head + 1) % AUX_QUEUE_SIZE;
+    aux_count--;
+    return b;
+}
+
+static void aux_command(unsigned char c) {
+    if (aux_param_pending) {
+        if (aux_param_pending == 0xF3) aux_rate = c;
+        else if (c <= 3) aux_res = c;
+        aux_param_pending = 0; aux_enqueue(0xFA); return;
+    }
+    switch (c) {
+    case 0xFF: aux_reporting = 0; aux_defaults(); aux_enqueue(0xFA); aux_enqueue(0xAA); aux_enqueue(0x00); break;
+    case 0xF4: aux_reporting = 1; aux_enqueue(0xFA); break;
+    case 0xF5: aux_reporting = 0; aux_enqueue(0xFA); break;
+    case 0xF6: aux_reporting = 0; aux_defaults(); aux_enqueue(0xFA); break;
+    case 0xF3: case 0xE8: aux_param_pending = c; aux_enqueue(0xFA); break;
+    case 0xE6: aux_scale21 = 0; aux_enqueue(0xFA); break;
+    case 0xE7: aux_scale21 = 1; aux_enqueue(0xFA); break;
+    case 0xE9:
+        aux_enqueue(0xFA);
+        aux_enqueue((unsigned char)((aux_reporting ? 0x20 : 0) | (aux_scale21 ? 0x10 : 0)
+            | ((aux_last_btn & 1) ? 4 : 0) | ((aux_last_btn & 4) ? 2 : 0) | ((aux_last_btn & 2) ? 1 : 0)));
+        aux_enqueue((unsigned char)aux_res);
+        aux_enqueue((unsigned char)aux_rate);
+        break;
+    case 0xF2: aux_enqueue(0xFA); aux_enqueue(0x00); break;
+    default: aux_enqueue(0xFA); break;
+    }
+}
+
+/* A move larger than 255 counts on an axis is split across packets rather than
+   clamped, so the guest's sum of deltas equals the host's motion. */
+static void aux_mouse_event(int x, int y, int btn) {
+    int dx = x - aux_last_x, dy = aux_last_y - y;
+    aux_last_x = x; aux_last_y = y;
+    if (!i8042_aux_enabled || !aux_reporting) { aux_last_btn = btn; return; }
+    if (dx == 0 && dy == 0 && btn == aux_last_btn) return;
+    aux_last_btn = btn;
+    do {
+        int sx = dx > 255 ? 255 : (dx < -255 ? -255 : dx);
+        int sy = dy > 255 ? 255 : (dy < -255 ? -255 : dy);
+        int rx = aux_scale(sx), ry = aux_scale(sy);
+        if (aux_count + 3 > AUX_QUEUE_SIZE) break;
+        aux_enqueue((unsigned char)(0x08 | (btn & 7) | (rx < 0 ? 0x10 : 0) | (ry < 0 ? 0x20 : 0)));
+        aux_enqueue((unsigned char)(rx & 0xFF));
+        aux_enqueue((unsigned char)(ry & 0xFF));
+        dx -= sx; dy -= sy;
+    } while (dx != 0 || dy != 0);
+}
+
 /* Win32 VK → PS/2 Set 1 scancode (common keys) */
 static unsigned char vk_to_scancode(int vk) {
     switch (vk) {
@@ -151,7 +251,6 @@ static unsigned char vk_to_scancode(int vk) {
 }
 
 /* ══ Mouse State ══ */
-#define MOUSE_BUF_ADDR 28684
 static int mouse_captured = 0;
 /* Pointer grab, Ctrl+Alt+G, the same chord QEMU uses.
    The guest's pointer is a RELATIVE boot mouse: the host sends
@@ -167,7 +266,6 @@ static int mouse_grabbed = 0;
    cursor; see the pointer-sync block. */
 static int mouse_from_window = 0;
 static int grab_warping = 0;   /* our own SetCursorPos raises WM_MOUSEMOVE too */
-static volatile unsigned char pending_mouse[3] = {0};
 static volatile int pending_mouse_valid = 0;
 static volatile int pending_mouse_abs_x = 0, pending_mouse_abs_y = 0, pending_mouse_btn = 0;
 /* Buttons pressed since the guest last read port 0xE1. A guest that polls
@@ -325,7 +423,7 @@ static unsigned int pci_config_addr = 0;
    whatever it really decoded. Probing is a mode now, not a mutation. */
 static struct {
     unsigned short vendor, device;
-    unsigned char class_code, subclass, progif, header_type;
+    unsigned char class_code, subclass, progif, header_type, revision;
     unsigned int bar[6];
     unsigned int bar_size[6];
     unsigned char bar_probe[6];
@@ -434,7 +532,8 @@ static unsigned int pci_read_config(int bus, int slot, int func, int offset) {
     case 0x04: return pci_devices[dev].command;
     case 0x08: return ((unsigned int)pci_devices[dev].class_code << 24) |
                       ((unsigned int)pci_devices[dev].subclass << 16) |
-                      ((unsigned int)pci_devices[dev].progif << 8);
+                      ((unsigned int)pci_devices[dev].progif << 8) |
+                      pci_devices[dev].revision;
     case 0x0C: return (unsigned int)pci_devices[dev].header_type << 16;
     case 0x10: case 0x14: case 0x18: case 0x1C: case 0x20: case 0x24: {
         int bi = ((offset & 0xFC) - 0x10) / 4;
@@ -1048,6 +1147,51 @@ static const unsigned char usb_hid_combo_cfg_desc[] = {
     9, 0x21, 0x11, 0x01, 0, 1, 0x22, 50, 0,
     7, 5, 0x82, 3, 4, 0, 10    /* EP2 IN, interrupt, mps 4 */
 };
+
+/* -hid-pad: the combo device with a third interface, a HID gamepad (class 3,
+   subclass 0, protocol 0, EP3 IN). A gamepad has no boot protocol, so its
+   layout is only in its report descriptor, answered for GET_DESCRIPTOR 0x22
+   with wIndex 2: Generic Desktop Gamepad, buttons 1-16 in two bytes, X, Y,
+   Z and Rz as signed bytes (-127..127), a hat in the low nibble of byte 6
+   (0-7 clockwise from up, 8 centred), four constant bits. It is the
+   descriptor codex/test/apps/usb-pad-report parses as descriptor A. */
+static int hid_pad = 0;
+static const unsigned char usb_hid_pad_report_desc[] = {
+    5, 1, 9, 5, 161, 1,
+    5, 9, 25, 1, 41, 16, 21, 0, 37, 1, 117, 1, 149, 16, 129, 2,
+    5, 1, 9, 48, 9, 49, 9, 50, 9, 53, 21, 129, 37, 127, 117, 8, 149, 4, 129, 2,
+    9, 57, 21, 0, 37, 7, 53, 0, 70, 59, 1, 101, 20, 117, 4, 149, 1, 129, 66,
+    117, 4, 149, 1, 129, 1,
+    192
+};
+static const unsigned char usb_hid_pad_cfg_desc[] = {
+    9, 2,       /* bLength, bDescriptorType=CONFIG */
+    84, 0,      /* wTotalLength = 84 */
+    3,          /* bNumInterfaces */
+    1,          /* bConfigurationValue */
+    0, 0x80, 50,/* iConfiguration, bmAttributes, bMaxPower */
+    9, 4, 0, 0, 1, 3, 1, 1, 0,
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, 63, 0,
+    7, 5, 0x81, 3, 8, 0, 10,   /* EP1 IN, interrupt, mps 8 */
+    9, 4, 1, 0, 1, 3, 1, 2, 0,
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, 50, 0,
+    7, 5, 0x82, 3, 4, 0, 10,   /* EP2 IN, interrupt, mps 4 */
+    /* Interface 2: gamepad */
+    9, 4, 2, 0, 1, 3, 0, 0, 0,
+    9, 0x21, 0x11, 0x01, 0, 1, 0x22, (unsigned char)sizeof(usb_hid_pad_report_desc), 0,
+    7, 5, 0x83, 3, 8, 0, 10    /* EP3 IN, interrupt, mps 8 */
+};
+static volatile int pad_buttons = 0, pad_x = 0, pad_y = 0, pad_z = 0, pad_rz = 0, pad_hat = 8;
+static int hid_pad_reports = 0;
+static void build_hid_pad_report(unsigned char *report) {
+    report[0] = (unsigned char)(pad_buttons & 0xFF);
+    report[1] = (unsigned char)((pad_buttons >> 8) & 0xFF);
+    report[2] = (unsigned char)(signed char)pad_x;
+    report[3] = (unsigned char)(signed char)pad_y;
+    report[4] = (unsigned char)(signed char)pad_z;
+    report[5] = (unsigned char)(signed char)pad_rz;
+    report[6] = (unsigned char)(pad_hat & 0x0F);
+}
 
 /* USB 2.0 high-speed hub, single transaction translator.
    bDeviceProtocol = 1 is single-TT; that is the field a host controller
@@ -1692,7 +1836,7 @@ static void xhci_post_event_ep_resid(int trb_type, int slot, int ep_id, int comp
     }
     unsigned long long off = xcur->er_addr + (unsigned long long)xcur->erdp_idx * 16;
     if (off + 16 > guest_mem_size) return;
-    unsigned char *ev = (unsigned char *)guest_mem + off;
+    unsigned char *ev = gptr(off, 16, "xHCI event");
     /* TRB pointer (param lo/hi) = address of command/transfer TRB that completed */
     *(unsigned int *)(ev + 0) = (unsigned int)(trb_ptr & 0xFFFFFFFF);
     *(unsigned int *)(ev + 4) = (unsigned int)(trb_ptr >> 32);
@@ -1722,7 +1866,7 @@ static unsigned long long xhci_next_trb(unsigned long long addr, int *ccs) {
     addr += 16;
     for (int hops = 0; hops < 4; hops++) {
         if (addr + 16 > guest_mem_size) return addr;
-        unsigned char *t = (unsigned char *)guest_mem + addr;
+        unsigned char *t = gptr(addr, 16, "xHCI TRB");
         unsigned int c = *(unsigned int *)(t + 12);
         if (((c >> 10) & 0x3F) != 6 || (int)(c & 1) != *ccs) return addr;
         if (c & 2) *ccs ^= 1;
@@ -1750,24 +1894,24 @@ static void xhci_copy_input_ctx(unsigned long long ictx, int slot) {
     unsigned long long ent = xcur->dcbaap + (unsigned long long)slot * 8;
     if (ent + 8 > guest_mem_size) return;
     unsigned long long dctx =
-        *(unsigned long long *)((unsigned char *)guest_mem + ent) & ~0x3FULL;
+        *(unsigned long long *)gptr(ent, 8, "xHCI DCBAA") & ~0x3FULL;
     if (dctx == 0) return;
     if (ictx + 8 > guest_mem_size) return;
-    unsigned int add = *(unsigned int *)((unsigned char *)guest_mem + ictx + 4);
+    unsigned int add = *(unsigned int *)gptr(ictx + 4, 4, "xHCI input ctx");
     for (int ci = 0; ci < 32; ci++) {
         if (!(add & (1u << ci))) continue;
         unsigned long long src = ictx + (unsigned long long)(ci + 1) * cs;
         unsigned long long dst = dctx + (unsigned long long)ci * cs;
         if (src + cs > guest_mem_size || dst + cs > guest_mem_size) continue;
-        memcpy((unsigned char *)guest_mem + dst,
-               (unsigned char *)guest_mem + src, cs);
+        memmove(gptr(dst, (unsigned long long)cs, "xHCI device ctx"),
+               gptr(src, (unsigned long long)cs, "xHCI input ctx"), cs);
         /* xHCI 4.6.5-6: the CONTROLLER owns EP State (output context dword 0
            bits 2:0) and sets a successfully addressed or configured endpoint
            to Running(1); the input context offers it as 0. Copying verbatim
            left est=0 in every bed while real silicon reads 1, so the one row
            built to discriminate silences disagreed with metal by default. */
         if (ci >= 1) {
-            unsigned int *d0 = (unsigned int *)((unsigned char *)guest_mem + dst);
+            unsigned int *d0 = (unsigned int *)gptr(dst, 4, "xHCI device ctx");
             *d0 = (*d0 & ~7u) | 1;
         }
     }
@@ -1839,6 +1983,10 @@ static unsigned int xhci_hub_port_status(int tier) {
    the model actually serves rather than restating them, so the expectation
    cannot drift from the descriptor it is an expectation about. */
 static const unsigned char *xhci_periodic_ep_desc(int kind, int ep_idx) {
+    if (kind == XHCI_KIND_HID && hid_pad)
+        return ep_idx == 7 ? usb_hid_pad_cfg_desc + sizeof(usb_hid_pad_cfg_desc) - 7
+             : ep_idx == 5 ? usb_hid_pad_cfg_desc + 52
+                           : usb_hid_pad_cfg_desc + 27;
     if (kind == XHCI_KIND_HID && hid_combo)
         return ep_idx == 5 ? usb_hid_combo_cfg_desc + sizeof(usb_hid_combo_cfg_desc) - 7
                            : usb_hid_combo_cfg_desc + 27;
@@ -1898,7 +2046,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
         int ccs = xcur->cr_ccs;
         for (int safety = 0; safety < 64; safety++) {
             if (ring_addr + 16 > guest_mem_size) break;
-            unsigned char *trb = (unsigned char *)guest_mem + ring_addr;
+            unsigned char *trb = gptr(ring_addr, 16, "xHCI command ring");
             unsigned int control = *(unsigned int *)(trb + 12);
             if ((int)(control & 1) != ccs) break;
             int trb_type = (control >> 10) & 0x3F;
@@ -1923,13 +2071,13 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                     xcur->scratch_checked = 1;
                     unsigned long long arr = 0;
                     if (xcur->dcbaap != 0 && xcur->dcbaap + 8 <= guest_mem_size)
-                        arr = *(unsigned long long *)((unsigned char *)guest_mem + xcur->dcbaap) & ~0x3FULL;
+                        arr = *(unsigned long long *)gptr(xcur->dcbaap, 8, "xHCI DCBAA") & ~0x3FULL;
                     /* xHCI 6.1: the array itself needs 64-byte alignment;
                        only the BUFFER PAGES it points to need PAGESIZE. */
                     int bad = (arr == 0 || (arr & 0x3F) != 0 ||
                                arr + (unsigned long long)xhci_scratch_bufs * 8 > guest_mem_size);
                     for (int sb = 0; !bad && sb < xhci_scratch_bufs; sb++) {
-                        unsigned long long pg = *(unsigned long long *)((unsigned char *)guest_mem + arr + sb * 8);
+                        unsigned long long pg = *(unsigned long long *)gptr(arr + sb * 8, 8, "xHCI scratchpad array");
                         if (pg == 0 || (pg & 0xFFF) != 0 || pg + 4096 > guest_mem_size) bad = 1;
                     }
                     xcur->scratch_bad = bad;
@@ -1957,9 +2105,9 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 if ((trb_type == 11 || trb_type == 12 || trb_type == 13) && slot >= 1 && slot <= XHCI_MAX_SLOTS) {
                     unsigned long long ictx = *(unsigned long long *)trb & ~0xFULL;
                     if (trb_type == 11 && ictx && ictx + (unsigned long long)XHCI_CTXSZ * 2 <= guest_mem_size) {
-                        unsigned int sd0 = *(unsigned int *)((unsigned char *)guest_mem + ictx + XHCI_CTXSZ);
-                        unsigned int sd1 = *(unsigned int *)((unsigned char *)guest_mem + ictx + XHCI_CTXSZ + 4);
-                        unsigned int sd2 = *(unsigned int *)((unsigned char *)guest_mem + ictx + XHCI_CTXSZ + 8);
+                        unsigned int sd0 = *(unsigned int *)gptr(ictx + XHCI_CTXSZ, 4, "xHCI input ctx");
+                        unsigned int sd1 = *(unsigned int *)gptr(ictx + XHCI_CTXSZ + 4, 4, "xHCI input ctx");
+                        unsigned int sd2 = *(unsigned int *)gptr(ictx + XHCI_CTXSZ + 8, 4, "xHCI input ctx");
                         xcur->slot_port[slot]    = (sd1 >> 16) & 0xFF;
                         xcur->slot_route[slot]   = sd0 & 0xFFFFF;
                         xcur->slot_speed[slot]   = (sd0 >> 20) & 0xF;
@@ -1988,9 +2136,9 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 int code = 17; /* Parameter Error */
                 if (slot >= 1 && slot <= XHCI_MAX_SLOTS && dci >= 1 &&
                     xcur->dcbaap && xcur->dcbaap + (unsigned long long)(slot + 1) * 8 <= guest_mem_size) {
-                    unsigned long long dctx = *(unsigned long long *)((unsigned char *)guest_mem + xcur->dcbaap + (unsigned long long)slot * 8) & ~0x3FULL;
+                    unsigned long long dctx = *(unsigned long long *)gptr(xcur->dcbaap + (unsigned long long)slot * 8, 8, "xHCI DCBAA") & ~0x3FULL;
                     if (dctx && dctx + 32ULL * XHCI_CTXSZ <= guest_mem_size) {
-                        unsigned int *ed0 = (unsigned int *)((unsigned char *)guest_mem + dctx + (unsigned long long)dci * XHCI_CTXSZ);
+                        unsigned int *ed0 = (unsigned int *)gptr(dctx + (unsigned long long)dci * XHCI_CTXSZ, 4, "xHCI endpoint ctx");
                         int est = (int)(*ed0 & 7);
                         if (trb_type == 15) {
                             /* 4.8.3 p.164: Stop received in Halted or Error
@@ -2016,11 +2164,11 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                 unsigned long long cur_dq = dq_full & ~0xFULL;
                                 int fse_code = 27, fse_resid = 0;
                                 if (cur_dq && cur_dq + 16 <= guest_mem_size) {
-                                    unsigned int tctl = *(unsigned int *)((unsigned char *)guest_mem + cur_dq + 12);
+                                    unsigned int tctl = *(unsigned int *)gptr(cur_dq + 12, 4, "xHCI TRB");
                                     if ((int)(tctl & 1) == (int)(dq_full & 1) &&
                                         ((tctl >> 10) & 0x3F) != 6) {
                                         fse_code = 26;
-                                        fse_resid = (int)(*(unsigned int *)((unsigned char *)guest_mem + cur_dq + 8) & 0x1FFFF);
+                                        fse_resid = (int)(*(unsigned int *)gptr(cur_dq + 8, 4, "xHCI TRB") & 0x1FFFF);
                                         if (usb_bot_stuck && cur_dq == usb_bot_stall_trb) fse_resid = usb_bot_stall_resid;
                                     }
                                 }
@@ -2071,12 +2219,12 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
            or usb-bulk-in/out, which wrote TRBs and rang this doorbell. We can
            find the TRBs by reading the endpoint context from DCBAAP. */
         if (xcur->dcbaap == 0 || xcur->dcbaap + (db + 1) * 8 > guest_mem_size) return;
-        unsigned long long slot_ctx_addr = *(unsigned long long *)((unsigned char *)guest_mem + xcur->dcbaap + db * 8);
+        unsigned long long slot_ctx_addr = *(unsigned long long *)gptr(xcur->dcbaap + db * 8, 8, "xHCI DCBAA");
         if (slot_ctx_addr == 0 || slot_ctx_addr + 32 * XHCI_CTXSZ > guest_mem_size) return;
         /* Endpoint context for the target endpoint (val & 0xFF is the endpoint index) */
         int ep_idx = val & 0xFF;
         if (ep_idx == 0) ep_idx = 1; /* control endpoint = DCI 1 */
-        unsigned char *ep_ctx = (unsigned char *)guest_mem + slot_ctx_addr + ep_idx * XHCI_CTXSZ;
+        unsigned char *ep_ctx = gptr(slot_ctx_addr + ep_idx * XHCI_CTXSZ, XHCI_CTXSZ, "xHCI endpoint ctx");
         /* xHCI 4.8.3: a Halted(2) endpoint ignores its doorbell until Reset
            Endpoint; a Stopped(3) one restarts on it, resuming at the saved
            dequeue. Disabled(0) is walked anyway -- contexts written before
@@ -2107,7 +2255,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
            the TC flag), stop at the producer's edge. */
         for (int safety = 0; safety < 64; safety++) {
             if (tr_dequeue + 16 > guest_mem_size) break;
-            unsigned char *trb = (unsigned char *)guest_mem + tr_dequeue;
+            unsigned char *trb = gptr(tr_dequeue, 16, "xHCI transfer ring");
             unsigned int ctrl = *(unsigned int *)(trb + 12);
             if ((int)(ctrl & 1) != ccs) break;
             int tt = (ctrl >> 10) & 0x3F;
@@ -2225,7 +2373,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                    advances follow links -- a TD may straddle the wrap. */
                 tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
                 if (tr_dequeue + 16 > guest_mem_size) break;
-                unsigned char *data_trb = (unsigned char *)guest_mem + tr_dequeue;
+                unsigned char *data_trb = gptr(tr_dequeue, 16, "xHCI transfer ring");
                 unsigned int data_ctrl = *(unsigned int *)(data_trb + 12);
                 int data_tt = (data_ctrl >> 10) & 0x3F;
                 unsigned long long data_buf = *(unsigned long long *)data_trb;
@@ -2240,26 +2388,30 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         int cfg_d_sz = (int)sizeof(usb_cfg_desc);
                         if (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID) { dev_d = usb_hid_dev_desc; dev_d_sz = (int)sizeof(usb_hid_dev_desc); cfg_d = usb_hid_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_cfg_desc); }
                         if (kind == XHCI_KIND_HID && hid_combo) { cfg_d = usb_hid_combo_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_combo_cfg_desc); }
+                        if (kind == XHCI_KIND_HID && hid_pad) { cfg_d = usb_hid_pad_cfg_desc; cfg_d_sz = (int)sizeof(usb_hid_pad_cfg_desc); }
                         if (kind == XHCI_KIND_UVC) { dev_d = usb_uvc_dev_desc; dev_d_sz = (int)sizeof(usb_uvc_dev_desc); cfg_d = usb_uvc_cfg_desc; cfg_d_sz = (int)sizeof(usb_uvc_cfg_desc); }
                         if (kind == XHCI_KIND_HUB) { dev_d = tier == 0 ? usb_hub_dev_desc : usb_hub_fs_dev_desc; dev_d_sz = 18; cfg_d = usb_hub_cfg_desc; cfg_d_sz = (int)sizeof(usb_hub_cfg_desc); }
                         if (desc_type == 1) { /* DEVICE */
                             int n = data_len < dev_d_sz ? data_len : dev_d_sz;
-                            memcpy((unsigned char *)guest_mem + data_buf, dev_d, n);
+                            memcpy(gptr(data_buf, (unsigned long long)n, "xHCI control data"), dev_d, n);
                         } else if (desc_type == 2) { /* CONFIG */
                             int n = data_len < cfg_d_sz ? data_len : cfg_d_sz;
-                            memcpy((unsigned char *)guest_mem + data_buf, cfg_d, n);
+                            memcpy(gptr(data_buf, (unsigned long long)n, "xHCI control data"), cfg_d, n);
+                        } else if (desc_type == 0x22 && kind == XHCI_KIND_HID && hid_pad && wIndex == 2) { /* gamepad REPORT */
+                            int n = data_len < (int)sizeof(usb_hid_pad_report_desc) ? data_len : (int)sizeof(usb_hid_pad_report_desc);
+                            memcpy(gptr(data_buf, (unsigned long long)n, "xHCI control data"), usb_hid_pad_report_desc, n);
                         } else if (desc_type == 0x22 && (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)) { /* HID REPORT */
                             int n = data_len < (int)sizeof(usb_hid_report_desc) ? data_len : (int)sizeof(usb_hid_report_desc);
-                            memcpy((unsigned char *)guest_mem + data_buf, usb_hid_report_desc, n);
+                            memcpy(gptr(data_buf, (unsigned long long)n, "xHCI control data"), usb_hid_report_desc, n);
                         } else if (desc_type == 0x29 && kind == XHCI_KIND_HUB) { /* HUB class */
                             int n = data_len < (int)sizeof(usb_hub_class_desc) ? data_len : (int)sizeof(usb_hub_class_desc);
-                            memcpy((unsigned char *)guest_mem + data_buf, usb_hub_class_desc, n);
+                            memcpy(gptr(data_buf, (unsigned long long)n, "xHCI control data"), usb_hub_class_desc, n);
                         }
                     } else if (bRequest == 0 && bmRequestType == 0xA3 &&
                                kind == XHCI_KIND_HUB && wIndex == 1 && data_len >= 4) {
                         /* GET_PORT_STATUS */
                         unsigned int st = xhci_hub_port_status(xhci_hub_tier(db));
-                        memcpy((unsigned char *)guest_mem + data_buf, &st, 4);
+                        memcpy(gptr(data_buf, 4, "xHCI control data"), &st, 4);
                     } else if (bmRequestType == 0xA1 &&
                                (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)) {
                         /* HID class GETs (HID 1.11 7.2): GET_REPORT(1) is
@@ -2275,23 +2427,23 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                             if (hid_kbd_carries_keys(kind)) build_hid_keyboard_report(rep);
                             else memset(rep, 0, 8);
                             int n = data_len < 8 ? data_len : 8;
-                            memcpy((unsigned char *)guest_mem + data_buf, rep, n);
+                            memcpy(gptr(data_buf, (unsigned long long)n, "xHCI control data"), rep, n);
                         } else if (bRequest == 2 && data_len >= 1) {
-                            *((unsigned char *)guest_mem + data_buf) = (unsigned char)hid_idle_rate;
+                            *gptr(data_buf, 1, "xHCI control data") = (unsigned char)hid_idle_rate;
                         } else if (bRequest == 3 && data_len >= 1) {
-                            *((unsigned char *)guest_mem + data_buf) = (unsigned char)hid_protocol;
+                            *gptr(data_buf, 1, "xHCI control data") = (unsigned char)hid_protocol;
                         }
                     } else if (bmRequestType == 0x80 && bRequest == 8 && data_len >= 1 &&
                                (kind == XHCI_KIND_HID || kind == XHCI_KIND_HUB_HID)) {
                         /* GET_CONFIGURATION (USB2 9.4.2) */
-                        *((unsigned char *)guest_mem + data_buf) = (unsigned char)hid_configuration;
+                        *gptr(data_buf, 1, "xHCI control data") = (unsigned char)hid_configuration;
                     }
                 }
                 if (data_tt == 3) tr_dequeue = xhci_next_trb(tr_dequeue, &ccs);
                 /* STATUS stage: post the transfer event whether or not a
                    data stage preceded it (SET_CONFIGURATION has none). */
                 if (tr_dequeue + 16 <= guest_mem_size) {
-                    unsigned char *sts_trb = (unsigned char *)guest_mem + tr_dequeue;
+                    unsigned char *sts_trb = gptr(tr_dequeue, 16, "xHCI transfer ring");
                     unsigned int sts_ctrl = *(unsigned int *)(sts_trb + 12);
                     if (((sts_ctrl >> 10) & 0x3F) == 4 && (int)(sts_ctrl & 1) == ccs) {
                         xhci_post_event_ep(32, db, ep_idx, ctrl_cc, tr_dequeue); /* Transfer Event */
@@ -2460,6 +2612,11 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                             hid_mouse_fresh = (pending_mouse_abs_x != hid_mouse_last_x ||
                                                pending_mouse_abs_y != hid_mouse_last_y);
                     }
+                    else if (kind == XHCI_KIND_HID && hid_pad && ep_idx == 7) {
+                        memset(report, 0, 8);
+                        build_hid_pad_report(report);
+                        hid_pad_reports++;
+                    }
                     else if (hid_kbd_carries_keys(kind)) build_hid_keyboard_report(report);
                     else memset(report, 0, 8);
                     if (hid_nak_unchanged && !is_combo_mouse) {
@@ -2472,7 +2629,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                                 db, ep_idx, (unsigned long long)buf_addr, report[2]);
                     }
                     int n = buf_len < 8 ? buf_len : 8;
-                    memcpy((unsigned char *)guest_mem + buf_addr, report, n);
+                    memcpy(gptr(buf_addr, (unsigned long long)n, "xHCI HID report"), report, n);
                     if (ctrl & 0x20) xhci_post_event_ep(32, db, ep_idx, 1, tr_dequeue);
                     tr_dequeue += 16;
                     continue;
@@ -2492,7 +2649,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                 int bot_nak = 0;
                 if (kind == 1 && ide.data && buf_addr > 0 &&
                     buf_addr + (unsigned long long)buf_len <= guest_mem_size) {
-                    unsigned char *buf = (unsigned char *)guest_mem + buf_addr;
+                    unsigned char *buf = gptr(buf_addr, (unsigned long long)buf_len, "xHCI BOT");
                     int ring_is_in = (ep_idx >= 2) && (ep_idx & 1); /* odd DCI = IN endpoint */
                     if (usb_bot_stuck && (ring_is_in || tr_dequeue == usb_bot_stall_trb)) {
                         bot_nak = 1;
@@ -2677,7 +2834,7 @@ static void xhci_handle_doorbell(int db, unsigned int val) {
                         uvc_frame_ready = 1;
                     }
                     int n = buf_len < UVC_FRAME_SIZE ? buf_len : UVC_FRAME_SIZE;
-                    memcpy((unsigned char *)guest_mem + buf_addr, uvc_frame, n);
+                    memcpy(gptr(buf_addr, (unsigned long long)n, "xHCI UVC frame"), uvc_frame, n);
                     copied = n;
                 }
                 /* An isochronous TRB that asks for an event gets one, exactly
@@ -2992,7 +3149,7 @@ static void xhci_write(unsigned long long offset, unsigned int val) {
             xcur->erstba = (xcur->erstba & 0xFFFFFFFF00000000ULL) | val;
             /* Read event ring segment table entry 0 to get ring address+size */
             if (xcur->erstba > 0 && xcur->erstba + 16 <= guest_mem_size) {
-                unsigned char *erst = (unsigned char *)guest_mem + xcur->erstba;
+                unsigned char *erst = gptr(xcur->erstba, 16, "xHCI ERST");
                 xcur->er_addr = *(unsigned long long *)erst;
                 xcur->er_size = *(unsigned short *)(erst + 8);
                 xcur->erdp_idx = 0;
@@ -3095,15 +3252,15 @@ static void hda_process_corb(void) {
         hda.corbrp = (hda.corbrp + 1) & 0xFF;
         unsigned long long cmd_off = corb_addr + (unsigned long long)hda.corbrp * 4;
         if (cmd_off + 4 > guest_mem_size) break;
-        unsigned int cmd = *(unsigned int *)((unsigned char *)guest_mem + cmd_off);
+        unsigned int cmd = *(unsigned int *)gptr(cmd_off, 4, "HDA CORB");
         unsigned int resp = hda_codec_verb(cmd);
         /* Write response to RIRB */
         if (hda.rirbctl & 2) {
             hda.rirbwp = (hda.rirbwp + 1) & 0xFF;
             unsigned long long resp_off = rirb_addr + (unsigned long long)hda.rirbwp * 8;
             if (resp_off + 8 <= guest_mem_size) {
-                *(unsigned int *)((unsigned char *)guest_mem + resp_off) = resp;
-                *(unsigned int *)((unsigned char *)guest_mem + resp_off + 4) = 0; /* codec 0 */
+                *(unsigned int *)gptr(resp_off, 4, "HDA RIRB") = resp;
+                *(unsigned int *)gptr(resp_off + 4, 4, "HDA RIRB") = 0; /* codec 0 */
             }
         }
     }
@@ -3228,11 +3385,12 @@ static void hda_drain_stream(void) {
     for (; hda_drain_idx <= lvi && hda_drain_idx < 256; hda_drain_idx++) {
         unsigned long long entry_addr = bdl_addr + (unsigned long long)hda_drain_idx * 16;
         if (entry_addr + 16 > guest_mem_size) break;
-        unsigned char *entry = (unsigned char *)guest_mem + entry_addr;
+        unsigned char *entry = gptr(entry_addr, 16, "HDA BDL");
         unsigned long long buf_addr = *(unsigned long long *)entry;
         unsigned int buf_len = *(unsigned int *)(entry + 8);
-        if (buf_addr > 0 && buf_addr + buf_len <= guest_mem_size && buf_len > 0) {
-            audio_write((unsigned char *)guest_mem + buf_addr, buf_len);
+        if (buf_addr > 0 && buf_addr + buf_len >= buf_addr && buf_addr + buf_len <= guest_mem_size && buf_len > 0) {
+            unsigned char *pb = gptr(buf_addr, buf_len, "HDA output buffer");
+            if (pb) audio_write(pb, buf_len);
             hda.sd0lpib += buf_len;
             hda_drain_count++;   /* evidence: a buffer reached the DAC */
         }
@@ -3261,6 +3419,8 @@ static unsigned char wave_in_data[AUDIO_IN_BUFS][AUDIO_IN_BUF_SIZE];
 static unsigned char mic_ring[MIC_RING_SIZE];
 static volatile int mic_ring_pos = 0;
 static int wave_in_opened = 0;
+static int hda_capture_mode = 0; /* -hda-capture-stall 1: RUN never clears; -hda-capture-silence 2: zeros, no host microphone */
+static int vm_no_rdrand = 0; /* -no-rdrand: CPUID leaf 1 ecx bit 30 withheld, a processor with no RDRAND to a guest that asks */
 static int wave_in_failed = 0;
 static CRITICAL_SECTION mic_lock;
 static int mic_lock_init = 0;
@@ -3316,17 +3476,19 @@ static void audio_in_open(void) {
    the first run; with no microphone the buffer is filled with silence. */
 static void hda_fill_input(void) {
     if (!(hda.sd1ctl & 2)) return;
-    if (!wave_in_opened) audio_in_open();
+    if (hda_capture_mode == 1) return;
+    if (!wave_in_opened && hda_capture_mode != 2) audio_in_open();
     unsigned long long bdl_addr = (unsigned long long)hda.sd1bdpu << 32 | hda.sd1bdpl;
     if (bdl_addr == 0 || bdl_addr + 16 > guest_mem_size) { hda.sd1ctl &= ~2u; return; }
-    unsigned char *entry = (unsigned char *)guest_mem + bdl_addr;
+    unsigned char *entry = gptr(bdl_addr, 16, "HDA BDL");
     unsigned long long buf_addr = *(unsigned long long *)entry;
     unsigned int buf_len = *(unsigned int *)(entry + 8);
-    if (buf_addr == 0 || buf_addr + buf_len > guest_mem_size || buf_len == 0) {
+    if (buf_addr == 0 || buf_addr + buf_len < buf_addr || buf_addr + buf_len > guest_mem_size || buf_len == 0) {
         hda.sd1ctl &= ~2u; return;
     }
     unsigned int copy = buf_len > MIC_RING_SIZE ? MIC_RING_SIZE : buf_len;
-    unsigned char *dst = (unsigned char *)guest_mem + buf_addr;
+    unsigned char *dst = gptr(buf_addr, copy, "HDA input buffer");
+    if (!dst) { hda.sd1ctl &= ~2u; return; }
     if (wave_in_opened) {
         EnterCriticalSection(&mic_lock);
         int start = (((mic_ring_pos - (int)copy) % MIC_RING_SIZE) + MIC_RING_SIZE) % MIC_RING_SIZE;
@@ -4794,6 +4956,34 @@ static int mmio_insn_len(const unsigned char *b, int n) {
 #define E1000_BMSR_LINK    0x0004
 
 static int e1000_present = 0;
+
+/* -ivshmem FILE: QEMU's ivshmem device without interrupts, per QEMU
+   docs/specs/ivshmem-spec.rst: "vendor ID 1af4, device ID 1110, revision 1";
+   "BAR0 holds device registers (256 Byte MMIO)": Interrupt Mask at 0 and
+   Interrupt Status at 4 (read/write, 0 on reset), IVPosition at 8 ("if the
+   device is not configured for interrupts, this is zero"), Doorbell at 12
+   ("the write is ignored"); "BAR2 maps the shared memory object". The spec
+   leaves BAR2's width and size open: here it is a 32-bit prefetchable memory
+   BAR over FILE, which must be exactly 1 MiB (MmioMapX86's window limit), and
+   two codex-vm processes given one FILE share its pages. */
+static const char *ivshmem_path = NULL;
+static void *ivshmem_view = NULL;
+static unsigned int ivshmem_mask = 0, ivshmem_status = 0;
+#define IVSHMEM_BAR0       0xFE600000ULL
+#define IVSHMEM_BAR0_SIZE  0x100
+#define IVSHMEM_BAR2       0xFC000000ULL
+#define IVSHMEM_SIZE       0x100000
+
+static unsigned int ivshmem_read(unsigned long long off) {
+    if (off == 0) return ivshmem_mask;
+    if (off == 4) return ivshmem_status;
+    return 0;
+}
+
+static void ivshmem_write(unsigned long long off, unsigned int val) {
+    if (off == 0) ivshmem_mask = val;
+    else if (off == 4) ivshmem_status = val;
+}
 /* Every one of these exists so the model can REFUSE. A model that can
    only succeed is not a test of the driver's failure handling. */
 static int e1000_fault_no_reset = 0;
@@ -5295,10 +5485,10 @@ static void e1000_deliver_rx(void) {
         }
         unsigned long long desc = ring + (unsigned long long)idx * 16;
         if (desc + 16 > guest_mem_size) return;
-        unsigned char *d = (unsigned char *)guest_mem + desc;
+        unsigned char *d = gptr(desc, 16, "e1000 RX descriptor");
         unsigned long long buf = *(unsigned long long *)d;
         if (!buf || buf + sizeof(e1000_canned) > guest_mem_size) return;
-        memcpy((unsigned char *)guest_mem + buf, e1000_canned, sizeof(e1000_canned));
+        memcpy(gptr(buf, sizeof(e1000_canned), "e1000 RX buffer"), e1000_canned, sizeof(e1000_canned));
         *(unsigned short *)(d + 8) = (unsigned short)sizeof(e1000_canned);
         d[12] = E1000_RXD_STAT_DD | E1000_RXD_STAT_EOP;
         e1000_rx_cursor = (int)((idx + 1) % count);
@@ -5325,11 +5515,11 @@ static void e1000_consume_tx(unsigned int tail) {
     while (head != (tail % count)) {
         unsigned long long desc = ring + (unsigned long long)head * 16;
         if (desc + 16 > guest_mem_size) break;
-        unsigned char *d = (unsigned char *)guest_mem + desc;
+        unsigned char *d = gptr(desc, 16, "e1000 TX descriptor");
         unsigned long long buf = *(unsigned long long *)d;
         unsigned short dlen = *(unsigned short *)(d + 8);
         if (buf && dlen && buf + dlen <= guest_mem_size) {
-            unsigned char *p = (unsigned char *)guest_mem + buf;
+            unsigned char *p = gptr(buf, dlen, "e1000 TX buffer");
             for (unsigned short k = 0; k < dlen; k++) e1000_tx_sum += p[k];
             e1000_tx_bytes += dlen;
             e1000_tx_frames++;
@@ -5626,6 +5816,9 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     if (e1000_present && gpa >= E1000_BAR && gpa < E1000_BAR + E1000_BAR_SIZE) {
         offset = gpa - E1000_BAR;
         read_fn = e1000_read; write_fn = e1000_write;
+    } else if (ivshmem_path && gpa >= IVSHMEM_BAR0 && gpa < IVSHMEM_BAR0 + IVSHMEM_BAR0_SIZE) {
+        offset = gpa - IVSHMEM_BAR0;
+        read_fn = ivshmem_read; write_fn = ivshmem_write;
     } else if (xhci_sel_for(gpa) >= 0) {
         int xsel = xhci_sel_for(gpa);
         xcur = &xhci_ctl[xsel];
@@ -5679,7 +5872,7 @@ static int handle_device_mmio(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 unsigned long long want = (unsigned long long)(16 - got);
                 if (want > page_left) want = page_left;
                 if (ig + want > guest_mem_size) break;
-                memcpy(ib + got, (unsigned char *)guest_mem + ig, (size_t)want);
+                memcpy(ib + got, gptr(ig, want, "MMIO decode fetch"), (size_t)want);
                 got += (int)want;
             }
             if (got > 0) insn = mmio_decode(ib, got);
@@ -5804,6 +5997,14 @@ static void vga_update_title(void) {
    padded stride and says so once. What the bed serves is GUEST-side row
    stepping, which is where the stride is a payload's responsibility. */
 static int gop_host_gpu_refuses(void) {
+    /* Below about 3 GB of -mem the GPU region (0xBE000000 up to the end of the
+       framebuffer) lies past guest RAM and is never committed, so a guest that
+       turns the GPU on would have the host write outside guest_mem. */
+    if (GOP_FB_ADDR + (unsigned long long)gop_stride * gop_height * 4 > guest_mem_size) {
+        static int said = 0;
+        if (!said++) fprintf(stderr, "GPU: refused, the GPU region ends past guest RAM (guest_mem_size=0x%llx)\n", (unsigned long long)guest_mem_size);
+        return 1;
+    }
     if (gop_stride == gop_width) return 0;
     static int warned = 0;
     if (!warned) {
@@ -5927,6 +6128,7 @@ static int uefi_cursor_col = 0;
 static unsigned char uefi_attr = 0x07; /* white on black */
 static unsigned long long uefi_alloc_hi;   /* high-water mark, allocates downward (set in setup) */
 static unsigned long long uefi_alloc_pool = 0x10000000; /* bump allocator for AllocatePool */
+static long long uefi_desc_size_lie = -1; /* CODEX_VM_UEFI_DESC_SIZE: the DescriptorSize GetMemoryMap reports */
 
 static void uefi_setup_tables(void *mem) {
     unsigned char *base = (unsigned char *)mem + UEFI_TABLE_PAGE;
@@ -6272,10 +6474,11 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     switch (func_id) {
     case UEFI_TRAP_CONOUT_PRINT: {
         /* OutputString(This, String) -- RDX = UTF-16LE string in guest mem */
-        if (rdx > 0 && rdx + 2 < guest_mem_size) {
-            unsigned char *str = (unsigned char *)guest_mem + rdx;
+        if (rdx > 0 && rdx < guest_mem_size && guest_mem_size - rdx >= 2) {
+            unsigned long long slen = guest_mem_size - rdx; if (slen > 8192) slen = 8192;
+            unsigned char *str = gptr(rdx, slen, "UEFI OutputString");
             unsigned char *vga = (unsigned char *)guest_mem + VGA_BASE;
-            for (int i = 0; i < 8192; i += 2) {
+            for (int i = 0; (unsigned long long)i + 1 < slen; i += 2) {
                 unsigned short ch = str[i] | (str[i + 1] << 8);
                 if (ch == 0) break;
                 if (conout_fp) {
@@ -6430,7 +6633,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 break;
             }
             if (rdx > 0 && rdx + 4 <= guest_mem_size) {
-                unsigned char *key = (unsigned char *)guest_mem + rdx;
+                unsigned char *key = gptr(rdx, 4, "UEFI key");
                 key[0] = scan & 0xFF; key[1] = (scan >> 8) & 0xFF;
                 key[2] = ascii; key[3] = 0;
             }
@@ -6476,7 +6679,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 break;
             }
             if (rdx > 0 && rdx + 8 <= guest_mem_size) {
-                unsigned char *key = (unsigned char *)guest_mem + rdx;
+                unsigned char *key = gptr(rdx, 8, "UEFI key");
                 key[0] = scan & 0xFF; key[1] = (scan >> 8) & 0xFF;
                 key[2] = ascii; key[3] = 0;
                 /* ShiftState at offset 4: set "valid" bit */
@@ -6498,7 +6701,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
            the call actually reads. Captured before any branch overwrites it. */
         unsigned long long alloc_in = 0;
         if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-            memcpy(&alloc_in, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+            memcpy(&alloc_in, gptr(arg_vals[3].Reg64, 8, "UEFI argument"), 8);
         if (rcx == 2) {
             /* AllocateAddress: caller set *R9 to exact address.
                Permissive mode just succeeds. Strict mode honors the memory
@@ -6510,7 +6713,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             if (uefi_strict) {
                 unsigned long long want = 0;
                 if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-                    memcpy(&want, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+                    memcpy(&want, gptr(arg_vals[3].Reg64, 8, "UEFI argument"), 8);
                 int occupied = (want < 0x200000); /* first 2MB: firmware-owned */
                 if (uefi_image_size &&
                     want < uefi_image_base + uefi_image_size &&
@@ -6526,13 +6729,13 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             /* AllocateMaxAddress: allocate at or below the address in *R9 */
             unsigned long long max_addr = 0;
             if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-                memcpy(&max_addr, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+                memcpy(&max_addr, gptr(arg_vals[3].Reg64, 8, "UEFI argument"), 8);
             unsigned long long ceiling = (max_addr < uefi_alloc_hi) ? max_addr : uefi_alloc_hi;
             if (ceiling >= alloc_size + 0x100000) {
                 unsigned long long addr = (ceiling - alloc_size) & ~0xFFFULL;
                 if (addr >= 0x1000) {
                     uefi_alloc_hi = addr;
-                    memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &addr, 8);
+                    memcpy(gptr(arg_vals[3].Reg64, 8, "UEFI argument"), &addr, 8);
                 } else {
                     rax_result = 0x8000000000000009ULL; /* EFI_OUT_OF_RESOURCES */
                 }
@@ -6545,7 +6748,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 unsigned long long addr = (uefi_alloc_hi - alloc_size) & ~0xFFFULL;
                 uefi_alloc_hi = addr;
                 if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-                    memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &addr, 8);
+                    memcpy(gptr(arg_vals[3].Reg64, 8, "UEFI argument"), &addr, 8);
             } else {
                 rax_result = 0x8000000000000009ULL;
             }
@@ -6554,7 +6757,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             /* Commit whatever we handed back so host-side handlers can write it. */
             unsigned long long got = 0;
             if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-                memcpy(&got, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+                memcpy(&got, gptr(arg_vals[3].Reg64, 8, "UEFI argument"), 8);
             if (got) guest_commit_range(got, alloc_size);
         }
         /* CODEX_VM_ALLOC_TRACE=1: one line per AllocatePages. Lets a guest that
@@ -6564,7 +6767,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         if (getenv("CODEX_VM_ALLOC_TRACE")) {
             unsigned long long shown = 0;
             if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-                memcpy(&shown, (unsigned char *)guest_mem + arg_vals[3].Reg64, 8);
+                memcpy(&shown, gptr(arg_vals[3].Reg64, 8, "UEFI argument"), 8);
             fprintf(stderr, "UEFI-ALLOC: type=%llu pages=%llu in=0x%llx -> addr=0x%llx "
                     "status=0x%llx alloc_hi=0x%llx\n",
                     (unsigned long long)rcx, pages, alloc_in, shown,
@@ -6601,37 +6804,37 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
             }
         }
         #undef MMAP_ENT
-        unsigned long long desc_size = 48;
-        unsigned long long map_size = (unsigned long long)num_entries * desc_size;
+        unsigned long long map_size = (unsigned long long)num_entries * 48;
+        unsigned long long desc_size = uefi_desc_size_lie >= 0 ? (unsigned long long)uefi_desc_size_lie : 48;
         /* UEFI 2.x GetMemoryMap: a MapSize smaller than the map gets the
            needed size written back and EFI_BUFFER_TOO_SMALL, and no map. */
         unsigned long long in_size = 0;
         if (rcx > 0 && rcx + 8 <= guest_mem_size)
-            memcpy(&in_size, (unsigned char *)guest_mem + rcx, 8);
+            memcpy(&in_size, gptr(rcx, 8, "UEFI argument"), 8);
         if (rcx > 0 && rcx + 8 <= guest_mem_size)
-            memcpy((unsigned char *)guest_mem + rcx, &map_size, 8);
+            memcpy(gptr(rcx, 8, "UEFI argument"), &map_size, 8);
         if (in_size < map_size) {
             if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-                memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &desc_size, 8);
+                memcpy(gptr(arg_vals[3].Reg64, 8, "UEFI argument"), &desc_size, 8);
             rax_result = 0x8000000000000005ULL; /* EFI_BUFFER_TOO_SMALL */
             break;
         }
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             unsigned long long map_key = UEFI_MAP_KEY;
-            memcpy((unsigned char *)guest_mem + r8, &map_key, 8);
+            memcpy(gptr(r8, 8, "UEFI argument"), &map_key, 8);
         }
         if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size)
-            memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &desc_size, 8);
+            memcpy(gptr(arg_vals[3].Reg64, 8, "UEFI argument"), &desc_size, 8);
         /* Write descriptor version */
         unsigned long long desc_ver_addr = 0;
         if (rsp + 40 + 8 <= guest_mem_size)
-            memcpy(&desc_ver_addr, (unsigned char *)guest_mem + rsp + 40, 8);
+            memcpy(&desc_ver_addr, gptr(rsp + 40, 8, "UEFI stack argument"), 8);
         if (desc_ver_addr > 0 && desc_ver_addr + 4 <= guest_mem_size)
-            *(int *)((unsigned char *)guest_mem + desc_ver_addr) = 1;
+            *(int *)gptr(desc_ver_addr, 4, "UEFI argument") = 1;
         /* Write map entries to guest buffer */
         if (rdx > 0 && rdx + map_size <= guest_mem_size) {
             for (int i = 0; i < num_entries; i++) {
-                unsigned char *d = (unsigned char *)guest_mem + rdx + i * 48;
+                unsigned char *d = gptr(rdx + (unsigned long long)i * 48, 48, "UEFI memory map");
                 memset(d, 0, 48);
                 *(unsigned int *)(d + 0)  = entries[i].type;
                 memcpy(d + 8,  &entries[i].phys, 8);
@@ -6648,7 +6851,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         unsigned long long addr = uefi_alloc_pool;
         uefi_alloc_pool = (uefi_alloc_pool + size + 4095) & ~4095ULL;
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
-            memcpy((unsigned char *)guest_mem + r8, &addr, 8);
+            memcpy(gptr(r8, 8, "UEFI argument"), &addr, 8);
         }
         guest_commit_range(addr, size);
         break;
@@ -6685,7 +6888,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* HandleProtocol(Handle, Protocol*, Interface**) -- RCX=handle, RDX=&GUID, R8=&interface */
         unsigned char guid[16];
         if (rdx > 0 && rdx + 16 <= guest_mem_size)
-            memcpy(guid, (unsigned char *)guest_mem + rdx, 16);
+            memcpy(guid, gptr(rdx, 16, "UEFI GUID"), 16);
         else { rax_result = EFI_NOT_FOUND_S; break; }
         unsigned long long iface = 0;
         if (memcmp(guid, GUID_BLOCK_IO, 16) == 0 && ide.data)
@@ -6697,7 +6900,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         else if (memcmp(guid, GUID_GOP, 16) == 0 && GOP_FB_ADDR + GOP_FB_SIZE <= guest_mem_size)
             iface = UEFI_TABLE_PAGE + 0x700;
         if (iface && r8 > 0 && r8 + 8 <= guest_mem_size)
-            memcpy((unsigned char *)guest_mem + r8, &iface, 8);
+            memcpy(gptr(r8, 8, "UEFI argument"), &iface, 8);
         else
             rax_result = EFI_NOT_FOUND_S;
         break;
@@ -6710,7 +6913,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* LocateProtocol(Protocol*, Registration, Interface**) -- RCX=&GUID, RDX=reg, R8=&interface */
         unsigned char guid[16];
         if (rcx > 0 && rcx + 16 <= guest_mem_size)
-            memcpy(guid, (unsigned char *)guest_mem + rcx, 16);
+            memcpy(guid, gptr(rcx, 16, "UEFI GUID"), 16);
         else { rax_result = EFI_NOT_FOUND_S; break; }
         unsigned long long iface = 0;
         if (memcmp(guid, GUID_BLOCK_IO, 16) == 0 && ide.data) {
@@ -6731,7 +6934,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
                 guid[3],guid[2],guid[1],guid[0]);
         }
         if (iface && r8 > 0 && r8 + 8 <= guest_mem_size)
-            memcpy((unsigned char *)guest_mem + r8, &iface, 8);
+            memcpy(gptr(r8, 8, "UEFI argument"), &iface, 8);
         else
             rax_result = EFI_NOT_FOUND_S;
         break;
@@ -6745,14 +6948,14 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         unsigned long long buf_size = arg_vals[3].Reg64;
         unsigned long long buf_addr = 0;
         if (rsp + 40 + 8 <= guest_mem_size)
-            memcpy(&buf_addr, (unsigned char *)guest_mem + rsp + 40, 8);
+            memcpy(&buf_addr, gptr(rsp + 40, 8, "UEFI stack argument"), 8);
         unsigned long long disk_off = lba * 512;
-        if (!ide.data || disk_off + buf_size > ide.size) {
+        if (!ide.data || lba > ide.size / 512 || buf_size > ide.size - disk_off) {
             rax_result = EFI_DEVICE_ERROR_S; /* EFI_DEVICE_ERROR (bit 63 set) */
             break;
         }
-        if (buf_addr > 0 && buf_addr + buf_size <= guest_mem_size) {
-            memcpy((unsigned char *)guest_mem + buf_addr, ide.data + disk_off, (size_t)buf_size);
+        if (buf_addr > 0 && buf_addr < guest_mem_size && buf_size <= guest_mem_size - buf_addr) {
+            { unsigned char *ub = gptr(buf_addr, buf_size, "UEFI ReadBlocks"); if (ub) memcpy(ub, ide.data + disk_off, (size_t)buf_size); else rax_result = EFI_DEVICE_ERROR_S; }
         } else {
             rax_result = EFI_INVALID_PARAM; /* EFI_INVALID_PARAMETER (bit 63 set) */
         }
@@ -6768,14 +6971,14 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         unsigned long long buf_size = arg_vals[3].Reg64;
         unsigned long long buf_addr = 0;
         if (rsp + 40 + 8 <= guest_mem_size)
-            memcpy(&buf_addr, (unsigned char *)guest_mem + rsp + 40, 8);
+            memcpy(&buf_addr, gptr(rsp + 40, 8, "UEFI stack argument"), 8);
         unsigned long long disk_off = lba * 512;
-        if (!ide.data || disk_off + buf_size > ide.size) {
+        if (!ide.data || lba > ide.size / 512 || buf_size > ide.size - disk_off) {
             rax_result = EFI_DEVICE_ERROR_S;
             break;
         }
-        if (buf_addr > 0 && buf_addr + buf_size <= guest_mem_size) {
-            memcpy(ide.data + disk_off, (unsigned char *)guest_mem + buf_addr, (size_t)buf_size);
+        if (buf_addr > 0 && buf_addr < guest_mem_size && buf_size <= guest_mem_size - buf_addr) {
+            { unsigned char *ub = gptr(buf_addr, buf_size, "UEFI WriteBlocks"); if (!ub) { rax_result = EFI_DEVICE_ERROR_S; break; } memcpy(ide.data + disk_off, ub, (size_t)buf_size); }
             /* Media advertises WriteCaching = 0 (0xF0848), so a write is
                through to the backing file and FlushBlocks has nothing left. */
             ide_flush(&ide, (size_t)disk_off, (size_t)buf_size);
@@ -6793,7 +6996,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         if (rcx > 0 && rcx + 16 <= guest_mem_size) {
             SYSTEMTIME st;
             GetLocalTime(&st);
-            unsigned char *t = (unsigned char *)guest_mem + rcx;
+            unsigned char *t = gptr(rcx, 16, "UEFI GetTime");
             memset(t, 0, 16);
             *(unsigned short *)(t + 0) = st.wYear;
             t[2] = (unsigned char)st.wMonth;
@@ -6809,11 +7012,11 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         /* QueryMode(This, ModeNumber, Columns, Rows) -- R8=&Cols, R9=&Rows */
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             unsigned long long cols = VGA_COLS;
-            memcpy((unsigned char *)guest_mem + r8, &cols, 8);
+            memcpy(gptr(r8, 8, "UEFI argument"), &cols, 8);
         }
         if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size) {
             unsigned long long rows = VGA_ROWS;
-            memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &rows, 8);
+            memcpy(gptr(arg_vals[3].Reg64, 8, "UEFI out-pointer"), &rows, 8);
         }
         break;
 
@@ -6833,11 +7036,11 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
         }
         if (r8 > 0 && r8 + 8 <= guest_mem_size) {
             unsigned long long sz = 36;
-            memcpy((unsigned char *)guest_mem + r8, &sz, 8);
+            memcpy(gptr(r8, 8, "UEFI out-pointer"), &sz, 8);
         }
         if (arg_vals[3].Reg64 > 0 && arg_vals[3].Reg64 + 8 <= guest_mem_size) {
             unsigned long long info_addr = UEFI_TABLE_PAGE + 0x2C0;
-            memcpy((unsigned char *)guest_mem + arg_vals[3].Reg64, &info_addr, 8);
+            memcpy(gptr(arg_vals[3].Reg64, 8, "UEFI out-pointer"), &info_addr, 8);
         }
         unsigned char *info = (unsigned char *)guest_mem + UEFI_TABLE_PAGE + 0x2C0;
         memset(info, 0, 36);
@@ -6902,7 +7105,7 @@ static int uefi_handle_trap(WHV_RUN_VP_EXIT_CONTEXT *ctx) {
     /* Set RAX = result, pop return address from stack into RIP */
     unsigned long long ret_addr = 0;
     if (rsp > 0 && rsp + 8 <= guest_mem_size) {
-        memcpy(&ret_addr, (unsigned char *)guest_mem + rsp, 8);
+        memcpy(&ret_addr, gptr(rsp, 8, "UEFI return address"), 8);
     }
     if (ret_addr == 0 || ret_addr > guest_mem_size) {
         fprintf(stderr, "UEFI trap %d: bad return addr 0x%llx (RSP=0x%llx)\n", func_id, ret_addr, rsp);
@@ -6982,6 +7185,29 @@ static void inject_mouse_parse(const char *s) {
         } else {
             fprintf(stderr, "-mouse: cannot parse event near '%.20s'\n", s);
         }
+        while (*s && *s != ';' && *s != '\n') s++;
+    }
+}
+
+/* -pad-file (with -hid-pad): one gamepad state per line,
+   't:buttons,x,y,z,rz,hat' on the pointer timeline's clock; buttons is a
+   16-bit mask, the axes -127..127, the hat 0-7 or 8 centred. */
+#define MAX_INJECT_PAD 1024
+typedef struct { double t_ms; int buttons, x, y, z, rz, hat; } InjectPad;
+static InjectPad inject_pad[MAX_INJECT_PAD];
+static int inject_pad_count = 0;
+static int inject_pad_idx = 0;
+
+static void inject_pad_parse(const char *s) {
+    while (*s && inject_pad_count < MAX_INJECT_PAD) {
+        while (*s == ';' || *s == '\n' || *s == '\r' || *s == ' ' || *s == '\t') s++;
+        if (*s == '#') { while (*s && *s != '\n') s++; continue; }
+        if (!*s) break;
+        InjectPad *p = &inject_pad[inject_pad_count];
+        if (sscanf(s, "%lf:%d,%d,%d,%d,%d,%d", &p->t_ms, &p->buttons, &p->x, &p->y, &p->z, &p->rz, &p->hat) == 7)
+            inject_pad_count++;
+        else
+            fprintf(stderr, "-pad-file: cannot parse event near '%.20s'\n", s);
         while (*s && *s != ';' && *s != '\n') s++;
     }
 }
@@ -7093,19 +7319,26 @@ static const COLORREF vga_palette[16] = {
     RGB(255,85,85),   RGB(255,85,255),  RGB(255,255,85),  RGB(255,255,255)
 };
 
+static int write_bmp(const char *path, const unsigned char *pixels, int w, int h, int stride);
+
 static void save_screenshot_bmp(const char *path) {
     if (!shadow_gop || shadow_gop_w <= 0 || shadow_gop_h <= 0) {
         fprintf(stderr, "Screenshot: no GOP framebuffer active\n");
         return;
     }
-    int w = shadow_gop_w, h = shadow_gop_h, stride = shadow_gop_stride;
+    if (write_bmp(path, shadow_gop, shadow_gop_w, shadow_gop_h, shadow_gop_stride))
+        fprintf(stderr, "Screenshot saved: %s (%dx%d)\n", path, shadow_gop_w, shadow_gop_h);
+}
+
+/* 24-bit bottom-up BMP of a 32-bit XRGB surface; 1 on success. */
+static int write_bmp(const char *path, const unsigned char *pixels, int w, int h, int stride) {
     int row_bytes = w * 3;
     int pad = (4 - (row_bytes % 4)) % 4;
     int padded_row = row_bytes + pad;
     int pixel_size = padded_row * h;
     int file_size = 54 + pixel_size;
     FILE *f = fopen(path, "wb");
-    if (!f) { fprintf(stderr, "Screenshot: cannot open %s\n", path); return; }
+    if (!f) { fprintf(stderr, "Screenshot: cannot open %s\n", path); return 0; }
     unsigned char hdr[54];
     memset(hdr, 0, sizeof(hdr));
     hdr[0] = 'B'; hdr[1] = 'M';
@@ -7120,7 +7353,7 @@ static void save_screenshot_bmp(const char *path) {
     fwrite(hdr, 1, 54, f);
     unsigned char padding[4] = {0,0,0,0};
     for (int y = h - 1; y >= 0; y--) {
-        unsigned int *row = (unsigned int*)(shadow_gop + y * stride * 4);
+        const unsigned int *row = (const unsigned int*)(pixels + (size_t)y * stride * 4);
         for (int x = 0; x < w; x++) {
             unsigned int px = row[x];
             unsigned char bgr[3] = { px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF };
@@ -7129,7 +7362,40 @@ static void save_screenshot_bmp(const char *path) {
         if (pad > 0) fwrite(padding, 1, pad, f);
     }
     fclose(f);
-    fprintf(stderr, "Screenshot saved: %s (%dx%d)\n", path, w, h);
+    return 1;
+}
+
+/* -record DIR: OUT 0xE5 saves the live GOP framebuffer as DIR\frame-NNNNN.bmp,
+   at most record_max frames and none sooner than record_min_ms after the last;
+   IN 0xE5 answers the frames saved. Without -record neither port is claimed. */
+static const char *record_dir = NULL;
+static int record_max = 60;
+static int record_min_ms = 200;
+static int record_every_ms = 0;
+static LARGE_INTEGER record_tick_last = {0};
+static int record_saved = 0, record_refused_cap = 0, record_refused_soon = 0, record_refused_nogop = 0;
+static LARGE_INTEGER record_last = {0};
+
+static void record_frame(void) {
+    LARGE_INTEGER now, freq;
+    if (record_saved >= record_max) { record_refused_cap++; return; }
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    if (record_saved > 0 && (double)(now.QuadPart - record_last.QuadPart) * 1000.0 / (double)freq.QuadPart < (double)record_min_ms) {
+        record_refused_soon++;
+        return;
+    }
+    if (!gop_active || gop_width <= 0 || gop_height <= 0 ||
+        GOP_FB_ADDR + (unsigned long long)gop_stride * gop_height * 4 > guest_mem_size) {
+        record_refused_nogop++;
+        return;
+    }
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\frame-%05d.bmp", record_dir, record_saved);
+    if (write_bmp(path, (const unsigned char *)guest_mem + GOP_FB_ADDR, gop_width, gop_height, gop_stride)) {
+        record_saved++;
+        record_last = now;
+    }
 }
 
 static void vga_paint(HWND hwnd) {
@@ -7389,6 +7655,7 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (pressed) InterlockedOr(&pending_mouse_btn_latch, pressed);
         pending_mouse_btn = new_btn;
         pending_mouse_valid = 1;
+        aux_mouse_event(pending_mouse_abs_x, pending_mouse_abs_y, new_btn);
         hid_mouse_fresh = 1;
         hid_input_changed = 1;
         return 0;
@@ -9261,10 +9528,10 @@ static void e1000_nat_rx(void) {
         }
         unsigned long long desc = ring + (unsigned long long)idx * 16;
         if (desc + 16 > guest_mem_size) return;
-        unsigned char *d = (unsigned char *)guest_mem + desc;
+        unsigned char *d = gptr(desc, 16, "e1000 NAT RX descriptor");
         unsigned long long buf = *(unsigned long long *)d;
         if (!buf || buf + (unsigned long long)f->len > guest_mem_size) return;
-        memcpy((unsigned char *)guest_mem + buf, f->data, (size_t)f->len);
+        memcpy(gptr(buf, (unsigned long long)f->len, "e1000 NAT RX buffer"), f->data, (size_t)f->len);
         *(unsigned short *)(d + 8) = (unsigned short)f->len;
         d[12] = E1000_RXD_STAT_DD | E1000_RXD_STAT_EOP;
         e1000_rx_cursor = (int)((idx + 1) % count);
@@ -9490,6 +9757,38 @@ static int guest_page_committed(unsigned long long gpa) {
     if (gpa >= guest_mem_size) return 0;
     if (VirtualQuery((unsigned char *)guest_mem + gpa, &mbi, sizeof(mbi)) != sizeof(mbi)) return 0;
     return mbi.State == MEM_COMMIT;
+}
+
+static int guest_range_committed(unsigned long long gpa, unsigned long long len) {
+    if (gpa >= guest_mem_size || len > guest_mem_size - gpa) return 0;
+    if (len == 0) return guest_page_committed(gpa);
+    for (unsigned long long p = gpa & ~0xFFFULL; p < gpa + len; p += 4096)
+        if (!guest_page_committed(p)) return 0;
+    return 1;
+}
+
+/* A string-OUT arm reads guest RAM through the host pointer, and a REP whose
+   RCX the guest left huge walks that read into pages it never touched: a host
+   read of a reserved page is 0xC0000005 and takes the VM process with it
+   (net-send-raw with length -1, 2026-10-31). A page the guest never touched
+   holds zeros, so it is read as zero and never dereferenced. One VirtualQuery
+   per 4 KB page per exit; *pg is the caller's cache, ~0ULL to start. */
+static unsigned int guest_str_byte(unsigned long long p, unsigned long long *pg, int *ok) {
+    if (p >= guest_mem_size) return 0;
+    if ((p >> 12) != *pg) { *pg = p >> 12; *ok = guest_page_committed(p); }
+    return *ok ? ((unsigned char *)guest_mem)[p] : 0;
+}
+
+static int guest_str_load(unsigned long long p, int size, unsigned long long *pg, int *ok) {
+    unsigned int v = 0;
+    if (p + (unsigned long long)size < p) return 0;
+    for (int i = 0; i < size; i++) v |= guest_str_byte(p + i, pg, ok) << (8 * i);
+    return (int)v;
+}
+
+static void str_io_refused(const char *dev, unsigned long long n) {
+    static int said = 0;
+    if (said++ < 8) fprintf(stderr, "%s: REP past the device's transfer count refused (%llu element(s) not moved)\n", dev, n);
 }
 
 static void dbg_dump_mem(unsigned long long addr, int len) {
@@ -9941,6 +10240,7 @@ static void dbg_crash_report(const char *reason, unsigned long long fault_addr,
 
 static int dbg_set_breakpoint(unsigned long long addr, int cond_reg, unsigned long long cond_val) {
     if (addr >= guest_mem_size) { fprintf(stderr, "  address out of range\n"); return -1; }
+    if (!guest_range_committed(addr, 1)) { fprintf(stderr, "  0x%llx: host page not committed (the guest never touched it); refusing\n", addr); return -1; }
     if (bp_count >= MAX_BREAKPOINTS) { fprintf(stderr, "  too many breakpoints\n"); return -1; }
     /* The byte we are about to save is the one we will restore. If a
        breakpoint is already patched here, the byte on the page is 0xCC and
@@ -10059,7 +10359,9 @@ static int dbg_command_loop(int vec, unsigned long long exc_rip) {
         else if (!strncmp(cmd, "x ", 2)) {
             /* x <addr> -- read 8-byte qword at addr */
             unsigned long long addr = strtoull(cmd + 2, NULL, 0);
-            if (addr + 8 <= guest_mem_size) {
+            if (addr + 8 <= guest_mem_size && !guest_range_committed(addr, 8)) {
+                fprintf(stderr, "  [0x%llx] host page not committed (the guest never touched it)\n", addr);
+            } else if (addr + 8 <= guest_mem_size) {
                 unsigned long long val = *(unsigned long long *)((unsigned char *)guest_mem + addr);
                 fprintf(stderr, "  [0x%llx] = 0x%llx (%llu)\n", addr, val, val);
             } else fprintf(stderr, "  out of range\n");
@@ -10337,7 +10639,19 @@ static void hid_service_pending(int mouse_only) {
                enables it. */
             mouse_from_window = 0;
             pending_mouse_valid = 1;
+            aux_mouse_event(ev->x, ev->y, ev->btn);
             hid_mouse_fresh = 1;
+            hid_input_changed = 1;
+        }
+    }
+    if (inject_pad_idx < inject_pad_count && perf_freq.QuadPart) {
+        LARGE_INTEGER pnow;
+        QueryPerformanceCounter(&pnow);
+        double pel = (double)(pnow.QuadPart - hid_timebase.QuadPart) * 1000.0 / perf_freq.QuadPart;
+        while (inject_pad_idx < inject_pad_count && pel >= inject_pad[inject_pad_idx].t_ms) {
+            InjectPad *ev = &inject_pad[inject_pad_idx++];
+            pad_buttons = ev->buttons; pad_x = ev->x; pad_y = ev->y;
+            pad_z = ev->z; pad_rz = ev->rz; pad_hat = ev->hat;
             hid_input_changed = 1;
         }
     }
@@ -10750,7 +11064,9 @@ static void blit_guest_output(void) {
         output_buf = grown;
         output_cap = new_cap;
     }
-    memcpy(output_buf + output_len, (unsigned char *)guest_mem + addr, (size_t)len);
+    unsigned char *bsrc = gptr(addr, len, "blit");
+    if (!bsrc) { if (output_lock_ready) LeaveCriticalSection(&output_lock); output_dropped += (size_t)len; return; }
+    memcpy(output_buf + output_len, bsrc, (size_t)len);
     output_len += (size_t)len;
     if (output_lock_ready) LeaveCriticalSection(&output_lock);
 }
@@ -11254,6 +11570,23 @@ static void create_vm(size_t mem_mb) {
             WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
         if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(low): 0x%lx\n", hr); exit(1); }
 
+        if (ivshmem_path) {
+            HANDLE f = CreateFileA(ivshmem_path, GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+            LARGE_INTEGER fsz;
+            if (f == INVALID_HANDLE_VALUE || !GetFileSizeEx(f, &fsz) || fsz.QuadPart != IVSHMEM_SIZE) {
+                fprintf(stderr, "ivshmem: %s must be an existing writable file of exactly %u bytes\n",
+                        ivshmem_path, (unsigned)IVSHMEM_SIZE);
+                exit(1);
+            }
+            HANDLE m = CreateFileMappingA(f, NULL, PAGE_READWRITE, 0, IVSHMEM_SIZE, NULL);
+            ivshmem_view = m ? MapViewOfFile(m, FILE_MAP_ALL_ACCESS, 0, 0, IVSHMEM_SIZE) : NULL;
+            if (!ivshmem_view) { fprintf(stderr, "ivshmem: cannot map %s, err=%lu\n", ivshmem_path, GetLastError()); exit(1); }
+            hr = WHvMapGpaRange(partition, ivshmem_view, IVSHMEM_BAR2, IVSHMEM_SIZE,
+                WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite);
+            if (FAILED(hr)) { fprintf(stderr, "WHvMapGpaRange(ivshmem): 0x%lx\n", hr); exit(1); }
+        }
+
         if (guest_mem_size > pre_lo) {
             size_t stack_base = guest_mem_size - chunk;
             if (stack_base >= pre_lo) {
@@ -11361,32 +11694,61 @@ static void create_vm(size_t mem_mb) {
 static void load_kernel(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", path); exit(1); }
-    fseek(f, 0, SEEK_END);
-    size_t sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    unsigned char *buf = malloc(sz);
-    fread(buf, 1, sz, f);
+    __int64 flen = (_fseeki64(f, 0, SEEK_END) == 0) ? _ftelli64(f) : -1;
+    if (flen < 0) { fprintf(stderr, "FATAL: cannot size kernel file %s\n", path); exit(1); }
+    if ((unsigned long long)flen > guest_mem_size) {
+        fprintf(stderr, "FATAL: kernel file %s is %lld bytes, more than guest RAM %llu\n",
+                path, (long long)flen, (unsigned long long)guest_mem_size);
+        exit(1);
+    }
+    size_t sz = (size_t)flen;
+    _fseeki64(f, 0, SEEK_SET);
+    unsigned char *buf = malloc(sz ? sz : 1);
+    if (!buf) { fprintf(stderr, "FATAL: cannot allocate %zu bytes for kernel file %s\n", sz, path); exit(1); }
+    if (fread(buf, 1, sz, f) != sz) { fprintf(stderr, "FATAL: short read of kernel file %s\n", path); exit(1); }
     fclose(f);
 
     /* Detect format and load accordingly */
     if (sz > 52 && buf[0] == 0x7F && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F') {
         /* ELF32 multiboot kernel -- load PT_LOAD segments at their vaddrs */
+        /* e_ident[EI_CLASS] is 1 for ELF32; an ELF32 program header is 32 bytes. */
+        if (buf[4] != 1) {
+            fprintf(stderr, "FATAL: ELF kernel class %u is not ELF32, refused\n", buf[4]);
+            exit(1);
+        }
         unsigned int e_entry = *(unsigned int*)(buf + 24);
         unsigned int phoff = *(unsigned int*)(buf + 28);
         unsigned short phnum = *(unsigned short*)(buf + 44);
         unsigned short phentsize = *(unsigned short*)(buf + 42);
         fprintf(stderr, "ELF: %d program headers at offset %d, entry=0x%x\n", phnum, phoff, e_entry);
+        if (phnum > 0 && (phentsize < 32 ||
+                (unsigned long long)phoff + (unsigned long long)phnum * phentsize > sz)) {
+            fprintf(stderr, "FATAL: ELF program headers (offset %u, %u x %u bytes) lie outside the %zu-byte file, refused\n",
+                    phoff, phnum, phentsize, sz);
+            exit(1);
+        }
+        int entry_loaded = 0;
         for (int i = 0; i < phnum; i++) {
-            unsigned char *ph = buf + phoff + i * phentsize;
+            unsigned char *ph = buf + phoff + (size_t)i * phentsize;
             unsigned int p_type = *(unsigned int*)(ph);
             if (p_type != 1) continue; /* PT_LOAD only */
             unsigned int p_offset = *(unsigned int*)(ph + 4);
             unsigned int p_vaddr = *(unsigned int*)(ph + 8);
             unsigned int p_filesz = *(unsigned int*)(ph + 16);
-            if (p_vaddr + p_filesz <= guest_mem_size && p_offset + p_filesz <= sz) {
-                memcpy((unsigned char*)guest_mem + p_vaddr, buf + p_offset, p_filesz);
-                fprintf(stderr, "  LOAD: vaddr=0x%x filesz=%u\n", p_vaddr, p_filesz);
+            if ((unsigned long long)p_vaddr + p_filesz > guest_mem_size ||
+                    (unsigned long long)p_offset + p_filesz > sz) {
+                fprintf(stderr, "FATAL: ELF segment %d (vaddr 0x%x, offset %u, filesz %u) lies outside guest RAM or the %zu-byte file, refused\n",
+                        i, p_vaddr, p_offset, p_filesz, sz);
+                exit(1);
             }
+            guest_commit_range(p_vaddr, p_filesz);
+            memcpy((unsigned char*)guest_mem + p_vaddr, buf + p_offset, p_filesz);
+            fprintf(stderr, "  LOAD: vaddr=0x%x filesz=%u\n", p_vaddr, p_filesz);
+            if (e_entry >= p_vaddr && (unsigned long long)e_entry < (unsigned long long)p_vaddr + p_filesz) entry_loaded = 1;
+        }
+        if (!entry_loaded) {
+            fprintf(stderr, "FATAL: ELF entry 0x%x lies in no loaded segment, refused\n", e_entry);
+            exit(1);
         }
         /* Store ELF entry point for set_initial_regs */
         *(unsigned int*)((unsigned char*)guest_mem + 0x500) = e_entry;
@@ -11445,10 +11807,10 @@ static void load_kernel(const char *path) {
        sizeable. A stick Codex had installed could not be booted by Codex's
        own firmware emulation while being perfectly readable by real
        firmware, and the emulator said nothing either way. */
-    if (uefi_mode && sz > 1024 && buf[0] != 'M' &&
+    if (uefi_mode && sz >= 1024 + 40 && buf[0] != 'M' &&
         buf[512] == 'E' && buf[513] == 'F' && buf[514] == 'I' && buf[515] == ' ') {
         unsigned long long part_lba = *(unsigned long long*)(buf + 1024 + 32);
-        unsigned long long part_start = part_lba * 512;
+        unsigned long long part_start = part_lba < sz / 512 ? part_lba * 512 : sz;
         if (part_start + 512 < sz) {
             unsigned char *bpb = buf + part_start;
             unsigned int bps = *(unsigned short*)(bpb + 11);
@@ -11520,6 +11882,7 @@ static void load_kernel(const char *path) {
                                 file_size, is_fat32 ? "FAT32" : "FAT16", part_lba);
                             /* Replace buf with the extracted PE */
                             unsigned char *pe = malloc(file_size);
+                            if (!pe) { fprintf(stderr, "FATAL: cannot allocate %u bytes for BOOTX64.EFI\n", file_size); exit(1); }
                             memcpy(pe, buf + file_off, file_size);
                             free(buf);
                             buf = pe;
@@ -11549,7 +11912,12 @@ static void load_kernel(const char *path) {
     /* Check for PE/EFI binary (MZ header) */
     if (uefi_mode && sz > 64 && buf[0] == 'M' && buf[1] == 'Z') {
         unsigned int pe_off = *(unsigned int*)(buf + 60);
-        if (pe_off + 4 < sz && buf[pe_off] == 'P' && buf[pe_off + 1] == 'E') {
+        /* The last header field read below is SizeOfHeaders, at pe_off + 84..87. */
+        if ((unsigned long long)pe_off + 88 > sz) {
+            fprintf(stderr, "FATAL: PE header offset %u lies outside the %zu-byte file, refused\n", pe_off, sz);
+            exit(1);
+        }
+        if (buf[pe_off] == 'P' && buf[pe_off + 1] == 'E') {
             /* PE64 header */
             unsigned short machine = *(unsigned short*)(buf + pe_off + 4);
             unsigned short num_sections = *(unsigned short*)(buf + pe_off + 6);
@@ -11571,21 +11939,33 @@ static void load_kernel(const char *path) {
 
             /* Load PE headers */
             if (load_base + hdr_size < guest_mem_size) {
-                memcpy((unsigned char*)guest_mem + load_base, buf, hdr_size < sz ? hdr_size : sz);
+                size_t hdr_copy = hdr_size < sz ? hdr_size : sz;
+                guest_commit_range(load_base, hdr_copy);
+                memcpy((unsigned char*)guest_mem + load_base, buf, hdr_copy);
             }
 
             /* Load sections */
             unsigned short opt_hdr_size = *(unsigned short*)(buf + pe_off + 20);
             unsigned char *sec = buf + pe_off + 24 + opt_hdr_size;
+            int entry_loaded = 0;
             for (int i = 0; i < num_sections && (sec - buf) + 40 <= (ptrdiff_t)sz; i++, sec += 40) {
                 unsigned int virt_addr = *(unsigned int*)(sec + 12);
                 unsigned int raw_size = *(unsigned int*)(sec + 16);
                 unsigned int raw_off = *(unsigned int*)(sec + 20);
                 unsigned long long dest = load_base + virt_addr;
-                if (dest + raw_size <= guest_mem_size && raw_off + raw_size <= sz) {
-                    memcpy((unsigned char*)guest_mem + dest, buf + raw_off, raw_size);
-                    fprintf(stderr, "  section %.8s: VA=0x%llx size=0x%x\n", sec, dest, raw_size);
+                if (dest + raw_size > guest_mem_size || (unsigned long long)raw_off + raw_size > sz) {
+                    fprintf(stderr, "FATAL: PE section %d (VA 0x%llx, raw offset %u, size %u) lies outside guest RAM or the %zu-byte file, refused\n",
+                            i, dest, raw_off, raw_size, sz);
+                    exit(1);
                 }
+                guest_commit_range(dest, raw_size);
+                memcpy((unsigned char*)guest_mem + dest, buf + raw_off, raw_size);
+                fprintf(stderr, "  section %.8s: VA=0x%llx size=0x%x\n", sec, dest, raw_size);
+                if (entry_rva >= virt_addr && (unsigned long long)entry_rva < (unsigned long long)virt_addr + raw_size) entry_loaded = 1;
+            }
+            if (!entry_loaded) {
+                fprintf(stderr, "FATAL: PE entry RVA 0x%x lies in no loaded section, refused\n", entry_rva);
+                exit(1);
             }
 
             /* Set entry point for 64-bit long mode */
@@ -11616,6 +11996,11 @@ static void load_kernel(const char *path) {
         if (flags & 0x10000) {
             unsigned int entry = *(unsigned int*)(mb + 28);
             fprintf(stderr, "Multiboot entry: 0x%x\n", entry);
+            if (entry < LOAD_ADDR || (unsigned long long)entry >= (unsigned long long)LOAD_ADDR + sz) {
+                fprintf(stderr, "FATAL: multiboot entry 0x%x lies outside the image at 0x%x (%zu bytes), refused\n",
+                        entry, LOAD_ADDR, sz);
+                exit(1);
+            }
             *(unsigned int*)((unsigned char*)guest_mem + 0x500) = entry;
         }
     }
@@ -11821,32 +12206,70 @@ static void watch_init(void) {
    syscalls per 16-bit word of every sector read. */
 static unsigned char *guest_chunk_seen = NULL;
 
-static void guest_host_touch(unsigned long long gpa, unsigned long long len) {
+/* CODEX_VM_FAIL_TOUCH=1 makes every host commit of a chunk not yet committed
+   fail, the shape of a box out of commit charge, so the refusal paths have an
+   arm. */
+static int fail_touch = 0;
+
+/* Answers 1 when every chunk of the range is committed, 0 when one could not
+   be. A chunk is marked seen only once it is committed: marking it first, as
+   this did, sent every later store into a chunk whose commit had failed
+   straight into reserved memory. */
+static int guest_host_touch(unsigned long long gpa, unsigned long long len) {
     unsigned long long chunk = 2ULL * 1024 * 1024;
-    if (!guest_mem || gpa >= guest_mem_size) return;
+    if (!guest_mem || gpa >= guest_mem_size) return 0;
     if (!guest_chunk_seen) {
         guest_chunk_seen = (unsigned char *)calloc((size_t)(guest_mem_size / chunk + 2), 1);
-        if (!guest_chunk_seen) return;
+        if (!guest_chunk_seen) return 0;
     }
     unsigned long long first = gpa / chunk;
     unsigned long long last = (gpa + (len ? len - 1 : 0)) / chunk;
+    int ok = 1;
     for (unsigned long long c = first; c <= last; c++) {
         unsigned long long base = c * chunk;
-        if (base >= guest_mem_size) return;
+        if (base >= guest_mem_size) return 0;
         if (guest_chunk_seen[c]) continue;
-        guest_chunk_seen[c] = 1;
         /* Leave the chunk carrying an armed watchpoint alone: watch_init
            committed it already and carved the page read-only, and a remap
            here would quietly hand write access back. */
-        if (watch_active && watch_page_base / chunk == c) continue;
+        if (watch_active && watch_page_base / chunk == c) { guest_chunk_seen[c] = 1; continue; }
         unsigned long long clen = chunk;
         if (base + clen > guest_mem_size) clen = guest_mem_size - base;
-        if (VirtualAlloc((unsigned char *)guest_mem + base, (size_t)clen,
+        if (guest_page_committed(base) && guest_page_committed(base + clen - 1)) { guest_chunk_seen[c] = 1; continue; }
+        if (!fail_touch && VirtualAlloc((unsigned char *)guest_mem + base, (size_t)clen,
                          MEM_COMMIT, PAGE_READWRITE)) {
             WHvMapGpaRange(partition, (unsigned char *)guest_mem + base, base, clen,
                 WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite | WHvMapGpaRangeFlagExecute);
+            guest_chunk_seen[c] = 1;
+        } else {
+            static int said = 0;
+            if (!said++) fprintf(stderr, "HOST: cannot commit guest RAM at GPA 0x%llx for a device store; the store is refused (out of commit charge, not a guest fault)\n", base);
+            ok = 0;
         }
     }
+    return ok;
+}
+
+/* Every device model reaches guest RAM through here with an address and a
+   length the guest chose. In range, the range is committed (an untouched page
+   reads as zero) and the host pointer is answered. Out of range or wrapping,
+   the access is refused: the device gets a zeroed sink, so its write goes
+   nowhere and its read sees zeros, and stderr names the device. A refusal
+   longer than the sink answers NULL, which every caller with an unbounded
+   length checks. */
+#define GPTR_SINK 131072
+static unsigned char gptr_sink[GPTR_SINK];
+
+static unsigned char *gptr(unsigned long long gpa, unsigned long long len, const char *who) {
+    static int said = 0;
+    if (guest_mem && gpa < guest_mem_size && len <= guest_mem_size - gpa) {
+        if (guest_host_touch(gpa, len)) return (unsigned char *)guest_mem + gpa;
+    }
+    if (said++ < 16)
+        fprintf(stderr, "%s: guest address 0x%llx length %llu is outside guest RAM or could not be committed, refused\n", who, gpa, len);
+    if (len > GPTR_SINK) return NULL;
+    memset(gptr_sink, 0, (size_t)len);
+    return gptr_sink;
 }
 
 static void hw_watch_init(void) {
@@ -12858,6 +13281,7 @@ static struct { CUdeviceptr_t ptr; unsigned long long bytes; } gpu_bufs[GPU_BUF_
 static char gpu_files_roots[GPU_FILES_ROOTS][MAX_PATH];
 static int gpu_files_root_count;
 static char gpu_out_root[MAX_PATH];
+static char asset_root[MAX_PATH];
 #define gpu_files_root gpu_files_roots[0]
 
 static unsigned long long com3_get_u64(const unsigned char *p) {
@@ -12986,8 +13410,29 @@ static int gpu_guest_ok(unsigned long long addr, unsigned long long bytes) {
    the file system sees it. -gpu-files may be given up to GPU_FILES_ROOTS
    times: the first root holding the path serves it, and when none does the
    first root's path is answered so the open reports it. */
+/* Win32 opens a reserved device name in any directory, with or without an
+   extension and before trailing dots or spaces: CON, PRN, AUX, NUL, CONIN$,
+   CONOUT$, COM0..9 and LPT0..9, the digit also as superscript 1, 2 or 3. */
+static int gpu_device_component(const char *c, unsigned int n) {
+    static const char *const fixed[] = { "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$" };
+    char b[8];
+    unsigned int k = 0, i;
+    while (k < n && c[k] != '.' && c[k] != ' ') {
+        if (k >= 7) return 0;
+        b[k] = (char)toupper((unsigned char)c[k]);
+        k++;
+    }
+    b[k] = 0;
+    for (i = 0; i < 6; i++) if (!strcmp(b, fixed[i])) return 1;
+    if (k == 4 && (!strncmp(b, "COM", 3) || !strncmp(b, "LPT", 3))) {
+        unsigned char d = (unsigned char)b[3];
+        return (d >= '0' && d <= '9') || d == 0xB9 || d == 0xB2 || d == 0xB3;
+    }
+    return 0;
+}
+
 static int gpu_rel_path(const unsigned char *name, unsigned int len, char *rel) {
-    unsigned int i;
+    unsigned int i, start;
     if (len == 0 || len >= MAX_PATH) return 0;
     for (i = 0; i < len; i++) {
         char c = (char)name[i];
@@ -13000,7 +13445,17 @@ static int gpu_rel_path(const unsigned char *name, unsigned int len, char *rel) 
         if (rel[i] == '.' && rel[i + 1] == '.' && (i == 0 || rel[i - 1] == '\\') &&
             (rel[i + 2] == '\\' || rel[i + 2] == 0)) return 0;
     }
+    for (i = 0, start = 0; i <= len; i++) {
+        if (i == len || rel[i] == '\\') {
+            if (gpu_device_component(rel + start, i - start)) return 0;
+            start = i + 1;
+        }
+    }
     return 1;
+}
+
+static int gpu_is_disk_file(HANDLE fh) {
+    return GetFileType(fh) == FILE_TYPE_DISK;
 }
 
 static int gpu_resolve_path(const unsigned char *name, unsigned int len, char *out, size_t cap) {
@@ -13104,7 +13559,12 @@ static void gpu_buffer_op(unsigned int op, unsigned int cmd_bytes) {
             com3_put_u32(COM3_STATUS_ERROR);
             return;
         }
-        guest_commit_range(addr, bytes);
+        if (!guest_host_touch(addr, bytes)) {
+            fprintf(stderr, "GPU: %s refused (guest 0x%llx, %llu bytes could not be committed)\n",
+                    op == GPU_OP_BUF_WRITE ? "write" : "read", addr, bytes);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
         r = op == GPU_OP_BUF_WRITE
             ? cuda.memcpy_htod(gpu_bufs[h - 1].ptr + off, g + addr, (size_t)bytes)
             : cuda.memcpy_dtoh(g + addr, gpu_bufs[h - 1].ptr + off, (size_t)bytes);
@@ -13146,6 +13606,12 @@ static void gpu_buffer_op(unsigned int op, unsigned int cmd_bytes) {
         fh = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, 0);
         if (fh == INVALID_HANDLE_VALUE) {
             fprintf(stderr, "GPU: upload cannot open %s\n", path);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        if (!gpu_is_disk_file(fh)) {
+            fprintf(stderr, "GPU: upload refused: %s is not a file\n", path);
+            CloseHandle(fh);
             com3_put_u32(COM3_STATUS_ERROR);
             return;
         }
@@ -13225,6 +13691,12 @@ upload_fail:
         fh = CreateFileA(path, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
         if (fh == INVALID_HANDLE_VALUE) {
             fprintf(stderr, "GPU: save cannot create %s\n", path);
+            com3_put_u32(COM3_STATUS_ERROR);
+            return;
+        }
+        if (!gpu_is_disk_file(fh)) {
+            fprintf(stderr, "GPU: save refused: %s is not a file\n", path);
+            CloseHandle(fh);
             com3_put_u32(COM3_STATUS_ERROR);
             return;
         }
@@ -13830,16 +14302,16 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             unsigned long long gpa = ctx->IoPortAccess.Rsi;
             unsigned long long cnt = ctx->IoPortAccess.Rcx;
             unsigned long long done = 0;
-            unsigned char *gmem = (unsigned char *)guest_mem;
+            unsigned long long pg = ~0ULL; int pg_ok = 0;
             if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
             for (; done < cnt; done++) {
                 unsigned long long p = gpa + done * (unsigned long long)size;
-                int wval = 0;
-                if (p + (unsigned long long)size > guest_mem_size) break;
-                if (size == 1) wval = gmem[p];
-                else if (size == 2) wval = gmem[p] | (gmem[p + 1] << 8);
-                else wval = (int)(*(unsigned int *)(gmem + p));
-                ne2k_handle_out(port, wval, size);
+                if (ne2k.rbcr <= 0 || ne2k.rsar >= NE2K_MEM_SIZE) {
+                    str_io_refused("NE2K OUTS", ctx->IoPortAccess.Rcx - done);
+                    done = ctx->IoPortAccess.Rcx;
+                    break;
+                }
+                ne2k_handle_out(port, guest_str_load(p, size, &pg, &pg_ok), size);
             }
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
@@ -13870,16 +14342,17 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             unsigned long long gpa = ctx->IoPortAccess.Rsi;
             unsigned long long cnt = ctx->IoPortAccess.Rcx;
             unsigned long long done = 0;
-            unsigned char *gmem = (unsigned char *)guest_mem;
+            unsigned long long pg = ~0ULL; int pg_ok = 0;
             if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
             for (; done < cnt; done++) {
                 unsigned long long p = gpa + done * (unsigned long long)size;
-                int wval = 0;
-                if (p + (unsigned long long)size > guest_mem_size) break;
-                if (size == 1) wval = gmem[p];
-                else if (size == 2) wval = gmem[p] | (gmem[p + 1] << 8);
-                else wval = (int)(*(unsigned int *)(gmem + p));
-                ide_write_data(ide_active(), wval);
+                IdeState *d = ide_active();
+                if (!d->writing || d->buf_remaining <= 0) {
+                    str_io_refused("IDE OUTS", ctx->IoPortAccess.Rcx - done);
+                    done = ctx->IoPortAccess.Rcx;
+                    break;
+                }
+                ide_write_data(d, guest_str_load(p, size, &pg, &pg_ok));
             }
             ide_out_batch_hits++;
             ide_out_batched += done;
@@ -13904,12 +14377,11 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             unsigned long long gpa = ctx->IoPortAccess.Rsi;
             unsigned long long cnt = ctx->IoPortAccess.Rcx;
             unsigned long long done = 0;
-            unsigned char *gmem = (unsigned char *)guest_mem;
+            unsigned long long pg = ~0ULL; int pg_ok = 0;
             if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
             for (; done < cnt; done++) {
                 unsigned long long p = gpa + done * (unsigned long long)size;
-                if (p + (unsigned long long)size > guest_mem_size) break;
-                output_buf_write(gmem[p]);
+                output_buf_write((unsigned char)guest_str_byte(p, &pg, &pg_ok));
             }
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRsi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
@@ -14089,9 +14561,18 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             DWORD ms = (val > 0 && val <= 1000) ? (DWORD)val : 1;
             Sleep(ms);
         }
-        /* Keyboard controller (0x60/0x64) -- accept silently */
-        else if (port == 0x60 || port == 0x64) {
-            /* guest disables keyboard; ignore */
+        else if (port == 0xE5 && record_dir) {
+            record_frame();
+        }
+        /* Keyboard controller: only the aux port's commands are modelled; the
+           keyboard's own commands are accepted and ignored. */
+        else if (port == 0x64) {
+            if (val == 0xA8) i8042_aux_enabled = 1;
+            else if (val == 0xA7) i8042_aux_enabled = 0;
+            else if (val == 0xD4) i8042_next_to_aux = 1;
+        }
+        else if (port == 0x60) {
+            if (i8042_next_to_aux) { i8042_next_to_aux = 0; aux_command((unsigned char)val); }
         }
         /* VGA Attribute Controller (0x3C0) */
         else if (port == 0x3C0) {
@@ -14283,13 +14764,15 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
                    since this port was written, so 0 must keep its meaning. */
                 int mode = (val == 1) ? 1 : 0;
                 unsigned long long sz = (unsigned long long)gpu_tex_upload_w * gpu_tex_upload_h * (mode == 1 ? 4 : 3);
-                if (gpu_tex_guest_addr + sz <= guest_mem_size) {
+                if (gpu_tex_guest_addr < guest_mem_size && sz <= guest_mem_size - gpu_tex_guest_addr) {
                     /* This memcpy reads guest RAM from the host. If the guest
                        points us at a region it has never touched, those pages
                        are reserved and the read faults -- killing the VM rather
                        than the guest. Commit first: a bad texture address must
                        not be able to take the process down. */
-                    guest_commit_range(gpu_tex_guest_addr, sz);
+                    if (!guest_host_touch(gpu_tex_guest_addr, sz)) {
+                        fprintf(stderr, "GPU texture upload from guest 0x%llx refused: the range could not be committed\n", gpu_tex_guest_addr);
+                    } else {
                     unsigned char *src = (unsigned char *)guest_mem + gpu_tex_guest_addr;
                     if (earth_tex_data) free(earth_tex_data);
                     earth_tex_data = (unsigned char *)malloc(sz);
@@ -14300,6 +14783,7 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
                         gpu_tex_mode = mode;
                         fprintf(stderr, "GPU texture uploaded from guest 0x%llx (%dx%d) mode %d\n",
                                 gpu_tex_guest_addr, earth_tex_w, earth_tex_h, gpu_tex_mode);
+                    }
                     }
                 }
             }
@@ -14321,14 +14805,32 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             if (asset_path_addr < guest_mem_size && asset_dest_addr < guest_mem_size) {
                 char path[256];
                 int pi = 0;
+                unsigned long long path_pg = ~0ULL; int path_ok = 0;
                 while (pi < 255 && asset_path_addr + pi < guest_mem_size) {
-                    char ch = (char)*((unsigned char *)guest_mem + asset_path_addr + pi);
+                    char ch = (char)guest_str_byte(asset_path_addr + pi, &path_pg, &path_ok);
                     if (ch == 0) break;
                     path[pi++] = ch;
                 }
                 path[pi] = 0;
-                FILE *fp = fopen(path, "rb");
-                if (fp) {
+                char rel[MAX_PATH], full[MAX_PATH * 2];
+                FILE *fp = 0;
+                int refused = 1;
+                if (!asset_root[0])
+                    fprintf(stderr, "Asset load refused: no -asset-root (the guest asked for %s)\n", path);
+                else if (!gpu_rel_path((const unsigned char *)path, (unsigned int)pi, rel) ||
+                         snprintf(full, sizeof(full), "%s\\%s", asset_root, rel) >= (int)sizeof(full))
+                    fprintf(stderr, "Asset load refused: %s must stay under -asset-root %s\n", path, asset_root);
+                else {
+                    refused = 0;
+                    fp = fopen(full, "rb");
+                    if (fp && GetFileType((HANDLE)_get_osfhandle(_fileno(fp))) != FILE_TYPE_DISK) {
+                        fprintf(stderr, "Asset load refused: %s is not a file\n", full);
+                        fclose(fp);
+                        fp = 0;
+                        refused = 1;
+                    }
+                }
+                if (!refused && fp) {
                     fseek(fp, 0, SEEK_END);
                     long sz = ftell(fp);
                     fseek(fp, 0, SEEK_SET);
@@ -14336,8 +14838,11 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
                         /* The guest has never touched the destination, so it is
                            reserved, not committed. Without this the fread below
                            reads zero bytes and says nothing about it. */
-                        guest_commit_range(asset_dest_addr, (unsigned long long)sz);
-                        size_t got = fread((unsigned char *)guest_mem + asset_dest_addr, 1, (size_t)sz, fp);
+                        size_t got = 0;
+                        if (!guest_host_touch(asset_dest_addr, (unsigned long long)sz))
+                            fprintf(stderr, "Asset load refused: %s -> guest 0x%llx could not be committed\n", path, asset_dest_addr);
+                        else
+                            got = fread((unsigned char *)guest_mem + asset_dest_addr, 1, (size_t)sz, fp);
                         asset_last_size = (unsigned long long)got;
                         if (got != (size_t)sz)
                             fprintf(stderr, "Asset short read: %s (%llu of %ld bytes -> guest 0x%llx)\n",
@@ -14346,8 +14851,8 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
                             fprintf(stderr, "Asset loaded: %s (%ld bytes -> guest 0x%llx)\n", path, sz, asset_dest_addr);
                     }
                     fclose(fp);
-                } else {
-                    fprintf(stderr, "Asset not found: %s\n", path);
+                } else if (!refused) {
+                    fprintf(stderr, "Asset not found: %s\n", full);
                 }
             }
         }
@@ -14398,7 +14903,16 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             unsigned long long done = 0;
             unsigned char *gmem = (unsigned char *)guest_mem;
             if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
-            guest_host_touch(gpa, cnt * (unsigned long long)size);
+            int refused = 0;
+            {
+                unsigned long long left = ne2k.rbcr > 0 ? ((unsigned long long)ne2k.rbcr + (unsigned long long)size - 1) / (unsigned long long)size : 0;
+                if (cnt > left) {
+                    str_io_refused("NE2K INS", ctx->IoPortAccess.Rcx - left);
+                    cnt = left;
+                    refused = 1;
+                }
+            }
+            if (!guest_host_touch(gpa, cnt * (unsigned long long)size)) { str_io_refused("NE2K INS", ctx->IoPortAccess.Rcx); cnt = 0; refused = 1; }
             for (; done < cnt; done++) {
                 unsigned long long p = gpa + done * (unsigned long long)size;
                 int rval = ne2k_handle_in(port, size);
@@ -14407,6 +14921,7 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
                 else if (size == 2) { gmem[p] = rval & 0xFF; gmem[p + 1] = (rval >> 8) & 0xFF; }
                 else *(unsigned int *)(gmem + p) = (unsigned int)rval;
             }
+            if (refused) done = ctx->IoPortAccess.Rcx;
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRdi, WHvX64RegisterRcx };
             WHV_REGISTER_VALUE sv[2];
             sv[0].Reg64 = ctx->IoPortAccess.Rdi + done * (unsigned long long)size;
@@ -14438,15 +14953,26 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             unsigned long long done = 0;
             unsigned char *gmem = (unsigned char *)guest_mem;
             if (cnt > (1ULL << 20)) cnt = (1ULL << 20);
-            guest_host_touch(gpa, cnt * (unsigned long long)size);
+            int ide_refused = 0;
+            if (gpa < guest_mem_size) {
+                unsigned long long span = cnt * (unsigned long long)size;
+                if (span > guest_mem_size - gpa) span = guest_mem_size - gpa;
+                if (!guest_host_touch(gpa, span)) { str_io_refused("IDE INS", ctx->IoPortAccess.Rcx); cnt = 0; ide_refused = 1; }
+            }
             for (; done < cnt; done++) {
                 unsigned long long p = gpa + done * (unsigned long long)size;
+                if (!no_ide && ide_active()->buf_remaining <= 0) {
+                    str_io_refused("IDE INS", ctx->IoPortAccess.Rcx - done);
+                    done = ctx->IoPortAccess.Rcx;
+                    break;
+                }
                 int rval = no_ide ? 0xFF : ide_read_data(ide_active());
                 if (p + (unsigned long long)size > guest_mem_size) continue;
                 if (size == 1) gmem[p] = rval & 0xFF;
                 else if (size == 2) { gmem[p] = rval & 0xFF; gmem[p + 1] = (rval >> 8) & 0xFF; }
                 else *(unsigned int *)(gmem + p) = (unsigned int)rval;
             }
+            if (ide_refused) done = ctx->IoPortAccess.Rcx;
             ide_in_batch_hits++;
             ide_in_batched += done;
             WHV_REGISTER_NAME sn[] = { WHvX64RegisterRdi, WHvX64RegisterRcx };
@@ -14641,11 +15167,12 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
         }
         /* Keyboard controller */
         else if (port == 0x60) {
-            int sc = kbd_dequeue();
+            int sc = kbd_count > 0 ? kbd_dequeue() : aux_dequeue();
             result = (sc >= 0) ? sc : 0;
         }
         else if (port == 0x64) {
-            result = (kbd_count > 0) ? 1 : 0; /* bit 0 = OBF (output buffer full) */
+            /* bit 0 = OBF (output buffer full), bit 5 = the byte is the aux port's */
+            result = (kbd_count > 0) ? 1 : (aux_count > 0 ? 0x21 : 0);
         }
         /* Mouse data via I/O ports (avoids WHP host-guest memory coherency issues).
            0xE1: button mask -- the live level OR the presses latched since the
@@ -14662,13 +15189,14 @@ static void handle_io_locked(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
         else if (port == 0xE2) { result = pending_mouse_abs_x & 0xFFFF; }
         else if (port == 0xE3) { result = pending_mouse_abs_y & 0xFFFF; pending_mouse_valid = 0; }
         else if (port == 0xE4) { result = pending_mouse_valid; }
+        else if (port == 0xE5 && record_dir) { result = record_saved; }
 
         if (ctx->IoPortAccess.AccessInfo.StringOp) {
             /* REP INSW/INSB: write to guest memory at [RDI], update RDI and RCX */
             unsigned long long gpa = ctx->IoPortAccess.Rdi;
             unsigned char *gmem = (unsigned char *)guest_mem;
-            guest_host_touch(gpa, (unsigned long long)size);
-            if (gpa < guest_mem_size) {
+            int str_ok = guest_host_touch(gpa, (unsigned long long)size);
+            if (str_ok && gpa < guest_mem_size) {
                 if (size == 1) gmem[gpa] = result & 0xFF;
                 else if (size == 2 && gpa + 1 < guest_mem_size) { gmem[gpa] = result & 0xFF; gmem[gpa + 1] = (result >> 8) & 0xFF; }
                 else if (size == 4 && gpa + 3 < guest_mem_size) { *(unsigned int *)(gmem + gpa) = result; }
@@ -14798,7 +15326,7 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
            see the generator it is actually given. */
         int host[4];
         __cpuid(host, 1);
-        if (host[2] & (1 << 30)) ecx |= (1ULL << 30);
+        if ((host[2] & (1 << 30)) && !vm_no_rdrand) ecx |= (1ULL << 30);
         if (vm_avx) {
             ecx |= (1ULL << 26) | (1ULL << 28);
             if (state[0].Reg64 & (1ULL << 18)) ecx |= (1ULL << 27);
@@ -14818,7 +15346,17 @@ static void handle_cpuid(WHV_RUN_VP_EXIT_CONTEXT *ctx, UINT32 vp) {
             vals[1].Reg64 = 576;
         }
     }
-    else if (leaf == 0x80000000) { vals[0].Reg64 = 0x80000004; }
+    else if (leaf == 0x80000000) { vals[0].Reg64 = 0x80000008; }
+    /* 8000_0008h EAX[7:0] is the physical address width and [15:8] the
+       linear (SDM CPUID, "Linear/Physical Address size"); the physical width
+       is the host's, since guest MMIO decodes on this hardware. */
+    else if (leaf == 0x80000008) {
+        int host[4];
+        __cpuid(host, 0x80000000);
+        unsigned int phys = 36;
+        if ((unsigned int)host[0] >= 0x80000008u) { __cpuid(host, 0x80000008); phys = (unsigned int)host[0] & 0xFF; }
+        vals[0].Reg64 = phys | (48u << 8);
+    }
     else if (leaf == 0x80000001) { vals[3].Reg64 = (1 << 29) | (1 << 20); } /* LM + NX */
     else if (leaf >= 0x80000002 && leaf <= 0x80000004) {
         static const char brand[48] = "codex-vm virtual CPU (WHP)";
@@ -15000,7 +15538,7 @@ static unsigned int *gpu_target_fb(void) {
 }
 
 static void gpu_present_viewport(void) {
-    if (!gpu_vp_active || !gpu_back) return;
+    if (!gpu_vp_active || !gpu_back || gop_host_gpu_refuses()) return;
     unsigned int *fb = (unsigned int *)((unsigned char *)guest_mem + GOP_FB_ADDR);
     int cx0, cy0, cx1, cy1;
     gpu_clip_rect(gop_width, gop_height, &cx0, &cy0, &cx1, &cy1);
@@ -15084,6 +15622,7 @@ static void gpu_shadow_begin(int size) {
    hundred triangles over a 256x256 buffer the threading would cost more than
    it saves. */
 static void gpu_shadow_render(int count) {
+    if (gop_host_gpu_refuses()) return;
     if (!gpu_shadow_buf || gpu_shadow_size <= 0) return;
     if (GPU_CMD_ADDR + (unsigned long long)count * 72 > guest_mem_size) return;
     unsigned char *cmd = (unsigned char *)guest_mem + GPU_CMD_ADDR;
@@ -15996,7 +16535,7 @@ static void sync_shadow_buffers(void) {
     if (gop_active && gop_width > 0 && gop_height > 0 && gop_due) {
         size_t fb_bytes = (size_t)gop_stride * gop_height * 4;
         if (!shadow_gop) shadow_gop = (unsigned char *)calloc(1, GOP_FB_SIZE);
-        if (shadow_gop && GOP_FB_ADDR + fb_bytes <= guest_mem_size) {
+        if (shadow_gop && fb_bytes <= GOP_FB_SIZE && GOP_FB_ADDR + fb_bytes <= guest_mem_size) {
             memcpy(shadow_gop, (unsigned char *)guest_mem + GOP_FB_ADDR, fb_bytes);
             shadow_gop_w = gop_width;
             shadow_gop_h = gop_height;
@@ -16015,16 +16554,6 @@ static void sync_shadow_buffers(void) {
             *((unsigned char *)guest_mem + 28680) = (unsigned char)pending_kbd_scancode;
             pending_kbd_valid = 0;
         }
-    }
-
-    /* Flush pending mouse state to guest memory (PS/2 path).
-       Do NOT clear pending_mouse_valid here -- the absolute-coordinate
-       port path (0xE1-0xE4) uses the same flag and clears it on 0xE3 read. */
-    if (pending_mouse_valid && MOUSE_BUF_ADDR + 3 <= (int)guest_mem_size) {
-        unsigned char *mbuf = (unsigned char *)guest_mem + MOUSE_BUF_ADDR;
-        mbuf[0] = pending_mouse[0];
-        mbuf[1] = pending_mouse[1];
-        mbuf[2] = pending_mouse[2];
     }
 }
 
@@ -16361,6 +16890,7 @@ int main(int argc, char **argv) {
     int mem_mb = 3072;  /* matches the build harness; binaries from pre-7209
                            seeds triple-fault below 2 GB + stack reserve */
     int mem_nocap = 0;
+    int no_ram_cell = 0;
 
     /* -run-list is a supervisor mode: it spawns a child per line and never
        builds a partition of its own, so it is answered before any of the
@@ -16438,6 +16968,25 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[i], "-screenshot") && i+1 < argc) screenshot_path = argv[++i];
         else if (!strcmp(argv[i], "-screenshot-delay") && i+1 < argc) screenshot_delay_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-record") && i+1 < argc) {
+            record_dir = argv[++i];
+            if (!CreateDirectoryA(record_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+                fprintf(stderr, "codex-vm: -record cannot create '%s'\n", record_dir);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "-record-max") && i+1 < argc) {
+            record_max = atoi(argv[++i]);
+            if (record_max < 1) { fprintf(stderr, "codex-vm: -record-max must be at least 1\n"); return 2; }
+        }
+        else if (!strcmp(argv[i], "-record-min-ms") && i+1 < argc) {
+            record_min_ms = atoi(argv[++i]);
+            if (record_min_ms < 0) { fprintf(stderr, "codex-vm: -record-min-ms must not be negative\n"); return 2; }
+        }
+        else if (!strcmp(argv[i], "-record-every-ms") && i+1 < argc) {
+            record_every_ms = atoi(argv[++i]);
+            if (record_every_ms < 1) { fprintf(stderr, "codex-vm: -record-every-ms must be at least 1\n"); return 2; }
+        }
         else if (!strcmp(argv[i], "-keys") && i+1 < argc) {
             /* comma-separated Set-1 scancodes, e.g. -keys 80,80,28 (down,down,enter) */
             const char *s = argv[++i];
@@ -16482,6 +17031,7 @@ int main(int argc, char **argv) {
             }
         }
         else if (!strcmp(argv[i], "-e1000")) e1000_present = 1;
+        else if (!strcmp(argv[i], "-ivshmem") && i+1 < argc) ivshmem_path = argv[++i];
         else if (!strcmp(argv[i], "-e1000-inject") && i+1 < argc) { e1000_present = 1; e1000_inject_want = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "-e1000-no-reset")) { e1000_present = 1; e1000_fault_no_reset = 1; }
         else if (!strcmp(argv[i], "-e1000-no-link"))  { e1000_present = 1; e1000_fault_no_link = 1; }
@@ -16573,6 +17123,15 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-hid-root-silent")) xhci_hid_root_silent = 1;
         else if (!strcmp(argv[i], "-hid-keys")) hid_keys_only = 1;
         else if (!strcmp(argv[i], "-hid-combo")) hid_combo = 1;
+        else if (!strcmp(argv[i], "-hid-pad")) { hid_combo = 1; hid_pad = 1; }
+        else if (!strcmp(argv[i], "-pad-file") && i+1 < argc) {
+            FILE *pf = fopen(argv[++i], "rb");
+            if (!pf) { fprintf(stderr, "-pad-file: cannot open %s\n", argv[i]); return 2; }
+            fseek(pf, 0, SEEK_END); long psz = ftell(pf); fseek(pf, 0, SEEK_SET);
+            char *pbuf = (char *)malloc((size_t)psz + 1);
+            if (pbuf) { size_t got = fread(pbuf, 1, (size_t)psz, pf); pbuf[got] = 0; inject_pad_parse(pbuf); free(pbuf); }
+            fclose(pf);
+        }
         else if (!strcmp(argv[i], "-hid-nak-unchanged")) hid_nak_unchanged = 1;
         else if (!strcmp(argv[i], "-hid-instant-complete")) hid_nak_unchanged = 0;
         else if (!strcmp(argv[i], "-xhci-calibrate-periodic")) xhci_calibrate_periodic = 1;
@@ -16609,6 +17168,7 @@ int main(int argc, char **argv) {
             if (xhci_hub_tiers > XHCI_HUB_TIERS) xhci_hub_tiers = XHCI_HUB_TIERS;
         }
         else if (!strcmp(argv[i], "-mem-nocap")) mem_nocap = 1;
+        else if (!strcmp(argv[i], "-no-ram-cell")) no_ram_cell = 1;
         else if (!strcmp(argv[i], "-gpu-files") && i+1 < argc) {
             char *root;
             DWORD n;
@@ -16636,6 +17196,18 @@ int main(int argc, char **argv) {
             }
             while (n > 3 && gpu_out_root[n - 1] == '\\') gpu_out_root[--n] = 0;
         }
+        else if (!strcmp(argv[i], "-asset-root") && i+1 < argc) {
+            DWORD n = GetFullPathNameA(argv[++i], (DWORD)sizeof(asset_root), asset_root, 0);
+            if (n == 0 || n >= sizeof(asset_root) || GetFileAttributesA(asset_root) == INVALID_FILE_ATTRIBUTES ||
+                !(GetFileAttributesA(asset_root) & FILE_ATTRIBUTE_DIRECTORY)) {
+                fprintf(stderr, "codex-vm: -asset-root: not a directory: %s\n", argv[i]);
+                return 1;
+            }
+            while (n > 3 && asset_root[n - 1] == '\\') asset_root[--n] = 0;
+        }
+        else if (!strcmp(argv[i], "-hda-capture-stall")) hda_capture_mode = 1;
+        else if (!strcmp(argv[i], "-no-rdrand")) vm_no_rdrand = 1;
+        else if (!strcmp(argv[i], "-hda-capture-silence")) hda_capture_mode = 2;
         else if (!strcmp(argv[i], "-uefi")) uefi_mode = 1;
         else if (!strcmp(argv[i], "-uefi-strict")) { uefi_mode = 1; uefi_strict = 1; }
         else if (!strcmp(argv[i], "-gop")) { gop_active = 1; }
@@ -16689,6 +17261,10 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    if (!record_dir && (record_every_ms > 0 || record_max != 60 || record_min_ms != 200)) {
+        fprintf(stderr, "codex-vm: -record-max, -record-min-ms and -record-every-ms need -record DIR\n");
+        return 2;
+    }
     if (!kernel) {
         fprintf(stderr, "Usage: codex-vm -kernel file.cdx [-input file.codex] [-output file.cdx]\n"
                         "       [-disk file.img] [-mem MB] [-mem-nocap] [-args STRING]\n"
@@ -16722,11 +17298,19 @@ int main(int argc, char **argv) {
         }
     }
     {
+        const char *fta = getenv("CODEX_VM_FAIL_TOUCH");
+        if (fta && fta[0] == '1') { fail_touch = 1; fprintf(stderr, "HOST: every host commit of an untouched chunk will fail (CODEX_VM_FAIL_TOUCH)\n"); }
         const char *fga = getenv("CODEX_VM_FAIL_GROW_AT");
         if (fga && fga[0]) {
             fail_grow_at = (size_t)strtoull(fga, NULL, 0);
             fprintf(stderr, "OUTPUT: capture buffer starts at %zu byte(s) and every growth will fail (CODEX_VM_FAIL_GROW_AT)\n",
                     fail_grow_at);
+        }
+        const char *uds = getenv("CODEX_VM_UEFI_DESC_SIZE");
+        if (uds && uds[0]) {
+            uefi_desc_size_lie = (long long)strtoull(uds, NULL, 0);
+            fprintf(stderr, "UEFI: GetMemoryMap will report DescriptorSize %lld over 48-byte descriptors (CODEX_VM_UEFI_DESC_SIZE)\n",
+                    uefi_desc_size_lie);
         }
     }
     hprof_file = getenv("CODEX_VM_PROFILE");
@@ -16790,6 +17374,15 @@ int main(int argc, char **argv) {
            it, so it is seeded here at power-up rather than in the PHY reset
            path with the bits that do clear. */
         i219_extcnf = i219_mng_holds ? I219_EXTCNF_MNG : 0;
+    }
+    if (ivshmem_path) {
+        int vi = pci_add_device(0x1AF4, 0x1110, 0x05, 0x00, 0x00, (unsigned int)IVSHMEM_BAR0, 0);
+        if (vi >= 0) {
+            pci_devices[vi].revision = 1;
+            pci_devices[vi].bar_size[0] = IVSHMEM_BAR0_SIZE;
+            pci_devices[vi].bar[2] = (unsigned int)IVSHMEM_BAR2 | 0x8;
+            pci_devices[vi].bar_size[2] = IVSHMEM_SIZE;
+        }
     }
 
     if (pci_bridge) {
@@ -16907,7 +17500,10 @@ int main(int argc, char **argv) {
         if (!mem_nocap && effective > GPU_CMD_ADDR)
             effective = GPU_CMD_ADDR;
         fprintf(stderr, "RAM cap: guest_mem_size=0x%llx effective=0x%llx gop=%d\n", guest_mem_size, effective, gop_active);
-        *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = effective;
+        /* -no-ram-cell leaves the cell as a multiboot loader does, unwritten,
+           so the guest's refusal of a RAM size it was never told has an arm. */
+        if (!no_ram_cell)
+            *(unsigned long long *)((unsigned char *)guest_mem + 0xFE8) = effective;
     }
 
     /* Write GOP resolution to GPA 0x7C4/0x7C8 so guests can read display size.
@@ -17302,7 +17898,7 @@ int main(int argc, char **argv) {
                     WHV_REGISTER_VALUE rv;
                     WHvGetVirtualProcessorRegisters(partition, 0, &rn, 1, &rv);
                     unsigned long long rip = rv.Reg64;
-                    if (rip > 0 && rip + 32 < guest_mem_size) {
+                    if (rip >= 8 && rip + 32 < guest_mem_size && guest_range_committed(rip - 8, 32)) {
                         unsigned char *p = (unsigned char*)guest_mem + rip;
                         fprintf(stderr, "Guest mem at RIP 0x%llx: ", rip);
                         for (int i = -8; i < 24; i++)
@@ -17344,7 +17940,7 @@ int main(int argc, char **argv) {
                     if (d6v.Reg64 & 0xF) {
                         hw_watch_hits++;
                         unsigned long long wv = 0;
-                        if (hw_watch_addr + 8 <= guest_mem_size)
+                        if (hw_watch_addr + 8 <= guest_mem_size && guest_range_committed(hw_watch_addr, 8))
                             memcpy(&wv, (unsigned char*)guest_mem + hw_watch_addr, 8);
                         if (hw_watch_log) {
                             /* One line per write, and keep going. The full crash
@@ -17458,7 +18054,7 @@ int main(int argc, char **argv) {
                                 WHvGetVirtualProcessorRegisters(partition, 0, &rn2, 1, &rv2);
                                 wcet_entry_rsp = rv2.Reg64;
                                 wcet_ret_addr = 0;
-                                if (wcet_entry_rsp + 8 <= guest_mem_size)
+                                if (wcet_entry_rsp + 8 <= guest_mem_size && guest_range_committed(wcet_entry_rsp, 8))
                                     memcpy(&wcet_ret_addr, (unsigned char *)guest_mem + wcet_entry_rsp, 8);
                                 wcet_active = hit;
                                 wcet_cur = 0;
@@ -17591,13 +18187,13 @@ int main(int argc, char **argv) {
                 WHV_REGISTER_VALUE cr3v[1];
                 WHvGetVirtualProcessorRegisters(partition, 0, cr3n, 1, cr3v);
                 unsigned long long cr3 = cr3v[0].Reg64 & ~0xFFFULL;
-                unsigned long long *pml4 = (cr3 + 4096 <= guest_mem_size)
+                unsigned long long *pml4 = (cr3 + 4096 <= guest_mem_size && guest_range_committed(cr3, 4096))
                     ? (unsigned long long *)((unsigned char *)guest_mem + cr3) : NULL;
                 unsigned long long pdpt_pa = pml4 ? (pml4[0] & 0x000FFFFFFFFFF000ULL) : 0;
-                unsigned long long *pdpt = (pdpt_pa && pdpt_pa + 4096 <= guest_mem_size)
+                unsigned long long *pdpt = (pdpt_pa && pdpt_pa + 4096 <= guest_mem_size && guest_range_committed(pdpt_pa, 4096))
                     ? (unsigned long long *)((unsigned char *)guest_mem + pdpt_pa) : NULL;
                 unsigned long long pd_pa = pdpt ? (pdpt[0] & 0x000FFFFFFFFFF000ULL) : 0;
-                unsigned long long *pd = (pd_pa && pd_pa + 4096 <= guest_mem_size)
+                unsigned long long *pd = (pd_pa && pd_pa + 4096 <= guest_mem_size && guest_range_committed(pd_pa, 4096))
                     ? (unsigned long long *)((unsigned char *)guest_mem + pd_pa) : NULL;
                 fprintf(stderr, "  CR3=0x%llx PML4[0]=0x%llx PDPT[0]=0x%llx PD[0]=0x%llx PD[1]=0x%llx\n",
                     cr3, pml4 ? pml4[0] : 0ULL, pdpt ? pdpt[0] : 0ULL,
@@ -17865,6 +18461,16 @@ int main(int argc, char **argv) {
             }
         }
 
+        if (record_dir && record_every_ms > 0) {
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            if (!record_tick_last.QuadPart ||
+                (double)(now.QuadPart - record_tick_last.QuadPart) * 1000.0 / perf_freq.QuadPart >= (double)record_every_ms) {
+                record_tick_last = now;
+                record_frame();
+            }
+        }
+
         /* Screenshot timer */
         if (screenshot_path) {
             LARGE_INTEGER now;
@@ -17916,6 +18522,9 @@ int main(int argc, char **argv) {
 done:
     if (cuda.state == 1) gpu_flush();
     gpu_census_print();
+    if (record_dir)
+        fprintf(stderr, "RECORD: dir=%s saved=%d refused cap=%d interval=%d no-gop=%d\n",
+                record_dir, record_saved, record_refused_cap, record_refused_soon, record_refused_nogop);
     fprintf(stderr, "VM exited (code=%d, exits=%llu, watch_hits=%d)\n", debug_exit_code, exits, watch_hit_count);
     io_report_by_vp();
     /* Before the summaries and the output dump, not after: an AP still
@@ -17950,10 +18559,10 @@ done:
     }
     if (trace_file && guest_mem) {
         unsigned long long te = 458752, tc = 458760, tb = 458768;  /* trace cells, mirrors X86_64Boot.codex */
-        if (te + 8 <= guest_mem_size) {
+        if (tb <= guest_mem_size && guest_range_committed(te, 16)) {
             unsigned long long enabled = *(unsigned long long *)((unsigned char *)guest_mem + te);
             unsigned long long cursor = *(unsigned long long *)((unsigned char *)guest_mem + tc);
-            if (enabled && cursor > 0 && tb + cursor * 16 <= guest_mem_size) {
+            if (enabled && cursor > 0 && cursor <= (guest_mem_size - tb) / 16 && guest_range_committed(tb, cursor * 16)) {
                 FILE *tf = fopen(trace_file, "wb");
                 if (tf) {
                     fwrite(&cursor, 8, 1, tf);
@@ -18051,7 +18660,9 @@ done:
                 i219_extcnf_violated, i219_extcnf);
         fflush(census_out());
     }
-    if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {
+    if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size && !guest_range_committed(dumpmem_addr, dumpmem_len))
+        fprintf(stderr, "DUMPMEM 0x%llx len %llu: host page not committed (the guest never touched this range)\n", dumpmem_addr, dumpmem_len);
+    else if (dumpmem_addr && guest_mem && dumpmem_addr + dumpmem_len <= guest_mem_size) {
         fprintf(stderr, "DUMPMEM 0x%llx len %llu:\n", dumpmem_addr, dumpmem_len);
         unsigned char *base = (unsigned char*)guest_mem + dumpmem_addr;
         for (unsigned long long off = 0; off < dumpmem_len; off += 16) {

@@ -1,0 +1,62 @@
+Chapter: AesGcmTypedSeal
+  cites Foreword chapter AesGcm
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+ aesgcm-seal-typed-into seals data[off .. off+n) and one type byte onto out; the reference is aesgcm-encrypt over
+ the same bytes with the type appended, after the same 2-byte prefix. n runs across both sides of each 16-byte
+ block edge, because the type byte takes keystream from block n / 16 at position n mod 16.
+
+  key-128 : List Integer = [1, 35, 69, 103, 137, 171, 205, 239, 16, 50, 84, 118, 152, 186, 220, 254]
+  key-256 : List Integer = key-128 & [254, 220, 186, 152, 118, 84, 50, 16, 239, 205, 171, 137, 103, 69, 35, 1]
+  nonce : List Integer = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 255, 254]
+  aad : List Integer = [23, 254, 253, 0, 33]
+
+  data-of : Integer, List Integer -> List Integer
+  data-of (n) (acc) = if list-length acc >= n then acc else data-of n (list-push acc (bit-and (list-length acc * 37 + 11) 255))
+
+  data : List Integer = data-of 64 []
+
+  slice : List Integer, Integer, Integer, List Integer -> List Integer
+  slice (bs) (off) (n) (acc) = if list-length acc >= n then acc else slice bs off n (list-push acc (list-at bs (off + list-length acc)))
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+ Each call builds its own prefix: out is pushed into in place, so a shared literal would carry every earlier
+ call's bytes (L-ALIAS).
+
+  prefix : Integer -> List Integer
+  prefix (cap) = list-push (list-push (__list-with-capacity cap) 7) 7
+
+  typed : List Integer, Integer -> List Integer
+  typed (key) (n) = aesgcm-seal-typed-into key nonce data 3 n 22 aad (prefix (n + 19))
+
+  reference : List Integer, Integer -> List Integer
+  reference (key) (n) =
+    let r = aesgcm-encrypt key nonce (slice data 3 n [] & [22]) aad
+    in prefix 2 & r.ciphertext & r.tag
+
+  row : List Integer, Integer -> Text
+  row (key) (n) = "n=" & show n & " len=" & show (list-length (typed key n)) & " same=" & show (same (typed key n) (reference key n) 0)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("aes-128 " & row key-128 0)
+    print-line-uni ("aes-128 " & row key-128 1)
+    print-line-uni ("aes-128 " & row key-128 15)
+    print-line-uni ("aes-128 " & row key-128 16)
+    print-line-uni ("aes-128 " & row key-128 17)
+    print-line-uni ("aes-128 " & row key-128 31)
+    print-line-uni ("aes-128 " & row key-128 32)
+    print-line-uni ("aes-128 " & row key-128 33)
+    print-line-uni ("aes-256 " & row key-256 33)
+    print-line-uni ("range past the data: len=" & show (list-length (aesgcm-seal-typed-into key-128 nonce data 60 5 22 aad (prefix 2))))
+    print-line-uni ("short nonce: len=" & show (list-length (aesgcm-seal-typed-into key-128 [1, 2] data 0 5 22 aad (prefix 2))))
+  end

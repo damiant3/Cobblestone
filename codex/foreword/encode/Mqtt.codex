@@ -3,10 +3,7 @@ Chapter: Mqtt
   cites Foreword chapter Units (Duration)
   cites Foreword chapter CCE
 
- MQTT v5.0 protocol types and packet builders for IoT messaging.
- Implements the wire protocol per OASIS MQTT v5.0 (March 2019).
- Each builder returns a List Integer (the raw packet bytes).
- Transport is handled by the caller (TCP, TLS, or WebSocket).
+ MQTT v5.0, the wire protocol per OASIS MQTT v5.0 (March 2019).
 
 Section: Packet Types
 
@@ -104,12 +101,7 @@ Section: CONNECT Packet
    password = None
   }
 
- THE CREDENTIALS WERE DEAD FIELDS. `MqttConnectConfig` has carried
- `username` and `password` since it was written, `mqtt-connect-flags`
- returned only the clean-start bit, and the payload was the client id and
- nothing else -- so a broker requiring authentication refused every
- connection this chapter could build, and the config said otherwise. They
- are emitted now, in the order MQTT v5 section 3.1.3 fixes: client id,
+ The CONNECT payload order is fixed by MQTT v5 section 3.1.3: client id,
  then username if its flag is set, then password.
 
   mqtt-build-connect : MqttConnectConfig -> List Integer
@@ -138,14 +130,8 @@ Section: CONNECT Packet
 Section: PUBLISH Packet
 
  A PUBLISH AT QoS 1 OR 2 CARRIES A PACKET IDENTIFIER, immediately after
- the topic and before the properties (MQTT v5 section 3.3.2.2). This
- builder had no packet-id parameter at all, so at any QoS above zero it
- produced a packet whose property length was read as the high byte of an
- identifier and whose payload was off by two -- a malformed packet a
- broker closes the connection on. Nothing caught it because every caller
- in the tree publishes at QoS 0, where the field is absent and the old
- code was accidentally right.
- The identifier is ignored at QoS 0, where the protocol forbids it.
+ the topic and before the properties (MQTT v5 section 3.3.2.2), and is
+ absent at QoS 0, where the protocol forbids it.
 
   mqtt-build-publish : Text, List Integer, MqttQos, Boolean, Integer -> List Integer
   mqtt-build-publish (topic) (payload) (qos) (retain) (packet-id) =
@@ -155,10 +141,18 @@ Section: PUBLISH Packet
     in let pid = if mqtt-qos-value qos > 0 then
       [bit-and (bit-shru packet-id 8) 255, bit-and packet-id 255]
     else []
-    in let properties = [0]
-    in let var-header = topic-bytes & pid & properties
-    in let remaining = var-header & payload
-    in [header-byte] & mqtt-encode-remaining-length (list-length remaining) & remaining
+    in let rem-len = list-length topic-bytes + list-length pid + 1 + list-length payload
+    in let len-bytes = mqtt-encode-remaining-length rem-len
+    in let out = list-push (__list-with-capacity (1 + list-length len-bytes + rem-len)) header-byte
+    in mqtt-push-all (list-push (mqtt-push-all (mqtt-push-all (mqtt-push-all out len-bytes 0) topic-bytes 0) pid 0) 0) payload 0
+
+ A packet is pushed into one list reserved at its length, so the payload is copied once rather than once per
+ concatenation.
+
+  mqtt-push-all : List Integer, List Integer, Integer -> List Integer
+  mqtt-push-all (out) (src) (i) =
+    if i >= list-length src then out
+    else mqtt-push-all (list-push out (list-at src i)) src (i + 1)
 
 Section: PUBACK Packet
 
@@ -168,9 +162,7 @@ Section: PUBACK Packet
 
 Section: QoS 2 Packets
 
- The four-step exchange "exactly once" is made of, and the reason
- `QosExactlyOnce` was a constructor with no delivery guarantee behind it
- until 2026-07-23. A publisher sends PUBLISH and hears PUBREC; it answers
+ The four-step exchange "exactly once" is made of. A publisher sends PUBLISH and hears PUBREC; it answers
  PUBREL and hears PUBCOMP. A subscriber does the mirror. Two round trips
  buy what one cannot: the receiver may record the identifier before
  acknowledging, so a redelivery after a lost acknowledgement is
@@ -218,10 +210,8 @@ Section: DISCONNECT Packet
 
 Section: Decoding
 
- The decoders below are the reading half. They are deliberately tolerant
- of the v5 property block: every one of these packet bodies carries a
- variable-byte property length that a v3 parser would run straight past,
- and mosquitto populates it.
+ Every v5 packet body below carries a variable-byte property length that
+ a v3 parser would run straight past, and mosquitto populates it.
 
   MqttVbi = record {
     mv-value : Integer,
@@ -242,7 +232,9 @@ Section: Decoding
     else mqtt-decode-vbi-loop bs at (i + 1) acc2 (shift + 7)
 
   mqtt-slice : List Integer, Integer, Integer -> List Integer
-  mqtt-slice (bs) (from) (stop) = mqtt-slice-loop bs from stop []
+  mqtt-slice (bs) (from) (stop) =
+    let upto = if stop < list-length bs then stop else list-length bs
+    in if upto <= from then [] else mqtt-slice-loop bs from upto (__list-with-capacity (upto - from))
 
   mqtt-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
   mqtt-slice-loop (bs) (i) (stop) (acc) =
@@ -254,24 +246,40 @@ Section: Decoding
     mp-type : Integer,
     mp-flags : Integer,
     mp-total : Integer,
-    mp-body : List Integer
+    mp-body : List Integer,
+    mp-src : List Integer,
+    mp-at : Integer,
+    mp-len : Integer
   }
 
   mqtt-parse : List Integer -> Maybe MqttPacket
-  mqtt-parse (bs) =
-    if list-length bs < 2 then None
-    else let b0 = list-at bs 0
-    in let vbi = mqtt-decode-vbi bs 1
+  mqtt-parse (bs) = mqtt-parse-at bs 0
+
+ The packet starting at off, read in place: a receive buffer holding several packets is parsed packet by packet
+ without copying what follows each one.
+
+  mqtt-parse-at : List Integer, Integer -> Maybe MqttPacket
+  mqtt-parse-at (bs) (off) =
+    if off < 0 | list-length bs - off < 2 then None
+    else let b0 = list-at bs off
+    in let vbi = mqtt-decode-vbi bs (off + 1)
     in if vbi.mv-ok == False then None
     else let head = 1 + vbi.mv-len
     in let total = head + vbi.mv-value
-    in if list-length bs < total then None
-    else Just (MqttPacket {
-      mp-type = bit-shru b0 4,
-      mp-flags = bit-and b0 15,
-      mp-total = total,
-      mp-body = mqtt-slice bs head total
-    })
+    in if list-length bs - off < total then None
+    else if bit-shru b0 4 == 3 then
+      Just (MqttPacket { mp-type = 3, mp-flags = bit-and b0 15, mp-total = total, mp-body = [], mp-src = bs, mp-at = off + head, mp-len = vbi.mv-value })
+    else mqtt-packet-copied b0 total (mqtt-slice bs (off + head) (off + total))
+
+ A PUBLISH, the one packet whose body is the payload, is read where it lies (mp-src from mp-at for mp-len bytes)
+ and its body is not copied; every other packet's body is copied out, and mp-src names that copy.
+
+  mqtt-packet-copied : Integer, Integer, List Integer -> Maybe MqttPacket
+  mqtt-packet-copied (b0) (total) (body) =
+    Just (MqttPacket { mp-type = bit-shru b0 4, mp-flags = bit-and b0 15, mp-total = total, mp-body = body, mp-src = body, mp-at = 0, mp-len = list-length body })
+
+  mqtt-pb : MqttPacket, Integer -> Integer
+  mqtt-pb (p) (i) = list-at (p.mp-src) (p.mp-at + i)
 
  CONNACK: acknowledge flags, then the reason code. Zero is success and
  anything else is the broker refusing, with 135 "not authorized" and 133
@@ -308,34 +316,54 @@ Section: Decoding
 
  An inbound PUBLISH. The QoS is in the FIXED HEADER flags, not the body,
  and it decides whether a packet identifier sits between the topic and
- the properties -- so the payload offset depends on a field three bytes
- earlier, which is the shape that makes a hand-written reader wrong.
+ the properties.
 
   mqtt-publish-qos : MqttPacket -> Integer
   mqtt-publish-qos (p) = bit-and (bit-shru (p.mp-flags) 1) 3
 
   mqtt-publish-topic : MqttPacket -> List Integer
   mqtt-publish-topic (p) =
-    if list-length (p.mp-body) < 2 then []
-    else let n = list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
-    in mqtt-slice (p.mp-body) 2 (2 + n)
+    if p.mp-len < 2 then []
+    else let n = mqtt-pb p 0 * 256 + mqtt-pb p 1
+    in let upto = if 2 + n < p.mp-len then 2 + n else p.mp-len
+    in mqtt-slice (p.mp-src) (p.mp-at + 2) (p.mp-at + upto)
 
   mqtt-publish-id : MqttPacket -> Integer
   mqtt-publish-id (p) =
     if mqtt-publish-qos p == 0 then (-1)
-    else if list-length (p.mp-body) < 2 then (-1)
-    else let n = list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
-    in if 2 + n + 1 >= list-length (p.mp-body) then (-1)
-    else list-at (p.mp-body) (2 + n) * 256 + list-at (p.mp-body) (2 + n + 1)
+    else if p.mp-len < 2 then (-1)
+    else let n = mqtt-pb p 0 * 256 + mqtt-pb p 1
+    in if 2 + n + 1 >= p.mp-len then (-1)
+    else mqtt-pb p (2 + n) * 256 + mqtt-pb p (2 + n + 1)
+
+ MQTT 5.0: a PUBLISH with both QoS bits set is malformed (section 3.3.1.2),
+ a QoS 1 or 2 PUBLISH carries a nonzero packet identifier (section 2.2.1),
+ and the topic name, the identifier and the property block lie inside the
+ packet. The receiver of a malformed packet closes the connection (section
+ 4.13).
+
+  mqtt-publish-valid : MqttPacket -> Boolean
+  mqtt-publish-valid (p) =
+    let qos = mqtt-publish-qos p
+    in if qos == 3 then False
+    else if p.mp-len < 2 then False
+    else let n = mqtt-pb p 0 * 256 + mqtt-pb p 1
+    in let after-topic = 2 + n + (if qos > 0 then 2 else 0)
+    in if after-topic >= p.mp-len then False
+    else let props = mqtt-decode-vbi (p.mp-src) (p.mp-at + after-topic)
+    in if props.mv-ok == False then False
+    else if after-topic + props.mv-len + props.mv-value > p.mp-len then False
+    else if qos == 0 then True
+    else mqtt-publish-id p /= 0
 
   mqtt-publish-payload : MqttPacket -> List Integer
   mqtt-publish-payload (p) =
-    if list-length (p.mp-body) < 2 then []
-    else let n = list-at (p.mp-body) 0 * 256 + list-at (p.mp-body) 1
+    if p.mp-len < 2 then []
+    else let n = mqtt-pb p 0 * 256 + mqtt-pb p 1
     in let after-topic = 2 + n + (if mqtt-publish-qos p > 0 then 2 else 0)
-    in let props = mqtt-decode-vbi (p.mp-body) after-topic
+    in if after-topic >= p.mp-len then []
+    else let props = mqtt-decode-vbi (p.mp-src) (p.mp-at + after-topic)
     in if props.mv-ok == False then []
-    else
-      mqtt-slice (p.mp-body) (after-topic + props.mv-len + props.mv-value) (list-length (p.mp-body))
+    else mqtt-slice (p.mp-src) (p.mp-at + after-topic + props.mv-len + props.mv-value) (p.mp-at + p.mp-len)
 
 Page 1

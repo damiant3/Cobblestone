@@ -1,8 +1,6 @@
 Chapter: GopAcpi
   cites Works chapter GopHandoff
 
- We say:
-
 Section: Little-Endian Reads
 
   acpi-rd16 : Integer, Integer -> Integer
@@ -41,6 +39,17 @@ Section: Signatures and Checksums
   acpi-table-len : Integer -> Integer
   acpi-table-len (t) = acpi-rd32 t 4
 
+ Every table length here is the firmware's word. The largest table a machine
+ carries is its DSDT, a few hundred KB; 4 MB is past any of them, so a longer
+ claim is refused rather than summed or searched.
+
+  acpi-max-table : Integer = #400000
+
+  acpi-len-ok : Integer, Integer -> Boolean
+  acpi-len-ok (t) (least) =
+    let l = acpi-table-len t
+    in l >= least & l <= acpi-max-table
+
 Section: Root Table Walk
 
   acpi-entry-count : Integer, Integer -> Integer
@@ -70,19 +79,19 @@ Section: MADT
     if off + 2 > len then 0
     else let t = peek-byte m off
     in let l = peek-byte m (off + 1)
-    in if l == 0 then 0
+    in if l < 2 | off + l > len then 0
     else if t == want then off
     else madt-scan m (off + l) len want
 
   madt-ioapic : Integer -> Integer
   madt-ioapic (m) =
     let off = madt-scan m 44 (acpi-table-len m) 1
-    in if off == 0 then 0 else acpi-rd32 m (off + 4)
+    in if off == 0 | peek-byte m (off + 1) < 12 then 0 else acpi-rd32 m (off + 4)
 
   madt-lapic-override : Integer -> Integer
   madt-lapic-override (m) =
     let off = madt-scan m 44 (acpi-table-len m) 5
-    in if off == 0 then 0 else acpi-rd64 m (off + 4)
+    in if off == 0 | peek-byte m (off + 1) < 12 then 0 else acpi-rd64 m (off + 4)
 
   madt-lapic : Integer -> Integer
   madt-lapic (m) =
@@ -234,6 +243,7 @@ Section: The Parse
     else if acpi-rsdp-ok rsdp == False then acpi-none rsdp
     else let root = acpi-root-of rsdp
     in if root == 0 then acpi-none rsdp
+    else if acpi-len-ok root 36 == False then acpi-none rsdp
     else if acpi-checksum-ok root (acpi-table-len root) == False then acpi-none rsdp
     else acpi-from-root rsdp root
 
@@ -241,13 +251,16 @@ Section: The Parse
   acpi-from-root (rsdp) (root) =
     let entsize = acpi-entsize-of root
     in let n = acpi-entry-count root entsize
-    in let madt = acpi-find root entsize n 0 65 80 73 67
-    in let fadt = acpi-find root entsize n 0 70 65 67 80
+    in let madt0 = acpi-find root entsize n 0 65 80 73 67
+    in let fadt0 = acpi-find root entsize n 0 70 65 67 80
+    in let madt = if madt0 /= 0 & acpi-len-ok madt0 44 then madt0 else 0
+    in let fadt = if fadt0 /= 0 & acpi-len-ok fadt0 116 then fadt0 else 0
     in acpi-assemble rsdp root entsize n madt fadt
 
   acpi-assemble : Integer, Integer, Integer, Integer, Integer, Integer -> AcpiInfo
   acpi-assemble (rsdp) (root) (entsize) (n) (madt) (fadt) =
-    let dsdt = if fadt == 0 then 0 else fadt-dsdt fadt
+    let dsdt0 = if fadt == 0 then 0 else fadt-dsdt fadt
+    in let dsdt = if dsdt0 /= 0 & acpi-len-ok dsdt0 36 then dsdt0 else 0
     in let s5 = if dsdt == 0 then (-1) else s5-search dsdt 36 (acpi-table-len dsdt - 8)
     in AcpiInfo {
       ai-ok = True,

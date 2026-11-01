@@ -3,44 +3,33 @@ Chapter: X509
   cites Foreword chapter Maybe
 
  An X.509 certificate, as RFC 5280 defines it and RFC 8410 extends it to
- the Edwards curves. This chapter PARSES. It does not decide whether a
- certificate is trustworthy -- that is a chain walk, and it is the next
- chapter. Parsing and trusting are separate jobs, and a chapter that does
- both tends to do the second one by accident.
+ the Edwards curves.
 
- The one invariant that matters more than any other here: the
- tbsCertificate is kept as the ORIGINAL BYTES, sliced out of the input by
- asn1-raw. It is never decoded and re-encoded. A signature is over a byte
- string, and a re-encoded tbsCertificate is a DIFFERENT byte string -- so a
- parser that rebuilds it is a parser that verifies a signature over
- something nobody ever signed. Every field below is a view onto the input;
- xc-tbs is the input.
+ The tbsCertificate is kept as the ORIGINAL BYTES, never decoded and
+ re-encoded. A signature is over a byte string, and a re-encoded
+ tbsCertificate is a DIFFERENT byte string -- so a parser that rebuilds it
+ is a parser that verifies a signature over something nobody ever signed.
 
  Names are kept as raw DER for the same family of reason. Two names that
  decode to the same string can be different byte strings, and comparing the
  decoded forms is how an implementation ends up believing that one issuer
- is another. The chain walk compares issuer bytes to subject bytes.
-
- We say:
+ is another.
 
 Section: Object Identifiers
 
- Compared as encoded bytes, never as decoded numbers -- see the Asn1
- chapter note. These are the CONTENT octets, without the tag and length.
+ These are the CONTENT octets, without the tag and length.
 
  Ed25519, 1.3.101.112 (RFC 8410).
 
   x509-oid-ed25519 : List Integer = [43, 101, 112]
 
  X25519, 1.3.101.110. A key agreement key -- it can appear as a subject
- public key, and it can NEVER verify a signature. The distinction is kept
- in the type so that nothing downstream can confuse the two.
+ public key, and it can NEVER verify a signature.
 
   x509-oid-x25519 : List Integer = [43, 101, 110]
 
  rsaEncryption, 1.2.840.113549.1.1.1, and sha256WithRSAEncryption,
- 1.2.840.113549.1.1.11. Every certificate on Google's chain is signed
- with the second one, which is why they are here.
+ 1.2.840.113549.1.1.11.
 
   x509-oid-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 1]
   x509-oid-sha256-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 11]
@@ -49,12 +38,9 @@ Section: Object Identifiers
  sha1WithRSAEncryption, 1.2.840.113549.1.1.5.
 
  SHA-1 is here so that certificates signed with it can be READ, and for
- no other reason. Two of the five roots Codex ships are from 2006 and are
- self-signed with SHA-1; refusing to parse them would mean refusing to
- hold them as anchors, even though an anchor's own signature is never
- checked by anybody. The chain walk answers False for a SHA-1 signature
- unconditionally -- collisions have been practical since 2017 -- so
- reading one and trusting one remain different things.
+ no other reason: roots from 2006 are self-signed with it, and an anchor's
+ own signature is never checked. SHA-1 collisions have been practical since
+ 2017, so reading one and trusting one remain different things.
 
   x509-oid-sha384-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 12]
   x509-oid-sha1-rsa : List Integer = [42, 134, 72, 134, 247, 13, 1, 1, 5]
@@ -64,15 +50,12 @@ Section: Object Identifiers
  question: the arithmetic that checks a P-256 signature is not the
  arithmetic that checks a P-384 one, and handing the second to the first
  does not fail loudly -- it computes in the wrong field and answers
- something. So the curve is read, and it decides which of the two
- elliptic-curve key kinds this is.
+ something.
 
   x509-oid-ec-public-key : List Integer = [42, 134, 72, 206, 61, 2, 1]
 
  prime256v1, 1.2.840.10045.3.1.7 -- the curve NIST calls P-256 and SEC
- calls secp256r1. It was the only curve this tree could verify on until
- 2026-07-28; secp384r1 below is the second. Every other named curve still
- parses into a key that says so about itself.
+ calls secp256r1.
 
   x509-oid-p256 : List Integer = [42, 134, 72, 206, 61, 3, 1, 7]
 
@@ -84,11 +67,7 @@ Section: Object Identifiers
 
  ecdsa-with-SHA256, 1.2.840.10045.4.3.2, and ecdsa-with-SHA384,
  1.2.840.10045.4.3.3. The Sectigo and Let's Encrypt elliptic-curve
- hierarchies sign their intermediates with the second one, which is why
- both are here. **Both are verified now**, as of 2026-07-28; this note
- said only the first was, and that a P-256 key signing under SHA-384 was
- read but never trusted. The digest half is written and the chain walk
- routes all four combinations of curve and digest.
+ hierarchies sign their intermediates with the second one.
 
   x509-oid-ecdsa-sha256 : List Integer = [42, 134, 72, 206, 61, 4, 3, 2]
   x509-oid-ecdsa-sha384 : List Integer = [42, 134, 72, 206, 61, 4, 3, 3]
@@ -98,10 +77,6 @@ Section: Object Identifiers
   x509-oid-basic-constraints : List Integer = [85, 29, 19]
 
 Section: Key
-
- A subject public key, with its algorithm. The algorithm is an enumeration
- and not a byte string, because the whole point is that a caller cannot
- hand an X25519 key to a signature check.
 
   X509KeyAlg =
     | KeyEd25519
@@ -155,8 +130,6 @@ Section: Key
  OIDs carry none, and RFC 8410 section 3 says they must not; RSA carries
  an explicit NULL, and RFC 4055 says it must. So one child or two, and
  the second has to be that NULL rather than anything a sender fancies.
- Requiring exactly one child is what made every RSA key in the world
- unparseable here.
 
   x509-spki-oid : List Integer, List Asn1Tlv, Asn1Tlv -> Maybe X509Key
   x509-spki-oid (buf) (algkids) (key) =
@@ -168,24 +141,12 @@ Section: Key
     if x509-key-params-ok buf algkids alg == False then None
     else x509-spki-bits buf alg key
 
- The parameter, when present, is NULL for RSA and a named-curve OID for
- an elliptic-curve key. The elliptic-curve case has already been settled
- by x509-curve-of, which insists on the OID rather than tolerating it;
- everything else carries either nothing (RFC 8410 section 3, the Edwards
- curves) or an explicit NULL (RFC 4055, RSA). A parameter of any other
- shape is a certificate this chapter does not understand, and guessing is
- what a parser must never do.
-
- Every elliptic-curve variant belongs on the True side here, because an EC
- key's parameter IS a named-curve OID and `x509-alg-params-ok` below admits
- only absent-or-NULL. This arm is written out per variant rather than as a
- catch-all, and the reason is worth the line: when `KeyEcdsaP384` was added
- on 2026-07-28 it fell into `is otherwise`, `x509-alg-params-ok` refused the
- curve OID, and every P-384 CERTIFICATE STOPPED PARSING -- not just its key.
- The exhaustiveness checker caught the same omission in a test that listed
- its variants (CDX2070) and could not catch it here, because a catch-all arm
- is exhaustive by construction. **A new variant is silently absorbed by
- every `is otherwise` in the tree.**
+ The parameter, when present, is NULL for RSA (RFC 4055) and a named-curve
+ OID for an elliptic-curve key; the Edwards curves carry nothing (RFC 8410
+ section 3). Every elliptic-curve variant must be listed on the True side
+ here, not left to `is otherwise`: its parameter IS a named-curve OID, which
+ `x509-alg-params-ok` refuses, and a variant left out stops every
+ certificate carrying that curve from parsing.
 
   x509-key-params-ok : List Integer, List Asn1Tlv, X509KeyAlg -> Boolean
   x509-key-params-ok (buf) (kids) (alg) =
@@ -271,12 +232,8 @@ Section: Key
     else if list-at bs 0 /= 4 then None
     else Just (X509Key { xk-alg = KeyEcdsaP384, xk-bytes = bs, xk-mod = [], xk-exp = [] })
 
- A key on any other named curve is kept whole and unexamined, because
- nothing here can do anything with it and pretending otherwise would be
- the whole problem in miniature. It parses so that the certificates
- carrying it can be read -- most elliptic-curve roots are P-384 -- and
- x509-can-verify answers False for it, so it can never sit in an issuer
- position.
+ A key on any other named curve is kept whole and unexamined, and can
+ never verify a signature.
 
   x509-ec-other-key : List Integer -> Maybe X509Key
   x509-ec-other-key (bs) =
@@ -341,8 +298,7 @@ Section: Key
 Section: The Certificate
 
  Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm,
- signatureValue }. xc-tbs is the raw signed bytes; everything else is a
- view onto them.
+ signatureValue }.
 
   X509Cert = record {
     xc-tbs : List Integer,
@@ -358,6 +314,8 @@ Section: The Certificate
     xc-is-ca : Boolean,
     xc-path-len : Integer,
     xc-cert-sign : Boolean,
+    xc-server-auth : Boolean,
+    xc-name-constraints : List Integer,
     xc-dns-names : List (List Integer),
     xc-ip-addrs : List (List Integer)
   }
@@ -447,7 +405,27 @@ Section: The TBSCertificate
   x509-fields (buf) (tbs) (sig) (salg) (kids) =
     if list-length kids < 7 then None
     else if (list-at kids 0).tlv-tag /= asn1-ctx0 then None
+    else if (list-at kids 3).tlv-tag /= asn1-sequence then None
+    else if (list-at kids 5).tlv-tag /= asn1-sequence then None
+    else if x509-tail-ok kids 7 0 == False then None
     else x509-version buf tbs sig salg kids
+
+ RFC 5280 4.1: issuer and subject are a Name, a SEQUENCE. After the subjectPublicKeyInfo come only issuerUniqueID
+ [1] and subjectUniqueID [2], IMPLICIT BIT STRING and therefore primitive (#81, #82), then extensions [3] EXPLICIT
+ (#A3), each at most once and in that order.
+
+  x509-tail-ok : List Asn1Tlv, Integer, Integer -> Boolean
+  x509-tail-ok (kids) (i) (rank) =
+    if i >= list-length kids then True
+    else if x509-tail-rank ((list-at kids i).tlv-tag) <= rank then False
+    else x509-tail-ok kids (i + 1) (x509-tail-rank ((list-at kids i).tlv-tag))
+
+  x509-tail-rank : Integer -> Integer
+  x509-tail-rank (tag) =
+    if tag == #81 then 1
+    else if tag == #82 then 2
+    else if tag == asn1-ctx3 then 3
+    else 0
 
   x509-version : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv -> Maybe X509Cert
   x509-version (buf) (tbs) (sig) (salg) (kids) =
@@ -484,12 +462,22 @@ Section: The TBSCertificate
   x509-serial (buf) (tbs) (sig) (salg) (kids) (v) =
     when asn1-int-bytes buf ((list-at kids 1).tlv-hdr)
       is None -> None
-      is Just (sn) -> x509-validity buf tbs sig salg kids v sn
+      is Just (sn) -> if x509-serial-ok sn then x509-validity buf tbs sig salg kids v sn else None
+
+ RFC 5280 4.1.2.2: the serial is a positive INTEGER of at most 20 octets. DER puts a 0x00 in front of a positive
+ value whose top bit is set, so the content runs to 21 bytes only behind that zero; a first byte at or above 0x80 is
+ negative, and a lone 0x00 is zero.
+
+  x509-serial-ok : List Integer -> Boolean
+  x509-serial-ok (sn) =
+    if list-length sn < 1 then False
+    else if list-at sn 0 >= #80 then False
+    else if list-length sn == 1 then list-at sn 0 /= 0
+    else if list-at sn 0 == 0 then list-length sn <= 21
+    else list-length sn <= 20
 
  Validity ::= SEQUENCE { notBefore Time, notAfter Time }. The times are
- kept as their raw bytes. This chapter has no clock and does not want one:
- comparing certificate times is the chain walk's job, and it takes the
- current time from its caller.
+ kept as their raw bytes.
 
   x509-validity : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer, List Integer -> Maybe X509Cert
   x509-validity (buf) (tbs) (sig) (salg) (kids) (v) (sn) =
@@ -510,12 +498,24 @@ Section: The TBSCertificate
   x509-times-of : List Integer, List Asn1Tlv -> Maybe X509Times
   x509-times-of (buf) (kids) =
     if list-length kids /= 2 then None
+    else if x509-time-tag-ok (list-at kids 0) == False then None
+    else if x509-time-tag-ok (list-at kids 1) == False then None
     else Just (X509Times { xt-not-before = asn1-content buf (list-at kids 0),
                            xt-not-after = asn1-content buf (list-at kids 1) })
+
+ RFC 5280 4.1.2.5: Time is UTCTime (tag 23, YYMMDDHHMMSSZ, 13 bytes) or GeneralizedTime (tag 24, 15 bytes); the
+ bytes are read by their length later, so a tag that does not match its length, or any other tag, refuses here.
+
+  x509-time-tag-ok : Asn1Tlv -> Boolean
+  x509-time-tag-ok (t) =
+    if t.tlv-tag == 23 then t.tlv-len == 13
+    else if t.tlv-tag == 24 then t.tlv-len == 15
+    else False
 
   x509-key-of : List Integer, Asn1Tlv, List Integer, X509SigAlg, List Asn1Tlv, Integer, List Integer, X509Times -> Maybe X509Cert
   x509-key-of (buf) (tbs) (sig) (salg) (kids) (v) (sn) (tt) =
     if x509-exts-understood buf kids == False then None
+    else if x509-san-ok buf (x509-ext-list buf kids 7) 0 == False then None
     else when x509-spki buf ((list-at kids 6).tlv-hdr)
       is None -> None
       is Just (k) -> Just (x509-mk buf tbs sig salg kids v sn tt k)
@@ -535,17 +535,12 @@ Section: The TBSCertificate
                xc-is-ca = x509-ca-flag buf kids,
                xc-path-len = x509-path-len buf kids,
                xc-cert-sign = x509-cert-sign buf kids,
+               xc-server-auth = x509-server-auth buf kids,
+               xc-name-constraints = x509-nc-raw buf kids,
                xc-dns-names = x509-alt-names buf kids x509-gn-dns,
                xc-ip-addrs = x509-alt-names buf kids x509-gn-ip }
 
 Section: subjectAltName
-
- The names a certificate actually asserts. Until 2026-07-26 nothing here
- read them, and nothing anywhere asked whether a certificate belonged to
- the host that was dialled -- so a leaf issued by a trusted authority
- authenticated for every host in the world. That is the hole this section
- exists to close, and the check that consumes it is x509-identity-matches
- in X509Chain.
 
  subjectAltName is OID 2.5.29.17 and its extnValue wraps GeneralNames ::=
  SEQUENCE OF GeneralName. GeneralName is a CHOICE of context-tagged
@@ -558,16 +553,14 @@ Section: subjectAltName
  The commonName is deliberately NOT read. RFC 6125 deprecated it as an
  identity in 2011 and every browser stopped honouring it years ago; a
  certificate that asserts no subjectAltName asserts no identity, and the
- honest answer to "does this name my peer" is then No. Accepting the CN as
- a fallback would mean the old fixtures kept passing, which is exactly the
- wrong reason to accept anything.
+ honest answer to "does this name my peer" is then No.
 
   x509-oid-subject-alt-name : List Integer = [85, 29, 17]
 
   x509-gn-dns : Integer = #82
   x509-gn-ip : Integer = #87
 
- The walk mirrors x509-ca-flag's: the extensions live in the [3] EXPLICIT
+ The extensions live in the [3] EXPLICIT
  member of the TBS, wrapped in a SEQUENCE, and each extension is a
  SEQUENCE of OID, optional critical flag, and an OCTET STRING holding the
  real DER.
@@ -621,6 +614,43 @@ Section: subjectAltName
     if i >= list-length gns then acc
     else if (list-at gns i).tlv-tag /= want then x509-san-collect buf gns (i + 1) want acc
     else x509-san-collect buf gns (i + 1) want (list-push acc (asn1-content buf (list-at gns i)))
+
+ RFC 5280 4.2.1.6: subjectAltName is GeneralNames SIZE (1..MAX); a dNSName is an IA5String in the preferred name
+ syntax, so a byte outside the printable range 0x21..0x7E (a NUL, a space, anything at or above 0x80) or an empty
+ one refuses the certificate, and an iPAddress is 4 octets (IPv4) or 16 (IPv6). A subjectAltName that does not read
+ refuses it too. Other GeneralName forms are not read and not judged.
+
+  x509-san-ok : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-san-ok (buf) (exts) (i) =
+    if i >= list-length exts then True
+    else if x509-ext-is-san buf (list-at exts i) then x509-san-value-ok buf (x509-ext-value buf (list-at exts i))
+    else x509-san-ok buf exts (i + 1)
+
+  x509-san-value-ok : List Integer, Maybe Asn1Tlv -> Boolean
+  x509-san-value-ok (buf) (m) =
+    when m
+      is None -> False
+      is Just (v) -> (when asn1-read-tag buf (v.tlv-off) asn1-sequence is None -> False is Just (s) -> x509-san-names-ok buf (asn1-children buf s) 0)
+
+  x509-san-names-ok : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-san-names-ok (buf) (gns) (i) =
+    if list-length gns < 1 then False
+    else if i >= list-length gns then True
+    else if x509-gn-ok buf (list-at gns i) == False then False
+    else x509-san-names-ok buf gns (i + 1)
+
+  x509-gn-ok : List Integer, Asn1Tlv -> Boolean
+  x509-gn-ok (buf) (g) =
+    if g.tlv-tag == x509-gn-dns then g.tlv-len >= 1 & x509-ia5-name buf (g.tlv-off) (g.tlv-off + g.tlv-len)
+    else if g.tlv-tag == x509-gn-ip then g.tlv-len == 4 | g.tlv-len == 16
+    else True
+
+  x509-ia5-name : List Integer, Integer, Integer -> Boolean
+  x509-ia5-name (buf) (i) (stop) =
+    if i >= stop then True
+    else if list-at buf i < #21 then False
+    else if list-at buf i > #7E then False
+    else x509-ia5-name buf (i + 1) stop
 
 Section: basicConstraints
 
@@ -707,7 +737,9 @@ Section: basicConstraints
 Section: Critical Extensions, Path Length And Key Usage
 
  RFC 5280 4.2: a certificate carrying a critical extension the verifier does not process MUST be rejected, so only
- the three this chapter reads may be critical. A middle element other than BOOLEAN 0x00 counts as critical.
+ the five this chapter reads may be critical. A middle element other than BOOLEAN 0x00 counts as critical. Each of
+ the five is read at its first instance, and RFC 5280 4.2 forbids a second, so a second instance, or a second [3]
+ block, refuses the certificate rather than leaving it to read differently under a verifier that takes the last.
  keyUsage is a BIT STRING (first content byte the unused-bit count) whose bit 5, keyCertSign, is 0x04 of the first
  data byte; pathLenConstraint is the INTEGER inside basicConstraints. An unreadable pathLen is read as 0 and an
  unreadable keyUsage as no keyCertSign.
@@ -740,10 +772,71 @@ Section: Critical Extensions, Path Length And Key Usage
   x509-ext-known : List Integer, Asn1Tlv -> Boolean
   x509-ext-known (buf) (e) =
     x509-ext-oid-is buf e x509-oid-basic-constraints | x509-ext-oid-is buf e x509-oid-key-usage
-      | x509-ext-oid-is buf e x509-oid-subject-alt-name
+      | x509-ext-oid-is buf e x509-oid-subject-alt-name | x509-ext-oid-is buf e x509-oid-ext-key-usage
+      | x509-ext-oid-is buf e x509-oid-name-constraints
 
   x509-exts-understood : List Integer, List Asn1Tlv -> Boolean
-  x509-exts-understood (buf) (kids) = x509-exts-ok buf (x509-ext-list buf kids 7) 0
+  x509-exts-understood (buf) (kids) =
+    if x509-ctx3-count kids 7 0 > 1 then False
+    else if x509-ext-block-ok buf kids 7 == False then False
+    else x509-exts-single buf (x509-ext-list buf kids 7)
+
+ RFC 5280 4.1: the [3] holds exactly one Extensions ::= SEQUENCE SIZE (1..MAX) OF Extension, and Extension ::=
+ SEQUENCE { extnID OID, critical BOOLEAN DEFAULT FALSE, extnValue OCTET STRING }.
+
+  x509-ext-block-ok : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-ext-block-ok (buf) (kids) (i) =
+    if i >= list-length kids then True
+    else if (list-at kids i).tlv-tag == asn1-ctx3 then x509-ext-block-one buf (asn1-children buf (list-at kids i))
+    else x509-ext-block-ok buf kids (i + 1)
+
+  x509-ext-block-one : List Integer, List Asn1Tlv -> Boolean
+  x509-ext-block-one (buf) (inner) =
+    if list-length inner /= 1 then False
+    else if (list-at inner 0).tlv-tag /= asn1-sequence then False
+    else x509-ext-shapes buf (asn1-children buf (list-at inner 0)) 0
+
+  x509-ext-shapes : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-ext-shapes (buf) (exts) (i) =
+    if list-length exts < 1 then False
+    else if i >= list-length exts then True
+    else if x509-ext-shape-ok buf (list-at exts i) == False then False
+    else x509-ext-shapes buf exts (i + 1)
+
+  x509-ext-shape-ok : List Integer, Asn1Tlv -> Boolean
+  x509-ext-shape-ok (buf) (e) =
+    if e.tlv-tag /= asn1-sequence then False
+    else x509-ext-parts-ok (asn1-children buf e)
+
+  x509-ext-parts-ok : List Asn1Tlv -> Boolean
+  x509-ext-parts-ok (parts) =
+    if list-length parts == 2 then
+      (if (list-at parts 0).tlv-tag /= asn1-oid then False else (list-at parts 1).tlv-tag == asn1-octet-string)
+    else if list-length parts /= 3 then False
+    else if (list-at parts 0).tlv-tag /= asn1-oid then False
+    else if (list-at parts 1).tlv-tag /= asn1-boolean then False
+    else (list-at parts 2).tlv-tag == asn1-octet-string
+
+  x509-ctx3-count : List Asn1Tlv, Integer, Integer -> Integer
+  x509-ctx3-count (kids) (i) (n) =
+    if i >= list-length kids then n
+    else if (list-at kids i).tlv-tag == asn1-ctx3 then x509-ctx3-count kids (i + 1) (n + 1)
+    else x509-ctx3-count kids (i + 1) n
+
+  x509-exts-single : List Integer, List Asn1Tlv -> Boolean
+  x509-exts-single (buf) (exts) =
+    if x509-exts-ok buf exts 0 == False then False
+    else if x509-ext-count buf exts x509-oid-basic-constraints 0 0 > 1 then False
+    else if x509-ext-count buf exts x509-oid-key-usage 0 0 > 1 then False
+    else if x509-ext-count buf exts x509-oid-ext-key-usage 0 0 > 1 then False
+    else if x509-ext-count buf exts x509-oid-name-constraints 0 0 > 1 then False
+    else x509-ext-count buf exts x509-oid-subject-alt-name 0 0 <= 1
+
+  x509-ext-count : List Integer, List Asn1Tlv, List Integer, Integer, Integer -> Integer
+  x509-ext-count (buf) (exts) (oid) (i) (n) =
+    if i >= list-length exts then n
+    else if x509-ext-oid-is buf (list-at exts i) oid then x509-ext-count buf exts oid (i + 1) (n + 1)
+    else x509-ext-count buf exts oid (i + 1) n
 
   x509-exts-ok : List Integer, List Asn1Tlv, Integer -> Boolean
   x509-exts-ok (buf) (exts) (i) =
@@ -799,6 +892,63 @@ Section: Critical Extensions, Path Length And Key Usage
     if b.tlv-len < 2 then False
     else if list-at buf (b.tlv-off) > 7 then False
     else bit-and (list-at buf (b.tlv-off + 1)) 4 /= 0
+
+Section: Extended Key Usage
+
+ RFC 5280 4.2.1.12: extendedKeyUsage is a SEQUENCE OF KeyPurposeId, and a certificate that carries one is for
+ those purposes only. xc-server-auth answers whether the key may authenticate a TLS server: True when the extension
+ is absent or names id-kp-serverAuth (1.3.6.1.5.5.7.3.1) or anyExtendedKeyUsage (2.5.29.37.0), False for any other
+ list and for one that does not read.
+
+  x509-oid-ext-key-usage : List Integer = [85, 29, 37]
+  x509-oid-kp-server-auth : List Integer = [43, 6, 1, 5, 5, 7, 3, 1]
+  x509-oid-any-eku : List Integer = [85, 29, 37, 0]
+
+  x509-server-auth : List Integer, List Asn1Tlv -> Boolean
+  x509-server-auth (buf) (kids) = x509-eku-scan buf (x509-ext-list buf kids 7) 0
+
+  x509-eku-scan : List Integer, List Asn1Tlv, Integer -> Boolean
+  x509-eku-scan (buf) (exts) (i) =
+    if i >= list-length exts then True
+    else if x509-ext-oid-is buf (list-at exts i) x509-oid-ext-key-usage then x509-eku-of buf (x509-ext-value buf (list-at exts i))
+    else x509-eku-scan buf exts (i + 1)
+
+  x509-eku-of : List Integer, Maybe Asn1Tlv -> Boolean
+  x509-eku-of (buf) (m) =
+    when m
+      is None -> False
+      is Just (v) -> (when asn1-read-tag buf (v.tlv-off) asn1-sequence is None -> False is Just (s) -> x509-eku-ids buf (asn1-children buf s) 0 False)
+
+  x509-eku-ids : List Integer, List Asn1Tlv, Integer, Boolean -> Boolean
+  x509-eku-ids (buf) (ids) (i) (found) =
+    if i >= list-length ids then found
+    else if (list-at ids i).tlv-tag /= asn1-oid then False
+    else if asn1-oid-is buf (list-at ids i) x509-oid-kp-server-auth then x509-eku-ids buf ids (i + 1) True
+    else if asn1-oid-is buf (list-at ids i) x509-oid-any-eku then x509-eku-ids buf ids (i + 1) True
+    else x509-eku-ids buf ids (i + 1) found
+
+Section: Name Constraints
+
+ nameConstraints (2.5.29.30) is kept as the DER inside its extnValue and read by the chain walk, which knows the
+ certificates below the constraining one. Absent is []; an extnValue that is empty or not an OCTET STRING is [0],
+ which no reader accepts.
+
+  x509-oid-name-constraints : List Integer = [85, 29, 30]
+
+  x509-nc-raw : List Integer, List Asn1Tlv -> List Integer
+  x509-nc-raw (buf) (kids) = x509-nc-scan buf (x509-ext-list buf kids 7) 0
+
+  x509-nc-scan : List Integer, List Asn1Tlv, Integer -> List Integer
+  x509-nc-scan (buf) (exts) (i) =
+    if i >= list-length exts then []
+    else if x509-ext-oid-is buf (list-at exts i) x509-oid-name-constraints then x509-nc-bytes buf (x509-ext-value buf (list-at exts i))
+    else x509-nc-scan buf exts (i + 1)
+
+  x509-nc-bytes : List Integer, Maybe Asn1Tlv -> List Integer
+  x509-nc-bytes (buf) (m) =
+    when m
+      is None -> [0]
+      is Just (v) -> if v.tlv-len < 1 then [0] else asn1-content buf v
 
 Section: An ECDSA Signature As DER
 

@@ -974,7 +974,7 @@ $expected = [ordered]@{
     'b3-noaddr' = 'b3=no-address: a peer named with no ip=, so there is no address to dial FROM and the stage refuses instead of inventing one'
     'b3-clockstuck' = 'b3=clock-stuck with -hpet-frozen: the HPET window reads all-ones, a bogus nonzero rate over a counter that never moves, and the clock control at b3 entry refuses before bring-up; nicinit and nicring are off by cfg so nothing ahead of b3 spends its fuel on the same stuck clock, and nicsit, the passive read ahead of the ESP file, reads ok because it spends none'
     'vmx-noguest' = 'vmx=no-guest when DIAG.CFG names vmx on and the ESP carries no GUEST.CDX (a New-Variant image lays down no guest); the subject, which carries one, reads vmx-off under codex-vm, whose IA32_FEATURE_CONTROL reads 1. The pair moves the stage between two states, and a cfg that does not name vmx reads skipped'
-    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 3945: the medium dies on the bank write in the MIDDLE of the b3 reset sequence (length cannot aim this arm at all, since ten consecutive notes share len=5632; the LBA is the discriminator), one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
+    'b3-banklost' = 'b3 bank lost inside the reset sequence with -usb-bot-die-len 5632 -usb-bot-die-lba 4089: the medium dies on the bank write in the MIDDLE of the b3 reset sequence (length cannot aim this arm at all, since ten consecutive notes share len=5632; the LBA is the discriminator), one of the b3 reset-* notes (WHICH one drifts run to run with the digit widths in the note text, so the arm derives it from the trail instead of naming it), the step says so on serial the moment its note is refused, every note before it banked and every note after it reads banked=-1, and the medium itself ends at the step immediately before the refused one; the summary says bank=lost at=b3. Sitting 11 shape: the glass names where the medium DIED, not where the ladder noticed'
     'b3-dhcp'  = 'b3=ok with ip=dhcp: the address is LEARNED from the segment and the row proves it, carrying addr=dhcp and the lease the NAT handed out (ip=10.0.2.15 gw=10.0.2.2). The lease facts are what a guess cannot produce'
     'b3-nolease' = 'b3=no-lease with ip=dhcp and -e1000 alone: the card is present and the link is up, and with no NAT there is no DHCP server, so the stage says the SEGMENT did not answer rather than blaming DIAG.CFG. The falsifier for the state'
     'k1-taken' = 'pchk1=taken with -i219: the part powers up at the campaign condition (K1 enabled, Giga_K1_disable clear) and the readback after e1000-init shows the disable bit SET, so the driver step landed'
@@ -2196,12 +2196,14 @@ $(1540 + $ChainShiftMs):83
             # DERIVE FROM THIS ARM AND NOT FROM b3-pass: this arm runs
             # ladder=off from its own recipe, so its bank sizes differ and the
             # note landing on a given LBA is not the one b3-pass puts there.
-            # Measured here 2026-09-25 (fester), after the avx stage and Ctrl-Alt-Del
-            # lengthened every bank: the die at 3945 lands on reset-rst-write, the
-            # third of the seven reset-* steps (two notes of margin before, four
-            # after), measured 2026-09-25 (fester). The previous aim, 3901, landed
-            # on clock. One added or removed ladder note ahead of b3 moves everything by eleven
-            # LBAs.
+            # Measured here 2026-11-01 (red, Update 73) with the die out of reach:
+            # the reset notes bank at 4055 reset-imc, 4066 reset-ctrl-read, 4077
+            # reset-rst-write, 4089 reset-await-reset, 4101 reset-settle-mdio, 4113
+            # reset-imc-again, 4125 reset-icr (each the write that holds the next
+            # step's banked size). The die fires on the first write of at least
+            # die-len bytes at or above die-lba, so 4089 is reset-await-reset, three
+            # notes of margin each side. One added or removed ladder note ahead of
+            # b3 moves everything by about eleven LBAs.
             #
             # TO RE-DERIVE: run THIS arm with -Keep, pair the len=5632 writes
             # in b3-banklost.census in order with the "b3 entering <step>"
@@ -2245,7 +2247,7 @@ $(1540 + $ChainShiftMs):83
             $k = New-Variant 'b3-banklost' '' $cfg
             if (-not $k) { $actual['b3-banklost'] = '(skipped: build-output/diag.efi, DIAG.ID or diag.cdx missing; run build-diag.ps1)' }
             else {
-                $lines = Invoke-Vm 'b3-banklost' $k $k @('-e1000', '-e1000-nat', '-usb-bot-die-len', '5632', '-usb-bot-die-lba', '3945') 240
+                $lines = Invoke-Vm 'b3-banklost' $k $k @('-e1000', '-e1000-nat', '-usb-bot-die-len', '5632', '-usb-bot-die-lba', '4089') 240
                 $block = Get-DiagBlock $lines
                 $notes = @($lines | Where-Object { $_ -match '^b3 entering (.+?) (ctrl=\d+ |settled=\d+ )?heap=\d+ banked=(-?\d+)$' })
                 $lost = @($lines | Where-Object { $_ -match '^b3 bank lost at (.+)$' })

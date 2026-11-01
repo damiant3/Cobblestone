@@ -29,8 +29,6 @@ Chapter: Txt2Img
  as uncond + cfg (cond - uncond); the latent is divided by the SDXL VAE's
  scaling factor 0.13025 before the decode.
 
- We say:
-
 Section: Request
 
   Txt2Img = record {
@@ -128,20 +126,12 @@ Section: Samplers
   ti-drop-penult : List Real, Integer, List Real -> List Real
   ti-drop-penult (xs) (i) (acc) = if i >= list-length xs then acc else ti-drop-penult xs (i + 1) (if i == list-length xs - 2 then acc else list-push acc (list-at xs i))
 
- The sigmas a sampler runs for steps steps under schedule k (Forge's
- get_sigmas).
-
   ti-sigmas : Integer, Integer, Integer, Boolean -> List Real
   ti-sigmas (sampler) (k) (steps) (sd15) =
     if sampler == ti-lcm & k == 0 then lcm-sigmas steps
     else let d = ti-discards sampler
     in let s = ti-schedule (if k == 0 then ti-auto-schedule sampler else k) (if d then steps + 1 else steps) sd15
     in if d then ti-drop-penult s 0 [] else s
-
- A sampler over sigmas sig, or for a timestep sampler over steps steps. DPM
- fast and DPM adaptive run between smin and smax, in nfe evaluations for DPM
- fast. den3 is the guided denoiser that also writes the unguided estimate,
- for DDIM CFG++.
 
   ti-run : Integer, (Integer, Real -> Integer), (Integer -> Integer), (Integer, Real, Integer -> Integer), Integer, List Real, Integer, Real, Real, Integer, Integer -> Integer
   ti-run (s) (den) (noise) (den3) (x) (sig) (steps) (smin) (smax) (nfe) (n) =
@@ -277,7 +267,9 @@ Section: Guidance
   ti-model (c) (y) (ctx) (x) (s) = ti-model-ops c (ti-ops c 0 0) y ctx x s
 
   ti-model-ops : TiCfg, UNetOps UNetFile, Integer, Integer, Integer, Real -> Integer
-  ti-model-ops (c) (ops) (y) (ctx) (x) (s) = if c.tc-sd15 then unet15-denoise-with ops sampler-native-ops (c.tc-unet) (c.tc-tab) ctx (c.tc-h) (c.tc-w) x s else unet-denoise-with ops sampler-native-ops (c.tc-unet) (c.tc-tab) y ctx (c.tc-h) (c.tc-w) x s
+  ti-model-ops (c) (ops) (y) (ctx) (x) (s) =
+    if c.tc-sd15 then unet15-denoise-with ops sampler-native-ops (c.tc-unet) (c.tc-tab) ctx (c.tc-h) (c.tc-w) x s
+    else unet-denoise-with ops sampler-native-ops (c.tc-unet) (c.tc-tab) y ctx (c.tc-h) (c.tc-w) x s
 
  The ops of one model call: FreeU's patch when the request has one; mode 1
  records SAG's attention into mbuf, mode 2 answers v in PAG's middle-block
@@ -291,7 +283,11 @@ Section: Guidance
     let fu = (c.tc-extras).tx-freeu
     in let thr = if ti-sag-patched c then list-at ((c.tc-extras).tx-sag) 2 else 1.0
     in let held = ti-sag-patched c
-    in unet-ops-with (if list-length fu >= 4 & ti-freeu-on (c.tc-extras) then (\a sk cx cs hh ww -> freeu-patch (list-at fu 0) (list-at fu 1) (list-at fu 2) (list-at fu 3) a sk cx cs hh ww) else (\a sk cx cs hh ww -> True)) (\p -> mode == 2 & text-starts-with p "middle_block." & (held == False | p /= ti-sag-key)) (\p -> mode == 1 & p == ti-sag-key) (\sb hd r -> sag-probs mbuf thr sb hd r) (\h -> if h == c.tc-cu then c.tc-ku else c.tc-kc)
+    in let patch = if list-length fu >= 4 & ti-freeu-on (c.tc-extras) then
+      (\a sk cx cs hh ww -> freeu-patch (list-at fu 0) (list-at fu 1) (list-at fu 2) (list-at fu 3) a sk cx cs hh ww)
+    else (\a sk cx cs hh ww -> True)
+    in let self-v = (\p -> mode == 2 & text-starts-with p "middle_block." & (held == False | p /= ti-sag-key))
+    in unet-ops-with patch self-v (\p -> mode == 1 & p == ti-sag-key) (\sb hd r -> sag-probs mbuf thr sb hd r) (\h -> if h == c.tc-cu then c.tc-ku else c.tc-kc)
 
  SAG patches the model only where the guidance scale is above 1 (Forge
  prints and skips it otherwise).
@@ -318,9 +314,6 @@ Section: Guidance
     in let f = (if dc == 0 then True else gpu-buf-free dc) & (if du == 0 then True else gpu-buf-free du)
     in let g = if mbuf == 0 then True else gpu-buf-free mbuf
     in post
-
- A request with no dynamic thresholding, SAG or PAG guides as the page does
- (DenoiserGraph's guided-with).
 
   ti-plain : TiCfg -> Boolean
   ti-plain (c) = ti-sag-patched c == False & list-length ((c.tc-extras).tx-dt) == 0 & (c.tc-extras).tx-pag ~0 0.0
@@ -461,7 +454,21 @@ Section: The Image
     in let tab = unet-log-sigmas 0
     in let x = gpu-buf-alloc (n * 4)
     in let x0 = noise-torch x (r.ti-seed) 0 n
-    in let tc = TiCfg { tc-unet = u, tc-tab = tab, tc-yc = yc, tc-cc = cc, tc-yu = yu, tc-cu = cu, tc-h = lh, tc-w = lw, tc-cfg = r.ti-cfg, tc-sd15 = False, tc-extras = r.ti-extras, tc-kc = kc, tc-ku = ku }
+    in let tc = TiCfg {
+      tc-unet = u,
+      tc-tab = tab,
+      tc-yc = yc,
+      tc-cc = cc,
+      tc-yu = yu,
+      tc-cu = cu,
+      tc-h = lh,
+      tc-w = lw,
+      tc-cfg = r.ti-cfg,
+      tc-sd15 = False,
+      tc-extras = r.ti-extras,
+      tc-kc = kc,
+      tc-ku = ku
+    }
     in let bad = ti-txt2img-run r tc x n
     in if bad > 0 | x0 == False then 0 - bad - (if x0 then 0 else 1000) else x
 

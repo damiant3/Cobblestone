@@ -187,7 +187,7 @@ $runSlow  = $Slow.IsPresent  -or $tiers.Contains('slow')
 # that silently widens to everything is worse than one that selects nothing.
 if ($tiers.Count -eq 0 -and $Battery.Count -eq 0) { [void]$tiers.Add('lang') }
 
-$machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.disk-mint', '.disk2-mint', '.keys')
+$machineSidecars = @('.smp', '.vmargs', '.disk', '.disk2', '.disk-mint', '.disk2-mint', '.keys', '.qemu-x86', '.vm-guests')
 function Test-MachineSidecar {
     param([string]$Src)
     $dir = [System.IO.Path]::GetDirectoryName($Src)
@@ -259,7 +259,7 @@ if ($Battery.Count -gt 0) {
         # or the two selectors would disagree (L-DENOM).
         if ($n -in $phaseOnly) {
             Write-Host "-Battery $n selects no test chapter: nothing under codex\test cites $n." -ForegroundColor Red
-            Write-Host "  it is covered by plug-binary, plug-smoke and plug-selftest."
+            Write-Host "  no gate runs a plug output (Damian, 2026-10-31): run that plug's own harness by hand."
             exit 1
         }
         if ($n -notin $corpus) {
@@ -924,6 +924,8 @@ foreach ($src in $toCompile) {
         Disk2 = $disk2File
         VmArgs = $vmArgsFile
         Wall = $wallFile
+        QemuX86 = (Join-Path $dir "$name.qemu-x86")
+        VmGuests = (Join-Path $dir "$name.vm-guests")
     })
 }
 
@@ -1032,187 +1034,207 @@ if ($needsRun.Count -gt 0) {
     }
 
     $phase2Sw = [System.Diagnostics.Stopwatch]::StartNew()
-    if ($env:CODEX_VM_HOST -eq 'qemu') {
-        $runWorker = {
-            $t = $_
-            $runScript = Join-Path $using:PSScriptRoot 'test-run.ps1'
-            $out = Join-Path $using:OutRoot $t.Name
-            $t.Raw = Join-Path $out 'runtime.raw'
-            $runArgs = @('-NoProfile', '-File', $runScript, '-Kernel', $t.Bin, '-OutFile', $t.Raw)
-            if (Test-Path -PathType Leaf $t.Stdin)  { $runArgs += @('-StdinFile', $t.Stdin) }
-            if (Test-Path -PathType Leaf $t.Keys)   { $runArgs += @('-KeysFile', $t.Keys) }
-            if (Test-Path -PathType Leaf $t.Disk)   { $runArgs += @('-DiskFile', $t.Disk) }
-            if (Test-Path -PathType Leaf $t.Disk2)  { $runArgs += @('-Disk2File', $t.Disk2) }
-            if ($t.Smp -gt 1)                       { $runArgs += @('-Smp', $t.Smp) }
-            if (Test-Path -PathType Leaf $t.VmArgs) { $runArgs += @('-VmArgsFile', $t.VmArgs) }
-            $runSw = [System.Diagnostics.Stopwatch]::StartNew()
-            & pwsh @runArgs
-            $runSw.Stop()
-            "$($runSw.ElapsedMilliseconds)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
-            $t.RunOk = ($LASTEXITCODE -eq 0)
-            $t.Why = 'run failed'
-        }
-        $needsRun | ForEach-Object -Parallel $runWorker -ThrottleLimit $Jobs
-        foreach ($t in $needsRun) { Write-RunVerdict $t $t.RunOk $t.Why }
-    } else {
-        $runDir = Join-Path $OutRoot '_runs'
-        if (Test-Path $runDir) { Remove-Item -Recurse -Force $runDir }
-        New-Item -ItemType Directory -Force -Path $runDir | Out-Null
-
-        # Dealt by the last run's .run-ms, heaviest first onto the lightest
-        # slot, the rule phase 1 uses for .src-bytes: a test with no reading
-        # goes to the slot with the fewest members. The few multi-second
-        # network tests are what this balances; the rest run in ~80 ms.
-        $runWeight = @{}
-        $runIndex = @{}
-        for ($i = 0; $i -lt $needsRun.Count; $i++) {
-            $t = $needsRun[$i]
-            $runIndex[$t.Name] = $i
-            $w = 0L
-            $rmF = Join-Path (Join-Path $OutRoot $t.Name) '.run-ms'
-            if (Test-Path -PathType Leaf $rmF) {
-                $rmText = (Get-Content -TotalCount 1 $rmF -ErrorAction SilentlyContinue)
-                if ($rmText -and ($rmText.Trim() -match '^\d+$')) { $w = [long]$rmText.Trim() }
-            }
-            $runWeight[$t.Name] = $w
-        }
-        $slotLoad = New-Object 'long[]' $Jobs
-        $slotCount = New-Object 'int[]' $Jobs
-        $slotMembers = @{}
-        for ($s = 0; $s -le $Jobs; $s++) { $slotMembers[$s] = [System.Collections.Generic.List[hashtable]]::new() }
-        $byRun = @($needsRun | Sort-Object @{ Expression = { $runWeight[$_.Name] }; Descending = $true }, @{ Expression = { $runIndex[$_.Name] }; Descending = $false })
-        # A .wall subject (COMPILER-123) goes to the extra slot $Jobs, one guest
-        # at a time, whose supervisor gets the largest budget, as bvt.ps1 does.
-        $longWall = 0
-        foreach ($t in $byRun) {
-            if (Test-Path -PathType Leaf $t.Wall) {
-                $wallSec = 0
-                $wallText = (Get-Content -TotalCount 1 $t.Wall).Trim()
-                if (-not [int]::TryParse($wallText, [ref]$wallSec) -or $wallSec -le 60 -or $wallSec -gt 600) {
-                    throw "$($t.Wall) must hold whole seconds above 60 and at most 600 on its first line, not '$wallText'"
-                }
-                $slotMembers[$Jobs].Add($t)
-                if ($wallSec -gt $longWall) { $longWall = $wallSec }
-                continue
-            }
-            # A -gpu-files subject reads a multi-GB checkpoint off the model disk and misses its budget beside
-            # another such read (Update 71: 35.3 s alone cold, 5.4 s two at once warm), so it joins slot $Jobs too.
-            if ((Test-Path -PathType Leaf $t.VmArgs) -and @(Get-Content -LiteralPath $t.VmArgs | Where-Object { $_.TrimStart().StartsWith('-gpu-files') }).Count -gt 0) {
-                $slotMembers[$Jobs].Add($t)
-                continue
-            }
-            $k = 0
-            if ($runWeight[$t.Name] -gt 0) {
-                for ($s = 1; $s -lt $Jobs; $s++) {
-                    if ($slotLoad[$s] -lt $slotLoad[$k] -or ($slotLoad[$s] -eq $slotLoad[$k] -and $slotCount[$s] -lt $slotCount[$k])) { $k = $s }
-                }
-            } else {
-                for ($s = 1; $s -lt $Jobs; $s++) {
-                    if ($slotCount[$s] -lt $slotCount[$k] -or ($slotCount[$s] -eq $slotCount[$k] -and $slotLoad[$s] -lt $slotLoad[$k])) { $k = $s }
-                }
-            }
-            $slotMembers[$k].Add($t)
-            $slotLoad[$k] += $runWeight[$t.Name]
-            $slotCount[$k] += 1
-        }
-
-        # Every token double-quoted: that is what -run-list's splitter takes,
-        # and it is what keeps a path with a space in one piece.
-        function Format-RunLine([string[]]$Tokens) { return ($Tokens | ForEach-Object { '"' + $_ + '"' }) -join ' ' }
-
-        # The sidecar preparation test-run.ps1 did stays with the caller: a
-        # depot .disk is read-only after sync and codex-vm flushes writes
-        # durably, so each image is copied to a writable temp for its run.
-        $tempFiles = [System.Collections.Generic.List[string]]::new()
-        $slotLists = @{}
-        $slotErrs = @{}
-        for ($s = 0; $s -le $Jobs; $s++) {
-            $lines = [System.Collections.Generic.List[string]]::new()
-            foreach ($t in $slotMembers[$s]) {
-                $out = Join-Path $OutRoot $t.Name
+    # A .qemu-x86 test needs a device codex-vm does not emulate (virtio-pci):
+    # build/test-qemu-x86.ps1 boots it under QEMU once per arm, one test at a time.
+    $qemuX86Runs = @($needsRun | Where-Object { $_.ContainsKey('QemuX86') -and (Test-Path -PathType Leaf $_.QemuX86) })
+    foreach ($t in $qemuX86Runs) {
+        [void]$needsRun.Remove($t)
+        $t.Raw = Join-Path (Join-Path $OutRoot $t.Name) 'runtime.raw'
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-qemu-x86.ps1') -Kernel $t.Bin -OutFile $t.Raw -ArmsFile $t.QemuX86 -DiskFile $t.Disk
+        Write-RunVerdict $t ($LASTEXITCODE -eq 0) 'QEMU arm failed (build/test-qemu-x86.ps1)'
+    }
+    # A .vm-guests test boots several codex-vm guests on one shared -ivshmem file:
+    # build/test-vm-guests.ps1 runs them as its sidecar orders, one test at a time.
+    $vmGuestRuns = @($needsRun | Where-Object { $_.ContainsKey('VmGuests') -and (Test-Path -PathType Leaf $_.VmGuests) })
+    foreach ($t in $vmGuestRuns) {
+        [void]$needsRun.Remove($t)
+        $t.Raw = Join-Path (Join-Path $OutRoot $t.Name) 'runtime.raw'
+        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-vm-guests.ps1') -Kernel $t.Bin -OutFile $t.Raw -GuestsFile $t.VmGuests
+        Write-RunVerdict $t ($LASTEXITCODE -eq 0) 'a guest did not finish (build/test-vm-guests.ps1)'
+    }
+    if ($needsRun.Count -gt 0) {
+        if ($env:CODEX_VM_HOST -eq 'qemu') {
+            $runWorker = {
+                $t = $_
+                $runScript = Join-Path $using:PSScriptRoot 'test-run.ps1'
+                $out = Join-Path $using:OutRoot $t.Name
                 $t.Raw = Join-Path $out 'runtime.raw'
-                if (Test-Path $t.Raw) { Remove-Item -Force $t.Raw }
-                $tokens = @('-kernel', $t.Bin, '-output', $t.Raw, '-mem', '3072', '-headless')
-                if (Test-Path -PathType Leaf $t.Stdin) { $tokens += @('-input', $t.Stdin) }
-                if (Test-Path -PathType Leaf $t.Keys)  { $tokens += @('-keys-file', $t.Keys) }
-                if (Test-Path -PathType Leaf $t.Disk) {
-                    $diskWork = [System.IO.Path]::GetTempFileName()
-                    $tempFiles.Add($diskWork)
-                    [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($t.Disk))
-                    $tokens += @('-disk', $diskWork)
+                $runArgs = @('-NoProfile', '-File', $runScript, '-Kernel', $t.Bin, '-OutFile', $t.Raw)
+                if (Test-Path -PathType Leaf $t.Stdin)  { $runArgs += @('-StdinFile', $t.Stdin) }
+                if (Test-Path -PathType Leaf $t.Keys)   { $runArgs += @('-KeysFile', $t.Keys) }
+                if (Test-Path -PathType Leaf $t.Disk)   { $runArgs += @('-DiskFile', $t.Disk) }
+                if (Test-Path -PathType Leaf $t.Disk2)  { $runArgs += @('-Disk2File', $t.Disk2) }
+                if ($t.Smp -gt 1)                       { $runArgs += @('-Smp', $t.Smp) }
+                if (Test-Path -PathType Leaf $t.VmArgs) { $runArgs += @('-VmArgsFile', $t.VmArgs) }
+                $runSw = [System.Diagnostics.Stopwatch]::StartNew()
+                & pwsh @runArgs
+                $runSw.Stop()
+                "$($runSw.ElapsedMilliseconds)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
+                $t.RunOk = ($LASTEXITCODE -eq 0)
+                $t.Why = 'run failed'
+            }
+            $needsRun | ForEach-Object -Parallel $runWorker -ThrottleLimit $Jobs
+            foreach ($t in $needsRun) { Write-RunVerdict $t $t.RunOk $t.Why }
+        } else {
+            $runDir = Join-Path $OutRoot '_runs'
+            if (Test-Path $runDir) { Remove-Item -Recurse -Force $runDir }
+            New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+
+            # Dealt by the last run's .run-ms, heaviest first onto the lightest
+            # slot, the rule phase 1 uses for .src-bytes: a test with no reading
+            # goes to the slot with the fewest members. The few multi-second
+            # network tests are what this balances; the rest run in ~80 ms.
+            $runWeight = @{}
+            $runIndex = @{}
+            for ($i = 0; $i -lt $needsRun.Count; $i++) {
+                $t = $needsRun[$i]
+                $runIndex[$t.Name] = $i
+                $w = 0L
+                $rmF = Join-Path (Join-Path $OutRoot $t.Name) '.run-ms'
+                if (Test-Path -PathType Leaf $rmF) {
+                    $rmText = (Get-Content -TotalCount 1 $rmF -ErrorAction SilentlyContinue)
+                    if ($rmText -and ($rmText.Trim() -match '^\d+$')) { $w = [long]$rmText.Trim() }
                 }
-                if (Test-Path -PathType Leaf $t.Disk2) {
-                    $disk2Work = [System.IO.Path]::GetTempFileName()
-                    $tempFiles.Add($disk2Work)
-                    [System.IO.File]::WriteAllBytes($disk2Work, [System.IO.File]::ReadAllBytes($t.Disk2))
-                    $tokens += @('-disk2', $disk2Work)
+                $runWeight[$t.Name] = $w
+            }
+            $slotLoad = New-Object 'long[]' $Jobs
+            $slotCount = New-Object 'int[]' $Jobs
+            $slotMembers = @{}
+            for ($s = 0; $s -le $Jobs; $s++) { $slotMembers[$s] = [System.Collections.Generic.List[hashtable]]::new() }
+            $byRun = @($needsRun | Sort-Object @{ Expression = { $runWeight[$_.Name] }; Descending = $true }, @{ Expression = { $runIndex[$_.Name] }; Descending = $false })
+            # A .wall subject (COMPILER-123) goes to the extra slot $Jobs, one guest
+            # at a time, whose supervisor gets the largest budget, as bvt.ps1 does.
+            $longWall = 0
+            foreach ($t in $byRun) {
+                if (Test-Path -PathType Leaf $t.Wall) {
+                    $wallSec = 0
+                    $wallText = (Get-Content -TotalCount 1 $t.Wall).Trim()
+                    if (-not [int]::TryParse($wallText, [ref]$wallSec) -or $wallSec -le 60 -or $wallSec -gt 600) {
+                        throw "$($t.Wall) must hold whole seconds above 60 and at most 600 on its first line, not '$wallText'"
+                    }
+                    $slotMembers[$Jobs].Add($t)
+                    if ($wallSec -gt $longWall) { $longWall = $wallSec }
+                    continue
                 }
-                if ($t.Smp -gt 1) { $tokens += @('-smp', "$($t.Smp)") }
-                if (Test-Path -PathType Leaf $t.VmArgs) {
-                    foreach ($line in (Get-Content $t.VmArgs)) {
-                        $line = $line.Trim()
-                        if (-not $line -or $line.StartsWith('#')) { continue }
-                        $tokens += ($line -split '\s+')
+                # A -gpu-files subject reads a multi-GB checkpoint off the model disk and misses its budget beside
+                # another such read (Update 71: 35.3 s alone cold, 5.4 s two at once warm), so it joins slot $Jobs too.
+                if ((Test-Path -PathType Leaf $t.VmArgs) -and @(Get-Content -LiteralPath $t.VmArgs | Where-Object { $_.TrimStart().StartsWith('-gpu-files') }).Count -gt 0) {
+                    $slotMembers[$Jobs].Add($t)
+                    continue
+                }
+                $k = 0
+                if ($runWeight[$t.Name] -gt 0) {
+                    for ($s = 1; $s -lt $Jobs; $s++) {
+                        if ($slotLoad[$s] -lt $slotLoad[$k] -or ($slotLoad[$s] -eq $slotLoad[$k] -and $slotCount[$s] -lt $slotCount[$k])) { $k = $s }
+                    }
+                } else {
+                    for ($s = 1; $s -lt $Jobs; $s++) {
+                        if ($slotCount[$s] -lt $slotCount[$k] -or ($slotCount[$s] -eq $slotCount[$k] -and $slotLoad[$s] -lt $slotLoad[$k])) { $k = $s }
                     }
                 }
-                [void]$lines.Add((Format-RunLine $tokens))
+                $slotMembers[$k].Add($t)
+                $slotLoad[$k] += $runWeight[$t.Name]
+                $slotCount[$k] += 1
             }
-            $slotLists[$s] = Join-Path $runDir "run-$s.txt"
-            # The supervisor's stderr is captured on the SYSTEM temp and moved
-            # into _runs afterwards. Measured 2026-08-22: the same eight
-            # supervisors took 2.6 s with the redirect file on C: and 12.3 to
-            # 12.7 s with it anywhere on D:, repo or not; a redirect is one
-            # write per stderr line and D: pays ~7.5 ms for each. test-run.ps1
-            # and the batch compiler only ever escaped this because
-            # GetTempFileName() lands on C:.
-            $slotErrs[$s] = [System.IO.Path]::GetTempFileName()
-            [System.IO.File]::WriteAllLines($slotLists[$s], $lines, [System.Text.UTF8Encoding]::new($false))
-        }
 
-        $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
-        $supervisors = @{}
-        for ($s = 0; $s -le $Jobs; $s++) {
-            if ($slotMembers[$s].Count -eq 0) { continue }
-            $listArgs = @('-run-list', $slotLists[$s])
-            if ($s -eq $Jobs -and $longWall -gt 0) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
-            $sa = @{ FilePath = $vmBin; ArgumentList = $listArgs; PassThru = $true; RedirectStandardError = $slotErrs[$s] }
-            if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
-            $supervisors[$s] = Start-Process @sa
-        }
-        foreach ($s in $supervisors.Keys) { $supervisors[$s].WaitForExit() }
+            # Every token double-quoted: that is what -run-list's splitter takes,
+            # and it is what keeps a path with a space in one piece.
+            function Format-RunLine([string[]]$Tokens) { return ($Tokens | ForEach-Object { '"' + $_ + '"' }) -join ' ' }
 
-        # One END line per list line, attributed by its [i/N] index rather
-        # than by position, so a line the supervisor could not even report
-        # reads as NOEND on its own test and shifts nothing onto a neighbour.
-        foreach ($s in $slotMembers.Keys) {
-            $members = $slotMembers[$s]
-            if ($members.Count -eq 0) { continue }
-            $endOf = @{}
-            $errText = if (Test-Path -PathType Leaf $slotErrs[$s]) { Read-LogShared $slotErrs[$s] } else { '' }
-            if (Test-Path -PathType Leaf $slotErrs[$s]) { Move-Item -Force $slotErrs[$s] (Join-Path $runDir "run-$s.err") }
-            foreach ($l in ($errText -split "`n")) {
-                if ($l -match 'RUN-LIST END \[(\d+)/\d+\] .* exit=(\S+) output=(-?\d+) dropped=(\d+) ms=(\d+)') {
-                    $endOf[[int]$matches[1]] = @{ Exit = $matches[2]; Dropped = [long]$matches[4]; Ms = $matches[5] }
+            # The sidecar preparation test-run.ps1 did stays with the caller: a
+            # depot .disk is read-only after sync and codex-vm flushes writes
+            # durably, so each image is copied to a writable temp for its run.
+            $tempFiles = [System.Collections.Generic.List[string]]::new()
+            $slotLists = @{}
+            $slotErrs = @{}
+            for ($s = 0; $s -le $Jobs; $s++) {
+                $lines = [System.Collections.Generic.List[string]]::new()
+                foreach ($t in $slotMembers[$s]) {
+                    $out = Join-Path $OutRoot $t.Name
+                    $t.Raw = Join-Path $out 'runtime.raw'
+                    if (Test-Path $t.Raw) { Remove-Item -Force $t.Raw }
+                    $tokens = @('-kernel', $t.Bin, '-output', $t.Raw, '-mem', '3072', '-headless')
+                    if (Test-Path -PathType Leaf $t.Stdin) { $tokens += @('-input', $t.Stdin) }
+                    if (Test-Path -PathType Leaf $t.Keys)  { $tokens += @('-keys-file', $t.Keys) }
+                    if (Test-Path -PathType Leaf $t.Disk) {
+                        $diskWork = [System.IO.Path]::GetTempFileName()
+                        $tempFiles.Add($diskWork)
+                        [System.IO.File]::WriteAllBytes($diskWork, [System.IO.File]::ReadAllBytes($t.Disk))
+                        $tokens += @('-disk', $diskWork)
+                    }
+                    if (Test-Path -PathType Leaf $t.Disk2) {
+                        $disk2Work = [System.IO.Path]::GetTempFileName()
+                        $tempFiles.Add($disk2Work)
+                        [System.IO.File]::WriteAllBytes($disk2Work, [System.IO.File]::ReadAllBytes($t.Disk2))
+                        $tokens += @('-disk2', $disk2Work)
+                    }
+                    if ($t.Smp -gt 1) { $tokens += @('-smp', "$($t.Smp)") }
+                    if (Test-Path -PathType Leaf $t.VmArgs) {
+                        foreach ($line in (Get-Content $t.VmArgs)) {
+                            $line = $line.Trim()
+                            if (-not $line -or $line.StartsWith('#')) { continue }
+                            $tokens += ($line -split '\s+')
+                        }
+                    }
+                    [void]$lines.Add((Format-RunLine $tokens))
+                }
+                $slotLists[$s] = Join-Path $runDir "run-$s.txt"
+                # The supervisor's stderr is captured on the SYSTEM temp and moved
+                # into _runs afterwards. Measured 2026-08-22: the same eight
+                # supervisors took 2.6 s with the redirect file on C: and 12.3 to
+                # 12.7 s with it anywhere on D:, repo or not; a redirect is one
+                # write per stderr line and D: pays ~7.5 ms for each. test-run.ps1
+                # and the batch compiler only ever escaped this because
+                # GetTempFileName() lands on C:.
+                $slotErrs[$s] = [System.IO.Path]::GetTempFileName()
+                [System.IO.File]::WriteAllLines($slotLists[$s], $lines, [System.Text.UTF8Encoding]::new($false))
+            }
+
+            $vmBin = Join-Path (Split-Path $PSScriptRoot) 'tools\codex-vm.exe'
+            $supervisors = @{}
+            for ($s = 0; $s -le $Jobs; $s++) {
+                if ($slotMembers[$s].Count -eq 0) { continue }
+                $listArgs = @('-run-list', $slotLists[$s])
+                if ($s -eq $Jobs -and $longWall -gt 0) { $listArgs += @('-run-list-wall', "$($longWall * 1000)") }
+                $sa = @{ FilePath = $vmBin; ArgumentList = $listArgs; PassThru = $true; RedirectStandardError = $slotErrs[$s] }
+                if ($IsWindows) { $sa.WindowStyle = 'Hidden' }
+                $supervisors[$s] = Start-Process @sa
+            }
+            foreach ($s in $supervisors.Keys) { $supervisors[$s].WaitForExit() }
+
+            # One END line per list line, attributed by its [i/N] index rather
+            # than by position, so a line the supervisor could not even report
+            # reads as NOEND on its own test and shifts nothing onto a neighbour.
+            foreach ($s in $slotMembers.Keys) {
+                $members = $slotMembers[$s]
+                if ($members.Count -eq 0) { continue }
+                $endOf = @{}
+                $errText = if (Test-Path -PathType Leaf $slotErrs[$s]) { Read-LogShared $slotErrs[$s] } else { '' }
+                if (Test-Path -PathType Leaf $slotErrs[$s]) { Move-Item -Force $slotErrs[$s] (Join-Path $runDir "run-$s.err") }
+                foreach ($l in ($errText -split "`n")) {
+                    if ($l -match 'RUN-LIST END \[(\d+)/\d+\] .* exit=(\S+) output=(-?\d+) dropped=(\d+) ms=(\d+)') {
+                        $endOf[[int]$matches[1]] = @{ Exit = $matches[2]; Dropped = [long]$matches[4]; Ms = $matches[5] }
+                    }
+                }
+                for ($i = 0; $i -lt $members.Count; $i++) {
+                    $t = $members[$i]
+                    $out = Join-Path $OutRoot $t.Name
+                    $runOk = $true
+                    $why = ''
+                    if (-not $endOf.ContainsKey($i + 1)) {
+                        $runOk = $false; $why = 'the -run-list supervisor reported no END line for this test'
+                    } else {
+                        $e = $endOf[$i + 1]
+                        "$($e.Ms)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
+                        if ($e.Exit -eq 'TIMEOUT') { $runOk = $false; $why = 'wall budget exceeded' }
+                        elseif ($e.Exit -eq 'SPAWNFAIL') { $runOk = $false; $why = 'codex-vm could not be spawned for this test' }
+                        elseif ($e.Dropped -gt 0) { $runOk = $false; $why = "codex-vm dropped $($e.Dropped) guest serial bytes: the capture is SHORT and any comparison against it is meaningless" }
+                    }
+                    Write-RunVerdict $t $runOk $why
                 }
             }
-            for ($i = 0; $i -lt $members.Count; $i++) {
-                $t = $members[$i]
-                $out = Join-Path $OutRoot $t.Name
-                $runOk = $true
-                $why = ''
-                if (-not $endOf.ContainsKey($i + 1)) {
-                    $runOk = $false; $why = 'the -run-list supervisor reported no END line for this test'
-                } else {
-                    $e = $endOf[$i + 1]
-                    "$($e.Ms)" | Set-Content -Path (Join-Path $out '.run-ms') -Encoding UTF8
-                    if ($e.Exit -eq 'TIMEOUT') { $runOk = $false; $why = 'wall budget exceeded' }
-                    elseif ($e.Exit -eq 'SPAWNFAIL') { $runOk = $false; $why = 'codex-vm could not be spawned for this test' }
-                    elseif ($e.Dropped -gt 0) { $runOk = $false; $why = "codex-vm dropped $($e.Dropped) guest serial bytes: the capture is SHORT and any comparison against it is meaningless" }
-                }
-                Write-RunVerdict $t $runOk $why
-            }
+            foreach ($f in $tempFiles) { Remove-Item -Force $f -ErrorAction SilentlyContinue }
         }
-        foreach ($f in $tempFiles) { Remove-Item -Force $f -ErrorAction SilentlyContinue }
     }
     $phase2Sw.Stop()
     Write-Host "Phase 2 (run) complete in $([int]($phase2Sw.ElapsedMilliseconds/1000))s."

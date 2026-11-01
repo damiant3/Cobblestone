@@ -36,8 +36,8 @@ Chapter: GuardCastleRouteProof
     (if capped > 0 then 1 else 0) + (if whole > 0 then 10 else 0)
   end
  Every walkable tile on the north stair (cv-on-stair) plans the leg cv-leg-goal gives it toward waypoint 1 under
- cv-plan-budget; one that does not is printed and counted. Any other tile from 1348,1611 to 1356,1621 with no leg is
- printed as OPEN and not graded.
+ cv-plan-budget, and so does every other tile from 1348,1611 to 1356,1621 (cv-beside-stair walks to the stair's foot);
+ one that does not is printed and counted.
   gcr-scan : TlPath, WorldTable, WalkMap, Integer, Integer -> [Console] Integer
   gcr-scan (nav) (world) (map) (x) (y) = if y > 1621 then 0 else if x > 1356 then gcr-scan nav world map 1348 (y + 1)
     else when walk-height map x y 72
@@ -45,10 +45,15 @@ Chapter: GuardCastleRouteProof
       is Ok (z) -> let leg = cv-leg-goal (gcr-mob x y z) (BbSpot { x = 1357, y = 1613, z = 72 }) in act
         m <- __heap-save
         planned <- gcr-plan nav world map x y z leg.x leg.y leg.z cv-plan-budget
+        whole <- if planned >= 0 then planned else gcr-plan nav world map x y z leg.x leg.y leg.z (nav.width * nav.height)
+        reached <- nav.expanded
+        foot <- if planned >= 0 then 0 else when walk-height map 1352 1621 50
+          is Err (_) -> -2
+          is Ok (fz) -> gcr-plan nav world map x y z 1352 1621 fz (nav.width * nav.height)
         restored <- __heap-restore m
         stair <- cv-on-stair (gcr-mob x y z)
         said <- if planned >= 0 | (x == leg.x & y == leg.y) then 0
-          else gcr-say ((if stair then "NO LEG " else "OPEN no leg ") & show x & "," & show y & "," & show z & " -> " & show leg.x & "," & show leg.y & "," & show leg.z) (if stair then 1 else 0)
+          else gcr-say ((if stair then "NO LEG " else "OPEN no leg ") & show x & "," & show y & "," & show z & " -> " & show leg.x & "," & show leg.y & "," & show leg.z & " whole=" & show whole & " reached=" & show reached & " to-foot=" & show foot) 1
         rest <- gcr-scan nav world map (x + 1) y
         said + rest
       end
@@ -66,10 +71,11 @@ Chapter: GuardCastleRouteProof
       up <- gcr-leg nav world map "guard 4 to stair top" 1417 1548 30 cv-castle-stair-x cv-castle-stair-y cv-castle-floor
       on <- gcr-leg nav world map "stair top to waypoint" cv-castle-stair-x cv-castle-stair-y cv-castle-floor 1357 1613 72
       top <- gcr-leg nav world map "stair top step to waypoint" 1352 1617 72 1357 1613 72
+      footz <- print-line-uni ("FOOT 1352,1621 z " & (when walk-height map 1352 1621 50 is Err (e) -> e is Ok (fz) -> show fz))
       scanned <- gcr-scan nav world map 1348 1611
       print-line-uni (if c1 + c2 + c3 + c4 == 44 then "PASS control: every castle loop leg routes, capped and whole" else "FAIL control: a castle loop leg does not route (" & show (c1 + c2 + c3 + c4) & " of 44)")
       print-line-uni (if up == 11 & on == 11 then "PASS guard 4 reaches its waypoint by the north stair top, both legs under cv-plan-budget" else "FAIL the stair-top legs do not route under cv-plan-budget (" & show up & ", " & show on & ")")
-      print-line-uni (if top == 0 & scanned == 0 then "PASS the stair's top step at z 72 plans no direct route (trial 44158), and every stair tile plans its cv-leg-goal leg" else "FAIL stair tiles: top step direct " & show top & ", " & show scanned & " stair tiles with no leg")
+      print-line-uni (if top == 0 & scanned == 0 then "PASS the stair's top step at z 72 plans no direct route (trial 44158), and every tile on and beside the stair plans its cv-leg-goal leg" else "FAIL stair tiles: top step direct " & show top & ", " & show scanned & " tiles on or beside the stair with no leg")
       print-line-uni (if g4 == 0 & bridge == 0 then "PASS witness: the direct legs from the town plan no route even over the whole window" else "FAIL witness: a direct leg routes, so the instrument does not see what live saw")
       0
     end

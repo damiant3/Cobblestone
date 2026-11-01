@@ -1,0 +1,152 @@
+Chapter: BrotliStages
+  cites Compress chapter Brotli
+  cites Compress chapter Deflate
+
+ Hand-built streams, RFC 7932 section 9.2 field by field, each paired with a
+ control that differs in the one field. A refusal is an empty result, so every
+ refused stream has a control that decodes non-empty. Only the decoder runs.
+
+Section: Streams
+
+  hb-bytes : BitWriter, Integer, Integer -> BitWriter
+  hb-bytes (w) (n) (i) =
+    if i >= n then w else hb-bytes (bw-bits w (97 + i) 8) n (i + 1)
+
+  hb-stored : Integer, Integer, Boolean -> List Integer
+  hb-stored (mlen) (ndata) (final) =
+    let w1 = bw-bits (bw-bits (bw-bits (bw-bits bw-empty 0 1) 0 1) 0 2) (mlen - 1) 16
+    in let w2 = hb-bytes (bw-align (bw-bits w1 1 1)) ndata 0
+    in bw-finish (if final then bw-bits w2 3 2 else w2)
+
+  hb-meta-then-stored : Integer -> List Integer
+  hb-meta-then-stored (rsv) =
+    let w1 = bw-align (bw-bits (bw-bits (bw-bits (bw-bits (bw-bits bw-empty 0 1) 0 1) 3 2) rsv 1) 0 2)
+    in let w2 = bw-bits (bw-bits (bw-bits w1 0 1) 0 2) 2 16
+    in let w3 = hb-bytes (bw-align (bw-bits w2 1 1)) 3 0
+    in bw-finish (bw-bits w3 3 2)
+
+  hb-last-metadata : List Integer
+  hb-last-metadata = bw-finish (bw-bits (bw-bits (bw-bits (bw-bits bw-empty 0 1) 1 1) 0 1) 3 2)
+
+  hb-simple1 : BitWriter, Integer, Integer -> BitWriter
+  hb-simple1 (w) (sym) (abits) = bw-bits (bw-bits (bw-bits w 1 2) 0 2) sym abits
+
+  hb-cmap : BitWriter, Integer, Integer -> BitWriter
+  hb-cmap (w) (ntrees) (sym) =
+    if ntrees <= 1 then w
+    else bw-bits (hb-simple1 (bw-bits w 0 1) sym (brotli-abits-of ntrees)) 0 1
+
+  hb-codes : BitWriter, List Integer, Integer, Integer -> BitWriter
+  hb-codes (w) (syms) (abits) (i) =
+    if i >= list-length syms then w
+    else hb-codes (hb-simple1 w (list-at syms i) abits) syms abits (i + 1)
+
+  hb-head : Integer -> BitWriter
+  hb-head (mlen) =
+    let w1 = bw-bits (bw-bits (bw-bits (bw-bits bw-empty 0 1) 1 1) 0 1) 0 2
+    in bw-bits (bw-bits (bw-bits (bw-bits w1 (mlen - 1) 16) 0 3) 0 6) 0 2
+
+  hb-syms : BitWriter, List Integer, Integer, Integer -> BitWriter
+  hb-syms (w) (syms) (abits) (i) =
+    if i >= list-length syms then w
+    else hb-syms (bw-bits w (list-at syms i) abits) syms abits (i + 1)
+
+  hb-simple : BitWriter, List Integer, Integer -> BitWriter
+  hb-simple (w) (syms) (abits) =
+    hb-syms (bw-bits (bw-bits w 1 2) (list-length syms - 1) 2) syms abits 0
+
+  hb-comp : Integer, Integer, Integer, List Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  hb-comp (mlen) (ntl) (lmap) (lsyms) (ntd) (dmap) (icsyms) (dsyms) (tailv) (tailn) =
+    let w1 = hb-cmap (brotli-varlen-write (hb-head mlen) ntl) ntl lmap
+    in let w2 = hb-cmap (brotli-varlen-write w1 ntd) ntd dmap
+    in let w3 = hb-codes (hb-simple (hb-codes w2 lsyms 8 0) icsyms 10) dsyms 6 0
+    in bw-finish (bw-bits w3 tailv tailn)
+
+ A complex literal code (RFC 7932 3.5), HSKIP 0. The code-length code is read
+ in the order 1, 2, 3, 4, 0, 5, 17, ...; each length goes in the fixed code
+ (0 = 00, 1 = 0111, 2 = 011, read low bit first). With clcl lengths sym1 = 2,
+ sym2 = 2, sym0 = 1 the canonical codes are 0 for sym0, 10 for sym1, 11 for
+ sym2. Kind 0 gives literals 0 and 1 length 1 (full); kind 1 gives 0 length 1,
+ 1 length 2, then zeros (three quarters); kind 2 gives 0, 1, 2 lengths 1, 2, 1
+ (over full); kind 3 leaves the code-length code at sym1 = 2, sym0 = 1 and
+ the other thirteen zero (three quarters), then kind 0's literal lengths.
+
+  hb-clf : BitWriter, Integer -> BitWriter
+  hb-clf (w) (v) = if v == 0 then bw-bits w 0 2 else if v == 2 then bw-bits w 3 3 else bw-bits w 7 4
+
+  hb-zeros : BitWriter, Integer -> BitWriter
+  hb-zeros (w) (n) = if n <= 0 then w else hb-zeros (bw-code w 0 1) (n - 1)
+
+  hb-complex-lit : BitWriter, Integer -> BitWriter
+  hb-complex-lit (w) (kind) =
+    let w0 = bw-bits w 0 2
+    in if kind == 3 then
+      (let wc = hb-clf (hb-clf (hb-clf (hb-clf (hb-clf w0 2) 0) 0) 0) 1
+       in let wz = hb-clfs-zero wc 13
+       in bw-code (bw-code wz 2 2) 2 2)
+    else let wc = hb-clf (hb-clf (hb-clf (hb-clf (hb-clf w0 2) 2) 0) 0) 1
+    in if kind == 0 then bw-code (bw-code wc 2 2) 2 2
+    else if kind == 1 then hb-zeros (bw-code (bw-code wc 2 2) 3 2) 254
+    else bw-code (bw-code (bw-code wc 2 2) 3 2) 2 2
+
+  hb-clfs-zero : BitWriter, Integer -> BitWriter
+  hb-clfs-zero (w) (n) = if n <= 0 then w else hb-clfs-zero (hb-clf w 0) (n - 1)
+
+  hb-comp-cx : Integer, Integer -> List Integer
+  hb-comp-cx (kind) (tailn) =
+    let w1 = brotli-varlen-write (brotli-varlen-write (hb-head 3) 1) 1
+    in let w2 = hb-codes (hb-simple (hb-complex-lit w1 kind) [152] 10) [16] 6 0
+    in bw-finish (bw-bits w2 0 tailn)
+
+  hb-take : List Integer, Integer, Integer, List Integer -> List Integer
+  hb-take (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else hb-take xs n (i + 1) (list-push acc (list-at xs i))
+
+  hb-half : List Integer -> List Integer
+  hb-half (xs) = hb-take xs (list-length xs / 2) 0 []
+
+  hb-show : Text, List Integer -> Text
+  hb-show (label) (out) =
+    label & " len=" & show (list-length out) & (if list-length out > 0 then " first=" & show (list-at out 0) else "")
+
+Section: Body
+
+  hb-row : Text -> [Console] Integer
+  hb-row (t) = act
+    let mark = __heap-save
+    in act
+      print-line-uni t
+      let d = __heap-restore mark
+      in 0
+    end
+  end
+
+  opening : [Console] Nothing = act
+    s1 <- hb-row (hb-show "1-stored-good" (brotli-decompress (hb-stored 3 3 True)))
+    s2 <- hb-row (hb-show "2-stored-past-input" (brotli-decompress (hb-stored 10 3 False)))
+    s3 <- hb-row (hb-show "3-no-last-block" (brotli-decompress (hb-stored 3 3 False)))
+    m1 <- hb-row (hb-show "4-metadata-then-stored" (brotli-decompress (hb-meta-then-stored 0)))
+    m2 <- hb-row (hb-show "5-metadata-reserved" (brotli-decompress (hb-meta-then-stored 1)))
+    m3 <- hb-row (hb-show "6-last-metadata" (brotli-decompress hb-last-metadata))
+    c1 <- hb-row (hb-show "7-comp-good" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [152] [16] 0 0)))
+    c2 <- hb-row (hb-show "8-lit-map-in-range" (brotli-decompress (hb-comp 3 3 2 [97, 98, 99] 1 0 [152] [16] 0 0)))
+    c3 <- hb-row (hb-show "9-lit-map-past-ntrees" (brotli-decompress (hb-comp 3 3 3 [97, 98, 99] 1 0 [152] [16] 0 0)))
+    c4 <- hb-row (hb-show "10-dist-good" (brotli-decompress (hb-comp 5 1 0 [97] 1 0 [138] [16] 0 1)))
+    c5 <- hb-row (hb-show "11-dist-map-in-range" (brotli-decompress (hb-comp 5 1 0 [97] 3 2 [138] [16, 16, 16] 0 1)))
+    c6 <- hb-row (hb-show "12-dist-map-past-ntrees" (brotli-decompress (hb-comp 5 1 0 [97] 3 3 [138] [16, 16, 16] 0 1)))
+    c7 <- hb-row (hb-show "13-insert-past-mlen" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [160] [16] 0 0)))
+    c8 <- hb-row (hb-show "14-copy-past-mlen" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [392] [16] 0 0)))
+    t1 <- hb-row (hb-show "16-ic-two-symbols" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [152, 153] [16] 0 1)))
+    t2 <- hb-row (hb-show "17-ic-symbol-past-alphabet" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [152, 1000] [16] 0 1)))
+    t3 <- hb-row (hb-show "18-ic-symbol-repeated" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [152, 152] [16] 0 1)))
+    t4 <- hb-row (hb-show "15-comp-truncated" (brotli-decompress (hb-half (hb-comp 5 1 0 [97] 1 0 [138] [16] 0 1))))
+    x1 <- hb-row (hb-show "20-complex-full" (brotli-decompress (hb-comp-cx 0 3)))
+    x2 <- hb-row (hb-show "21-complex-under-full" (brotli-decompress (hb-comp-cx 1 3)))
+    x3 <- hb-row (hb-show "22-complex-over-full" (brotli-decompress (hb-comp-cx 2 3)))
+    x4 <- hb-row (hb-show "23-code-length-code-under-full" (brotli-decompress (hb-comp-cx 3 3)))
+    print-line-uni (hb-show "19-ic-single-past-alphabet" (brotli-decompress (hb-comp 3 1 0 [97] 1 0 [1000] [16] 0 0)))
+  end
+
+Page 1

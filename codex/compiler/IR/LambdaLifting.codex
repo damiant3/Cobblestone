@@ -4,15 +4,16 @@ Chapter: LambdaLifting
   cites Codex chapter Build Settings (demand-lift-guard-band)
   cites Codex chapter Phase Allocator (deck-bound-short-of, deck-record)
   cites Codex chapter SkipListText (skip-list-text-empty, skip-list-text-insert)
-  cites Codex chapter Codex Types (empty-row)
+  cites Codex chapter Codex Types (empty-row, int-ty-default)
   cites Codex chapter Source Text (synthetic-span)
-  cites Codex chapter IR Chapter (IRBranch, IRChapter, IRDef, IRExpr, IRFieldVal, IRParam)
+  cites Codex chapter IR Chapter (IRBranch, IRChapter, IRDef, IRExpr, IRFieldVal, IRParam, ir-expr-type)
 
 Section: Types
   LiftCtx = record {
    reserved : SkipListText,
    counter : Integer between 0 and 4294967295,
-   lifted : List IRDef
+   lifted : List IRDef,
+   thunk-clauses : Boolean
   }
 
   FreeVar = record {
@@ -22,9 +23,15 @@ Section: Types
 
 Section: Entry Point
   lift-lambdas : IRChapter, Integer -> IRChapter
-  lift-lambdas (chapter) (ceiling) =
+  lift-lambdas (chapter) (ceiling) = lift-lambdas-with chapter ceiling False
+
+  lift-lambdas-thunked : IRChapter, Integer -> IRChapter
+  lift-lambdas-thunked (chapter) (ceiling) = lift-lambdas-with chapter ceiling True
+
+  lift-lambdas-with : IRChapter, Integer, Boolean -> IRChapter
+  lift-lambdas-with (chapter) (ceiling) (thunk) =
     let reserved = collect-reserved-names (chapter.defs) 0 (list-length (chapter.defs)) skip-list-text-empty
-    in let ctx0 = LiftCtx { reserved = reserved, counter = 0, lifted = [] }
+    in let ctx0 = LiftCtx { reserved = reserved, counter = 0, lifted = [], thunk-clauses = thunk }
     in let (ctx, defs) = lift-defs ctx0 (chapter.defs) 0 (list-length (chapter.defs)) [] ceiling
     in __record-set chapter "defs" (defs & (ctx.lifted))
 
@@ -211,15 +218,26 @@ Section: Expression Walker
     if i >= len then (ctx, acc)
     else let c = list-at cs i
     in let clause-enc = skip-list-text-insert enclosing (c.resume-name)
-    in let (ctx1, body-expr) = lift-expr ctx clause-enc (c.body)
+    in let thunk = ctx.thunk-clauses & list-length (c.params) == 0
+    in let body0 = if thunk then clause-thunk (c.body) (c.span) else c.body
+    in let (ctx1, body-expr) = lift-expr ctx clause-enc body0
     in let new-c = deck-record (IRHandleClause {
      op-name = c.op-name,
-     params = c.params,
+     params = if thunk then [clause-thunk-param] else c.params,
      resume-name = c.resume-name,
      body = body-expr,
      span = c.span
     })
     in lift-handle-clauses ctx1 enclosing cs (i + 1) len (list-push acc new-c)
+
+  clause-thunk-param : Text = "__op-unit"
+
+  clause-thunk : IRExpr, SourceSpan -> IRExpr
+  clause-thunk (body) (sp) =
+    let p = deck-record (IRParam { name = clause-thunk-param, type-val = int-ty-default, span = sp })
+    in let ty = ir-expr-type body
+    in let held = deck-record (IrLet "__op-value" ty body (deck-record (IrName "__op-value" ty sp)) sp)
+    in deck-record (IrLambda [p] held (FunTy int-ty-default empty-row ty) sp)
 
   add-clause-names-to-enclosing : List IRHandleClause, SkipListText -> SkipListText
   add-clause-names-to-enclosing (cs) (enc) =

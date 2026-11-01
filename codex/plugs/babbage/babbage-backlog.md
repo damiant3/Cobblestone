@@ -8,8 +8,7 @@ something, this is where its open items are.
 emits `. call <name>` as a COMMENT card, emits the argument computation, and
 then stores literal zero as the result (`N000` / `S<target>`), so `argpos 5`
 computes its argument correctly and answers 0 rather than the 14 the x86-64
-oracle gives. Found 2026-08-21 while closing the let-binding defect in the
-same emitter (main 18744) and untouched by that fix. The Analytical Engine
+oracle gives. The Analytical Engine
 has no call instruction, so this is a design question about how a call is to
 be represented, not a missing line.
 

@@ -69,6 +69,25 @@ Section: Definitions
     let pkt = mqtt-build-subscribe 1 "sensor/#" QosAtLeastOnce
     in if bytes-eq pkt [130, 14, 0, 1, 0, 0, 8, 115, 101, 110, 115, 111, 114, 47, 35, 1] then 1 else 0
 
+ A seeded single-byte mutation sweep over a valid publish packet: every byte
+ is flipped and run through mqtt-parse, which must return (a packet or None)
+ and never read a remaining-length or field off the end. test-sweep is 1 when
+ the sweep completes.
+
+  mq-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mq-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else mq-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  mq-sweep : List Integer, Integer, Integer, Integer -> Integer
+  mq-sweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else mq-sweep base (pos + 1) n (acc + (when mqtt-parse (mq-mutate base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []) is None -> 0 is Just (p) -> 1))
+
+  test-sweep : Integer =
+    let base = mqtt-build-publish "sensor/temp" [50, 51, 46, 53] QosAtMostOnce False 0
+    in if mq-sweep base 0 (list-length base) 0 >= 0 then 1 else 0
+
   opening : Integer =
     let vs = test-vbi-small
     in let vl = test-vbi-large
@@ -81,6 +100,7 @@ Section: Definitions
     in let cb = test-connect-bytes
     in let pb = test-publish-bytes
     in let sb = test-subscribe-bytes
-    in vs + vl + co + pu + su + pi + di + ua + cb + pb + sb
+    in let sw = test-sweep
+    in vs + vl + co + pu + su + pi + di + ua + cb + pb + sb + sw
 
 Page 1

@@ -28,7 +28,7 @@ param(
 # This is that instrument. It reads the catalogue -- the constant->code table,
 # the registry rows, every raise site across codex/compiler (code lines only,
 # never column-2 prose) and the host's own "error <N>:" raises -- and fails
-# the build on the three ways they can disagree:
+# the build on the five ways they can disagree:
 # 
 #   REGISTERED-BUT-NEVER-RAISED  a row describes a code no site emits, so it
 #                                is a promise the compiler does not keep (the
@@ -40,6 +40,14 @@ param(
 #   NAME-MISMATCH                a row's Name string is not the PascalCase of
 #                                its constant, which is the one half of a
 #                                summary a machine CAN check.
+#   SEVERITY-MISMATCH            a raise site spells its severity (make-error,
+#                                st-add-warning, ...) and the row's sev- is
+#                                another. A site that passes the code through a
+#                                variable names no severity and is not graded.
+#   OUTSIDE-CATALOGUE            a raise site spells a severity for a cdx-*
+#                                constant CdxCodes.codex does not declare, so
+#                                no row can describe it and its number can
+#                                collide with a catalogue code unseen.
 # 
 # It does not verify summary PROSE against behaviour -- no build-time check
 # can -- but it makes the catalogue read by the build, which is what stops the
@@ -71,12 +79,16 @@ function ConvertTo-Pascal([string]$kebab) {
 #    A constant appears in a row iff `mk-cdx <const> "` is present.
 $constToCode = @{}
 $registered = @{}
+$rowSev = @{}
 foreach ($line in ([System.IO.File]::ReadAllLines($codesFile))) {
     if (($line -match '^\s+(cdx-[a-z0-9-]+)\s*:\s*Integer\s*=\s*(\d+)\s*$')) {
         $constToCode[$matches[1]] = [int]$matches[2]
     }
     if (($line -match 'mk-cdx\s+(cdx-[a-z0-9-]+)\s+"([^"]*)"')) {
         $registered[$matches[1]] = $matches[2]
+    }
+    if (($line -match 'mk-cdx\s+(cdx-[a-z0-9-]+)\s+"[^"]*"\s+sev-([a-z]+)')) {
+        $rowSev[$matches[1]] = $matches[2]
     }
 }
 
@@ -94,6 +106,8 @@ foreach ($line in ([System.IO.File]::ReadAllLines($codesFile))) {
 #    fail in the direction it exists to detect.
 
 $raised = @{}
+$sevMismatch = @()
+$outsideCatalogue = @()
 $compilerFiles = @(Get-ChildItem (Join-Path $Root 'codex/compiler') -Recurse -Filter '*.codex' -File)
 foreach ($f in $compilerFiles) {
     $isCodesFile = ($f.FullName -eq (Resolve-Path $codesFile).Path)
@@ -116,6 +130,16 @@ foreach ($f in $compilerFiles) {
             $name = $m.Value
             if ($constToCode.ContainsKey($name)) {
                 $raised[$name] = $true
+            }
+        }
+        foreach ($sm in ([regex]::Matches($line, '(?:make|st-add)-(error|warning|info|hint)\s+(?:[a-z0-9-]+\s+)?\(?(cdx-[a-z0-9-]+)'))) {
+            $sv = $sm.Groups[1].Value
+            $sc = $sm.Groups[2].Value
+            if ((-not $constToCode.ContainsKey($sc))) {
+                $outsideCatalogue += ('{0}  -- {1} raises it as {2}, and CdxCodes.codex does not declare it' -f $sc, $f.Name, $sv)
+            }
+            if (($rowSev.ContainsKey($sc) -and ($rowSev[$sc] -ne $sv))) {
+                $sevMismatch += ('CDX{0:0000}  {1}  -- row says sev-{2}, {3} raises it as {4}' -f $constToCode[$sc], $sc, $rowSev[$sc], $f.Name, $sv)
             }
         }
     }
@@ -177,7 +201,7 @@ foreach ($const in ($constToCode.Keys | Sort-Object)) {
 }
 
 
-$total = ((@($registeredNoRaiser).Count + @($raisedNoRow).Count) + @($nameMismatch).Count)
+$total = (((@($registeredNoRaiser).Count + @($raisedNoRow).Count) + @($nameMismatch).Count) + (@($sevMismatch).Count + @($outsideCatalogue).Count))
 if (($total -eq 0)) {
     Write-Host ('check-cdx-registry: OK ({0} codes, {1} registered, all raised codes documented)' -f $constToCode.Count, $registered.Count)
     exit 0
@@ -208,6 +232,22 @@ if ((@($nameMismatch).Count -gt 0)) {
     }
 }
 
+if ((@($sevMismatch).Count -gt 0)) {
+    Write-Host ''
+    Write-Host '  Registry severity does not match a raise site:'
+    foreach ($r in $sevMismatch) {
+        Write-Host ([string]'    ' + $r)
+    }
+}
+
+if ((@($outsideCatalogue).Count -gt 0)) {
+    Write-Host ''
+    Write-Host '  Raised with a severity but declared outside the catalogue:'
+    foreach ($r in $outsideCatalogue) {
+        Write-Host ([string]'    ' + $r)
+    }
+}
+
 Write-Host ''
-Write-Host '  Add the row, delete the dead code, or fix the Name in CdxCodes.codex.'
+Write-Host '  Add the row, delete the dead code, move the constant into CdxCodes.codex, or fix the Name or severity there.'
 exit 1

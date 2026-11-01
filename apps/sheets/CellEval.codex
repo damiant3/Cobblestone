@@ -4,44 +4,6 @@ Chapter: CellEval
   cites Sheets chapter CellStore
   cites Foreword chapter CCE
 
- A FORMULA IS TYPED. `=A1+B1` where B1 holds text is a refusal naming B1,
- never a silent zero and never a sigil inherited from 1985. A text value
- therefore carries WHERE IT CAME FROM: an operator sees values rather
- than expressions, so without the origin the refusal could only say that
- some operand was text, and a person reading a wrong total needs the
- cell.
-
- An error PROPAGATES unchanged rather than being reworded at each level,
- so the message that reaches the top names the cell that caused it and
- not the outermost operator.
-
- The choices a spreadsheet has to make, made:
-
- - An EMPTY cell is zero in arithmetic and is not counted by COUNT. A
-   cell nobody filled is an absence, and absence in a sum is zero; a
-   count of quantities that counted absences would answer the size of
-   the range.
- - A RANGE SKIPS text and empty cells rather than refusing. A label
-   sitting above a column of quantities is the normal shape of a sheet,
-   and the refusal exists for `+`, where the operand was named
-   deliberately.
- - MIN, MAX and AVERAGE over a range holding NO numbers refuse. An empty
-   maximum has no honest value, and zero is the answer that looks right.
- - AVERAGE truncates, because a cell holds a 32-bit integer. The
-   truncation is stated here rather than discovered.
- - SUMIF and COUNTIF take a VALUE to match, exactly, rather than a text
-   criterion like ">5". A criterion parsed out of a string is a second
-   expression language reachable only at runtime.
-
- LEN counts CODE POINTS, by skipping UTF-8 continuation bytes, because a
- person counting characters does not mean bytes. UPPER and LOWER fold
- ASCII only: every byte of a multi-byte sequence has its high bit set and
- is passed through untouched, so a non-ASCII character survives rather
- than being corrupted by a byte-wise fold. TRIM removes leading and
- trailing spaces and does not collapse runs inside.
-
- We say:
-
 Section: Values
 
   TextVal = record {
@@ -97,10 +59,6 @@ Section: Values
 
 Section: Reading A Cell
 
- A cell holding a formula answers the value already computed for it,
- which the derived order guarantees exists. Any other cell answers the
- store.
-
   ev-store : Program, Integer, Integer -> Value
   ev-store (pg) (r) (c) =
     let k = sheet-kind (pg.pg-blk) r c
@@ -114,10 +72,6 @@ Section: Reading A Cell
     else let s = gr-slot-at pg r c
     in if s == 0 then ev-store pg r c
     else ev-named (list-at vals (s - 1)) (ev-cell-name r c)
-
- A text arriving from a formula cell is relabelled with the cell the
- reader named, because the origin a refusal should print is the cell in
- the formula and not whatever cell that formula copied its text from.
 
   ev-named : Value, Text -> Value
   ev-named (v) (name) = when v
@@ -154,10 +108,6 @@ Section: Arithmetic And Comparison
 
   ev-bool : Boolean -> Value
   ev-bool (b) = if b then VNum 1 else VNum 0
-
- Two texts compare for equality and inequality only. An ORDERING on text
- is a collation decision, and a byte order pretending to be one is the
- answer that looks right until a reader meets a language.
 
   ev-text-of : Value -> Text
   ev-text-of (v) = when v
@@ -209,10 +159,6 @@ Section: Arithmetic And Comparison
 
 Section: Ranges
 
- A range is collected into a list of the NUMBERS it holds, so every
- aggregate is written over one traversal that has already made the
- skipping decision.
-
   ev-row-nums : Program, List Value, Integer, Integer, Integer, List Integer -> List Integer
   ev-row-nums (pg) (vals) (r) (c) (c2) (acc) =
     if c > c2 then acc
@@ -233,11 +179,6 @@ Section: Ranges
     let a = g.rr-from
     in let b = g.rr-to
     in ev-rect-nums pg vals (gr-lo (a.cr-row) (b.cr-row)) (gr-hi (a.cr-row) (b.cr-row)) (gr-lo (a.cr-col) (b.cr-col)) (gr-hi (a.cr-col) (b.cr-col)) []
-
- An empty cell is skipped by COUNT and is zero in a SUM, so a range's
- numbers are exactly what an aggregate reads. A cell holding an ERROR
- inside a range is not skipped: the error is the answer, because a total
- computed over a refusal is a wrong number wearing a right shape.
 
   ev-row-err : Program, List Value, Integer, Integer, Integer -> Value
   ev-row-err (pg) (vals) (r) (c) (c2) =
@@ -330,10 +271,6 @@ Section: Calls
   ev-arity (nm) (want) (got) =
     nm & " wants " & show want & " arguments and was given " & show got
 
- A range argument is passed as an EXPRESSION rather than a value,
- because a range has no value of its own: only the aggregate reading it
- knows whether to sum the cells or count them.
-
   ev-range-arg : Expr -> Boolean
   ev-range-arg (e) = when e
    is ExRange (g) -> True
@@ -391,10 +328,6 @@ Section: Calls
     in let b = g.rr-to
     in ev-rect-cells pg vals (gr-lo (a.cr-row) (b.cr-row)) (gr-hi (a.cr-row) (b.cr-row)) (gr-lo (a.cr-col) (b.cr-col)) (gr-hi (a.cr-col) (b.cr-col)) []
 
- An EMPTY cell matches only another empty, never the number zero: a
- COUNTIF for 0 that counted every unfilled cell in the range would
- answer the size of the range.
-
   ev-same : Value, Value -> Boolean
   ev-same (a) (b) =
     if ev-is-empty a | ev-is-empty b then ev-is-empty a & ev-is-empty b
@@ -415,21 +348,6 @@ Section: Calls
     else ev-match-loop cs (i + 1) n want summing (acc + 1)
 
 Section: Lookup
-
- `LOOKUP(range, key, header)`. The range's FIRST ROW is the header row
- and its FIRST COLUMN is the key column. The key is matched EXACTLY in
- the key column, and the answer is taken from the column whose header
- equals `header`.
-
- Named rather than positional: a lookup keyed on
- column POSITION is wrong the first time somebody inserts a column, and
- nothing in the sheet says so.
-
- Three refusals, and each names what a person can act on: no column
- carries that header, no row carries that key, or MORE THAN ONE row
- carries that key. The last is the one other spreadsheets answer instead
- of refusing, and a duplicate key has no single right answer: taking the
- first is a near match wearing an exact match's clothes.
 
   ev-r1 : RangeRef -> Integer
   ev-r1 (g) = gr-lo ((g.rr-from).cr-row) ((g.rr-to).cr-row)

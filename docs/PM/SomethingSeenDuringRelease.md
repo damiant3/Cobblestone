@@ -28,6 +28,16 @@ count does.
 ## Open
 
 ## Done
+### Update 73 -- seven reds at step 0b, none a compiler defect, every one a runner or a record that only the full gate reads
+
+- **degenerate-arms: 20 problems.** Fester's DTLS and TLS refusal landings (52461, 52981) changed nine armed `.expected` lines (a `phase` field, type 0 for an empty inner) and exposed eleven helpers as trust decisions. Re-pinned, eight waived with the reason, three open as CORE-24 and CORE-25 (main 53205, 53208).
+- **check-annotation-targets: 131 findings.** Fester 49341 and 49405 moved 116 chapters into `codex/test/apps` under new names and their sidecars stayed behind; 12 sidecars outlived deleted chapters; 3 entries named removed functions. Moved by `Chapter:` header, deleted, removed (main 53208).
+- **check-shell-raw**: a `ScRaw` in `buildbootimgScript` (blu 52751) became `ScAppend`/`SeConcat`/`SePathJoin` in the generator and the script together. **check-cite-names**: `TzTrans` was cited from `TimeZone`; it is defined in `TzCompile`, which `TimeZone` cites (main 53208).
+- **sem-equiv: 2 body mismatches.** A negative literal passed bare as an argument (`list-push acc -1`, blu 53072) prints as `(-1)` and re-parses as another tree. Parenthesized in the source; the compiler binary is byte-identical (main 53211).
+- **check-errors: `cost-accumulator-growth` COMPILED.** The runner never passed a refusal test's `.flags`, so the one test that needs `cost-report` compiled without it; every seed refuses it with the flag. The runner passes `.flags` (main 53213).
+- **test-compile: 3 chapters.** Three arm64 tick tests (reek 51210, 51227, 51257) carry `.arch-only arm64` and the sweep ignores it; baselined with their runners named (main 53215), the runner defect a `Build.md` row (main 53217).
+- **The battery refused its kernel.** The gate leaves the unsigned stage-1 compiler (`A6453A16`) at `build-output/bare-metal/Codex.cdx`, which matches neither the seed nor `Sut.cdx`; run the release battery with `-CodexCdx build\output\Sut.cdx`.
+- **Resuming the gate**: the Update 66 recipe (a copy of `build.ps1` outside the workspace, proven phases in `$SkipPhases`, `$script:seedVerdict = 'one-pass'`) picked gate 5 up at `test-compile`.
 ### Update 72 -- a printer defect, five wasm gaps and a moved lambda name, all seen only by release-only runners
 
 - **text-stage2: the printer dropped the parentheses of an `await` argument.** `par` (main 48854) holds `list-push deeper (await t)`, printed `list-push deeper await (t)`, so the printed compiler refused (CDX2001, CDX2087 at `par-forked-from`). `needs-parens` listed no `IrFork` or `IrAwait` (seed 9E200018, main 49081). Only the full gate's text leg compiles printed source; a compiler change that adds a construct to compiler or foreword source runs the leg on its candidate:

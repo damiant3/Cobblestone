@@ -10,8 +10,6 @@ Chapter: UNet
   cites Diffusion chapter GpuModules
   cites Diffusion chapter UNetGraph
 
- We say:
-
 Section: Host Words
 
  Host-side values reach the device through the reply region past the first
@@ -175,10 +173,6 @@ Section: Temporaries
 
 Section: Weights
 
- A weight is uploaded by its LDM name under model.diffusion_model., converted
- on the way to dst-dt: f16 for a matrix the GEMM reads, f32 for a bias or a
- norm's scale and shift.
-
   UNetFile = record {
     uf-path : Text,
     uf-file : SafeTensorFile,
@@ -216,8 +210,6 @@ Section: Weights
   un-resident : UNetFile -> Boolean
   un-resident (u) = list-length (u.uf-handles) > 0
 
- A weight the caller must free: one it uploaded, not one the cache holds.
-
   un-drop : UNetFile, Integer, Integer -> Integer
   un-drop (u) (keep) (h) = if un-resident u then keep else un-free keep h
 
@@ -241,9 +233,6 @@ Section: Weights
     else un-free 0 h
 
 Section: Operations
-
- Each operation answers a fresh f32 buffer, or 0 when an allocation, an
- upload or a launch was refused, and frees its temporaries.
 
   un-cast16 : Integer, Integer -> Integer
   un-cast16 (x) (n) =
@@ -270,8 +259,6 @@ Section: Operations
     in if h == 0 | x == 0 | bias == 0 then un-free 0 h
     else un-out h (un-layer "kernel_add_channel" n [un-buf x, un-buf bias, un-buf h, un-int hw, un-int n])
 
- y = x W^T + b over mm rows of kk, W and b the named linear.
-
   un-linear : UNetFile, Integer, Integer, Integer, Integer, Text -> Integer
   un-linear (u) (x) (mm) (kk) (nn) (name) = un-linear-b u x mm kk nn name True
 
@@ -293,19 +280,19 @@ Section: Operations
 
   un-gemm-linear : GpuParam, GpuParam, GpuParam, GpuParam, Integer, Integer, Integer -> Integer
   un-gemm-linear (xh) (w) (bp) (y) (mm) (nn) (kk) =
-    if kk - kk / 8 * 8 == 0 then (if ((nn + 127) / 128) * ((mm + 127) / 128) < 136 then un-run 2 gemm-ptx "kernel_linear_fast_n64" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 127) / 128, gz = 1, bx = 128, by = 1, bz = 1, shared = 30720 }) [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0]
-      else un-run 2 gemm-ptx "kernel_linear_fast" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }) [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0])
+    if kk - kk / 8 * 8 == 0 then
+      (if ((nn + 127) / 128) * ((mm + 127) / 128) < 136 then
+        un-run 2 gemm-ptx "kernel_linear_fast_n64" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 127) / 128, gz = 1, bx = 128, by = 1, bz = 1, shared = 30720 })
+          [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0]
+      else
+        un-run 2 gemm-ptx "kernel_linear_fast" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 })
+          [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0])
     else un-run 2 gemm-ptx "kernel_linear_wmma" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [xh, w, bp, y, un-int mm, un-int nn, un-int kk, un-int 0]
-
- A square conv of the named weights with its bias, over a cin x h x w input.
 
   un-conv : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
   un-conv (u) (x) (cin) (h) (wd) (cout) (k) (stride) (pad) (name) =
     if cin - cin / 32 * 32 == 0 then un-conv-fast u x cin h wd cout k stride pad name
     else un-conv-wmma u x cin h wd cout k stride pad name
-
- kernel-conv2d-fast (cin a multiple of 32) reads the input as h x w x cin and
- the weights as cout x kh x kw x cin, and adds the bias itself.
 
   un-per256 : Integer -> GpuGrid
   un-per256 (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
@@ -321,10 +308,36 @@ Section: Operations
     in let b = un-weight u (name & ".bias") gpu-dt-f32
     in let y = gpu-buf-alloc (cout * oh * ow * 4)
     in let g = GpuGrid { gx = (oh * ow + 127) / 128, gy = (cout + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
+    in let to-nhwc = GpuGrid { gx = (h * wd + 31) / 32, gy = (cin + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }
+    in let conv-args = [
+      un-buf xn,
+      un-buf wp,
+      un-buf b,
+      un-buf y,
+      un-int cin,
+      un-int h,
+      un-int wd,
+      un-int cout,
+      un-int k,
+      un-int k,
+      un-int stride,
+      un-int pad,
+      un-int oh,
+      un-int ow,
+      un-int 0,
+      un-int 0,
+      un-int 0,
+      un-int 0,
+      un-int 0,
+      un-int 0,
+      un-int 0,
+      un-int 0,
+      un-int 0
+    ]
     in let ok = if xh == 0 | xn == 0 | w == 0 | wp == 0 | b == 0 | y == 0 then False
-       else if un-run 2 gemm-ptx "kernel_nchw_to_nhwc" (GpuGrid { gx = (h * wd + 31) / 32, gy = (cin + 31) / 32, gz = 1, bx = 256, by = 1, bz = 1, shared = 2176 }) [un-buf xh, un-buf xn, un-int cin, un-int (h * wd), un-int (cin * h * wd)] < 0 then False
+       else if un-run 2 gemm-ptx "kernel_nchw_to_nhwc" to-nhwc [un-buf xh, un-buf xn, un-int cin, un-int (h * wd), un-int (cin * h * wd)] < 0 then False
        else if un-run 2 gemm-ptx "kernel_conv_weight_khwc" (un-per256 (cout * cin * k * k)) [un-buf w, un-buf wp, un-int cin, un-int k, un-int k, un-int (cout * cin * k * k)] < 0 then False
-       else un-run 2 gemm-ptx "kernel_conv2d_fast" g [un-buf xn, un-buf wp, un-buf b, un-buf y, un-int cin, un-int h, un-int wd, un-int cout, un-int k, un-int k, un-int stride, un-int pad, un-int oh, un-int ow, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0, un-int 0] >= 0
+       else un-run 2 gemm-ptx "kernel_conv2d_fast" g conv-args >= 0
     in un-drop u (un-drop u (un-tfree (un-tfree (un-tfree (un-out y ok) xh (cin * h * wd * 2)) xn (cin * h * wd * 2)) wp (cout * cin * k * k * 2)) w) b
 
   un-conv-wmma : UNetFile, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text -> Integer
@@ -336,7 +349,8 @@ Section: Operations
     in let b = un-weight u (name & ".bias") gpu-dt-f32
     in let y = gpu-buf-alloc (cout * oh * ow * 4)
     in let g = GpuGrid { gx = (oh * ow + 63) / 64, gy = (cout + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
-    in let ok = if xh == 0 | w == 0 | b == 0 | y == 0 then False else un-run 2 gemm-ptx "kernel_conv2d_wmma" g [un-buf xh, un-buf w, un-buf y, un-int cin, un-int h, un-int wd, un-int cout, un-int k, un-int k, un-int stride, un-int pad, un-int oh, un-int ow, un-int 0] >= 0
+    in let ok = if xh == 0 | w == 0 | b == 0 | y == 0 then False
+       else un-run 2 gemm-ptx "kernel_conv2d_wmma" g [un-buf xh, un-buf w, un-buf y, un-int cin, un-int h, un-int wd, un-int cout, un-int k, un-int k, un-int stride, un-int pad, un-int oh, un-int ow, un-int 0] >= 0
     in let biased = if ok then un-add-channel y b (oh * ow) (cout * oh * ow) else 0
     in un-free (un-drop u (un-drop u (un-tfree biased xh (cin * h * wd * 2)) w) b) y
 
@@ -348,7 +362,8 @@ Section: Operations
     in let beta = un-weight u (name & ".bias") gpu-dt-f32
     in let y = gpu-buf-alloc (c * hw * 4)
     in let ok = if x == 0 | st == 0 | part == 0 | gamma == 0 | beta == 0 | y == 0 then False
-       else if un-rows "kernel_row_stats_wide" 32 [un-buf x, un-buf st, un-buf part, un-int (c / 32 * hw), un-real eps, un-int 32] then un-layer "kernel_group_norm" (c * hw) [un-buf x, un-buf st, un-buf gamma, un-buf beta, un-buf y, un-int c, un-int hw, un-int 32, un-int (c * hw)]
+       else if un-rows "kernel_row_stats_wide" 32 [un-buf x, un-buf st, un-buf part, un-int (c / 32 * hw), un-real eps, un-int 32] then
+         un-layer "kernel_group_norm" (c * hw) [un-buf x, un-buf st, un-buf gamma, un-buf beta, un-buf y, un-int c, un-int hw, un-int 32, un-int (c * hw)]
        else False
     in un-drop u (un-drop u (un-tfree (un-tfree (un-out y ok) st (32 * 16)) part (32 * 128 * 8)) gamma) beta
 
@@ -360,7 +375,8 @@ Section: Operations
     in let beta = un-weight u (name & ".bias") gpu-dt-f32
     in let y = gpu-buf-alloc (rows * dim * 4)
     in let ok = if x == 0 | st == 0 | part == 0 | gamma == 0 | beta == 0 | y == 0 then False
-       else if un-rows "kernel_row_stats_wide" rows [un-buf x, un-buf st, un-buf part, un-int dim, un-real 0.00001, un-int rows] then un-layer "kernel_layer_norm" (rows * dim) [un-buf x, un-buf st, un-buf gamma, un-buf beta, un-buf y, un-int dim, un-int (rows * dim)]
+       else if un-rows "kernel_row_stats_wide" rows [un-buf x, un-buf st, un-buf part, un-int dim, un-real 0.00001, un-int rows] then
+         un-layer "kernel_layer_norm" (rows * dim) [un-buf x, un-buf st, un-buf gamma, un-buf beta, un-buf y, un-int dim, un-int (rows * dim)]
        else False
     in un-drop u (un-drop u (un-tfree (un-tfree (un-out y ok) st (rows * 16)) part (rows * 128 * 8)) gamma) beta
 
@@ -371,11 +387,6 @@ Section: Operations
     else un-out h (un-layer "kernel_transpose" (rows * cols) [un-buf x, un-buf h, un-int rows, un-int cols, un-int (rows * cols)])
 
 Section: Op Set
-
- The graph (UNetGraph, UNet15Graph) does its GPU work through a UNetOps value,
- so one graph runs over these native operations and over the browser's
- (docs/Designs/Active/Apps/InBrowserDiffusion.md, stage 3). The launches the
- graph used to make itself are the six below, unchanged.
 
   un-geglu-launch : Integer, Integer, Integer, Integer -> Boolean
   un-geglu-launch (pr) (g) (inner) (n) = un-layer "kernel_geglu" n [un-buf pr, un-buf g, un-int inner, un-int n]
@@ -406,7 +417,8 @@ Section: Op Set
   un-timestep-launch (tb) (temb) = un-layer "kernel_timestep_embedding" 320 [un-buf tb, un-buf temb, un-int 320, un-real 9.210340371976184, un-int 320]
 
   un-scores-launch : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Real -> Boolean
-  un-scores-launch (q) (k) (s) (heads) (sq) (sk) (d) (scale) = un-layer "kernel_attn_scores" (heads * sq * sk) [un-buf q, un-buf k, un-buf s, un-int heads, un-int sq, un-int sk, un-int d, un-real scale, un-int (heads * sq * sk)]
+  un-scores-launch (q) (k) (s) (heads) (sq) (sk) (d) (scale) =
+    un-layer "kernel_attn_scores" (heads * sq * sk) [un-buf q, un-buf k, un-buf s, un-int heads, un-int sq, un-int sk, un-int d, un-real scale, un-int (heads * sq * sk)]
 
   un-softmax-launch : Integer, Integer, Integer -> Boolean
   un-softmax-launch (s) (cols) (rows) = un-layer "kernel_softmax_rows" rows [un-buf s, un-int cols, un-int rows]
@@ -414,8 +426,40 @@ Section: Op Set
   un-values-launch : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
   un-values-launch (s) (v) (o) (heads) (sq) (sk) (d) = un-layer "kernel_attn_values" (sq * heads * d) [un-buf s, un-buf v, un-buf o, un-int heads, un-int sq, un-int sk, un-int d, un-int (sq * heads * d)]
 
-  unet-ops-with : (Integer, Integer, Integer, Integer, Integer, Integer -> Boolean), (Text -> Boolean), (Text -> Boolean), (Integer, Integer, Integer -> Boolean), (Integer -> Integer) -> UNetOps UNetFile
-  unet-ops-with (patch) (selfv) (probsat) (pr) (ctxlen) = UNetOps { conv = un-conv, linear = un-linear, linear-b = un-linear-b, group-norm = un-group-norm, layer-norm = un-layer-norm, silu = un-silu, add = un-add, add-channel = un-add-channel, transpose = un-transpose, concat = un-concat, attention = un-attention, alloc = gpu-buf-alloc, free = un-free, temp = un-temp, tfree = un-tfree, upload = un-upload, geglu = un-geglu-launch, upsample = un-upsample-launch, crop = un-crop, timestep = un-timestep-launch, attn-scores = un-scores-launch, softmax-rows = un-softmax-launch, attn-values = un-values-launch, out-patch = patch, self-v = selfv, probs-at = probsat, probs = pr, flash-at = \d -> False, flash = \q k v o hh sq sk d sc -> False, ctx-len = ctxlen }
+  unet-ops-with : (Integer, Integer, Integer, Integer, Integer, Integer -> Boolean), (Text -> Boolean), (Text -> Boolean),
+      (Integer, Integer, Integer -> Boolean), (Integer -> Integer) -> UNetOps UNetFile
+  unet-ops-with (patch) (selfv) (probsat) (pr) (ctxlen) = UNetOps {
+    conv = un-conv,
+    linear = un-linear,
+    linear-b = un-linear-b,
+    group-norm = un-group-norm,
+    layer-norm = un-layer-norm,
+    silu = un-silu,
+    add = un-add,
+    add-channel = un-add-channel,
+    transpose = un-transpose,
+    concat = un-concat,
+    attention = un-attention,
+    alloc = gpu-buf-alloc,
+    free = un-free,
+    temp = un-temp,
+    tfree = un-tfree,
+    upload = un-upload,
+    geglu = un-geglu-launch,
+    upsample = un-upsample-launch,
+    crop = un-crop,
+    timestep = un-timestep-launch,
+    attn-scores = un-scores-launch,
+    softmax-rows = un-softmax-launch,
+    attn-values = un-values-launch,
+    out-patch = patch,
+    self-v = selfv,
+    probs-at = probsat,
+    probs = pr,
+    flash-at = \d -> False,
+    flash = \q k v o hh sq sk d sc -> False,
+    ctx-len = ctxlen
+  }
 
   unet-native-ops : UNetOps UNetFile
   unet-native-ops = unet-ops-with (\x s cx cs hh ww -> True) (\p -> False) (\p -> False) (\s hd r -> True) (\h -> 77)
@@ -437,8 +481,9 @@ Section: Attention
     in let kh = un-cast16 k (sk * c)
     in let vh = un-cast16 v (sk * c)
     in let o = un-temp (sq * c * 4)
+    in let fused = GpuGrid { gx = (sq + 63) / 64, gy = c / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 45056 }
     in let ok = if qh == 0 | kh == 0 | vh == 0 | o == 0 then False
-       else un-run 2 gemm-ptx "kernel_attention_fused" (GpuGrid { gx = (sq + 63) / 64, gy = c / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 45056 }) [un-buf qh, un-buf kh, un-buf vh, un-buf o, un-int sq, un-int sk, un-int c] >= 0
+       else un-run 2 gemm-ptx "kernel_attention_fused" fused [un-buf qh, un-buf kh, un-buf vh, un-buf o, un-int sq, un-int sk, un-int c] >= 0
     in let out = if ok then un-linear u o sq c c (p & "to_out.0") else 0
     in let back = un-tfree (un-tfree (un-tfree (un-tfree out qh (sq * c * 2)) kh (sk * c * 2)) vh (sk * c * 2)) o (sq * c * 4)
     in un-free (un-free (un-free back q) k) v

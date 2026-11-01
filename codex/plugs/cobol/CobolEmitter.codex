@@ -24,10 +24,6 @@ Section: Keywords and Sanitization
   cobol-name : Text -> Text
   cobol-name (name) = cobol-upper (cobol-sanitize name)
 
- The IR spells a record field as `name/slot`, so a field name reaches the
- emitter as `a/0` and reads as a division. riscv resolves the slot and
- needs it; every source plug wants the name.
-
   cobol-slash-pos : Text, Integer, Integer -> Integer
   cobol-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -154,8 +150,8 @@ Section: PIC Clause and Type Helpers
 
  A list is the same length-carrying group as text, with a TABLE in place of the
  character field. `OCCURS` is COBOL's only array and it is fixed at compile
- time, so the capacity is a constant and every write is bounded against it: a
- subscript past the OCCURS is undefined behaviour in COBOL, not a trap.
+ time, and a subscript past the OCCURS is undefined behaviour in COBOL, not a
+ trap.
 
   cobol-list-cap : Integer = 256
 
@@ -165,13 +161,12 @@ Section: PIC Clause and Type Helpers
     "         05 " & name & "-L      PIC S9(18).\n" &
     "         05 " & name & "-D      PIC S9(18) OCCURS " & integer-to-text cobol-list-cap & " TIMES."
 
- A list of TEXT needs its own shape, because the element is itself a
- length-carrying pair rather than one numeric field. The table is nested: each
- occurrence has its own `-EL` and `-ED`, so an element is
- `<v>-ED(i)(1:<v>-EL(i))`. The capacity is smaller than the numeric list's
- because each slot costs 256 characters plus its length.
-
   cobol-text-list-cap : Integer = 64
+
+  cobol-trap-index : Text =
+    "             DISPLAY \"CODEX_TRAP_index\"\n" &
+    "             MOVE 1 TO RETURN-CODE\n" &
+    "             STOP RUN\n"
 
   cobol-decl-list-text : Text -> Text
   cobol-decl-list-text (name) =
@@ -215,10 +210,6 @@ Section: PIC Clause and Type Helpers
  A group MOVE between two identically laid out group items is an alphanumeric
  copy, which is what lets a variant be passed and assigned in one statement,
  so every value of a type is sized to its widest constructor.
-
- The wire spells a variant type as its NAME alone -- `(sum "Shape" (args))`
- carries no constructor list -- so the layout and the tag have to be looked up
- in the chapter's own type declarations.
 
   cobol-sum-name : CodexType -> Text
   cobol-sum-name (ty) =
@@ -339,11 +330,6 @@ Section: Emission State
   }
 
 Section: The Name Environment
-
- A binding is looked up from the END so a later one shadows an earlier one,
- and a let restores the depth it found rather than the list it found: an
- in-place extension of the backing array makes the saved LIST unreliable
- where the saved LENGTH is not.
 
   cobol-set-env : CobolState, List CobolBind -> CobolState
   cobol-set-env (st) (e) =
@@ -722,12 +708,14 @@ Section: Expression Emission
       "             IF " & result & "-L < " & integer-to-text cobol-list-cap & "\n" &
       "               ADD 1 TO " & result & "-L\n" &
       "               MOVE " & lv & "-D(WS-LIDX) TO " & result & "-D(" & result & "-L)\n" &
+      "             ELSE\n" & cobol-trap-index &
       "             END-IF\n" &
       "           END-PERFORM\n" &
       "           PERFORM VARYING WS-LIDX FROM 1 BY 1 UNTIL WS-LIDX > " & rv & "-L\n" &
       "             IF " & result & "-L < " & integer-to-text cobol-list-cap & "\n" &
       "               ADD 1 TO " & result & "-L\n" &
       "               MOVE " & rv & "-D(WS-LIDX) TO " & result & "-D(" & result & "-L)\n" &
+      "             ELSE\n" & cobol-trap-index &
       "             END-IF\n" &
       "           END-PERFORM\n"
      is IrConsList ->
@@ -737,6 +725,7 @@ Section: Expression Emission
       "             IF " & result & "-L < " & integer-to-text cobol-list-cap & "\n" &
       "               ADD 1 TO " & result & "-L\n" &
       "               MOVE " & rv & "-D(WS-LIDX) TO " & result & "-D(" & result & "-L)\n" &
+      "             ELSE\n" & cobol-trap-index &
       "             END-IF\n" &
       "           END-PERFORM\n"
 
@@ -873,11 +862,6 @@ Section: Expression Emission
  the pascal plug shipped for every list read it ever emitted, so the `+ 1` is
  here rather than left to a caller.
 
- An empty separator answers a one-element list holding the whole string, and a
- TRAILING separator leaves a final empty field, both of which Codex specifies
- and both of which are where a library `split` usually differs. The scan is
- explicit for that reason and because COBOL's `UNSTRING` cannot express either.
-
   emit-cobol-builtin-text-split : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-text-split (args) (arities) (st) =
     let s = emit-cobol-expr-to-var (list-at args 0) arities st
@@ -911,6 +895,7 @@ Section: Expression Emission
       "                   IF " & i.name & " > " & start.name & "\n" &
       "                     MOVE " & sv & "-D(" & start.name & ":" & i.name & " - " & start.name & ") TO " & n & "-ED(" & n & "-L)\n" &
       "                   END-IF\n" &
+      "                 ELSE\n" & cobol-trap-index &
       "                 END-IF\n" &
       "                 COMPUTE " & i.name & " = " & i.name & " + " & pv & "-L\n" &
       "                 MOVE " & i.name & " TO " & start.name & "\n" &
@@ -925,6 +910,7 @@ Section: Expression Emission
       "               IF " & sv & "-L >= " & start.name & "\n" &
       "                 MOVE " & sv & "-D(" & start.name & ":" & sv & "-L - " & start.name & " + 1) TO " & n & "-ED(" & n & "-L)\n" &
       "               END-IF\n" &
+      "             ELSE\n" & cobol-trap-index &
       "             END-IF\n" &
       "           END-IF\n",
      state = st4
@@ -935,10 +921,6 @@ Section: Expression Emission
     if cobol-list-elem-is-text (ir-expr-type (list-at args 0))
     then emit-cobol-builtin-list-at-text args arities st
     else emit-cobol-builtin-list-at-int args arities st
-
- Reading a TEXT element copies its length and characters into a text group of
- its own, so everything downstream sees the ordinary `-L` and `-D` pair rather
- than a subscripted one.
 
   emit-cobol-builtin-list-at-text : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-list-at-text (args) (arities) (st) =
@@ -957,6 +939,7 @@ Section: Expression Emission
       "           IF " & sub.name & " >= 1 AND " & sub.name & " <= " & xs.var-name & "-L\n" &
       "             MOVE " & xs.var-name & "-EL(" & sub.name & ") TO " & alloc.name & "-L\n" &
       "             MOVE " & xs.var-name & "-ED(" & sub.name & ") TO " & alloc.name & "-D\n" &
+      "           ELSE\n" & cobol-trap-index &
       "           END-IF\n",
      state = st3
     }
@@ -974,7 +957,7 @@ Section: Expression Emission
      code = xs.code & ix.code &
       "           COMPUTE " & sub.name & " = " & ix.var-name & " + 1\n" &
       "           IF " & sub.name & " < 1 OR " & sub.name & " > " & xs.var-name & "-L\n" &
-      "             MOVE 0 TO " & alloc.name & "\n" &
+      cobol-trap-index &
       "           ELSE\n" &
       "             MOVE " & xs.var-name & "-D(" & sub.name & ") TO " & alloc.name & "\n" &
       "           END-IF\n",
@@ -991,11 +974,6 @@ Section: Expression Emission
      code = xs.code & "           MOVE " & xs.var-name & "-L TO " & alloc.name & "\n",
      state = st2
     }
-
- `list-push` and `list-snoc` both COPY. `__list_snoc` on bare metal stores in
- place only when the backing array has spare capacity and otherwise copies, and
- an unconditional in-place append is the defect plugs-backlog 1.7 names: a copy
- is always correct, and a fixed OCCURS table has no capacity notion to exploit.
 
   emit-cobol-builtin-list-append : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-list-append (args) (arities) (st) =
@@ -1021,6 +999,7 @@ Section: Expression Emission
       "           IF " & alloc.name & "-L < " & integer-to-text cobol-list-cap & "\n" &
       "             ADD 1 TO " & alloc.name & "-L\n" &
       "             MOVE " & v.var-name & " TO " & alloc.name & "-D(" & alloc.name & "-L)\n" &
+      "           ELSE\n" & cobol-trap-index &
       "           END-IF\n",
      state = st3
     }
@@ -1144,12 +1123,6 @@ Section: Expression Emission
      state = st3
     }
 
- Measured through the seed compiler 2026-08-18 rather than read off
- `__str_replace`: an empty needle answers the subject unchanged, needle and
- replacement are both literal, and every NON-OVERLAPPING occurrence is
- replaced left to right, advancing by the needle length ("aaaa" with "aa"
- for "b" is "bb", not "b").
-
  `INSPECT ... REPLACING` cannot serve: it requires the two operands to be
  the same length. The scan is written out instead. Both appends are bounded
  against the 256-byte data item because a reference modification past the
@@ -1220,6 +1193,8 @@ Section: Expression Emission
     in CobolExprResult {
      var-name = alloc.name,
      code = str-r.code & idx-r.code & "           ADD 1 TO " & idx-r.var-name & " GIVING " & alloc2.name & "\n" &
+      "           IF " & alloc2.name & " < 1 OR " & alloc2.name & " > " & str-r.var-name & "-L\n" & cobol-trap-index &
+      "           END-IF\n" &
       "           MOVE " & str-r.var-name & "-D(" & alloc2.name & ":1) TO " & alloc.name & "\n",
      state = st3
     }
@@ -1240,11 +1215,7 @@ Section: Expression Emission
      code = str-r.code & start-r.code & len-r.code &
       "           ADD 1 TO " & start-r.var-name & " GIVING " & alloc2.name & "\n" &
       "           MOVE " & len-r.var-name & " TO " & alloc3.name & "\n" &
-      "           IF " & alloc2.name & " + " & alloc3.name & " - 1 > " & str-r.var-name & "-L\n" &
-      "             COMPUTE " & alloc3.name & " = " & str-r.var-name & "-L - " & alloc2.name & " + 1\n" &
-      "           END-IF\n" &
-      "           IF " & alloc3.name & " < 0\n" &
-      "             MOVE 0 TO " & alloc3.name & "\n" &
+      "           IF " & start-r.var-name & " < 0 OR " & alloc3.name & " < 0 OR " & alloc2.name & " + " & alloc3.name & " - 1 > " & str-r.var-name & "-L\n" & cobol-trap-index &
       "           END-IF\n" &
       "           MOVE SPACES TO " & alloc.name & "-D\n" &
       "           IF " & alloc3.name & " > 0\n" &
@@ -1347,14 +1318,6 @@ Section: Expression Emission
  The character predicates test CCE BANDS: 1..2 whitespace, 3..12 digit,
  13..64 or 97..127 letter, the hole being CCE's punctuation at 65..96.
 
- Both of these ran `FUNCTION ORD` over the operand and compared against
- 66..91 and 98..123, which is ASCII with COBOL's one-based ordinal added.
- Two things were wrong with that. The bands were ASCII rather than CCE,
- and the operand is already an INTEGER here -- a Char reaches this
- emitter as a numeric literal or a numeric working-storage item, so ORD
- was being applied to a number. Comparing the value directly is both
- correct and one variable cheaper.
-
   emit-cobol-builtin-is-letter : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-builtin-is-letter (args) (arities) (st) =
     let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
@@ -1440,7 +1403,7 @@ Section: Expression Emission
     in if ar < 0 then let fallback = emit-cobol-expr-to-var (list-at args 0) arities st
     in CobolExprResult {
       var-name = fallback.var-name,
-      code = fallback.code,
+      code = fallback.code & "           DISPLAY \"COBOL: " & n & " not supported\"\n",
       state = fallback.state
     }
     else let name = cobol-name n
@@ -1631,11 +1594,6 @@ Section: Expression Emission
      state = rec-r.state
     }
 
- A literal fills the table and sets the length. It used to move each element
- into a scalar of its own and answer the LAST one, or `0` for an empty list, so
- `lit-len [10,20,30,40]` returned 0 where Codex answers 4 and the four MOVEs
- went nowhere.
-
   emit-cobol-list-var : List IRExpr, List ArityEntry, CobolState -> CobolExprResult
   emit-cobol-list-var (elems) (arities) (st) =
     let n = list-length elems
@@ -1644,7 +1602,7 @@ Section: Expression Emission
     in let moves = emit-cobol-list-moves elems arities st2 0 (alloc.name)
     in CobolExprResult {
      var-name = alloc.name,
-     code = moves.code & "           MOVE " & integer-to-text (if n > cobol-list-cap then cobol-list-cap else n) & " TO " & alloc.name & "-L\n",
+     code = (if n > cobol-list-cap then "           DISPLAY \"COBOL: a list literal over " & integer-to-text cobol-list-cap & " elements not supported\"\n" else "") & moves.code & "           MOVE " & integer-to-text (if n > cobol-list-cap then cobol-list-cap else n) & " TO " & alloc.name & "-L\n",
      state = moves.state
     }
 
@@ -1905,10 +1863,6 @@ Section: Tail Call Optimization
     in let rest = emit-cobol-tco-match-arms branches func-name params scrut-var arities (cobol-env-restore (body-r.state) depth) (i + 1)
     in CobolMoveResult { code = label & body-r.code & rest.code, state = rest.state }
 
- A tail-position arm leaves the paragraph by a GO TO, so the flag is not what
- stops the next arm running; it is what stops an arm whose body does NOT jump
- from falling into the next arm's test.
-
   emit-cobol-tco-chain-arms : List IRBranch, Text, List IRParam, Text, Text, List ArityEntry, CobolState, Integer -> CobolMoveResult
   emit-cobol-tco-chain-arms (branches) (func-name) (params) (scrut-var) (flag) (arities) (st) (i) =
     if i >= list-length branches then CobolMoveResult { code = "", state = st }
@@ -1945,11 +1899,6 @@ Section: Tail Call Optimization
    ta-commit : Text,
    ta-state : CobolState
   }
-
- A tail call assigns the parameters of the loop it jumps back to, so an
- argument written early is visible to an argument emitted after it. Every
- argument lands in its own temporary first and the slots are committed
- together.
 
   emit-cobol-tco-eval-args : List IRExpr, List IRParam, Text, List ArityEntry, CobolState, Integer -> CobolTcoArgs
   emit-cobol-tco-eval-args (args) (params) (name) (arities) (st) (i) =

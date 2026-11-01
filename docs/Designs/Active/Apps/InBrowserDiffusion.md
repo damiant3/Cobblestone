@@ -330,9 +330,9 @@ vectors. Sampling drains the device between steps. VAE input is divided by
 nonempty completion text or a recorded GPU error causes refusal.
 
 The browser VAE adapter now consumes the first activation passed to `add`,
-matching the native adapter's ownership contract. Its separate result buffer
-previously left residual convolution outputs live. The attention wrapper no
-longer frees that consumed projection a second time, and failed activation
+matching the native adapter's ownership contract, so no residual convolution
+output stays live. The attention wrapper frees that consumed projection once,
+and failed activation
 construction/transposition releases the allocated buffer. The seven VAE-op
 arms, including ownership and refusal controls, and five existing decode arms
 pass; pixel bounds remain unchanged. Native VAE code is unchanged.
@@ -524,7 +524,7 @@ jobs do not retain Brownian trees in the page. The 50 ms cancellation poll
 adds bounded work while preparation is active. No full settings-range or
 long-run physical-memory bound is claimed. Compiler heap/time is unchanged.
 
-The diffusion demo chooser supports both families (main 33426).
+The diffusion demo chooser supports both families.
 `build-browser-page.mjs` embeds base and CLIP WGSL; tokenizer embedding and
 `--no-tokenizer` folder loading retain their existing routes. SD1.5 uses
 512 x 512 Euler/uniform, default 20 steps and CFG 7. SDXL uses 1024 x 1024
@@ -625,8 +625,6 @@ Compiler heap/time behavior is unchanged.
 
 ## SD1.5 LoRA
 
-The standard SD1.5 loader is on main 33714.
-
 `browser-sd15-lora-load-then checkpoint file size weight code progress refuse ready`
 loads one picked LoRA with an SD1.5 checkpoint. `file` is the opaque name
 returned by `pick-file-then`, not its displayed basename. `size` is the
@@ -711,8 +709,6 @@ proofs use compiler `1C9168D510D4C60A`; the independent contract reader
 confirmed the source and measured claims.
 
 ## SDXL LoRA
-
-The standard SDXL loader is on main 33764.
 
 `browser-sdxl-lora-open checkpoint size code extra file lora-size weight lora-code ready refuse`
 loads a standard LoRA with SDXL. Checkpoint and LoRA names/sizes come from
@@ -984,7 +980,7 @@ arm, shader and both package files byte for byte (`head/artifact-equality.json`)
 
 ## Browser DoRA
 
-The existing LoRA loaders (main 34127) accept `.dora_scale` alongside an underlying
+The LoRA loaders accept `.dora_scale` alongside an underlying
 weight format. Bias tensors retain their ordinary difference/norm path.
 The browser matches native DoRA's input-channel grouping: with `rows`
 output channels, flattened `cols`, and `chans` scale elements, `cols` must
@@ -1052,7 +1048,7 @@ f16 packing and all BF16/FP8 encoding controls remain in the grader.
 Compiler `0FD86AE43ACF3693` reproduces the graded arm and LoRA shader
 byte for byte (`head/artifact-equality.json`). Demo and Studio packages
 build with the same shader bytes (`package-evidence.json`); Studio includes
-the writing-pane caller from main 34120. These package checks establish
+the writing-pane caller. These package checks establish
 compilation and shader embedding, not another Studio UI image grade.
 
 ## SD1.5 DPM++
@@ -1163,9 +1159,9 @@ therefore a page that has loaded SDXL holds that commit until the tab closes.
   declare `Real approximate` (RwF32, which the IR carries), and the PTX plug
   lowers RwF32 to f32 while plain `Real` stays f64. Not a declaration alone:
   `Real approximate` does not unify with `Real` (CDX2001), and
-  `device-load-f32`/`device-store-f32` are typed `Real` (`DeviceEffect.codex:25`),
-  so the kernels need approximate load/store intrinsics in both plugs and
-  approximate constants first; the plan is reek's row (main 31190).
+  `device-load-f32`/`device-store-f32` are typed `Real`, therefore
+  BrowserKernels load and store through `device-load-approx`/`device-store-approx`
+  (`DeviceEffect.codex`).
 - Where the orchestration runs (stage 3). The native SD1.5 path cannot be
   compiled for a page as it stands (surveyed 2026-09-29): the bridge rings x86
   ports (`GpuBridge.codex:77-84`); scratch lives at fixed guest addresses read

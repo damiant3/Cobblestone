@@ -26,9 +26,11 @@ Section: Operations
    | LoMovCb (Integer) (Integer)
    | LoSys (Integer) (Integer)
    | LoAdd64 (Integer) (Integer) (Integer) (Integer) (Integer)
+   | LoAdd64Wide (Integer) (Integer) (Integer)
    | LoShl64 (Integer) (Integer) (Integer)
    | LoMul64 (Integer) (Integer) (Integer)
    | LoDivPow2 (Integer) (Integer) (Integer) (Integer) (Integer)
+   | LoDivVar (Integer) (Integer) (Integer) (Integer) (Integer) (Integer) (Integer) (Integer) (Integer)
    | LoCmp64 (Integer) (Integer) (Integer) (Integer) (Integer)
    | LoLoad64 (Integer) (Integer)
    | LoStore64 (Integer) (Integer)
@@ -247,9 +249,9 @@ Section: Arithmetic
   lw-add64 (st) (a) (b) (neg) =
     let p = lw-pair st
     in let carry = lw-free-pred st.busy-preds 0
-    in if carry > 6 then lw-fail st "predicates"
+    in if carry > 6 & neg /= 0 then lw-fail st "predicates"
     else when p.val
-     is LInt (d) -> lw-res (lw-emit p.st (LoAdd64 d a b neg carry)) (LInt d)
+     is LInt (d) -> lw-res (lw-emit p.st (if carry > 6 then LoAdd64Wide d a b else LoAdd64 d a b neg carry)) (LInt d)
      is otherwise -> p
 
   lw-shl64 : LState, Integer, Integer -> LRes
@@ -289,6 +291,40 @@ Section: Arithmetic
     else when p.val
      is LInt (d) -> lw-res (lw-emit p.st (LoDivPow2 d sum a k carry)) (LInt d)
      is otherwise -> p
+
+  lw-div-var : LState, IRExpr, IRExpr -> LRes
+  lw-div-var (st) (x) (y) =
+    let rx = lower-expr st x
+    in if lw-is-fail rx.val then rx
+    else let ry = lower-expr rx.st y
+    in if lw-is-fail ry.val then ry
+    else let a = lw-int-reg rx.val
+    in let b = lw-int-reg ry.val
+    in if a < 0 | b < 0 then lw-fail ry.st "operand"
+    else lw-div-var-take ry.st a b (lw-div-checks y) []
+
+  lw-div-var-take : LState, Integer, Integer, Integer, List Integer -> LRes
+  lw-div-var-take (st) (a) (b) (check) (got) =
+    if list-length got == 4 then lw-div-var-emit st a b check got
+    else let p = lw-pair st
+    in when p.val
+     is LInt (r) -> lw-div-var-take p.st a b check (got & [r])
+     is otherwise -> p
+
+  lw-div-var-emit : LState, Integer, Integer, Integer, List Integer -> LRes
+  lw-div-var-emit (st) (a) (b) (check) (got) =
+    let q = lw-free-pred st.busy-preds 0
+    in if q > 6 then lw-fail st "predicates"
+    else let p = lw-pair st
+    in when p.val
+     is LInt (d) -> lw-res (lw-emit p.st (LoDivVar d a b (list-at got 0) (list-at got 1) (list-at got 2) (list-at got 3) q check)) (LInt d)
+     is otherwise -> p
+
+  lw-div-checks : IRExpr -> Integer
+  lw-div-checks (e) =
+    when e
+     is IrIntLit (v) (sp) -> (if v == 0 then 1 else 0) + (if v == -1 then 2 else 0)
+     is otherwise -> 3
 
   lw-log2 : Integer, Integer -> Integer
   lw-log2 (v) (k) =
@@ -340,7 +376,7 @@ Section: Arithmetic
     let k = lw-pow2-lit y
     in when op
      is IrMulInt -> if k >= 0 then lw-scaled st x k else if lw-pow2-lit x >= 0 then lw-scaled st y (lw-pow2-lit x) else lw-binary-2 st op x y
-     is IrDivInt -> if k >= 0 then lw-div-pow2 st x k else lw-binary-2 st op x y
+     is IrDivInt -> if k >= 0 then lw-div-pow2 st x k else lw-div-var st x y
      is otherwise -> lw-binary-2 st op x y
 
   lw-scaled : LState, IRExpr, Integer -> LRes
@@ -505,14 +541,6 @@ Section: Control
     else lw-stmts (lw-with-next rv.st st.regs) lp tail stmts (i + 1) LNone m0 bound
 
 Section: Loops
-
- A call in tail position to the function being lowered, the kernel itself or
- an inlined helper that names itself, is a loop: its arguments move into the
- function's parameter registers and a branch, under the guard of the arm it
- sits in, returns to the head. An argument that is another parameter's
- register is copied out first, so no move overwrites a value a later move
- reads. An inlined loop's arguments are copied into registers of its own, so
- the loop never writes its caller's. Any other self call is refused.
 
   lw-tail : LState, LLoop, IRExpr -> LRes
   lw-tail (st) (lp) (e) =
@@ -701,11 +729,6 @@ Section: Calls
     in when p.val
      is LInt (d) -> lw-res (lw-emit (lw-emit p.st (LoFop k d (list-at la.regs 0) (list-at la.regs (list-length la.regs - 1)))) (LoMovReg (d + 1) 255)) (LInt d)
      is otherwise -> p
-
- The narrow forms take a byte address. A narrow load is zero-extended: its
- high word is written 0. A shared address is the low word of its pair, an
- offset in the block's shared window, where our layout puts the kernel's
- shared buffer at 0 (shared-base).
 
   lw-shared-load : LState, List IRExpr, Integer -> LRes
   lw-shared-load (st) (args) (w) =
@@ -914,10 +937,6 @@ Section: WMMA
     in let b0 = 248 - 4 * (lw-imin u.b 7 + 1)
     in let a0 = b0 - 4 * (lw-imin u.a 7 + 1)
     in LFrag { c0 = a0 - 8 * (lw-imin u.c 7 + 1), a0 = a0, b0 = b0 }
-
- A WMMA call's temporaries (the lane, its address arithmetic, the halves it
- packs) are dead once it has emitted, its result being in fragment registers:
- the register cursor returns to where the call began, and its value is 0.
 
   lw-wmma-scope : LState, LRes -> LRes
   lw-wmma-scope (before) (r) =
@@ -1145,9 +1164,11 @@ Section: Selection
      is LoMovCb (r) (off) -> s52-one acc g (SMov r (SrcCb 0 off))
      is LoSys (r) (id) -> s52-one acc g (SS2r r id)
      is LoAdd64 (d) (a) (b) (neg) (carry) -> s52-one (s52-one acc g (SIaddc d a (SrcReg b) (1 + 8 * neg))) g (SIaddc (d + 1) (a + 1) (SrcReg (b + 1)) (2 + 8 * neg))
+     is LoAdd64Wide (d) (a) (b) -> s52-one (s52-one acc g (SIaddc d a (SrcReg b) 1)) g (SIaddc (d + 1) (a + 1) (SrcReg (b + 1)) 2)
      is LoShl64 (d) (a) (k) -> s52-one (s52-one acc g (SShf 0 d 255 (SrcImm k) a 0 3 0)) g (SShf 0 (d + 1) a (SrcImm k) (a + 1) 0 3 0)
      is LoMul64 (d) (a) (b) -> acc
      is LoDivPow2 (d) (t) (a) (k) (carry) -> acc
+     is LoDivVar (d) (a) (b) (r) (m) (c) (t) (p) (check) -> acc
      is LoCmp64 (q) (c) (a) (b) (outer) -> s52-one (s52-one acc g (SIaddc 255 a (SrcReg b) 9)) g (SIsetpc q c 0 1 (a + 1) (SrcReg (b + 1)) 0 outer 0)
      is LoLoad64 (d) (addr) -> s52-one acc g (SLdg d addr 0 64)
      is LoStore64 (addr) (v) -> s52-one acc g (SStg addr 0 v 64)
@@ -1167,15 +1188,13 @@ Section: Selection
      is LoBra (l) (name) -> acc
      is LoExit -> s52-one acc g SExit
 
- A 64-bit multiply other than by a power of two has no SM 5.2 form here: built
- from XMAD it could not be graded for what it computes before stage 4.
-
   s52-refusal : List LInsn, Integer -> Text
   s52-refusal (ops) (k) =
     if k >= list-length ops then ""
     else when (list-at ops k).op
      is LoMul64 (d) (a) (b) -> "multiply"
      is LoDivPow2 (d) (t) (a) (j) (carry) -> "divide"
+     is LoDivVar (d) (a) (b) (r) (m) (c) (t) (p) (check) -> "divide"
      is LoBra (l) (name) -> "recursion " & name
      is LoLoadN (d) (addr) (w) -> "narrow memory"
      is LoStoreN (addr) (v) (w) -> "narrow memory"

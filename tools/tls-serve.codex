@@ -231,8 +231,9 @@ Section: The Connection
   echo-back (ep) (ts) =
     let payload = tls-ep-app-in ep
     in let step = tls-ep-send-app ep payload
+    in let bye = tls-ep-close-notify (step.tes-ep)
     in act
-      ts1 <- send-all ts (step.tes-out) 0
+      ts1 <- send-all ts ((step.tes-out) & (bye.tes-out)) 0
       ts2 <- net-io-close ts1
       let verdict = "echoed " & show (list-length payload)
       in verdict
@@ -258,11 +259,29 @@ Section: Entry
  did, and the symptom was a handshake timeout with a guest sitting at
  "listening".
 
+ A connection's endpoints, records and verdict all lie above the mark taken before it is accepted, its 32 MiB
+ transport receive buffer the largest, so the heap goes back to the mark after the verdict is printed. The one thing that outlives the heap is the transport arena free list, whose head is a
+ process-table word (`NetCompact.codex`, The Pool) that `transport-release` links a set into at close: a set carved
+ above the mark and released there would be handed to the next connection after the restore reclaimed it (every
+ second connection failed that way). So one set is carved below the mark first, as `WebServer` does, and the head
+ is put back with the restore. The line reports the mark: the same for every connection.
+
   serve-loop : Integer -> [Network.Read, Network.Write, Console.Write] Integer
-  serve-loop (count) = act
+  serve-loop (count) = serve-loop-pool count (nc-pool-cell process-get-pid)
+
+  serve-loop-pool : Integer, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop-pool (count) (cell) = serve-loop-warm count cell (nc-set-release (nc-set-acquire cell))
+
+  serve-loop-warm : Integer, Integer, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop-warm (count) (cell) (warm) = serve-loop-from count cell (peek-qword cell 0) __heap-save
+
+  serve-loop-from : Integer, Integer, Integer, Integer -> [Network.Read, Network.Write, Console.Write] Integer
+  serve-loop-from (count) (cell) (head) (mark) = act
     verdict <- serve-one 0
-    print-line-uni ("tls-serve " & show count & ": " & verdict)
-    serve-loop (count + 1)
+    print-line-uni ("tls-serve " & show count & ": " & verdict & " heap-mark=" & show mark)
+    let pool = poke-qword cell 0 head
+    in let restored = __heap-restore mark
+    in serve-loop (count + 1)
   end
 
   opening : [Network.Read, Network.Write, Console.Write] Nothing = act

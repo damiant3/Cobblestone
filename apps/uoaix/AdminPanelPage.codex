@@ -109,13 +109,13 @@ Chapter: AdminPanelPage
   ap-arr : Text -> List Text
   ap-arr (t) = json-parse-obj (if text-length (text-trim t) == 0 | t == "null" then "[]" else t)
   ap-len : List Text -> Integer
-  ap-len (rows) = text-to-int (json-obj-field rows "length")
+  ap-len (rows) = (text-to-int-or (json-obj-field rows "length") 0)
   ap-at : List Text, Integer -> List Text
   ap-at (rows) (i) = ap-obj (json-obj-field rows (show i))
   ap-f : List Text, Text -> Text
   ap-f (o) (key) = json-obj-field o key
   ap-num : List Text, Text -> Integer
-  ap-num (o) (key) = text-to-int (json-obj-field o key)
+  ap-num (o) (key) = (text-to-int-or (json-obj-field o key) 0)
   ap-yes : List Text, Text -> Boolean
   ap-yes (o) (key) = let v = json-obj-field o key in text-length v > 0 & v /= "false" & v /= "0"
   ap-set : Text, Text -> Integer
@@ -131,7 +131,7 @@ Chapter: AdminPanelPage
   ap-value : Text -> Text
   ap-value (id) = dom-get-value (dom-get id)
   ap-int : Text -> Integer
-  ap-int (id) = text-to-int (text-trim (dom-get-value (dom-get id)))
+  ap-int (id) = (text-to-int-or (text-trim (dom-get-value (dom-get id))) 0)
   ap-cells : DomElement, List Text, Integer -> Integer
   ap-cells (row) (values) (i) = if i >= list-length values then 0
     else let cell = dom-append row (dom-set-text (dom-create "td") (list-at values i))
@@ -152,7 +152,7 @@ Chapter: AdminPanelPage
   ap-pct (bp) = show (bp / 100) & "." & text-pad-left (show (int-mod bp 100)) 2 "0"
   ap-bp-of : Text -> Integer
   ap-bp-of (t) = let parts = text-split (text-trim t) "."
-    in text-to-int (list-at parts 0) * 100 + (if list-length parts < 2 then 0 else text-to-int (substring (list-at parts 1 & "00") 0 2))
+    in (text-to-int-or (list-at parts 0) 0) * 100 + (if list-length parts < 2 then 0 else (text-to-int-or (substring (list-at parts 1 & "00") 0 2) 0))
   ap-hex : Integer -> Text
   ap-hex (n) = if n < 16 then substring "0123456789abcdef" n 1 else ap-hex (n / 16) & substring "0123456789abcdef" (int-mod n 16) 1
   ap-join : List Text, Integer, Text -> Text
@@ -206,7 +206,7 @@ Chapter: AdminPanelPage
   ap-ints : Text -> List Integer
   ap-ints (json) = let rows = ap-arr json in ap-ints-of rows 0 (ap-len rows) []
   ap-ints-of : List Text, Integer, Integer, List Integer -> List Integer
-  ap-ints-of (rows) (i) (n) (out) = if i >= n then out else ap-ints-of rows (i + 1) n (list-push out (text-to-int (json-obj-field rows (show i))))
+  ap-ints-of (rows) (i) (n) (out) = if i >= n then out else ap-ints-of rows (i + 1) n (list-push out ((text-to-int-or (json-obj-field rows (show i)) 0)))
   ap-points : List Integer, List Integer, Integer, List DataPoint -> List DataPoint
   ap-points (hours) (values) (i) (out) = if i >= list-length hours | i >= list-length values then out
     else ap-points hours values (i + 1) (list-push out (data-point (list-at hours i) (ap-floor0 (list-at values i))))
@@ -349,7 +349,7 @@ Chapter: AdminPanelPage
     in let b = ap-helps h 0 (ap-len h)
     in if ap-len r + ap-len h > 0 then 0 else ap-empty "support" "No reports or help pages awaiting review."
   ap-review : Text -> Integer
-  ap-review (id) = let n = text-to-int (substring id 7 (text-length id - 7))
+  ap-review (id) = let n = (text-to-int-or (substring id 7 (text-length id - 7)) 0)
     in ap-req ("{\"command\":\"report-read\",\"id\":" & show n & "}") (ap-reviewed n)
   ap-reviewed : Integer, Text -> Integer
   ap-reviewed (n) (answer) = let r = ap-obj answer
@@ -358,7 +358,7 @@ Chapter: AdminPanelPage
     in let cleared = ap-clear "report-actions"
     in let b = dom-append (dom-get "report-actions") (dom-on-click (ap-el "button" ("ack-" & show n) ("Acknowledge #" & show n)) ap-ack) in 0
   ap-ack : Text -> Integer
-  ap-ack (id) = ap-req ("{\"command\":\"report-ack\",\"id\":" & show (text-to-int (substring id 4 (text-length id - 4))) & "}") ap-acked
+  ap-ack (id) = ap-req ("{\"command\":\"report-ack\",\"id\":" & show ((text-to-int-or (substring id 4 (text-length id - 4)) 0)) & "}") ap-acked
   ap-acked : Text -> Integer
   ap-acked (answer) = let shown = ap-set "report-detail" (ap-said answer "Acknowledged and logged. No disciplinary action follows.")
     in let cleared = ap-clear "report-actions"
@@ -514,7 +514,7 @@ Chapter: AdminPanelPage
     in if ap-num t "amount" == 0 then ap-totals rows (i + 1) shown
     else let r = ap-row "ledger-totals" [ap-f t "kind", ap-coin (ap-f t "metal"), ap-f t "amount"] in ap-totals rows (i + 1) (shown + 1)
   ap-ore-total : Text, Text -> Integer
-  ap-ore-total (metal) (amount) = if text-to-int amount == 0 then 0 else let r = ap-row "ledger-totals" ["mining tax", metal, amount] in 1
+  ap-ore-total (metal) (amount) = if (text-to-int-or amount 0) == 0 then 0 else let r = ap-row "ledger-totals" ["mining tax", metal, amount] in 1
   ap-keys : List Text, Integer, Integer, List Integer -> List Integer
   ap-keys (rows) (i) (base) (out) = if i >= ap-len rows then out
     else ap-keys rows (i + 1) base (list-push out (ap-num (ap-at rows i) "hour" * 2000000 + base + i))
@@ -551,7 +551,7 @@ Chapter: AdminPanelPage
     else let b = dom-append (dom-get "account-list") (dom-on-click (dom-add-class (ap-el "button" ("acct-" & ap-f a "purse") (ap-f a "who" & ", " & ap-account-kind (ap-num a "kind") & ", " & ap-f a "gold" & " gold")) "account-pick") ap-account-pick)
     in ap-account-picks rows (i + 1) kind (shown + 1)
   ap-account-pick : Text -> Integer
-  ap-account-pick (id) = ap-req ("{\"command\":\"account\",\"purse\":" & show (text-to-int (substring id 5 (text-length id - 5))) & "}") ap-account
+  ap-account-pick (id) = ap-req ("{\"command\":\"account\",\"purse\":" & show ((text-to-int-or (substring id 5 (text-length id - 5)) 0)) & "}") ap-account
   ap-account : Text -> Integer
   ap-account (answer) = let d = ap-obj answer
     in if not (ap-yes d "available") then ap-msg "That account is unavailable."
@@ -661,7 +661,7 @@ Chapter: AdminPanelPage
     else let b = ap-button grid ("pw-" & show (list-at ap-power-bits i)) (list-at ap-power-names i) ap-power-toggle
     in ap-power-buttons grid (i + 1)
   ap-power-toggle : Text -> Integer
-  ap-power-toggle (id) = let bit = text-to-int (substring id 3 (text-length id - 3))
+  ap-power-toggle (id) = let bit = (text-to-int-or (substring id 3 (text-length id - 3)) 0)
     in let mask = state-get "gm-mask"
     in let s = state-set "gm-mask" (if ap-has mask bit then mask - bit else mask + bit)
     in ap-power-paint 0

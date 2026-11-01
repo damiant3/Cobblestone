@@ -1,0 +1,55 @@
+Chapter: ClockEntryChoice
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone (Zone, zone-from-db)
+  cites Works chapter GopClock
+  cites Works chapter GopZone
+  cites Works chapter GopZones (zone-find)
+
+Section: Fixtures
+
+  enter : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  enter (ks) (y) (mo) (d) (h) (mi) =
+    let a = poke-32 ks clk-h-cell h
+    in let b = poke-32 ks clk-mi-cell mi
+    in let c = poke-32 ks clk-s-cell 0
+    in let e = poke-32 ks clk-d-cell d
+    in let f = poke-32 ks clk-mo-cell mo
+    in let g = poke-32 ks clk-y-cell (y - 2000)
+    in clk-choice-set ks clk-choice-none 0 0
+
+  kind-text : Integer -> Text
+  kind-text (k) =
+    if k == clk-choice-exact then "exact" else if k == clk-choice-fold then "twice" else if k == clk-choice-gap then "skipped" else "none"
+
+  resolved : Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  resolved (ks) (y) (mo) (d) (h) (mi) =
+    let e = enter ks y mo d h mi
+    in let k = clk-resolve ks (clk-entered-local ks)
+    in kind-text k & ": " & clk-choice-label ks (clk-choice-a ks) & (if k == clk-choice-fold then " | " & clk-choice-label ks (clk-choice-b ks) else "")
+
+  utc-hm : Integer -> Text
+  utc-hm (u) = let t = int-mod u 86400 in clk-hms (t / 3600) (int-mod t 3600 / 60) (int-mod t 60) & " UTC"
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let london = zone-from-db (tz-parse tz-sources) "Europe/London"
+    in let ks = alloc-zeroed clk-block-bytes 64
+    in let z = poke-32 ks clk-zid-cell (zone-find "Europe/London")
+    in let f = clk-tz-apply ks london (clk-civil-seconds 12 0 0 2026 10 20) False
+    in act
+      print-line-uni ("2026-10-25 01:30 : " & resolved ks 2026 10 25 1 30)
+      print-line-uni ("  first in utc   : " & utc-hm (clk-choice-a ks) & ", second " & utc-hm (clk-choice-b ks))
+      print-line-uni ("2027-03-28 01:30 : " & resolved ks 2027 3 28 1 30)
+      print-line-uni ("  after in utc   : " & utc-hm (clk-choice-a ks))
+      print-line-uni ("2026-07-01 12:00 : " & resolved ks 2026 7 1 12 0)
+      print-line-uni ("  in utc         : " & utc-hm (clk-choice-a ks))
+      print-line-uni ("2026-01-15 12:00 : " & resolved ks 2026 1 15 12 0)
+      print-line-uni ("2026-10-25 00:59 : " & resolved ks 2026 10 25 0 59)
+      print-line-uni ("2026-10-25 02:00 : " & resolved ks 2026 10 25 2 0)
+      print-line-uni ("fields of utc    : " & show (clk-fields-of-utc ks (clk-civil-seconds 23 59 58 2026 12 31)) & " " & show (peek-32 ks clk-y-cell) & "-" & show (peek-32 ks clk-mo-cell) & "-" & show (peek-32 ks clk-d-cell) & " " & show (peek-32 ks clk-h-cell) & ":" & show (peek-32 ks clk-mi-cell) & ":" & show (peek-32 ks clk-s-cell))
+    end

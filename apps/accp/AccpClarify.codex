@@ -1,0 +1,450 @@
+Chapter: AccpClarify
+  cites Accp chapter AccpJson
+  cites OS chapter Clarifier
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+
+Section: Lexicon
+
+  ac-referent-set : Text
+  ac-referent-set = " it its this these those they them their theirs he him his she her hers thing things stuff someone somebody something "
+
+  ac-domain-set : Text
+  ac-domain-set = " etc cases situations otherwise whatever somewhere somehow "
+
+  ac-cardinality-set : Text
+  ac-cardinality-set = " some many few most several lots plenty various numerous often always never sometimes usually rarely seldom "
+
+  ac-threshold-set : Text
+  ac-threshold-set = " more less fewer better worse bigger smaller larger higher lower faster slower cheaper enough too slow fast quick quickly slowly big small large high low cheap expensive early late long short good bad "
+
+  ac-modality-set : Text
+  ac-modality-set = " may might should could would ought "
+
+  ac-connective-set : Text
+  ac-connective-set = " so "
+
+  ac-back-references : List Text
+  ac-back-references = ["like we talked about", "as we talked about", "like we discussed", "as we discussed", "as discussed", "as agreed", "as before", "like before", "like last time", "same as last time", "as usual", "the usual", "you know"]
+
+  ac-technical-set : Text
+  ac-technical-set = " api function server database compile compiler query protocol parameter variable integer boolean schema endpoint json http https tcp udp cpu memory kernel thread runtime struct array pointer stack heap "
+
+  ac-temporal-set : Text
+  ac-temporal-set = " soon later lately recently eventually earlier sometime someday meanwhile afterwards since while "
+
+  ac-in : Text, Text -> Boolean
+  ac-in (set) (w) = text-contains set (" " & w & " ")
+
+  ac-word-kind : Text -> Integer
+  ac-word-kind (w) =
+    if ac-in ac-referent-set w then 0
+    else if ac-in ac-domain-set w then 1
+    else if ac-in ac-cardinality-set w then 2
+    else if ac-in ac-threshold-set w then 3
+    else if ac-in ac-temporal-set w then 4
+    else if ac-in ac-modality-set w then 5
+    else if ac-in ac-connective-set w then 6
+    else 0 - 1
+
+  ac-kind : Integer -> QuestionKind
+  ac-kind (k) =
+    if k == 0 | k == 7 | k == 8 then ReferentQuestion
+    else if k == 1 then DomainQuestion
+    else if k == 2 then CardinalityQuestion
+    else if k == 3 then ThresholdQuestion
+    else if k == 4 then TemporalQuestion
+    else if k == 5 then ModalityQuestion
+    else ConnectiveQuestion
+
+  ac-gap : Integer, Integer -> Text
+  ac-gap (k) (sentence) =
+    "Sentence " & show sentence
+      & (if k == 0 then " names no antecedent"
+      else if k == 1 then " declares no domain"
+      else if k == 2 then " binds no count"
+      else if k == 3 then " states no baseline"
+      else if k == 4 then " fixes no time"
+      else if k == 5 then " leaves open whether it is possible, permitted or required"
+      else if k == 6 then " leaves open whether it is a consequence or a purpose"
+      else if k == 7 then " points back to something said earlier"
+      else " names it for the first time")
+
+  ac-register-named : Text -> Integer
+  ac-register-named (name) =
+    if name == "child" then 0
+    else if name == "casual" then 1
+    else if name == "technical" then 2
+    else if name == "formal" then 3
+    else 0 - 1
+
+  ac-register : Integer -> Register
+  ac-register (r) =
+    if r == 0 then Child
+    else if r == 1 then Casual
+    else if r == 2 then Technical
+    else Formal
+
+Section: Scanning
+
+  AcSpan = record { start : Integer, length : Integer }
+  AcNode = record { kind : Integer, word : Text, sentence : Integer }
+  AcSolid = record { sentence : Integer, text : Text }
+  AcTally = record {
+    nodes : List AcNode,
+    total : Integer,
+    solid : List AcSolid,
+    sentences : Integer,
+    words : Integer,
+    letters : Integer,
+    seen : List Text,
+    last : List Text,
+    before : List Text,
+    last-names : List Text,
+    before-names : List Text,
+    technical : Integer
+  }
+
+ At most 64 questions and 64 solid sentences are returned, and the text is
+ capped at 16384 characters: the Clarifier's insertion sort is quadratic in
+ the node count, and an agent acts on the first question, not the 500th.
+
+  ac-node-cap : Integer
+  ac-node-cap = 64
+
+  ac-text-cap : Integer
+  ac-text-cap = 16384
+
+  ac-terminal : Integer -> Boolean
+  ac-terminal (c) = c == char-code-at "." 0 | c == char-code-at "!" 0 | c == char-code-at "?" 0 | c == char-code-at "\n" 0
+
+  ac-sentences : Text, Integer, Integer, List AcSpan -> List AcSpan
+  ac-sentences (s) (i) (start) (acc) =
+    if i >= text-length s then
+      (if i > start then list-push acc (AcSpan { start = start, length = i - start }) else acc)
+    else if ac-terminal (char-code-at s i) then
+      ac-sentences s (i + 1) (i + 1) (list-push acc (AcSpan { start = start, length = i + 1 - start }))
+    else ac-sentences s (i + 1) start acc
+
+  ac-letter : Text, Integer -> Boolean
+  ac-letter (s) (i) = is-letter (code-to-char (char-code-at s i))
+
+  ac-space : Text, Integer -> Boolean
+  ac-space (s) (i) = is-whitespace (code-to-char (char-code-at s i))
+
+  ac-trim-start : Text, Integer -> Integer
+  ac-trim-start (s) (i) = if i < text-length s & ac-space s i then ac-trim-start s (i + 1) else i
+
+  ac-trim-end : Text, Integer, Integer -> Integer
+  ac-trim-end (s) (lo) (hi) = if hi > lo & ac-space s (hi - 1) then ac-trim-end s lo (hi - 1) else hi
+
+  ac-trim : Text -> Text
+  ac-trim (s) =
+    let lo = ac-trim-start s 0
+    in let hi = ac-trim-end s lo (text-length s)
+    in substring s lo (hi - lo)
+
+  ac-word-at : Text, Integer, Integer -> Text
+  ac-word-at (s) (start) (stop) = text-to-lower (substring s start (stop - start))
+
+  ac-words : Text, Integer, Integer, List Text -> List Text
+  ac-words (s) (i) (start) (acc) =
+    if i >= text-length s then
+      (if start >= 0 then list-push acc (ac-word-at s start i) else acc)
+    else if ac-letter s i then ac-words s (i + 1) (if start >= 0 then start else i) acc
+    else if start >= 0 then ac-words s (i + 1) (0 - 1) (list-push acc (ac-word-at s start i))
+    else ac-words s (i + 1) (0 - 1) acc
+
+  ac-seen : List AcNode, Text, Integer -> Boolean
+  ac-seen (ns) (w) (i) =
+    if i >= list-length ns then False
+    else if (list-at ns i).word == w then True
+    else ac-seen ns w (i + 1)
+
+  ac-determiner-set : Text
+  ac-determiner-set = " the a an my your our "
+
+  ac-candidate-set : Text
+  ac-candidate-set = " the a an my your our his her their its this that these those "
+
+  ac-candidates : List Text, Integer, Integer -> Integer
+  ac-candidates (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else let w = list-at ws i
+    in ac-candidates ws (i + 1) (if ac-in ac-candidate-set w | ac-in ac-referent-set w then acc + 1 else acc)
+
+  ac-adjective-set : Text
+  ac-adjective-set = " new old red blue green black white main local remote broken empty full "
+
+  ac-head : List Text, Integer -> Text
+  ac-head (ws) (i) =
+    if i + 1 >= list-length ws then ""
+    else if ac-in ac-determiner-set (list-at ws i) then ac-head-noun ws (i + 1)
+    else ac-head ws (i + 1)
+
+  ac-head-noun : List Text, Integer -> Text
+  ac-head-noun (ws) (j) =
+    if j >= list-length ws then ""
+    else let n = list-at ws j
+    in if ac-word-kind n == 3 | ac-in ac-adjective-set n then ac-head-noun ws (j + 1)
+    else if ac-word-kind n < 0 & ac-in ac-not-noun-set n == False then n
+    else ""
+
+  ac-antecedent : List Text, List Text -> Text
+  ac-antecedent (prev) (before) =
+    let c = ac-candidates prev 0 0
+    in if c == 1 then ac-head prev 0
+    else if c == 0 & ac-candidates before 0 0 == 1 then ac-head before 0
+    else ""
+
+  ac-starter-set : Text
+  ac-starter-set = " i today yesterday tomorrow then now here there yes no please thanks hello hi ok okay first next finally also however nothing nobody everyone everything we you "
+
+  ac-raw-words : Text, Integer, Integer, List Text -> List Text
+  ac-raw-words (s) (i) (start) (acc) =
+    if i >= text-length s then
+      (if start >= 0 then list-push acc (substring s start (i - start)) else acc)
+    else if ac-letter s i then ac-raw-words s (i + 1) (if start >= 0 then start else i) acc
+    else if start >= 0 then ac-raw-words s (i + 1) (0 - 1) (list-push acc (substring s start (i - start)))
+    else ac-raw-words s (i + 1) (0 - 1) acc
+
+  ac-name-word : Text -> Boolean
+  ac-name-word (raw) =
+    let w = text-to-lower raw
+    in is-upper (code-to-char (char-code-at raw 0)) & ac-word-kind w < 0 & ac-in ac-candidate-set w == False
+      & ac-in ac-starter-set w == False & ac-in ac-not-noun-set w == False
+
+  ac-names : List Text, Integer, List Text -> List Text
+  ac-names (raw) (i) (acc) =
+    if i >= list-length raw then acc
+    else let r = list-at raw i
+    in let w = text-to-lower r
+    in ac-names raw (i + 1) (if ac-name-word r & ac-member acc w 0 (list-length acc) == False then list-push acc w else acc)
+
+  ac-sole-name : List Text, List Text -> Text
+  ac-sole-name (prev) (before) =
+    if list-length prev == 1 then list-at prev 0
+    else if list-length prev == 0 & list-length before == 1 then list-at before 0
+    else ""
+
+  ac-plural : Text -> Boolean
+  ac-plural (w) =
+    let n = text-length w
+    in n >= 2 & substring w (n - 1) 1 == "s" & substring w (n - 2) 1 /= "s"
+
+  ac-bound : Text, Text, Text -> Boolean
+  ac-bound (ante) (name) (w) =
+    (ante /= "" & ((ac-in " it its " w & ac-plural ante == False) | (ac-in " they them their theirs " w & ac-plural ante)))
+      | (name /= "" & ac-in " he him his she her hers " w)
+
+  ac-flags : List Text, Integer, Integer, Text, Text, List AcNode -> List AcNode
+  ac-flags (ws) (i) (sentence) (ante) (name) (acc) =
+    if i >= list-length ws then acc
+    else let w = list-at ws i
+    in let k = ac-word-kind w
+    in if k < 0 then ac-flags ws (i + 1) sentence ante name acc
+    else if k == 0 & ac-bound ante name w then ac-flags ws (i + 1) sentence ante name acc
+    else if ac-seen acc w 0 then ac-flags ws (i + 1) sentence ante name acc
+    else ac-flags ws (i + 1) sentence ante name (list-push acc (AcNode { kind = k, word = w, sentence = sentence }))
+
+  ac-spaced : List Text -> Text
+  ac-spaced (ws) = " " & text-concat-list (for w in ws -> w & " ")
+
+  ac-back-flags : Text, List Text, Integer, Integer, List AcNode -> List AcNode
+  ac-back-flags (spaced) (phrases) (sentence) (i) (acc) =
+    if i >= list-length phrases then acc
+    else let p = list-at phrases i
+    in if text-contains spaced (" " & p & " ") & ac-seen acc p 0 == False then
+      ac-back-flags spaced phrases sentence (i + 1) (list-push acc (AcNode { kind = 7, word = p, sentence = sentence }))
+    else ac-back-flags spaced phrases sentence (i + 1) acc
+
+  ac-member : List Text, Text, Integer, Integer -> Boolean
+  ac-member (ws) (w) (i) (stop) =
+    if i >= stop then False
+    else if list-at ws i == w then True
+    else ac-member ws w (i + 1) stop
+
+  ac-not-noun-set : Text
+  ac-not-noun-set = " other same first last next only whole rest end way one ones a an the "
+
+  ac-unique-set : Text
+  ac-unique-set = " sun moon earth sky world weather sea ocean wind internet "
+
+  ac-first-flags : List Text, List Text, Integer, Integer, List AcNode -> List AcNode
+  ac-first-flags (ws) (seen) (sentence) (i) (acc) =
+    if i + 1 >= list-length ws then acc
+    else let n = list-at ws (i + 1)
+    in let label = "the " & n
+    in if list-at ws i == "the" & ac-word-kind n < 0 & ac-in ac-not-noun-set n == False & ac-in ac-unique-set n == False
+      & ac-member seen n 0 (list-length seen) == False & ac-member ws n 0 (i + 1) == False & ac-seen acc label 0 == False then
+      ac-first-flags ws seen sentence (i + 1) (list-push acc (AcNode { kind = 8, word = label, sentence = sentence }))
+    else ac-first-flags ws seen sentence (i + 1) acc
+
+  ac-technical-words : List Text, Integer, Integer -> Integer
+  ac-technical-words (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else ac-technical-words ws (i + 1) (if ac-in ac-technical-set (list-at ws i) then acc + 1 else acc)
+
+  ac-code-mark : Integer -> Boolean
+  ac-code-mark (c) =
+    (c >= char-code-at "0" 0 & c <= char-code-at "9" 0) | c == char-code-at "_" 0 | c == char-code-at "/" 0
+      | c == char-code-at "=" 0 | c == char-code-at "(" 0
+
+  ac-code-tokens : Text, Integer, Boolean, Boolean, Integer -> Integer
+  ac-code-tokens (s) (i) (inside) (marked) (count) =
+    if i >= text-length s then (if inside & marked then count + 1 else count)
+    else if ac-space s i then
+      ac-code-tokens s (i + 1) False False (if inside & marked then count + 1 else count)
+    else ac-code-tokens s (i + 1) True (marked | ac-code-mark (char-code-at s i)) count
+
+  ac-letters : List Text, Integer, Integer -> Integer
+  ac-letters (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else ac-letters ws (i + 1) (acc + text-length (list-at ws i))
+
+  ac-append-capped : List AcNode, List AcNode, Integer -> List AcNode
+  ac-append-capped (acc) (more) (i) =
+    if i >= list-length more | list-length acc >= ac-node-cap then acc
+    else ac-append-capped (list-push acc (list-at more i)) more (i + 1)
+
+  ac-tally : Text, List AcSpan, Integer, AcTally -> AcTally
+  ac-tally (s) (spans) (i) (t) =
+    if i >= list-length spans then t
+    else let sp = list-at spans i
+    in let body = ac-trim (substring s (sp.start) (sp.length))
+    in let ws = ac-words body 0 (0 - 1) []
+    in if list-length ws == 0 then ac-tally s spans (i + 1) t
+    else let n = t.sentences + 1
+    in let word-flags = ac-flags ws 0 n (ac-antecedent (t.last) (t.before)) (ac-sole-name (t.last-names) (t.before-names)) []
+    in let back = ac-back-flags (ac-spaced ws) ac-back-references n 0 word-flags
+    in let flags = ac-first-flags ws (t.seen) n 0 back
+    in let solid = if list-length flags == 0 & list-length (t.solid) < ac-node-cap then
+      t.solid & [AcSolid { sentence = n, text = body }]
+    else t.solid
+    in ac-tally s spans (i + 1) (AcTally {
+      nodes = ac-append-capped (t.nodes) flags 0,
+      total = t.total + list-length flags,
+      solid = solid,
+      sentences = n,
+      words = t.words + list-length ws,
+      letters = t.letters + ac-letters ws 0 0,
+      seen = t.seen & ws,
+      last = ws,
+      before = t.last,
+      last-names = ac-names (ac-raw-words body 0 (0 - 1) []) 0 [],
+      before-names = t.last-names,
+      technical = t.technical + ac-technical-words ws 0 0 + ac-code-tokens body 0 False False 0
+    })
+
+  ac-scan : Text -> AcTally
+  ac-scan (s) =
+    ac-tally s (ac-sentences s 0 0 []) 0 (AcTally {
+      nodes = [],
+      total = 0,
+      solid = [],
+      sentences = 0,
+      words = 0,
+      letters = 0,
+      seen = [],
+      last = [],
+      before = [],
+      last-names = [],
+      before-names = [],
+      technical = 0
+    })
+
+Section: Register
+
+ Thresholds: at least 2 technical tokens and at least 1 in every 10 words is
+ Technical (a token from ac-technical-set, or one holding a digit, _, /, = or
+ an opening parenthesis); 3.9 letters a word or fewer is Child (the design's
+ child example measures 3.7, its adult example 5.5); 6.0 letters a word or
+ 25 words a sentence is Formal; the rest is Casual.
+
+  ac-detect : AcTally -> Integer
+  ac-detect (t) =
+    if t.words == 0 then 1
+    else let tenths = t.letters * 10 / t.words
+    in if t.technical >= 2 & t.technical * 10 >= t.words then 2
+    else if tenths <= 39 then 0
+    else if tenths >= 60 | t.words / t.sentences >= 25 then 3
+    else 1
+
+Section: Questions
+
+  ac-unresolved : AcNode -> UnresolvedNode
+  ac-unresolved (n) = UnresolvedNode {
+    kind = ac-kind (n.kind),
+    label = n.word,
+    ambiguity = ac-gap (n.kind) (n.sentence)
+  }
+
+  ac-of-priority : List AcNode, Integer, Integer, List AcNode -> List AcNode
+  ac-of-priority (ns) (p) (i) (acc) =
+    if i >= list-length ns then acc
+    else let n = list-at ns i
+    in if question-priority (ac-kind (n.kind)) == p then ac-of-priority ns p (i + 1) (list-push acc n)
+    else ac-of-priority ns p (i + 1) acc
+
+  ac-ordered : List AcNode -> List AcNode
+  ac-ordered (ns) =
+    ac-of-priority ns 0 0 [] & ac-of-priority ns 1 0 [] & ac-of-priority ns 2 0 []
+      & ac-of-priority ns 3 0 [] & ac-of-priority ns 4 0 [] & ac-of-priority ns 5 0 [] & ac-of-priority ns 6 0 []
+
+  ac-utterance : AcTally -> Utterance
+  ac-utterance (t) = Utterance {
+    solid = for s in (t.solid) -> SolidNode { label = "sentence " & show (s.sentence), description = s.text },
+    unresolved = for n in (t.nodes) -> ac-unresolved n
+  }
+
+Section: Answer
+
+  AcAnswer = record { ok : Boolean, body : Text }
+
+  ac-join : List Text -> Text
+  ac-join (parts) = ac-join-loop parts 0 []
+
+  ac-join-loop : List Text, Integer, List Text -> Text
+  ac-join-loop (parts) (i) (acc) =
+    if i >= list-length parts then text-concat-list acc
+    else ac-join-loop parts (i + 1) (list-push (if i == 0 then acc else list-push acc ",") (list-at parts i))
+
+  ac-node-json : AcNode, Register -> Text
+  ac-node-json (n) (reg) =
+    let u = ac-unresolved n
+    in "{\"kind\":" & aj-quote (question-kind-name (u.kind)) & ",\"word\":" & aj-quote (n.word)
+      & ",\"sentence\":" & show (n.sentence) & ",\"question\":" & aj-quote (format-question u reg) & "}"
+
+  ac-solid-json : AcSolid -> Text
+  ac-solid-json (s) = "{\"sentence\":" & show (s.sentence) & ",\"text\":" & aj-quote (s.text) & "}"
+
+  ac-first-question : Text -> Text
+  ac-first-question (text) =
+    if text-length text > ac-text-cap then ""
+    else let t = ac-scan text
+    in let ordered = ac-ordered (t.nodes)
+    in if list-length ordered == 0 then "" else format-question (ac-unresolved (list-at ordered 0)) (ac-register (ac-detect t))
+
+  ac-clarify : Text, Text -> AcAnswer
+  ac-clarify (text) (register-name-in) =
+    let requested = if register-name-in == "" then 0 - 1 else ac-register-named register-name-in
+    in if register-name-in /= "" & requested < 0 then AcAnswer { ok = False, body = "register must be child, casual, technical or formal" }
+    else if text-length text > ac-text-cap then AcAnswer { ok = False, body = "text exceeds 16384 characters" }
+    else let t = ac-scan text
+    in let r = if requested >= 0 then requested else ac-detect t
+    in let reg = ac-register r
+    in let result = clarify (ac-utterance t) reg
+    in let ordered = ac-ordered (t.nodes)
+    in AcAnswer {
+      ok = True,
+      body = "{\"status\":\"ok\",\"register\":" & aj-quote (register-name reg)
+        & ",\"register_source\":" & (if requested >= 0 then "\"requested\"" else "\"detected\"")
+        & ",\"sentences\":" & show (t.sentences)
+        & ",\"solid\":[" & ac-join (for s in (t.solid) -> ac-solid-json s) & "]"
+        & ",\"unresolved\":[" & ac-join (for n in ordered -> ac-node-json n reg) & "]"
+        & ",\"unresolved_total\":" & show (t.total)
+        & ",\"next_question\":" & aj-quote (result.next-question)
+        & ",\"fully_resolved\":" & (if result.fully-resolved then "true" else "false") & "}"
+    }
+
+Page 1

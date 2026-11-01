@@ -37,6 +37,24 @@ Section: Tests
     let req = http-parse-request [0, 0, 0]
     in "valid=" & show-bool (req.valid)
 
+ A seeded single-byte mutation sweep over a valid request: every byte is
+ flipped and run through http-parse-request, which must return (valid or not)
+ and never read past the bytes.
+
+  ht-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ht-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else ht-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  ht-sweep : List Integer, Integer, Integer, Integer -> Integer
+  ht-sweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else let req = http-parse-request (ht-mutate base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n [])
+    in ht-sweep base (pos + 1) n (acc + (if req.valid then text-length (req.path) else 0))
+
+  test-sweep : Text =
+    "request-sweep completed=" & (if ht-sweep get-bytes 0 (list-length get-bytes) 0 >= 0 then "True" else "False")
+
   test-404 : Text =
     let r = http-parse-response nf-response
     in "status=" & show (r.status-code) & " Not Found body=" & r.body
@@ -47,4 +65,5 @@ Section: Tests
     print-line-uni test-parse-request
     print-line-uni test-invalid
     print-line-uni test-404
+    print-line-uni test-sweep
   end

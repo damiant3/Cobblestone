@@ -1,8 +1,6 @@
 Chapter: DateTime
   cites Foreword chapter Tuple
 
- We say:
-
 Section: Time Types
 
   Timestamp = unit family NanoStamp
@@ -112,18 +110,21 @@ Section: To Unix Timestamp
 Section: Day of Week
   day-of-week : Integer -> Integer
   day-of-week (unix-ts) =
-    let days = unix-ts / seconds-per-day
-    in (days + 4) / 7 * 7 - days - 4 + (days + 4)
+    let days = dt-floor-div unix-ts seconds-per-day
+    in (days + 4) - 7 * dt-floor-div (days + 4) 7
+
+  dt-floor-div : Integer, Integer -> Integer
+  dt-floor-div (a) (b) = if a >= 0 then a / b else 0 - ((0 - a + b - 1) / b)
 
   day-of-week-name : Integer -> Text
   day-of-week-name (dow) =
-    if dow == 0 then "Thu"
-    else if dow == 1 then "Fri"
-    else if dow == 2 then "Sat"
-    else if dow == 3 then "Sun"
-    else if dow == 4 then "Mon"
-    else if dow == 5 then "Tue"
-    else if dow == 6 then "Wed"
+    if dow == 0 then "Sun"
+    else if dow == 1 then "Mon"
+    else if dow == 2 then "Tue"
+    else if dow == 3 then "Wed"
+    else if dow == 4 then "Thu"
+    else if dow == 5 then "Fri"
+    else if dow == 6 then "Sat"
     else "?"
 
 Section: Formatting
@@ -172,3 +173,40 @@ Section: Month Names
     else "?"
 
 Page 1
+
+Section: Civil Time from Unix Seconds
+
+ Seconds since 1970-01-01 UTC to the proleptic Gregorian date and time
+ (H. Hinnant's civil_from_days), correct before 1970 as well.
+
+  dt-civil-of-unix : Integer -> DateTime
+  dt-civil-of-unix (secs) =
+    let days = dt-floor-div secs seconds-per-day
+    in let tod = secs - days * seconds-per-day
+    in let z = days + 719468
+    in let era = dt-floor-div z 146097
+    in let doe = z - era * 146097
+    in let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    in let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    in let mp = (5 * doy + 2) / 153
+    in let d = doy - (153 * mp + 2) / 5 + 1
+    in let m = if mp < 10 then mp + 3 else mp - 9
+    in DateTime {
+      year = yoe + era * 400 + (if m <= 2 then 1 else 0),
+      month = __narrow m,
+      day = __narrow d,
+      hour = __narrow (tod / 3600),
+      minute = __narrow ((tod - (tod / 3600) * 3600) / 60),
+      second = __narrow (tod - (tod / 60) * 60)
+    }
+
+ The X.509 validity clock (X509Chain x509-valid-at, TlsEndpoint cal-now):
+ YYYYMMDDHHMMSS in UTC as fourteen ASCII digit bytes.
+
+  unix-to-x509-now : Integer -> List Integer
+  unix-to-x509-now (secs) =
+    let c = dt-civil-of-unix secs
+    in dt-digits (c.year) 4 & dt-digits (c.month) 2 & dt-digits (c.day) 2 & dt-digits (c.hour) 2 & dt-digits (c.minute) 2 & dt-digits (c.second) 2
+
+  dt-digits : Integer, Integer -> List Integer
+  dt-digits (v) (n) = if n <= 0 then [] else dt-digits (v / 10) (n - 1) & [48 + (v - (v / 10) * 10)]

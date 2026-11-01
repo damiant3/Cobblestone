@@ -69,39 +69,42 @@ Section: Config Store (backed by foreword KvStore/HAMT)
     cs-watches = [], cs-watch-count = 0, cs-next-watch-id = 1
   }
 
-  cs-set : ConfigStore, Text, Text, Integer -> ConfigStore
-  cs-set (st) (key) (value) (ts) =
-    let new-version = st.cs-version + 1
-    in let new-values = kv-put (st.cs-values) key value
-    in let existing = cs-find-meta (st.cs-meta) key 0 (st.cs-meta-count)
-    in let new-meta = when existing
-      is Just (idx) ->
-        let old = list-at (st.cs-meta) idx
-        in let updated = ConfigEntry {
-          ce-key = key,
-          ce-value = value,
-          ce-version = new-version,
-          ce-created = old.ce-created,
-          ce-modified = ts,
-          ce-ttl-sec = old.ce-ttl-sec,
-          ce-expires = if old.ce-ttl-sec > 0 then ts + old.ce-ttl-sec else 0,
-          ce-namespace = old.ce-namespace
-        }
-        in list-set-at (st.cs-meta) idx updated
-      is None -> list-push (st.cs-meta) (config-entry-new key value new-version ts)
-    in let new-count = when existing is Just (idx) -> st.cs-meta-count is None -> st.cs-meta-count + 1
-    in ConfigStore {
-      cs-values = new-values, cs-meta = new-meta, cs-meta-count = new-count,
-      cs-version = new-version,
-      cs-watches = st.cs-watches, cs-watch-count = st.cs-watch-count,
-      cs-next-watch-id = st.cs-next-watch-id
-    }
+  cs-make : ConfigStore, KvStore, List ConfigEntry, Integer, List ConfigWatch, Integer -> ConfigStore
+  cs-make (st) (values) (meta) (version) (watches) (next-id) = ConfigStore {
+    cs-values = values, cs-meta = meta, cs-meta-count = list-length meta,
+    cs-version = version,
+    cs-watches = watches, cs-watch-count = list-length watches,
+    cs-next-watch-id = next-id
+  }
 
-  cs-find-meta : List ConfigEntry, Text, Integer, Integer -> Maybe Integer
-  cs-find-meta (entries) (key) (i) (n) =
-    if i >= n then None
-    else if (list-at entries i).ce-key == key then Just i
-    else cs-find-meta entries key (i + 1) n
+  cs-set : ConfigStore, Text, Text, Integer -> ConfigStore
+  cs-set (st) (key) (value) (ts) = cs-put st key value (-1) ts
+
+  cs-set-ttl : ConfigStore, Text, Text, Integer, Integer -> ConfigStore
+  cs-set-ttl (st) (key) (value) (ttl) (ts) = cs-put st key value ttl ts
+
+  cs-put : ConfigStore, Text, Text, Integer, Integer -> ConfigStore
+  cs-put (st) (key) (value) (ttl) (ts) =
+    let v = st.cs-version + 1
+    in let entry = when cs-get-meta (st.cs-meta) key 0 (st.cs-meta-count)
+      is Just (old) -> cs-entry key value v (old.ce-created) ts (if ttl < 0 then old.ce-ttl-sec else ttl) (old.ce-namespace)
+      is None -> cs-entry key value v ts ts (if ttl < 0 then 0 else ttl) (config-namespace key)
+    in cs-make st (kv-put (st.cs-values) key value) (cs-put-meta (st.cs-meta) entry 0 (st.cs-meta-count) [] False) v (st.cs-watches) (st.cs-next-watch-id)
+
+  cs-entry : Text, Text, Integer, Integer, Integer, Integer, Text -> ConfigEntry
+  cs-entry (key) (value) (version) (created) (ts) (ttl) (ns) = ConfigEntry {
+    ce-key = key, ce-value = value, ce-version = version,
+    ce-created = created, ce-modified = ts,
+    ce-ttl-sec = ttl, ce-expires = if ttl > 0 then ts + ttl else 0,
+    ce-namespace = ns
+  }
+
+  cs-put-meta : List ConfigEntry, ConfigEntry, Integer, Integer, List ConfigEntry, Boolean -> List ConfigEntry
+  cs-put-meta (entries) (e) (i) (n) (acc) (found) =
+    if i >= n then (if found then acc else list-push acc e)
+    else let old = list-at entries i
+    in if old.ce-key == e.ce-key then cs-put-meta entries e (i + 1) n (list-push acc e) True
+    else cs-put-meta entries e (i + 1) n (list-push acc old) found
 
   cs-get : ConfigStore, Text -> Maybe ConfigEntry
   cs-get (st) (key) =
@@ -121,14 +124,7 @@ Section: Config Store (backed by foreword KvStore/HAMT)
 
   cs-delete : ConfigStore, Text -> ConfigStore
   cs-delete (st) (key) =
-    let new-values = kv-delete (st.cs-values) key
-    in let filtered = cs-delete-meta (st.cs-meta) key 0 (st.cs-meta-count) []
-    in ConfigStore {
-      cs-values = new-values, cs-meta = filtered, cs-meta-count = list-length filtered,
-      cs-version = st.cs-version + 1,
-      cs-watches = st.cs-watches, cs-watch-count = st.cs-watch-count,
-      cs-next-watch-id = st.cs-next-watch-id
-    }
+    cs-make st (kv-delete (st.cs-values) key) (cs-delete-meta (st.cs-meta) key 0 (st.cs-meta-count) []) (st.cs-version + 1) (st.cs-watches) (st.cs-next-watch-id)
 
   cs-delete-meta : List ConfigEntry, Text, Integer, Integer, List ConfigEntry -> List ConfigEntry
   cs-delete-meta (entries) (key) (i) (n) (acc) =
@@ -176,12 +172,53 @@ Section: Config Store (backed by foreword KvStore/HAMT)
       cw-callback = callback,
       cw-last-version = st.cs-version
     }
-    in __record-set (__record-set (__record-set st "cs-watches" (list-push (st.cs-watches) w)) "cs-watch-count" (st.cs-watch-count + 1)) "cs-next-watch-id" (st.cs-next-watch-id + 1)
+    in cs-make st (st.cs-values) (st.cs-meta) (st.cs-version) (list-push (for x in st.cs-watches -> x) w) (st.cs-next-watch-id + 1)
+
+  cs-find-watch : List ConfigWatch, Integer, Integer, Integer -> Maybe ConfigWatch
+  cs-find-watch (ws) (id) (i) (n) =
+    if i >= n then None
+    else let w = list-at ws i
+    in if w.cw-id == id then Just w
+    else cs-find-watch ws id (i + 1) n
+
+  cs-watch-changes : ConfigStore, Integer -> List ConfigEntry
+  cs-watch-changes (st) (id) =
+    when cs-find-watch (st.cs-watches) id 0 (st.cs-watch-count)
+      is Just (w) ->
+        let under = cs-list-prefix st (w.cw-prefix)
+        in cs-newer-loop under (w.cw-last-version) 0 (list-length under) []
+      is None -> []
+
+  cs-newer-loop : List ConfigEntry, Integer, Integer, Integer, List ConfigEntry -> List ConfigEntry
+  cs-newer-loop (entries) (since) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = list-at entries i
+    in if e.ce-version > since then cs-newer-loop entries since (i + 1) n (list-push acc e)
+    else cs-newer-loop entries since (i + 1) n acc
+
+  cs-watch-seen : ConfigStore, Integer -> ConfigStore
+  cs-watch-seen (st) (id) =
+    cs-make st (st.cs-values) (st.cs-meta) (st.cs-version) (cs-seen-loop (st.cs-watches) id (st.cs-version) 0 (st.cs-watch-count) []) (st.cs-next-watch-id)
+
+  cs-seen-loop : List ConfigWatch, Integer, Integer, Integer, Integer, List ConfigWatch -> List ConfigWatch
+  cs-seen-loop (ws) (id) (version) (i) (n) (acc) =
+    if i >= n then acc
+    else let w = list-at ws i
+    in let w2 = if w.cw-id == id then ConfigWatch { cw-id = w.cw-id, cw-prefix = w.cw-prefix, cw-callback = w.cw-callback, cw-last-version = version } else w
+    in cs-seen-loop ws id version (i + 1) n (list-push acc w2)
 
   cs-expire : ConfigStore, Integer -> ConfigStore
   cs-expire (st) (now) =
-    let filtered = cs-expire-loop (st.cs-meta) now 0 (st.cs-meta-count) []
-    in __record-set (__record-set st "cs-meta" filtered) "cs-meta-count" (list-length filtered)
+    let kept = cs-expire-loop (st.cs-meta) now 0 (st.cs-meta-count) []
+    in if list-length kept == st.cs-meta-count then st
+    else cs-make st (cs-expire-values (st.cs-values) (st.cs-meta) now 0 (st.cs-meta-count)) kept (st.cs-version + 1) (st.cs-watches) (st.cs-next-watch-id)
+
+  cs-expire-values : KvStore, List ConfigEntry, Integer, Integer, Integer -> KvStore
+  cs-expire-values (values) (entries) (now) (i) (n) =
+    if i >= n then values
+    else let e = list-at entries i
+    in let v2 = if ce-is-expired e now then kv-delete values (e.ce-key) else values
+    in cs-expire-values v2 entries now (i + 1) n
 
   cs-expire-loop : List ConfigEntry, Integer, Integer, Integer, List ConfigEntry -> List ConfigEntry
   cs-expire-loop (entries) (now) (i) (n) (acc) =

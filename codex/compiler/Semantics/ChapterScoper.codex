@@ -75,26 +75,6 @@ Section: Collision Detection
 
 Section: Builtin Shadowing
 
- It does not win everywhere, and that is the sharper half. Measured
- 2026-07-18 by shadowing five builtins in one chapter and printing what
- each call returned: abs, int-mod, text-contains and is-digit took the
- definition; text-length took the BUILTIN and ignored the definition
- entirely. A builtin lowered to its own IR node never reaches the
- dispatch a definition could displace. So the same shadowing pattern
- resolves two different ways depending on which builtin it names, and
- the source says nothing about which -- you would have to know how that
- particular builtin is lowered. Inconsistent is worse than either
- answer consistently, and it is the reason to say something at the
- definition rather than leave it to be reasoned out at each call.
-
- What the warning buys is that the dangerous case stops being silent.
- The danger is not a different ANSWER, it is a different COST: `Hamt`
- defined list-insert-at -- a builtin that is in-place and amortised
- O(1) -- with a pure O(n) body, and citing Hamt into the compiler sent
- TypeEnv, ChapterScoper, TypeChecker and LambdaLifting quadratic until
- R10 walked into the stack. That shadow was correct by every test and
- wrong by every clock.
-
   check-shadowed-builtins : List DefHeader, SkipListText, Integer, Integer, List Diagnostic -> List Diagnostic
   check-shadowed-builtins (headers) (bset) (i) (len) (acc) =
     if i >= len then acc
@@ -108,13 +88,6 @@ Section: Builtin Shadowing
     else check-shadowed-builtins headers bset (i + 1) len acc
 
 Section: Colliding Across Chapters
-
- It has been paid for once already. CL 8955 moved three builtin emitter
- bodies from the Emit quire into Types, where emit-expr resolved to the
- text emitter instead of the x86 one. That was caught, but only because
- the two signatures were far enough apart to raise CDX2001. Two
- colliding definitions with compatible types compile clean and emit the
- wrong code, and nothing looks wrong anywhere.
 
   colliding-other-chapter : List ChapterAssignment, Text, Text, Integer, Integer -> Text
   colliding-other-chapter (assignments) (name) (own-slug) (i) (len) =
@@ -383,11 +356,6 @@ Section: Chapter Scoping Pipeline
     in let pushed = build-global-renames assignments colliding 0 count skip-list-text-empty entries
     in sort-by pushed compare-rename-originals
 
- The first assignment of a colliding name wins, as in build-mod-renames for a
- chapter that does not define it: the walk skips a name already pushed, so sort-by, an unstable in-place
- quicksort (average O(n log n), worst-case O(n squared) comparisons), never
- sees two equal keys.
-
   compare-rename-originals : RenameEntry, RenameEntry -> Integer
   compare-rename-originals (a) (b) = text-compare (a.original) (b.original)
 
@@ -459,21 +427,6 @@ Section: Duplicate Cite Detection
   check-duplicate-cites : List ACitesDecl -> DiagnosticBag
   check-duplicate-cites (citations) =
     check-duplicate-cites-loop citations 0 (list-length citations) empty-bag
-
- It is an ERROR (CDX3007) since 2026-07-20, and both the warning period
- and the flip were decided by measurement rather than by taste. It began
- as a warning because as an error it would have halted the sign tool and
- three sibling tools -- all citing Foreword chapter Console, all
- assembled without Console.codex, a class the presence check could not
- see while it asked only the per-definition assignments (Console
- declares only effect operations). The header-presence fix
- resolved that whole class, and the warning then measured ZERO
- firings across every population anyone could assemble: all 265 app
- entry units, all 1,154 test units compiled standalone, the selfhost,
- the sign tool, the canary and the plug bundles. A cite that names no
- chapter in the unit is a broken unit, the host resolver already
- refuses the same fact as CDX3010, and with the false-positive class
- gone there is nothing left for a warning to measure.
 
   chapter-slug-dashes : Text, Integer, Integer -> Integer
   chapter-slug-dashes (s) (i) (len) =
@@ -587,12 +540,6 @@ Section: AST-Level Chapter Scoping
  the product large. Compiling the compiler: 91 transitions, 106 citations, 6,431
  assignments -- 9,646 resolutions, each walking 6,431 entries with a suffix
  compare per entry, and now 106 of them.
-
- IT IS INVISIBLE ON A SMALL SUBJECT and that is worth knowing before measuring
- one. A four-chapter bundle with one citation resolves four times and saves
- three; fourteen such subjects came out byte-identical with their step counts
- unchanged to a tenth of a percent. Correct, and no faster, because there was
- nothing there to save.
 
  MEASURED ON THE ONE SUBJECT BIG ENOUGH TO HAVE THE PRODUCT: the compiler
  compiling itself, through a tree-walking interpreter where the work is

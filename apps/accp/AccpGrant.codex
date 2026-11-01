@@ -1,0 +1,254 @@
+Chapter: AccpGrant
+  cites Accp chapter AccpJson
+  cites Accp chapter AccpIr
+  cites Accp chapter AccpLease
+  cites Accp chapter AccpFlow
+  cites Accp chapter AccpClarify
+  cites Trust chapter AgentProtocol
+  cites Trust chapter GrantSeal
+  cites Trust chapter PolicyEngine
+  cites Trust chapter PolicyProse
+  cites Trust chapter NameBook
+  cites Foreword chapter MathLib (int-widen)
+  cites Foreword chapter Maybe
+
+Section: Binding
+
+  AccpBinding = record {
+    bound : Boolean,
+    requester : Text,
+    identity : Text,
+    grantors : Text,
+    max-seconds : Integer,
+    policy-sha256 : Text
+  }
+
+  ag-unbound : AccpBinding
+  ag-unbound = AccpBinding { bound = False, requester = "", identity = "", grantors = "", max-seconds = 0, policy-sha256 = "" }
+
+  ag-binding : Text -> AccpBinding
+  ag-binding (meta) =
+    let m = aj-object meta
+    in let raw = aj-get m "binding"
+    in if m.ok == False | raw == "" | raw == "null" then ag-unbound
+    else let b = aj-object raw
+    in if b.ok == False then ag-unbound
+    else AccpBinding {
+      bound = True,
+      requester = aj-text b "requester",
+      identity = aj-text b "identity",
+      grantors = aj-text b "grantor_keys",
+      max-seconds = aj-int (aj-get b "max_lease_seconds"),
+      policy-sha256 = aj-text b "policy_sha256"
+    }
+
+ Unix seconds take ten digits, past aj-int's nine; fifteen digits keep the
+ accumulator far inside 64 bits.
+
+  ag-seconds : Text -> Integer
+  ag-seconds (s) =
+    if text-length s == 0 | text-length s > 15 | aj-digits s 0 /= text-length s then 0 - 1
+    else ag-seconds-loop s 0 0
+
+  ag-seconds-loop : Text, Integer, Integer -> Integer
+  ag-seconds-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else ag-seconds-loop s (i + 1) (acc * 10 + aj-at s i - char-code-at "0" 0)
+
+Section: Hex
+
+  ag-digits : Text
+  ag-digits = "0123456789abcdef"
+
+  ag-byte-hex : Integer -> Text
+  ag-byte-hex (b) =
+    if b < 0 | b > 255 then "??"
+    else substring ag-digits (b / 16) 1 & substring ag-digits (b - (b / 16) * 16) 1
+
+  ag-hex : List Integer -> Text
+  ag-hex (bs) = text-concat-list (for b in bs -> ag-byte-hex b)
+
+  ag-nibble : Text, Integer -> Integer
+  ag-nibble (c) (i) =
+    if i >= 16 then 0 - 1
+    else if substring ag-digits i 1 == c then i
+    else ag-nibble c (i + 1)
+
+  ag-unhex-loop : Text, Integer, List Integer -> Maybe (List Integer)
+  ag-unhex-loop (s) (i) (acc) =
+    if i >= text-length s then Just acc
+    else let hi = ag-nibble (substring s i 1) 0
+    in let lo = ag-nibble (substring s (i + 1) 1) 0
+    in if hi < 0 | lo < 0 then None
+    else ag-unhex-loop s (i + 2) (list-push acc (hi * 16 + lo))
+
+  ag-unhex : Text -> Maybe (List Integer)
+  ag-unhex (s) =
+    if text-length s == 0 | text-length s - (text-length s / 2) * 2 /= 0 then None
+    else ag-unhex-loop s 0 []
+
+Section: Admission
+
+  ag-lease-json : GrantMsg -> Text
+  ag-lease-json (g) =
+    "{\"lease_id\":" & aj-quote (ag-hex (g.id)) & ",\"grantor\":" & aj-quote (ag-hex (g.grantor.public-key))
+      & ",\"holder\":" & aj-quote (ag-hex (g.from.public-key)) & ",\"policy_sha256\":" & aj-quote (ag-hex (g.policy-sha256)) & "}"
+
+  ag-key-in : Text, Text -> Boolean
+  ag-key-in (keys) (key) = text-length key == 64 & text-contains ("," & keys & ",") ("," & key & ",")
+
+  ag-label : Text, Text -> Text
+  ag-label (e) (sc) = e & (if sc == "" then "" else " " & aj-quote sc)
+
+  ag-uncovered : GrantMsg, List Text, List Text, Integer -> Text
+  ag-uncovered (g) (row) (scopes) (i) =
+    if i >= list-length row then ""
+    else let e = list-at row i
+    in let sc = list-at scopes i
+    in if ai-console e sc then ag-uncovered g row scopes (i + 1)
+    else if al-covers (g.capability.name) (int-widen (g.capability.direction)) (g.capability.scope) e sc then
+      ag-uncovered g row scopes (i + 1)
+    else ag-label e sc
+
+ The order is the order a requester can act on: who signed it, whom it names,
+ when it holds, what it covers, and last the policy it was drawn against.
+
+  ag-refusal : AccpBinding, GrantMsg, Integer, List Text, List Text -> Text
+  ag-refusal (b) (g) (now) (row) (scopes) =
+    let grantor = ag-hex (g.grantor.public-key)
+    in let holder = ag-hex (g.from.public-key)
+    in let uncovered = ag-uncovered g row scopes 0
+    in let flow-why = afl-rules-refusal (g.flow-rules) 0
+    in if b.bound == False then "this instance is not bound to a requester; launch it with -Requester, -Grantors and -Identity"
+    else if ag-key-in (b.grantors) grantor == False then "lease grantor is not trusted by this instance"
+    else if grant-verify g == False then "lease signature does not verify"
+    else if grantor == holder then "lease is self-granted"
+    else if holder /= b.requester then "lease is held by another key"
+    else if ag-hex (g.audience.public-key) /= b.identity then "lease is addressed to another conduit"
+    else if al-bounded (g.not-before) (g.expires) (b.max-seconds) == False then "lease lifetime exceeds this instance's maximum or is empty"
+    else if al-current (g.not-before) (g.expires) now == False then "lease is not current"
+    else if g.scope.path /= g.capability.scope then "lease scopes disagree"
+    else if flow-why /= "" then "lease " & flow-why
+    else if list-length (g.gates) > 0 then "lease carries approval gates, which this conduit does not check yet"
+    else if list-length (g.conditions) > 0 then "lease carries conditions this conduit cannot evaluate"
+    else if uncovered /= "" then "lease does not cover " & uncovered
+    else if b.policy-sha256 == "" | ag-hex (g.policy-sha256) /= b.policy-sha256 then "lease names a policy this conduit does not hold"
+    else ""
+
+Section: Policy
+
+ Check 5. The held policy is the grantor's prose lowered through the name book
+ the same grantor signed, so a book signed by anyone else refuses the policy
+ whole. Each non-ambient label is evaluated at the host's week-minute (Monday
+ 00:00 is 0, PolicyProse's day numbering); a label's direction is its suffix.
+
+  ag-held-policy : Text, NameBook, List Integer -> Maybe Policy
+  ag-held-policy (text) (book) (grantor) =
+    let r = compile-policy-checked text
+    in if r.ok then lower-policy r.policy "held" book grantor else None
+
+  ag-policy-unread : Text -> Text
+  ag-policy-unread (text) =
+    let r = compile-policy-checked text
+    in if r.ok then ""
+    else let lines = pol-split-lines text
+    in let q = if r.line > 0 & r.line <= list-length lines then ac-first-question (list-at lines (r.line - 1)) else ""
+    in "the held policy does not read: line " & show (r.line) & ", " & r.reason & " [" & r.word & "]" & (if q == "" then "" else "; clarifier: " & q)
+
+  ag-policy-from : Text, Text, List Integer -> Maybe Policy
+  ag-policy-from (text) (book-hex) (grantor) =
+    when ag-unhex book-hex
+      is None -> None
+      is Just (bs) ->
+        when name-book-decode-checked bs
+          is None -> None
+          is Just (book) -> ag-held-policy text book grantor
+
+  ag-label-direction : Text -> Integer between 0 and 255
+  ag-label-direction (label) =
+    if al-ends label ".Read" then 0 else if al-ends label ".Write" then 1 else 2
+
+  ag-policy-denial : Policy, Text, Integer, List Text, List Text, Integer -> Text
+  ag-policy-denial (pol) (holder) (week-minute) (row) (scopes) (i) =
+    if i >= list-length row then ""
+    else let e = list-at row i
+    in let sc = list-at scopes i
+    in if ai-console e sc then ag-policy-denial pol holder week-minute row scopes (i + 1)
+    else let d = eval-policy pol (PolicyContext {
+      capability = e,
+      direction = ag-label-direction e,
+      trust-score = 0,
+      current-time = week-minute,
+      agent-id = holder,
+      scope = sc
+    })
+    in if d.allowed == False then "the held policy does not allow " & ag-label e sc & " now: " & d.reason
+    else if d.needs-approval then
+      "the held policy allows " & ag-label e sc & " only with a human approval, which this conduit does not check yet"
+    else ag-policy-denial pol holder week-minute row scopes (i + 1)
+
+ A quota is spent by the execution time of the runs it admits, counted by the
+ host's ledger under the grantor, the holder, the deciding rule and the period
+ (AccpDecidablePolicy.md section 8). One quota rule per row: a row whose labels
+ fall under two different quota rules is refused rather than charged to one.
+
+  AgQuota = record { found : Boolean, conflict : Boolean, rule : Text, minutes : Integer, period : Text }
+
+  ag-no-quota : AgQuota
+  ag-no-quota = AgQuota { found = False, conflict = False, rule = "", minutes = 0, period = "" }
+
+  ag-quota : Policy, Text, Integer, List Text, List Text, Integer, AgQuota -> AgQuota
+  ag-quota (pol) (holder) (week-minute) (row) (scopes) (i) (acc) =
+    if i >= list-length row then acc
+    else let e = list-at row i
+    in let sc = list-at scopes i
+    in if ai-console e sc then ag-quota pol holder week-minute row scopes (i + 1) acc
+    else let d = eval-policy pol (PolicyContext {
+      capability = e,
+      direction = ag-label-direction e,
+      trust-score = 0,
+      current-time = week-minute,
+      agent-id = holder,
+      scope = sc
+    })
+    in if d.allowed == False | d.quota-minutes < 0 then ag-quota pol holder week-minute row scopes (i + 1) acc
+    else if acc.found & (acc.rule /= d.matched-rule | acc.period /= d.quota-period) then
+      AgQuota { found = True, conflict = True, rule = acc.rule, minutes = acc.minutes, period = acc.period }
+    else ag-quota pol holder week-minute row scopes (i + 1) (AgQuota {
+      found = True,
+      conflict = acc.conflict,
+      rule = d.matched-rule,
+      minutes = d.quota-minutes,
+      period = d.quota-period
+    })
+
+  ag-quota-of : Maybe Policy, GrantMsg, Integer, List Text, List Text -> AgQuota
+  ag-quota-of (pol) (g) (week-minute) (row) (scopes) =
+    when pol
+      is None -> ag-no-quota
+      is Just (p) -> ag-quota p (ag-hex (g.from.public-key)) week-minute row scopes 0 ag-no-quota
+
+  ag-quota-refusal : AgQuota, Text, Text -> Text
+  ag-quota-refusal (q) (status) (spent) =
+    if q.conflict then "the row falls under more than one quota rule"
+    else if status /= "ok" then "the held policy carries a quota and this instance keeps no usage ledger"
+    else if ag-seconds spent < 0 then "the usage ledger answered no count"
+    else if ag-seconds spent >= q.minutes * 60000 then "quota of " & show (q.minutes) & " minutes per " & q.period & " is spent"
+    else ""
+
+  ag-admit : AccpBinding, GrantMsg, Integer, Integer, Maybe Policy, List Text, List Text -> Text
+  ag-admit (b) (g) (now) (week-minute) (pol) (row) (scopes) =
+    let first = ag-refusal b g now row scopes
+    in if first /= "" then first
+    else when pol
+      is None -> "the held policy does not lower: its name book is not the lease grantor's or binds no key for a grant's subject"
+      is Just (p) -> ag-policy-denial p (ag-hex (g.from.public-key)) week-minute row scopes 0
+
+  ag-admit-held : AccpBinding, GrantMsg, Integer, Integer, Maybe Policy, Text, List Text, List Text -> Text
+  ag-admit-held (b) (g) (now) (week-minute) (pol) (unread) (row) (scopes) =
+    let first = ag-refusal b g now row scopes
+    in if first /= "" then first
+    else if unread /= "" then unread
+    else ag-admit b g now week-minute pol row scopes
+
+Page 1

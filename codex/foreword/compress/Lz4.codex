@@ -1,8 +1,6 @@
 Chapter: Lz4
   cites Foreword chapter Wrap64
 
- We say:
-
 Section: Constants
 
   lz4-min-match : Integer = 4
@@ -127,12 +125,21 @@ Section: Sequence Emission
 Section: Decompression
 
   lz4-decompress : List Integer -> List Integer
-  lz4-decompress (input) =
-    lz4-decompress-loop input 0 (list-length input) []
+  lz4-decompress (input) = lz4-decompress-capped input 1000000000
 
-  lz4-decompress-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  lz4-decompress-loop (input) (pos) (len) (acc) =
-    if pos >= len then acc
+ A caller feeding the decoder bytes it did not write passes its own output
+ ceiling. The plain entry keeps a ceiling above any stream this project produces,
+ so every round trip is byte-identical; the cap bounds a hostile stream, where a
+ long extra-length run makes one match replicate far more output than its input.
+
+  lz4-decompress-capped : List Integer, Integer -> List Integer
+  lz4-decompress-capped (input) (cap) =
+    lz4-decompress-loop input 0 (list-length input) [] cap
+
+  lz4-decompress-loop : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  lz4-decompress-loop (input) (pos) (len) (acc) (cap) =
+    if list-length acc >= cap then acc
+    else if pos >= len then acc
     else let token = list-at input pos
     in let lit-len = bit-shru token 4
     in let ml-code = bit-and token lz4-ml-mask
@@ -142,8 +149,8 @@ Section: Decompression
     in if lz4-fits input after-lit 2 == False then acc2
     else let offset = list-at input after-lit + bit-shl (list-at input (after-lit + 1)) 8
     in let mr = lz4-read-extra-length input (after-lit + 2) len (ml-code + lz4-min-match)
-    in let acc3 = lz4-copy-match acc2 offset (mr.length) 0
-    in lz4-decompress-loop input (mr.next) len acc3
+    in let acc3 = lz4-copy-match acc2 offset (mr.length) 0 cap
+    in lz4-decompress-loop input (mr.next) len acc3 cap
 
   Lz4LenResult = record {
     length : Integer,
@@ -162,13 +169,14 @@ Section: Decompression
     in if b < 255 then Lz4LenResult { length = 15 + extra + b, next = pos + 1 }
     else lz4-read-extra-loop input (pos + 1) len (extra + 255)
 
-  lz4-copy-match : List Integer, Integer, Integer, Integer -> List Integer
-  lz4-copy-match (acc) (offset) (length) (i) =
+  lz4-copy-match : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  lz4-copy-match (acc) (offset) (length) (i) (cap) =
     if i >= length then acc
+    else if list-length acc >= cap then acc
     else if offset <= 0 then acc
     else let src = list-length acc - offset
     in if src < 0 then acc
-    else lz4-copy-match (list-push acc (list-at acc src)) offset length (i + 1)
+    else lz4-copy-match (list-push acc (list-at acc src)) offset length (i + 1) cap
 
 Section: Helpers
 

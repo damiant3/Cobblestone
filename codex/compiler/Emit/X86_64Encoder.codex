@@ -7,14 +7,6 @@ Section: Arithmetic Helpers
     in let r = n - n / d * d
     in if r < 0 then r + abs-d else r
 
- The obvious spelling of a floor division biases the dividend before
- dividing: `if n >= 0 then n / d else (n - d + 1) / d`. That form
- underflows. For n = i64-min and d = 256, `n - d + 1` wraps positive,
- the quotient comes back +2^55 instead of -2^55, and write-bytes below
- emits FF FF FF FF FF FF 7F for the top seven bytes of a literal whose
- value is i64-min. A hex literal in the band i64-min..i64-min+254
- compiled to the wrong constant with no diagnostic.
-
   floor-div : Integer, Integer -> Integer
   floor-div (n) (d) =
     let q = n / d
@@ -231,6 +223,16 @@ Section: MOV Instructions
  error is -1, which without this reads as 4294967295.
 
   movsxd-rax-eax : List Integer = [72, 99, 192]
+
+ `movsxd rd, dword [base + idx*4]`: SIB scale field 2 is times 4; a base whose
+ low 3 bits are 5 needs mod 1 and a zero disp8, as in `lea-rr`.
+
+  movsxd-idx4 : Integer, Integer, Integer -> List Integer
+  movsxd-idx4 (rd) (base-reg) (idx) =
+    let r = rex True (rd >= 8) (idx >= 8) (base-reg >= 8)
+    in if int-mod base-reg 8 == 5
+       then [r, 99, modrm 1 rd 4, sib 2 idx base-reg] & write-i8 0
+    else [r, 99, modrm 0 rd 4, sib 2 idx base-reg]
 
   mov-store-byte : Integer, Integer, Integer -> List Integer
   mov-store-byte (rd) (rs) (offset) =

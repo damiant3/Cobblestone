@@ -1,0 +1,76 @@
+Chapter: GopTzdb
+  cites Foreword chapter Maybe
+  cites Works chapter GopFat16
+  cites Works chapter GopZone (ZoneMachine, zone-machine-load)
+  cites Works chapter GopRtcZone (rtc-utc-read)
+  cites Foreword chapter TimeZone (Zone, tz-zone-of-bytes)
+
+Section: The Database File
+
+  gtz-be : Integer, Integer, Integer, Integer -> Integer
+  gtz-be (buf) (at) (n) (acc) =
+    if n <= 0 then acc
+    else gtz-be buf (at + 1) (n - 1) (acc * 256 + peek-byte buf at)
+
+  gtz-name-is : Integer, Integer, Text, Integer -> Boolean
+  gtz-name-is (buf) (at) (want) (i) =
+    if i >= text-length want then True
+    else if peek-byte buf (at + 1 + i) /= to-unicode (char-code-at want i) then False
+    else gtz-name-is buf at want (i + 1)
+
+  gtz-slice : Integer, Integer, Integer, List Integer -> List Integer
+  gtz-slice (buf) (at) (stop) (acc) =
+    if at >= stop then acc
+    else gtz-slice buf (at + 1) stop (list-push acc (peek-byte buf at))
+
+  gtz-entries-end : Integer, Integer, Integer, Integer -> Integer
+  gtz-entries-end (buf) (len) (at) (left) =
+    if left == 0 then at
+    else if at + 1 > len then 0 - 1
+    else let l = peek-byte buf at
+    in if at + 9 + l > len then 0 - 1
+    else gtz-entries-end buf len (at + 9 + l) (left - 1)
+
+  gtz-record : Integer, Integer, Integer, Text -> Maybe Zone
+  gtz-record (buf) (start) (stop) (want) =
+    when tz-zone-of-bytes (gtz-slice buf start stop [])
+      is None -> None
+      is Just (z) -> Just (Zone { name = want, initial = z.initial, trans = z.trans, footer = z.footer })
+
+  gtz-find : Integer, Integer, Integer, Integer, Integer, Text -> Maybe Zone
+  gtz-find (buf) (len) (at) (left) (blob) (want) =
+    if left == 0 then None
+    else let l = peek-byte buf at
+    in if l == text-length want & gtz-name-is buf at want 0 then
+      (let off = gtz-be buf (at + 1 + l) 4 0
+      in let n = gtz-be buf (at + 5 + l) 4 0
+      in if blob + off + n > len then None else gtz-record buf (blob + off) (blob + off + n) want)
+    else gtz-find buf len (at + 9 + l) (left - 1) blob want
+
+  gtz-zone-of : Integer, Integer, Text -> Maybe Zone
+  gtz-zone-of (buf) (len) (want) =
+    if len < 8 then None
+    else if peek-byte buf 0 /= 67 | peek-byte buf 1 /= 84 | peek-byte buf 2 /= 90 | peek-byte buf 3 /= 66 then None
+    else let n = gtz-be buf 4 4 0
+    in let blob = gtz-entries-end buf len 8 n
+    in if blob < 0 then None else gtz-find buf len 8 n blob want
+
+Section: Boot
+
+  gtz-load : Text -> [Device.Port] Maybe Zone
+  gtz-load (name) = act
+    m <- gfat-mount-esp
+    if m.gm-ok == False then None
+    else act
+      f <- gfat-read-file (m.gm-vol) "TZDB.BIN"
+      if f.gf-ok == False then None
+      else gtz-zone-of (f.gf-buf) (f.gf-len) name
+    end
+  end
+
+  rtc-utc-boot : Integer -> [Device.Port] Maybe Integer
+  rtc-utc-boot (d) = act
+    zm <- zone-machine-load
+    mz <- if zm.zm-rtc-local then gtz-load (zm.zm-name) else act None end
+    rtc-utc-read mz
+  end

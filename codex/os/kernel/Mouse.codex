@@ -1,12 +1,22 @@
 Chapter: Mouse
 
- 3-byte PS/2 packets arrive in the kernel's IRQ12 mouse buffer at 28684.
-
- We say:
+ The PS/2 pointer on the i8042 aux port: status and commands on port 0x64,
+ data on port 0x60. Status bit 0 is output buffer full, bit 1 input buffer
+ full, bit 5 marks the byte as the aux device's. Controller command 0xA8
+ enables the aux port and 0xD4 sends the next data byte to the device, which
+ answers each byte with 0xFA (ACK), a reset (0xFF) with 0xFA 0xAA 0x00, and
+ starts reporting after 0xF4. A packet is 3 bytes: flags (bit 3 always set;
+ bits 0-2 left, right, middle; bit 4 x sign; bit 5 y sign), dx, dy with y
+ positive upward. The kernel's IRQ1 handler owns keyboard bytes, so 0x60 is
+ read only when bit 5 is set, and the port is polled rather than IRQ12-driven.
+ 100000 status reads bound every wait, so an absent controller answers
+ instead of hanging.
 
 Section: Constants
-  mouse-buffer-addr : Integer = 28684
-  mouse-packet-size : Integer = 3
+  mouse-status-port : Integer = 100
+  mouse-data-port : Integer = 96
+  mouse-ack : Integer = 250
+  mouse-spin : Integer = 100000
 
 Section: Mouse State
   MouseState = record {
@@ -18,7 +28,12 @@ Section: Mouse State
     m-right : Boolean,
     m-middle : Boolean,
     m-max-x : Integer,
-    m-max-y : Integer
+    m-max-y : Integer,
+    m-ready : Boolean,
+    m-pkt-n : Integer,
+    m-pkt0 : Integer,
+    m-pkt1 : Integer,
+    m-packets : Integer
   }
 
   mouse-new : Integer, Integer -> MouseState
@@ -26,36 +41,153 @@ Section: Mouse State
     mx = max-x / 2, my = max-y / 2,
     mdx = 0, mdy = 0,
     m-left = False, m-right = False, m-middle = False,
-    m-max-x = max-x, m-max-y = max-y
+    m-max-x = max-x, m-max-y = max-y,
+    m-ready = False, m-pkt-n = 0, m-pkt0 = 0, m-pkt1 = 0, m-packets = 0
   }
 
-Section: Packet Reading
-  mouse-has-packet : Boolean
-  mouse-has-packet = peek-byte mouse-buffer-addr 0 /= 0
+Section: Packets
 
-  mouse-read-packet : MouseState -> MouseState
-  mouse-read-packet (st) =
-    let flags = peek-byte mouse-buffer-addr 0
-    in let raw-dx = peek-byte mouse-buffer-addr 1
-    in let raw-dy = peek-byte mouse-buffer-addr 2
-    in let clear = poke-byte mouse-buffer-addr 0 0
-    in let dx = if bit-and flags 16 > 0 then raw-dx - 256 else raw-dx
-    in let dy = if bit-and flags 32 > 0 then raw-dy - 256 else raw-dy
-    in let new-x = mouse-clamp (st.mx + dx) 0 (st.m-max-x - 1)
-    in let new-y = mouse-clamp (st.my - dy) 0 (st.m-max-y - 1)
+  mouse-take-byte : MouseState, Integer -> MouseState
+  mouse-take-byte (st) (b) =
+    if st.m-pkt-n == 0 then (if bit-and b 8 == 0 then st else mouse-with-pkt st 1 b 0)
+    else if st.m-pkt-n == 1 then mouse-with-pkt st 2 (st.m-pkt0) b
+    else mouse-apply-packet st (st.m-pkt0) (st.m-pkt1) b
+
+  mouse-with-pkt : MouseState, Integer, Integer, Integer -> MouseState
+  mouse-with-pkt (st) (n) (b0) (b1) = MouseState {
+    mx = st.mx, my = st.my, mdx = st.mdx, mdy = st.mdy,
+    m-left = st.m-left, m-right = st.m-right, m-middle = st.m-middle,
+    m-max-x = st.m-max-x, m-max-y = st.m-max-y,
+    m-ready = st.m-ready, m-pkt-n = n, m-pkt0 = b0, m-pkt1 = b1, m-packets = st.m-packets
+  }
+
+  mouse-apply-packet : MouseState, Integer, Integer, Integer -> MouseState
+  mouse-apply-packet (st) (flags) (raw-dx) (raw-dy) =
+    let dx = if bit-and flags 64 > 0 then 0 else if bit-and flags 16 > 0 then raw-dx - 256 else raw-dx
+    in let dy = if bit-and flags 128 > 0 then 0 else if bit-and flags 32 > 0 then raw-dy - 256 else raw-dy
     in MouseState {
-      mx = new-x, my = new-y,
+      mx = mouse-ps2-clamp (st.mx + dx) 0 (st.m-max-x - 1),
+      my = mouse-ps2-clamp (st.my - dy) 0 (st.m-max-y - 1),
       mdx = dx, mdy = dy,
       m-left = bit-and flags 1 > 0,
       m-right = bit-and flags 2 > 0,
       m-middle = bit-and flags 4 > 0,
-      m-max-x = st.m-max-x, m-max-y = st.m-max-y
+      m-max-x = st.m-max-x, m-max-y = st.m-max-y,
+      m-ready = st.m-ready, m-pkt-n = 0, m-pkt0 = 0, m-pkt1 = 0, m-packets = st.m-packets + 1
     }
 
+Section: The i8042 Aux Port
+
+  mouse-wait-write : Integer -> [Device.Port] Integer
+  mouse-wait-write (n) = act
+    s <- port-in-byte mouse-status-port
+    let clear = bit-and s 2 == 0
+    in if clear then n else if n >= mouse-spin then n else mouse-wait-write (n + 1)
+  end
+
+  mouse-read-aux : Integer -> [Device.Port] Integer
+  mouse-read-aux (n) = act
+    s <- port-in-byte mouse-status-port
+    let ready = bit-and s 33 == 33
+    in if ready then mouse-read-data 0 else if n >= mouse-spin then 0 - 1 else mouse-read-aux (n + 1)
+  end
+
+  mouse-read-data : Integer -> [Device.Port] Integer
+  mouse-read-data (z) = act
+    b <- port-in-byte mouse-data-port
+    b
+  end
+
+  mouse-send : Integer -> [Device.Port] Integer
+  mouse-send (b) = act
+    w1 <- mouse-wait-write 0
+    o1 <- port-out-byte mouse-status-port 212
+    w2 <- mouse-wait-write 0
+    o2 <- port-out-byte mouse-data-port b
+    mouse-read-aux 0
+  end
+
+  mouse-enable-aux : Integer -> [Device.Port] Integer
+  mouse-enable-aux (z) = act
+    w <- mouse-wait-write 0
+    o <- port-out-byte mouse-status-port 168
+    w
+  end
+
+  mouse-init : MouseState -> [Device.Port] MouseState
+  mouse-init (st) = act
+    e <- mouse-enable-aux 0
+    r <- mouse-send 255
+    t <- mouse-read-aux 0
+    i <- mouse-read-aux 0
+    k <- mouse-send 244
+    mouse-mark-ready st (r == mouse-ack & t == 170 & k == mouse-ack)
+  end
+
+  mouse-mark-ready : MouseState, Boolean -> MouseState
+  mouse-mark-ready (st) (ok) = MouseState {
+    mx = st.mx, my = st.my, mdx = st.mdx, mdy = st.mdy,
+    m-left = st.m-left, m-right = st.m-right, m-middle = st.m-middle,
+    m-max-x = st.m-max-x, m-max-y = st.m-max-y,
+    m-ready = ok, m-pkt-n = 0, m-pkt0 = 0, m-pkt1 = 0, m-packets = st.m-packets
+  }
+
+Section: Device Settings
+
+ Device commands: 0xF5 stops reporting, 0xF3 then a rate sets samples per
+ second (10, 20, 40, 60, 80, 100 or 200), 0xE8 then 0-3 sets the resolution
+ (1, 2, 4, 8 counts/mm), 0xE6 and 0xE7 select 1:1 and 2:1 scaling, 0xF4
+ restarts reporting. 0xE9 answers ACK then three bytes: flags (bit 5
+ reporting, bit 4 2:1 scaling), resolution, sample rate.
+
+  mouse-rate-ok : Integer -> Boolean
+  mouse-rate-ok (r) = r == 10 | r == 20 | r == 40 | r == 60 | r == 80 | r == 100 | r == 200
+
+  mouse-configure : MouseState, Integer, Integer, Boolean -> [Device.Port] MouseState
+  mouse-configure (st) (rate) (res) (scale21) = act
+    if st.m-ready == False | mouse-rate-ok rate == False | res < 0 | res > 3 then st
+    else act
+      d <- mouse-send 245
+      r1 <- mouse-send 243
+      r2 <- mouse-send rate
+      e1 <- mouse-send 232
+      e2 <- mouse-send res
+      s <- mouse-send (if scale21 then 231 else 230)
+      k <- mouse-send 244
+      mouse-mark-ready st (d == mouse-ack & r1 == mouse-ack & r2 == mouse-ack & e1 == mouse-ack & e2 == mouse-ack & s == mouse-ack & k == mouse-ack)
+    end
+  end
+
+  MouseStatus = record {
+    mst-ok : Boolean,
+    mst-flags : Integer,
+    mst-res : Integer,
+    mst-rate : Integer
+  }
+
+  mouse-status : MouseState -> [Device.Port] MouseStatus
+  mouse-status (st) = act
+    a <- mouse-send 233
+    f <- mouse-read-aux 0
+    r <- mouse-read-aux 0
+    s <- mouse-read-aux 0
+    MouseStatus { mst-ok = a == mouse-ack & f >= 0 & r >= 0 & s >= 0, mst-flags = f, mst-res = r, mst-rate = s }
+  end
+
 Section: Polling
-  mouse-poll : MouseState -> MouseState
-  mouse-poll (st) =
-    if mouse-has-packet then mouse-read-packet st else st
+
+  mouse-poll : MouseState -> [Device.Port] MouseState
+  mouse-poll (st) = act
+    s <- port-in-byte mouse-status-port
+    let ready = st.m-ready & bit-and s 33 == 33
+    in if ready then mouse-poll-byte st else st
+  end
+
+  mouse-poll-byte : MouseState -> [Device.Port] MouseState
+  mouse-poll-byte (st) = act
+    b <- port-in-byte mouse-data-port
+    mouse-poll (mouse-take-byte st b)
+  end
 
 Section: Cursor Drawing
   mouse-draw-cursor : Integer, Integer, Integer, Integer -> Integer
@@ -109,8 +241,8 @@ Section: Queries
     st.m-left & mouse-in-rect st x y w h
 
 Section: Helpers
-  mouse-clamp : Integer, Integer, Integer -> Integer
-  mouse-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+  mouse-ps2-clamp : Integer, Integer, Integer -> Integer
+  mouse-ps2-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
 
   format-mouse : MouseState -> Text
   format-mouse (st) = "mouse(" & show (st.mx) & "," & show (st.my) & ") L=" & show (st.m-left)

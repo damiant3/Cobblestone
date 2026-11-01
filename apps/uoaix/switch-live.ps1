@@ -64,8 +64,20 @@ if($Running){
     $runs=@(Get-ChildItem -LiteralPath $Running -Directory -Filter 'run-*' | Sort-Object {[int]($_.Name.Substring(4))})
     if($runs.Count -gt 0){
         $rj=Join-Path $runs[-1].FullName 'run.json'
-        if(Test-Path -LiteralPath $rj){$d=[IO.Path]::GetFullPath((Get-Content -LiteralPath $rj -Raw | ConvertFrom-Json).stateFile);if(-not $leaving.Contains($d)){$leaving.Add($d)}}
+        if(Test-Path -LiteralPath $rj){$d=[IO.Path]::GetFullPath((Get-Content -LiteralPath $rj -Raw | ConvertFrom-Json).stateFile);if(-not ($leaving | Where-Object {$_ -eq $d})){$leaving.Add($d)}}
     }
+}
+# Every backup path is fixed here, before anything stops: <parent folder>-<disk base>-<stamp><ext>, so the live world
+# and -World both named world.disk back up apart, and a path two disks would share, or one already taken, refuses
+# while the shard still serves (UOAIX-289).
+$plan=[ordered]@{}
+foreach($d in $leaving){
+    $copy=Join-Path $BackupDir ("{0}-{1}-{2}{3}" -f (Split-Path (Split-Path $d) -Leaf),[IO.Path]::GetFileNameWithoutExtension($d),$stamp,[IO.Path]::GetExtension($d))
+    if($plan.Values | Where-Object {$_ -eq $copy}){throw "Backups of two leaving disks would share $copy; nothing was stopped"}
+    if(Test-Path -LiteralPath $copy){throw "Backup exists: $copy; nothing was stopped"}
+    $plan[$d]=$copy
+}
+if($Running){
     if($Bake){
         if($s.state -ne 'serving'){throw "-Bake exports from a serving shard; $Running is $($s.state)"}
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'bake-decor.ps1') -Port $AdminPort -KeyFile $KeyFile -ClientRoot $ClientRoot -MultiDir (Join-Path $bakeDir 'client')
@@ -95,7 +107,7 @@ foreach($d in $leaving){
 if($leaving.Count -gt 0){[void](New-Item -ItemType Directory -Force $BackupDir)}
 foreach($d in $leaving){
     if(-not (Test-Path -LiteralPath $d)){continue}
-    $copy=Join-Path $BackupDir ("{0}-{1}{2}" -f [IO.Path]::GetFileNameWithoutExtension($d),$stamp,[IO.Path]::GetExtension($d))
+    $copy=$plan[$d]
     if(Test-Path -LiteralPath $copy){throw "Backup exists: $copy"}
     $before=(Get-FileHash -LiteralPath $d).Hash
     Copy-Item -LiteralPath $d -Destination $copy

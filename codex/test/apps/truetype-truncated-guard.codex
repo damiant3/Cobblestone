@@ -3,27 +3,10 @@ Chapter: TruetypeTruncatedGuard
   cites Ui chapter GlyphRasterizer
   cites Ui chapter TrueTypeFont
 
- Track D row 19 residue, found while guarding GlyphRasterizer and assigned back
- to this lane. ttf-u8, ttf-u16, ttf-u32 and ttf-read-tag all read with bare
- list-at, and every field of every table is read at a fixed offset from a table
- offset the FILE supplied. A file that stops early is read past its end.
-
- Measured before the guard: ttf-parse of a font truncated anywhere in its table
- directory or its head table kills the guest. The whole ui/ leg's guards sit
- downstream of a call that never returned.
-
  The bytes below are codex/test/truetype-bridge-test.codex's font, byte for
  byte, cut to a series of lengths: 0, 1, 11 (inside the offset table), 12
  (exactly the offset table), 30 (inside the first table record), 60 (three
  records in), 240 (inside the head table) and 355 (one byte short).
-
- Row 1 is the control and carries the arm: the whole 356-byte font must still
- parse to 96 glyphs at 9x11, or a guard that answered zero everywhere would
- pass every truncated row and mean nothing.
-
- Row 10 is the second control: unitsPerEm read back from the intact font must
- still be 1024, which is what says ttf-byte-at did not start answering zero for
- offsets that are in range.
 
 Section: Font
 
@@ -62,6 +45,23 @@ Section: Font
     in let f = ttf-parse bytes
     in label & " bytes=" & show (list-length bytes) & " upem=" & show (f.tf-head.th-units-per-em) & " glyphs=" & show (f.tf-num-glyphs) & " render=" & format-ttf-bitmap-font (ttf-to-bitmap-font f 16 "t")
 
+ A seeded single-byte mutation sweep over the valid font, run through
+ ttf-parse (the table directory and head parse, the length-parsing core).
+ ttf-byte-at answers 0 past the end, so every read is in bounds; the sweep
+ completing confirms no parser escapes that accessor and traps. The render
+ path is exercised by the truncation arms above.
+
+  tt-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tt-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else tt-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  tt-sweep : Integer, Integer, Integer -> Integer
+  tt-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else let f = ttf-parse (tt-mutate test-font-bytes pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n [])
+    in tt-sweep (pos + 1) n (acc + f.tf-num-glyphs + f.tf-head.th-units-per-em)
+
 Section: Body
 
   opening : [Console] Nothing = act
@@ -75,6 +75,7 @@ Section: Body
     print-line-uni (row "08-in-head" 240)
     print-line-uni (row "09-one-short" 355)
     print-line-uni ("10-upem-intact " & show ((ttf-parse test-font-bytes).tf-head.th-units-per-em))
+    print-line-uni ("11-parse-sweep completed=" & (if tt-sweep 0 (list-length test-font-bytes) 0 >= 0 then "True" else "False"))
   end
 
 Page 1

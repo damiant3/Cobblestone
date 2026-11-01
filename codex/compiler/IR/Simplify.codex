@@ -5,92 +5,8 @@ Chapter: Simplify
   cites Codex chapter Occurrence (occ-expr, occ-map-get)
   cites Codex chapter SkipListText (skip-list-text-from-list, skip-list-text-has)
 
- The simplifier: one traversal that applies every local rewrite it
- knows at once, iterated to a fixpoint (GHC Core's
- one-Simplifier-pass architecture, the closest
- production analogue to this IR). This is WS-D3, slices 1 through 3. It
- carries a substitution environment down the tree and a rewrite count
- up it. It stays deliberately narrow -- no renaming, so every rewrite is
- sound by inspection: dead-let elimination and occurs-once inlining reason
- about traps and effects through an explicit purity predicate, and
- inlining refuses (rather than renames) any substitution that could
- capture a variable.
-
- **Constant folding.** Integer add / subtract / multiply over two
- literals, the six integer comparisons, boolean and / or, negate of a
- literal, and the three text builtins the old hardcoded pass already
- folded (text-length, char-code, char-code-at). Folding replaces an
- expression with the value the runtime would compute for it, so it is
- always sound. Division and remainder are NOT folded here: they can
- trap on a zero divisor and folding would have to preserve that trap,
- which is the next slice's concern along with the sign rules.
-
- **Sparse conditional constant propagation.** An `IrIf` whose condition
- has folded to a boolean literal becomes its taken arm. The untaken arm
- is never even simplified -- this is a strict language, so the arm that
- is not taken never runs, and dropping it can remove no effect and no
- trap that would otherwise have fired.
-
- **Literal propagation.** A `let` whose value has folded to a literal is
- dropped and every use of its name in the body is replaced by that
- literal. A literal has no free variables, so this substitution can
- capture nothing and needs no renaming; a literal is free to duplicate,
- so it is sound whether the name is used once or many times. This is the
- rewrite that carries a constant to where it can fold -- `let x = 5 in
- x + 3` becomes `8` in one traversal, because the body is simplified
- under the extended substitution before the fold runs.
-
- **Dead-let elimination.** A non-literal `let x = v in b` whose name x is
- never used in b, and whose value v is pure and trap-free, is dropped and
- replaced by b -- the binding and the work that computed its value both
- disappear. This is where the simplifier consumes the WS-D2 occurrence
- analyser: deadness is `occ-expr`'s free map answering that x has no free
- occurrence in b, which is correct under shadowing. It needs no renaming
- because it removes a binding rather than moving a value. The purity
- predicate is what keeps it sound in a strict language -- dropping a let
- whose value could trap or print would delete that trap or print -- so it
- fires only for values that certainly do neither (see the Purity section).
-
- The substitution is shadow-aware. At every binder -- a `let`, a lambda
- parameter, a match pattern variable, an act bind -- the bound name is
- removed from the substitution before its scope is walked, so an inner
- binding of a name the substitution carries hides the outer literal
- rather than being overwritten by it. Because the only values ever
- substituted are literals, removal is the whole of the discipline: there
- is no capture to rename around. The rapier -- renaming on collision so a
- non-trivial value can be substituted -- is the next slice, and this one
- is written so it never needs it.
-
- Two boundaries are walked with an empty substitution rather than the
- carried one: the clauses of an `IrHandle` and the three statement lists
- of an `IrTry`. A handle clause's operation and resume binders, and the
- way a try body's binds are visible in its fallback blocks, are exactly
- the unscoped-binder edges that remain unscoped. Propagating an outer
- literal across those boundaries could replace one of those leaked names.
- Refusing to carry the substitution in costs only the rare cross-boundary
- constant and keeps the slice sound without depending on those being
- closed first. The sub-expressions inside are still folded and
- propagated on their own.
-
- Termination. A single traversal terminates by structural recursion,
- bounded by the shared recursion depth; a subtree past the budget is
- returned unsimplified, which is always sound. The traversal is iterated
- while it reports rewrites, capped at `simplify-max-iters`. Every rewrite
- here strictly shrinks the tree or turns a name into a literal, both
- monotone, so the iteration cannot oscillate and the cap is a backstop,
- not a semantic bound; a later slice with non-monotone rewrites
- (reassociation) is where a size-proportional global budget that errors
- loudly earns its place.
-
- Limitations, stated so they are not assumed away: occurs-once inlining
- refuses rather than renames when a substitution would capture (the
- rename-on-collision rapier that would inline those cases too is a later
- refinement), so a value whose free name is bound somewhere in the body
- is left where it is; no division or remainder folding; no
- case-of-known-constructor, if-of-if commuting, reassociation, or
- strength reduction; the substitution is an
- association list scanned linearly, sized for the binders one definition
- carries; and heap is bounded by the iteration cap rather than reclaimed
+ The substitution is an association list scanned linearly, sized for the
+ binders one definition carries, and heap is bounded by the iteration cap rather than reclaimed
  between iterations -- every iteration rebuilds the definition body on the
  pass deck, so peak is at most `simplify-max-iters` copies of the largest
  body, paid only when the pass is switched on.
@@ -131,12 +47,6 @@ Section: Results
 
 Section: Substitution
 
- A map from a name to the literal that replaces it. Only literals are
- ever stored, which is the property that makes propagation capture-free.
- Adding a name removes any earlier binding of it first, so at most one
- entry per name survives and it is always the innermost -- a lookup never
- has to reason about order.
-
   SubstEntry = record {
    name : Text,
    val : IRExpr
@@ -161,10 +71,6 @@ Section: Substitution
   subst-add (m) (n) (v) = list-push (subst-remove m n) (SubstEntry { name = n, val = v })
 
 Section: Literals
-
- A literal is an integer, number, text, boolean, or character constant --
- the values that are free to duplicate and cannot capture. Only these
- are substituted and only these drive the let-dropping rewrite.
 
   simp-is-literal : IRExpr -> Boolean
   simp-is-literal (e) =
@@ -248,26 +154,6 @@ Section: Folding
        is otherwise -> fold-none (deck-record (IrBinary op l r ty sp)))
      is otherwise -> fold-none (deck-record (IrBinary op l r ty sp))
 
- The text builtins the old pass folded, recognised on already-simplified
- operands: `text-length` and `char-code` are one-argument applications,
- `char-code-at` a two-argument one whose partial application is itself an
- `IrApply`. An out-of-range index is left as a call, to trap at runtime
- exactly as it would unfolded.
-
- These three rules fold a name, so they must first ask whether the chapter
- DEFINES that name -- a chapter is allowed to define its own
- `text-length`. Folding one that does gave two answers in one function:
- the fold caught the literal argument and answered the builtin's way,
- while every other call site reached `emit-compound`, which checks
- `user-arity < 0` before routing to `emit-builtin` and answered the
- definition's way. `fold-constants` (Lowering,
- Section: Constant Folding) had the identical defect.
-
- Both are fixed the same way and the set is the same set: `dn`, a
- `SkipListText` of the chapter's own def names, built once per chapter at
- `simplify-chapter` / `simplify-run` and threaded down the walk. A name in
- it is never folded.
-
  `dn` is threaded rather than rebuilt per definition because the walk is
  iterated to a fixpoint -- `simplify-iter` runs the whole traversal again
  for each rewrite round, and rebuilding a skip list of every def name on
@@ -308,27 +194,6 @@ Section: Folding
      is otherwise -> fold-none (deck-record (IrApply partial idx-arg ty sp))
 
 Section: Purity and Deadness
-
- Dead-let elimination drops `let x = v in b` when x is never used in b
- and evaluating v has no observable consequence. Both halves are needed:
- an unused binding whose value could trap or print must not be dropped,
- because dropping it deletes the trap or the print. This is where the
- simplifier consumes the occurrence analyser (`IR/Occurrence.codex`,
- WS-D2): deadness is read from `occ-expr`'s free map, which counts free
- names with correct shadowing, so a name shadowed by an inner binder of
- the same name is not mistaken for a use of the outer one -- the exact
- hazard a flat name-keyed set would fall into.
-
- The purity predicate is conservative in the safe direction: it answers
- True only for expressions that certainly cannot trap and certainly have
- no effect, so a False merely keeps a let that could have been dropped.
- Literals, names (referencing a value neither traps nor acts), the
- non-trapping integer / boolean / text operators, and the pure structural
- forms (if, let, lambda, list, record, field access) qualify. Division
- and remainder trap on a zero divisor; application can call anything; a
- match can be inexhaustive; act, handle, try, fork, await, field store,
- and error carry effects or traps. None of those qualify, so a let
- binding one of them is kept even when its name is dead.
 
   simp-op-trapfree : IRBinaryOp -> Boolean
   simp-op-trapfree (op) =
@@ -387,29 +252,6 @@ Section: Purity and Deadness
 
 Section: Inlining
 
- A let bound to a non-literal value may still be inlined -- its name
- replaced by the value and the binding dropped -- in two cases, and only
- when doing so cannot capture. A value bound to a bare name is
- copy-propagated at any occurrence count: a name is pure, trap-free, and
- free to duplicate, so replacing every use costs nothing and can change
- nothing. A value that is pure and trap-free and whose name occurs
- exactly once is inlined into that one use: no work is duplicated because
- there is one use, and the value cannot trap or act, so moving where it
- is evaluated is unobservable -- the property that makes this sound in a
- strict language, where a conditional use would otherwise decide whether
- the value's trap fires.
-
- Capture is refused, not renamed. Substituting a value that carries free
- variables into a body that binds one of those names would rebind the
- value's variable to the wrong thing. This slice detects that -- does any
- binder in the body carry a free name of the value -- and declines to
- inline when it could happen, keeping the let. Declining is strictly
- sound; the alternative, renaming the colliding binder to a fresh name
- (the rapier), is more complete and is a later refinement. Because the
- fixed point cannot see a capture miscompile -- a wrongly captured program
- still compiles to a consistent wrong answer -- the guard here is the one
- that matters, and the adversarial `sc-cap` fixture pins it.
-
   simp-free-names : IRExpr -> List Text
   simp-free-names (e) = for en in ((occ-expr e [] 0).free) -> en.name
 
@@ -427,11 +269,6 @@ Section: Inlining
     if i >= len then False
     else if list-at names i == n then True
     else simp-name-in-loop names n (i + 1) len
-
- Does any binder anywhere in the expression carry a name in the set? A
- True here forbids an inline that would otherwise capture. The walk is
- depth-bounded, and an exhausted budget answers True -- the conservative
- direction, since an unknown body might bind a captured name.
 
   simp-binds-any : IRExpr, List Text, Integer -> Boolean
   simp-binds-any (e) (names) (depth) =
@@ -559,10 +396,6 @@ Section: Inlining
       else False
 
 Section: Expression Walk
-
- One traversal, carrying the substitution down and the rewrite count up.
- A node past the depth budget is returned untouched -- sound, because
- leaving a subtree unsimplified never changes its meaning.
 
   simplify-expr : SkipListText, List SubstEntry, IRExpr, Integer -> SimpRes
   simplify-expr (dn) (env) (e) (depth) =

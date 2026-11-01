@@ -1,7 +1,45 @@
 Chapter: FwdDragTest
   cites UI chapter Drag
 
+Section: Fixtures
+
+  dgt-zones : List DropZone
+  dgt-zones = [drop-zone-accept (drop-zone-new "bin" 100 100 50 50) ["file"]]
+
+  dgt-result : DropResult -> Text
+  dgt-result (r) =
+    when r
+      is Dropped (zone) (data) -> "dropped " & zone & (when data
+        is DragText (t) -> " text " & t
+        is otherwise -> " other")
+      is Cancelled -> "cancelled"
+      is NoTarget -> "no target"
+
+  dgt-b : Boolean -> Text
+  dgt-b (b) = if b then "T" else "F"
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "UI/Drag OK"
-  end
+
+  opening : [Console] Nothing =
+    let near = drag-move (drag-start "src" (DragText "hi") 10 10) 12 12 dgt-zones
+    in let near-active = drag-is-active near
+    in let near-end = dgt-result (drag-end near)
+    in let far = drag-move (drag-start "src" (DragText "hi") 10 10) 14 13 dgt-zones
+    in let far-active = drag-is-active far
+    in let far-end = dgt-result (drag-end far)
+    in let over = drag-move (drag-move (drag-start "src" (DragText "hi") 10 10) 14 13 dgt-zones) 120 120 dgt-zones
+    in let over-zone = over.ds-over-zone
+    in let over-end = dgt-result (drag-end over)
+    in let off-x = drag-offset-x over
+    in let off-y = drag-offset-y over
+    in let notes = [drop-zone-accept (drop-zone-new "notes" 100 100 50 50) ["file", "text"]]
+    in let into-notes = drag-move (drag-move (drag-start "src" (DragText "hi") 10 10) 14 13 notes) 120 120 notes
+    in let cancelled = drag-cancel (drag-move (drag-start "src" (DragText "hi") 10 10) 14 13 dgt-zones)
+    in act
+      print-line-uni ("move 4: active " & dgt-b near-active & ", end " & near-end)
+      print-line-uni ("move 7: active " & dgt-b far-active & ", end " & far-end)
+      print-line-uni ("over bin (accepts file only): zone " & over-zone & ", end " & over-end & ", offset " & show off-x & "," & show off-y)
+      print-line-uni ("over notes (accepts file and text): zone " & into-notes.ds-over-zone & ", end " & dgt-result (drag-end into-notes))
+      print-line-uni ("cancelled: active " & dgt-b (drag-is-active cancelled) & ", end " & dgt-result (drag-end cancelled) & "; idle " & dgt-b (drag-is-idle drag-idle))
+      print-line-uni ("zone edges 150,100 " & dgt-b (drag-point-in-zone (list-at dgt-zones 0) 150 100) & ", 149,149 " & dgt-b (drag-point-in-zone (list-at dgt-zones 0) 149 149) & ", 100,99 " & dgt-b (drag-point-in-zone (list-at dgt-zones 0) 100 99))
+    end

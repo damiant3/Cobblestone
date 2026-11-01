@@ -1,0 +1,79 @@
+Chapter: X509EkuTest
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Encode chapter X509Write
+  cites Encode chapter Asn1Write
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+  priv : List Integer =
+    [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15,
+     91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  host : List Integer = [101, 107, 117, 46, 99, 111, 100, 101, 120, 46, 116, 101, 115, 116]
+
+  t0 : List Integer = [50, 48, 50, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+  t1 : List Integer = [50, 48, 51, 53, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+  now : List Integer = [50, 48, 50, 54, 48, 49, 48, 49, 48, 48, 48, 48, 48, 48]
+
+  oid-eku : List Integer = [85, 29, 37]
+  kp-server : List Integer = [43, 6, 1, 5, 5, 7, 3, 1]
+  kp-client : List Integer = [43, 6, 1, 5, 5, 7, 3, 2]
+  kp-code : List Integer = [43, 6, 1, 5, 5, 7, 3, 3]
+  kp-any : List Integer = [85, 29, 37, 0]
+
+Section: Minting
+
+  pub : List Integer = ed25519-public-key priv
+
+  mint : List Integer -> List Integer
+  mint (extra) =
+    let name = x509w-name host
+    in let exts = der-ctx3 (der-sequence (x509w-leaf-exts [host] [] & extra))
+    in x509w-sign priv pub (x509w-tbs-of pub (x509w-serial-content [1]) name name (x509w-validity t0 t1) exts)
+
+  eku : Boolean, List (List Integer) -> List Integer
+  eku (critical) (ids) = x509w-ext oid-eku critical (der-sequence (oids ids 0 []))
+
+  oids : List (List Integer), Integer, List Integer -> List Integer
+  oids (ids) (i) (acc) =
+    if i >= list-length ids then acc else oids ids (i + 1) (acc & der-oid (list-at ids i))
+
+  verdict : List Integer -> Text
+  verdict (der) =
+    when x509-parse der
+      is None -> "unparsed"
+      is Just (c) -> vtext (x509-verify-peer [c] [X509Anchor { xa-subject = c.xc-subject, xa-key = c.xc-key }] now host)
+
+  vtext : X509Verdict -> Text
+  vtext (v) =
+    when v
+      is ChainOk -> "ok"
+      is otherwise -> "refused"
+
+Section: Results
+
+  test-none : Text = "no eku " & verdict (mint [])
+  test-server : Text = "server-auth " & verdict (mint (eku False [kp-server]))
+  test-both : Text = "client-auth and server-auth " & verdict (mint (eku False [kp-client, kp-server]))
+  test-any : Text = "any-eku " & verdict (mint (eku False [kp-any]))
+  test-critical : Text = "critical server-auth " & verdict (mint (eku True [kp-server]))
+  test-client : Text = "client-auth only " & verdict (mint (eku False [kp-client]))
+  test-code : Text = "code-signing only " & verdict (mint (eku False [kp-code]))
+  test-not-seq : Text = "eku not a sequence " & verdict (mint (x509w-ext oid-eku False (der-small-int 5)))
+  test-two : Text = "two ekus " & verdict (mint (eku False [kp-client] & eku False [kp-server]))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni test-none
+    print-line-uni test-server
+    print-line-uni test-both
+    print-line-uni test-any
+    print-line-uni test-critical
+    print-line-uni test-client
+    print-line-uni test-code
+    print-line-uni test-not-seq
+    print-line-uni test-two
+  end

@@ -114,7 +114,7 @@ limits live in the type checker and the runner, never in the agent.
 | L0 compiler | `codex-compiler.wasm`, or the seed on codex-vm | yes, unchanged |
 | L1 runner | compiles IR to a runnable form and runs it with a granted link surface | in-tab: the Run button (not an ACCP runner, section 5.1). Hosted: the section 8 prototype, outside the depot |
 | L2 conduit | the request/response wire (section 6) over a warm L0 and L1 | no |
-| L3 grant | leases and policy for rows wider than ambient | chapters exist in `codex/os/trust/`; not wired to any runner |
+| L3 grant | leases and policy for rows wider than ambient | wired: the conduit admits a non-ambient row under a signed lease and the held policy (`ap-leased`, `AccpGrant.codex`); the hosted runner still traps a granted `Network.Read` |
 | L4 binding | how a harness reaches L2: an MCP server, and Prism's in-page tool loop | Prism's loop exists without a `run` tool |
 
 Each layer consumes the one below through its published contract only.
@@ -295,10 +295,12 @@ access to embargoed data inside a time window, an aviation authority
 granting a pilot: each is a grantor issuing a `ProseGrant` that becomes
 a policy fact, and a lease drawn against it. For example:
 
-> Jake's agent may write files under `/jake/homework/` on school days
-> from 15:00 to 18:00, for no more than an hour a day.
+> We say:
+> "Jake's agent" is permitted to use FileSystem.Write on weekdays between
+> 15:00 and 18:00, for no more than 1 hour per day.
 
-A program with row `[Console, FileSystem.Write "/jake/homework/"]` runs
+with the lease scoped to `/jake/homework/` (`docs/Designs/Done/Compiler/AccpGrantProse.md`
+is the sentence grammar). A program with row `[Console, FileSystem.Write "/jake/homework/"]` runs
 inside that window. A program with `FileSystem.Write "/"` is refused with
 `needs: ["FileSystem.Write \"/\""]`, and when Jake asks why, the answer
 cites the policy by hash. Outside the window, the lease does not issue.
@@ -425,7 +427,7 @@ takes them in order.
 | 3 | L4 MCP binding and the language card | A Claude session with the server mounted answers the strawberry question through `codex_run`, recorded as a transcript; the turn count to a clean compile is logged |
 | 4 | Prism `run` tool on the 5.1 Worker runner | The agent arm gains a run section. Its sabotage: a program whose emitted JS reads `localStorage` gets `undefined`, and the same program on the old Run handler does not |
 | 5 | Evidence level 1 for the page modules | A script rebuilds both modules from depot seed and source and prints digests equal to the deployed ones, or names the step that differs |
-| 6 | L3: lease check for non-ambient rows, using `codex/os/trust/` | The Jake policy (section 7) admits the scoped write in the window and refuses it outside, with the policy hash in the refusal. The first granted effect needs rung 1's runner to map it to a WASI call |
+| 6 | L3: lease check for non-ambient rows, using `codex/os/trust/` | Built: the Jake policy (section 7) admits the scoped write in the window and refuses it outside (`codex/test/apps/accp-lease-policy`), with the policy hash in the refusal. The first granted effect needs rung 1's runner to map it to a WASI call |
 
 ## 12. What this design does not do
 
@@ -641,11 +643,14 @@ An independent reader checks this amendment and the eventual run commands.
 
 Before rung 4, replace the Worker-global deletion proposal with an enforced
 browser isolation contract and tests for network, storage, nested workers
-and message forgery, not only absent localStorage. Before rung 6, preserve
-subject, scope and quota during policy lowering and bind leases to an
-authenticated requester; enforce runtime scope, expiry and revocation.
-`PolicyProse.codex` currently lowers capability and time but drops subject
-and quota, and `PolicyEngine.codex` renders scoped outcomes as reason text.
+and message forgery, not only absent localStorage. Rung 6's preconditions are
+built: lowering keeps the subject (through the grantor's `NameBook`), the
+scope (`AllowWithScope`) and the quota (`AllowWithQuota`); a lease binds to
+the requester by instance binding (`AccpRequesterAuth.md` section 2); and the
+conduit enforces scope, expiry, the held policy now, the quota (a host ledger)
+and revocation by policy hash (`apps/accp/AccpGrant.codex`, `README.md`).
+Request binding for a shared transport (`AccpRequesterAuth.md` rung B) is not
+built.
 Reproducibility and behavioral parity are separate evidence dimensions;
 a signed description alone cannot attest which module a remote host ran.
 

@@ -19,8 +19,6 @@ Chapter: Lora
  diffusers form (packages_3rdparty/comfyui_lora_collection/utils.py:189,
  unet_to_diffusers, applied here to one name at a time).
 
- We say:
-
 Section: Files
 
   lora-open : Text, Real -> LoraFile
@@ -78,11 +76,6 @@ Section: Merge
   lora-grid : Integer -> GpuGrid
   lora-grid (n) = GpuGrid { gx = (n + 255) / 256, gy = 1, gz = 1, bx = 256, by = 1, bz = 1, shared = 0 }
 
- Adds one LoRA's patch into rows row0 .. row0 + rows of the f32 weight w32
- (cols wide; a conv flattened to cout x cin kh kw): 1 when applied, 0 when
- the file does not name the slot, -1 when it names it with a shape that does
- not fit or a transfer was refused.
-
   lora-apply : LoraFile, LoraSlot, Integer, Integer -> Integer
   lora-apply (l) (slot) (w32) (cols) =
     let module = lora-module l slot 0
@@ -123,11 +116,9 @@ Section: Merge
     in let hd = if tucker then lora-mid-down l mid down rank (cols / kk) kk else lora-upload l down
     in let hu = lora-upload l up
     in let ok = if hd == 0 | hu == 0 then False
-      else gm-launch gm-slot-lora lora-kernels-ptx "kernel_lora_delta" (lora-grid (rows * cols)) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf hu 0, gpu-arg-buf hd 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 rank] >= 0
+      else gm-launch gm-slot-lora lora-kernels-ptx "kernel_lora_delta" (lora-grid (rows * cols)) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4),
+        gpu-arg-buf hu 0, gpu-arg-buf hd 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 rank] >= 0
     in lora-free (lora-free (if ok then 1 else 0 - 1) hd) hu
-
- The other kinds read their tensors by name; a missing one or a count that
- does not fit the slot refuses the merge (-1).
 
   lora-need : LoraFile, Text -> StTensorMeta
   lora-need (l) (name) =
@@ -158,12 +149,9 @@ Section: Merge
     in let h2a = lora-upload l m2a
     in let h2b = lora-upload l m2b
     in let ok = if h1a == 0 | h1b == 0 | h2a == 0 | h2b == 0 then False
-      else lora-launch "kernel_lora_loha" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1a 0, gpu-arg-buf h1b 0, gpu-arg-buf h2a 0, gpu-arg-buf h2b 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 r1, gpu-arg-u64 r2]
+      else lora-launch "kernel_lora_loha" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1a 0, gpu-arg-buf h1b 0,
+        gpu-arg-buf h2a 0, gpu-arg-buf h2b 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 r1, gpu-arg-u64 r2]
     in lora-free (lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) h1a) h1b) h2a) h2b
-
- A LoKr factor as an f32 device matrix: the full tensor when the file has it,
- else its two low-rank halves multiplied out; answers the handle times 2^32
- plus the factored rank (0 when full), or 0 when refused.
 
   lora-kr-factor : LoraFile, Text, Text -> Integer
   lora-kr-factor (l) (module) (w) =
@@ -205,7 +193,8 @@ Section: Merge
     in let dim = if f2 - h2 * 4294967296 > 0 then f2 - h2 * 4294967296 else f1 - h1 * 4294967296
     in let alpha = if dim > 0 then lora-alpha l module dim / real-from-int dim else 1.0
     in let ok = if h1 == 0 | h2 == 0 then False
-      else lora-launch "kernel_lora_kron" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0, gpu-arg-u64 (real-to-bits (l.lf-strength * alpha)), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 c, gpu-arg-u64 d]
+      else lora-launch "kernel_lora_kron" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0,
+        gpu-arg-u64 (real-to-bits (l.lf-strength * alpha)), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 c, gpu-arg-u64 d]
     in lora-free (lora-free (if ok then 1 else 0 - 1) h1) h2
 
  A full difference (diff, w_norm, diff_b, b_norm) adds strength * d.
@@ -240,7 +229,8 @@ Section: Merge
     in let base = gpu-arg-buf w32 (slot.ls-row0 * cols * 4)
     in let ok = if ha1 == 0 | ha2 == 0 | hb1 == 0 | hb2 == 0 | hwa == 0 then False
       else if not (lora-launch "kernel_lora_matmul" (rows * r) [gpu-arg-buf hwa 0, base, gpu-arg-buf ha2 0, gpu-arg-u64 rows, gpu-arg-u64 r, gpu-arg-u64 cols]) then False
-      else lora-launch "kernel_lora_sum2" (rows * cols) [base, gpu-arg-buf hb2 0, gpu-arg-buf hb1 0, gpu-arg-buf hwa 0, gpu-arg-buf ha1 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 rb, gpu-arg-u64 r]
+      else lora-launch "kernel_lora_sum2" (rows * cols) [base, gpu-arg-buf hb2 0, gpu-arg-buf hb1 0, gpu-arg-buf hwa 0, gpu-arg-buf ha1 0,
+        gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 rb, gpu-arg-u64 r]
     in lora-free (lora-free (lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) ha1) ha2) hb1) hb2) hwa
  DoRA: the kind's delta at strength 1 into a zeroed temporary, then every
  input channel of W + d rescaled by dora_scale over its norm and blended in at
@@ -265,9 +255,9 @@ Section: Merge
       else if not (lora-launch "kernel_lora_zero" n [gpu-arg-buf hd 0, gpu-arg-u64 n]) then False
       else if lora-apply-kind one module local hd cols /= 1 then False
       else if not (lora-launch "kernel_lora_dora_norm" chans [base, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 inner]) then False
-      else lora-launch "kernel_lora_dora_apply" n [base, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-buf hs 0, gpu-arg-u64 (real-to-bits (l.lf-strength)), gpu-arg-u64 full, gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 inner]
+      else lora-launch "kernel_lora_dora_apply" n [base, gpu-arg-buf hd 0, gpu-arg-buf hn 0, gpu-arg-buf hs 0,
+        gpu-arg-u64 (real-to-bits (l.lf-strength)), gpu-arg-u64 full, gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 inner]
     in lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) hd) hn) hs
- LoCon's mid folded into the down it multiplies: rank x (cin kk) f32, or 0.
 
   lora-mid-down : LoraFile, StTensorMeta, StTensorMeta, Integer, Integer, Integer -> Integer
   lora-mid-down (l) (mid) (down) (rank) (cin) (kk) =
@@ -292,7 +282,9 @@ Section: Merge
     in let ha = lora-upload l ma
     in let hb = lora-upload l mb
     in let h = gpu-buf-alloc (rows * cols * 4)
-    in let ok = if ht == 0 | ha == 0 | hb == 0 | h == 0 then False else lora-launch "kernel_lora_tucker" (rows * cols) [gpu-arg-buf h 0, gpu-arg-buf ht 0, gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-u64 rank, gpu-arg-u64 rows, gpu-arg-u64 cin, gpu-arg-u64 kk]
+    in let ok = if ht == 0 | ha == 0 | hb == 0 | h == 0 then False
+    else lora-launch "kernel_lora_tucker" (rows * cols) [gpu-arg-buf h 0, gpu-arg-buf ht 0, gpu-arg-buf ha 0, gpu-arg-buf hb 0,
+      gpu-arg-u64 rank, gpu-arg-u64 rows, gpu-arg-u64 cin, gpu-arg-u64 kk]
     in lora-free (lora-free (lora-free (if ok then h else lora-free 0 h) ht) ha) hb
 
   lora-apply-loha-t : LoraFile, Text, LoraSlot, Integer, Integer -> Integer
@@ -303,7 +295,9 @@ Section: Merge
     else let h1 = lora-tucker-half l module "1" rows cols rank
     in let h2 = lora-tucker-half l module "2" rows cols rank
     in let scale = l.lf-strength * lora-alpha l module rank / real-from-int rank
-    in let ok = if h1 == 0 | h2 == 0 then False else lora-launch "kernel_lora_prod" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0, gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 (rows * cols)]
+    in let ok = if h1 == 0 | h2 == 0 then False
+    else lora-launch "kernel_lora_prod" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0,
+      gpu-arg-u64 (real-to-bits scale), gpu-arg-u64 (rows * cols)]
     in lora-free (lora-free (if ok then 1 else 0 - 1) h1) h2
 
  LoKr with lokr_t2: w2 is the Tucker product of t2 with lokr_w2_a (rank x c)
@@ -332,7 +326,8 @@ Section: Merge
     in let alpha = lora-alpha l module rank / real-from-int rank
     in let ok = if h1 == 0 | ht == 0 | ha == 0 | hb == 0 | h2 == 0 then False
       else if not (lora-launch "kernel_lora_tucker" (c * d * kk) [gpu-arg-buf h2 0, gpu-arg-buf ht 0, gpu-arg-buf ha 0, gpu-arg-buf hb 0, gpu-arg-u64 rank, gpu-arg-u64 c, gpu-arg-u64 d, gpu-arg-u64 kk]) then False
-      else lora-launch "kernel_lora_kron4" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0, gpu-arg-u64 (real-to-bits (l.lf-strength * alpha)), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 c, gpu-arg-u64 d, gpu-arg-u64 kk]
+      else lora-launch "kernel_lora_kron4" (rows * cols) [gpu-arg-buf w32 (slot.ls-row0 * cols * 4), gpu-arg-buf h1 0, gpu-arg-buf h2 0,
+        gpu-arg-u64 (real-to-bits (l.lf-strength * alpha)), gpu-arg-u64 rows, gpu-arg-u64 cols, gpu-arg-u64 c, gpu-arg-u64 d, gpu-arg-u64 kk]
     in lora-free (lora-free (lora-free (lora-free (lora-free (if ok then 1 else 0 - 1) h1) ht) ha) hb) h2
 
   lora-apply-files : List LoraFile, LoraSlot, Integer, Integer, Integer, Integer -> Integer
@@ -355,11 +350,6 @@ Section: Merge
     else if j >= list-length slots then lora-names-any ls slots (i + 1) 0
     else if lora-module (list-at ls i) (list-at slots j) 0 /= "" then True
     else lora-names-any ls slots i (j + 1)
-
- The named checkpoint tensor (its full name) as a fresh f16 device buffer with
- every LoRA in ls merged: widened to f32, each slot patched by each file that
- names it, one cast back; 0 when a file or transfer refused. A tensor no LoRA
- names is uploaded as f16 directly.
 
   lora-merged-weight : Text, SafeTensorFile, List LoraFile, Integer, Text -> Integer
   lora-merged-weight (path) (ckpt) (ls) (res-blocks) (name) =

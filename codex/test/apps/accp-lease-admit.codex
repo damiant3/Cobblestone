@@ -1,0 +1,169 @@
+Chapter: AccpLeaseAdmit
+  cites Accp chapter AccpGrant
+  cites Trust chapter AgentProtocol
+  cites Trust chapter GrantSeal
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+ The grantor and holder secrets are RFC 8032 section 7.1 TEST 1 and TEST 2;
+ the third is TEST 3, a key this instance does not trust.
+
+  grantor-secret : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  holder-secret : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  other-secret : List Integer = [197, 170, 141, 244, 63, 159, 131, 123, 237, 183, 68, 47, 49, 220, 183, 177, 102, 211, 133, 53, 7, 111, 9, 75, 133, 206, 58, 46, 11, 68, 88, 247]
+
+  identity-key : List Integer = [212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212]
+
+  policy : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  grantor-pub : List Integer
+  grantor-pub = ed25519-public-key grantor-secret
+
+  holder-pub : List Integer
+  holder-pub = ed25519-public-key holder-secret
+
+  other-pub : List Integer
+  other-pub = ed25519-public-key other-secret
+
+  binding-held : Text -> AccpBinding
+  binding-held (policy-hex) = AccpBinding {
+    bound = True,
+    requester = ag-hex holder-pub,
+    identity = ag-hex identity-key,
+    grantors = ag-hex grantor-pub,
+    max-seconds = 900,
+    policy-sha256 = policy-hex
+  }
+
+  LeaseSpec = record {
+    holder : List Integer,
+    grantor : List Integer,
+    audience : List Integer,
+    name : Text,
+    direction : Integer between 0 and 255,
+    scope : Text,
+    path : Text,
+    not-before : Integer,
+    expires : Integer,
+    flows : List Text,
+    gates : List Text,
+    conditions : List (List Integer)
+  }
+
+  base : LeaseSpec
+  base = LeaseSpec {
+    holder = holder-pub,
+    grantor = grantor-pub,
+    audience = identity-key,
+    name = "FileSystem.Write",
+    direction = 1,
+    scope = "/jake/homework/",
+    path = "/jake/homework/",
+    not-before = 900,
+    expires = 1500,
+    flows = [],
+    gates = [],
+    conditions = []
+  }
+
+  grant-of : LeaseSpec -> GrantMsg
+  grant-of (s) = GrantMsg {
+    id = [7, 1],
+    proposal = [],
+    from = AgentIdentity { public-key = s.holder },
+    grantor = AgentIdentity { public-key = s.grantor },
+    audience = AgentIdentity { public-key = s.audience },
+    capability = Capability { name = s.name, direction = s.direction, scope = s.scope },
+    scope = Scope { direction = s.direction, path = s.path, duration = 0 },
+    not-before = s.not-before,
+    expires = s.expires,
+    policy-sha256 = policy,
+    flow-rules = s.flows,
+    gates = s.gates,
+    conditions = s.conditions,
+    signature = []
+  }
+
+  flipped : GrantMsg -> GrantMsg
+  flipped (g) = GrantMsg {
+    id = g.id,
+    proposal = g.proposal,
+    from = g.from,
+    grantor = g.grantor,
+    audience = g.audience,
+    capability = g.capability,
+    scope = g.scope,
+    not-before = g.not-before,
+    expires = g.expires,
+    policy-sha256 = g.policy-sha256,
+    flow-rules = g.flow-rules,
+    gates = g.gates,
+    conditions = g.conditions,
+    signature = flip-first (g.signature) 0 []
+  }
+
+  flip-first : List Integer, Integer, List Integer -> List Integer
+  flip-first (s) (i) (acc) =
+    if i >= list-length s then acc
+    else let b = list-at s i
+    in flip-first s (i + 1) (list-push acc (if i == 0 then (if b == 255 then 0 else b + 1) else b))
+
+  row : List Text
+  row = ["Console", "FileSystem.Write"]
+
+  scopes : List Text
+  scopes = ["", "/jake/homework/"]
+
+  verdict : Text, AccpBinding, GrantMsg, Integer, List Text, List Text -> Text
+  verdict (label) (b) (g) (now) (r) (s) =
+    let why = ag-refusal b g now r s
+    in label & ": " & (if why == "" then "admitted" else why)
+
+  sealed : LeaseSpec, List Integer -> GrantMsg
+  sealed (s) (secret) = grant-seal (grant-of s) secret
+
+  held : Text
+  held = ag-hex policy
+
+  unhex-text : Text -> Text
+  unhex-text (s) =
+    when ag-unhex s
+      is Just (bs) -> "[" & text-concat-list (for b in bs -> show b & " ") & "]"
+      is None -> "refused"
+
+  opening : [Console] Nothing = act
+    print-line-uni (verdict "valid, policy held" (binding-held held) (sealed base grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "valid, no policy held" (binding-held "") (sealed base grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "unbound" ag-unbound (sealed base grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "untrusted grantor" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = other-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = [], gates = [], conditions = [] }) other-secret) 1000 row scopes)
+    print-line-uni (verdict "bad signature" (binding-held held) (flipped (sealed base grantor-secret)) 1000 row scopes)
+    print-line-uni (verdict "self-granted" (AccpBinding { bound = True, requester = ag-hex holder-pub, identity = ag-hex identity-key, grantors = ag-hex holder-pub, max-seconds = 900, policy-sha256 = held }) (sealed (LeaseSpec { holder = holder-pub, grantor = holder-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = [], gates = [], conditions = [] }) holder-secret) 1000 row scopes)
+    print-line-uni (verdict "held by another key" (binding-held held) (sealed (LeaseSpec { holder = other-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = [], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "another audience" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = other-pub, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = [], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "lifetime over the maximum" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1801, flows = [], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "before not_before" (binding-held held) (sealed base grantor-secret) 899 row scopes)
+    print-line-uni (verdict "at expires" (binding-held held) (sealed base grantor-secret) 1500 row scopes)
+    print-line-uni (verdict "scopes disagree" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/", not-before = 900, expires = 1500, flows = [], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "flow rules" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = ["Secrets -> Network"], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "malformed flow rule" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = ["Secrets -> Network", "Secrets Network"], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "console flow rule" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = ["Console.Read -> Console.Write"], gates = [], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "gates" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = [], gates = ["parent"], conditions = [] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "conditions" (binding-held held) (sealed (LeaseSpec { holder = holder-pub, grantor = grantor-pub, audience = identity-key, name = "FileSystem.Write", direction = 1, scope = "/jake/homework/", path = "/jake/homework/", not-before = 900, expires = 1500, flows = [], gates = [], conditions = [[1]] }) grantor-secret) 1000 row scopes)
+    print-line-uni (verdict "scope outside the lease" (binding-held held) (sealed base grantor-secret) 1000 ["Console", "FileSystem.Write"] ["", "/"])
+    print-line-uni (verdict "read label, write lease" (binding-held held) (sealed base grantor-secret) 1000 ["FileSystem.Read"] ["/jake/homework/"])
+    print-line-uni (verdict "other policy held" (binding-held (ag-hex [9, 9])) (sealed base grantor-secret) 1000 row scopes)
+    print-line-uni ("unhex 0a0bff: " & unhex-text "0a0bff")
+    print-line-uni ("unhex odd: " & unhex-text "0a0")
+    print-line-uni ("unhex upper: " & unhex-text "0A")
+    print-line-uni ("unhex empty: " & unhex-text "")
+    print-line-uni ("hex: " & ag-hex [0, 15, 16, 255])
+    print-line-uni ("seconds ten digits: " & show (ag-seconds "1793529430"))
+    print-line-uni ("seconds sixteen digits: " & show (ag-seconds "1234567890123456"))
+  end
+
+Page 1

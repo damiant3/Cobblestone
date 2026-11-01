@@ -20,8 +20,6 @@ Chapter: OtaBoot
  nobody points at and a device that boots the firmware it already
  trusted.
 
- We say:
-
 Section: The Record
 
  A device that has never been updated has no record. Erased NOR flash
@@ -206,10 +204,10 @@ Section: The Flash Half
  changing after Gate B blessed it -- a partial write, a bad cell, a
  flipped bit -- which is what a boot-time re-check is for.
 
-  boot-verify-candidate : Integer, Integer -> Boolean
-  boot-verify-candidate (rec-addr) (slot-addr) =
+  boot-verify-candidate : Integer, Integer, Integer -> Boolean
+  boot-verify-candidate (rec-addr) (slot-addr) (slot-size) =
     let len = boot-candidate-length rec-addr
-    in if len <= 0 then False
+    in if len <= 0 | len > slot-size then False
     else
       ota-hash-eq (hkdf-words-to-bytes (sha256-buf slot-addr 0 len)) (boot-expected-digest rec-addr) 0 32
 
@@ -225,24 +223,24 @@ Section: The Selector
      is SlotA -> a-addr
      is SlotB -> b-addr
 
-  boot-check : BootRecord, Integer, Integer -> Boolean
-  boot-check (counted) (rec-addr) (slot-addr) =
+  boot-check : BootRecord, Integer, Integer, Integer -> Boolean
+  boot-check (counted) (rec-addr) (slot-addr) (slot-size) =
     if counted.br-attempts > boot-attempt-limit then False
-    else boot-verify-candidate rec-addr slot-addr
+    else boot-verify-candidate rec-addr slot-addr slot-size
 
   boot-give-up-store : linear Board, Integer, Integer, BootRecord, Boolean -> [Flash, Device.Mmio] (linear Board, Integer)
   boot-give-up-store (brd) (bank) (rec-addr) (r) (ok) =
     if boot-give-up r ok then boot-store brd bank rec-addr (ota-rollback r)
     else board-pair brd 0
 
-  boot-run-candidate : linear Board, Integer, Integer, Integer, BootRecord, BootSlot -> [Flash, Device.Mmio] (linear Board, BootSlot)
-  boot-run-candidate (brd) (bank) (rec-addr) (slot-addr) (r) (c) =
+  boot-run-candidate : linear Board, Integer, Integer, Integer, Integer, BootRecord, BootSlot -> [Flash, Device.Mmio] (linear Board, BootSlot)
+  boot-run-candidate (brd) (bank) (rec-addr) (slot-addr) (slot-size) (r) (c) =
     let counted = ota-boot-attempt r
     in act
      w <- boot-store brd bank rec-addr counted
      when w
       is (brd1, wr) ->
-        let ok = boot-check counted rec-addr slot-addr
+        let ok = boot-check counted rec-addr slot-addr slot-size
         in act
          g <- boot-give-up-store brd1 bank rec-addr counted ok
          when g
@@ -250,12 +248,12 @@ Section: The Selector
          end
         end
 
-  boot-run : linear Board, Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, BootSlot)
-  boot-run (brd) (bank) (rec-addr) (slot-a-addr) (slot-b-addr) =
+  boot-run : linear Board, Integer, Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, BootSlot)
+  boot-run (brd) (bank) (rec-addr) (slot-a-addr) (slot-b-addr) (slot-size) =
     let r = boot-load rec-addr
     in when r.br-candidate
      is None -> board-pair brd (r.br-primary)
-     is Just (c) -> boot-run-candidate brd bank rec-addr (slot-address c slot-a-addr slot-b-addr) r c
+     is Just (c) -> boot-run-candidate brd bank rec-addr (slot-address c slot-a-addr slot-b-addr) slot-size r c
 
   boot-commit : linear Board, Integer, Integer -> [Flash, Device.Mmio] (linear Board, Integer)
   boot-commit (brd) (bank) (rec-addr) =

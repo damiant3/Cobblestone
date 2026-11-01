@@ -8,13 +8,6 @@ Chapter: Tls
   cites Foreword chapter Maybe
   cites Foreword chapter ListUtils
 
- TLS 1.3 record layer and handshake protocol per RFC 8446. Supports
- ChaCha20-Poly1305 and AES-128-GCM cipher suites. Builds and parses
- TLS record bytes for integration with a TCP transport. Key exchange
- uses X25519; key derivation uses HKDF-SHA256.
-
- We say:
-
 Section: Constants
   tls-version-12 : Integer = 771
   tls-version-13 : Integer = 772
@@ -164,16 +157,8 @@ Section: Extensions
 
  SIGNATURE_ALGORITHMS IS MANDATORY IN A CLIENTHELLO. RFC 8446 section 9.2
  requires it of any client that offers certificate authentication, and a
- conforming server MUST abort the handshake without it. This extension was
- absent until 2026-07-23 and no test could see that: our own server does
- not inspect it, so a loopback handshake completed perfectly, and the only
- interop harness in the tree drove our SERVER with openssl's client. Our
- CLIENT had never met a conforming server.
-
- mosquitto's OpenSSL says what it is: `missing sigalgs extension`, then
- `disconnected: protocol error`. Nothing came back on the wire -- an
- abort with no alert -- which from the client's seat is indistinguishable
- from a server that simply never answered.
+ conforming server MUST abort the handshake without it, with no alert, which
+ from the client's seat is indistinguishable from a server that never answered.
 
  The list is in descending order of preference (RFC 8446 section 4.2.3),
  though a server chooses by what its certificate can do and not by what we
@@ -244,16 +229,6 @@ Section: Helpers
   tls-take-bytes : List Integer, Integer -> List Integer
   tls-take-bytes (bytes) (n) = tls-slice bytes 0 n []
 
- tls-text-to-bytes is what puts the SNI hostname on the wire, so it must
- emit ASCII. It used to be tls-t2b -- bare char-code, which yields the
- CCE code point, not the byte a peer expects. `example.com` went out as
- CCE and no server could have matched it. Same defect as the key-schedule
- labels, same fix: convert at the I/O boundary.
-
- tls-t2b is kept, unexported in spirit, ONLY as the pin in
- codex/test/tls13-schedule.codex that demonstrates the trap. Do not reach
- for it to build wire bytes.
-
   tls-text-to-bytes : Text -> List Integer
   tls-text-to-bytes (s) = tls13-ascii s
 
@@ -283,18 +258,9 @@ Section: TLS 1.3 Key Schedule
  RFC 8448 -- every secret, key and IV below is checked against a value
  the IETF printed, not against this chapter agreeing with itself.
 
- The first defined its own tls-hkdf-expand as a single HMAC block with a
- hardcoded counter of 1 -- not HKDF-Expand at all. It silently returned
- SHORT for any request above 32 bytes rather than failing, and
- tls-derive-keys built the handshake keys on it using ad-hoc labels
- ("c hs", "s hs") that appear in no specification. Deleted.
-
- The second was structurally correct but computed the early secret as
- HKDF-Extract(0, [0]) -- a ONE-byte IKM. RFC 8446 writes that input as
- "0", meaning a string of Hash.length zero bytes; a single zero byte is a
- different number and produces a different early secret, and therefore a
- different everything. Fixed here, and the RFC 8448 vector is what
- catches it.
+ RFC 8446 writes the early secret's IKM as "0", meaning a string of
+ Hash.length zero bytes; a single zero byte is a different number and
+ produces a different early secret, and therefore a different everything.
 
   tls13-hkdf-label : List Integer, List Integer, Integer -> List Integer
   tls13-hkdf-label (label) (context) (length) =
@@ -331,20 +297,8 @@ Section: TLS 1.3 Key Schedule
   tls13-derive-secret (secret) (label) (messages-hash) =
     tls13-expand-label secret label messages-hash 32
 
- A trap worth naming, because it cost real time and it will cost the
- next reader the same: the foreword `sha256` returns the compressor's
- internal state, which is eight 32-bit WORDS, not thirty-two bytes.
- `sha256-to-hex` renders it with `words-to-hex`, and `Hkdf` wraps every
- hash it touches in `hkdf-words-to-bytes` for exactly this reason. Feed
- the word list into a key schedule as if it were bytes and you get
- plausible-looking key material that is wrong from the second rung down.
- tls13-hash is the byte-valued hash; use it, and never `sha256` directly,
- anywhere a transcript hash is wanted.
-
   tls13-hash : List Integer -> List Integer
   tls13-hash (msg) = hkdf-words-to-bytes (sha256 msg)
-
- The schedule proper. Each step is one line of RFC 8446's ladder.
 
   tls13-early-secret : List Integer
   tls13-early-secret = hkdf-extract (list-zeros 32) (list-zeros 32)
@@ -387,20 +341,13 @@ Section: TLS 1.3 Key Schedule
 
 Section: TLS 1.3 Transcript And Finished
 
- RFC 8446 sections 4.4.4 and 4.4.1. These lived in Encode chapter
- DtlsMessage under dtls- names because DTLS is where a handshake was
- first driven to completion, and DTLS 1.3 inherits both of them from TLS
- 1.3 unchanged. Nothing here is about datagrams: TlsEndpoint, which
- speaks TLS over TCP, was reaching into a DTLS chapter to hash a
- transcript. They belong here, beside the key schedule they are derived
- from.
+ RFC 8446 sections 4.4.4 and 4.4.1; DTLS 1.3 inherits both unchanged.
 
  The transcript form is the TLS 1.3 one -- a type byte, a uint24 length
  and the body. DTLS carries a message_seq and fragment fields on the
  wire and RFC 9147 section 5.2 is explicit that none of them may be fed
  to the handshake hash, so a DTLS message is stripped back to THIS shape
- before hashing. That is why the DTLS chapter's own transcript function
- was already producing the TLS form.
+ before hashing.
 
   tls13-msg-transcript : Integer, List Integer -> List Integer
   tls13-msg-transcript (msg-type) (body) =
@@ -531,30 +478,81 @@ Section: TLS 1.3 Record Layer
 
   tls13-record-encrypt : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
   tls13-record-encrypt (key) (iv) (seq) (content-type) (content) =
-    let inner = content & [content-type]
-    in let enc-len = list-length inner + 16
-    in let r = aesgcm-encrypt key (tls13-rec-nonce iv seq) inner (tls13-rec-aad enc-len)
-    in tls13-rec-aad enc-len & r.ciphertext & r.tag
+    tls13-record-encrypt-at key iv seq content-type content 0 (list-length content)
+
+  tls13-record-encrypt-at : List Integer, List Integer, Integer, Integer, List Integer, Integer, Integer -> List Integer
+  tls13-record-encrypt-at (key) (iv) (seq) (content-type) (data) (off) (n) =
+    let enc-len = n + 1 + 16
+    in let head = tls-slice (tls13-rec-aad enc-len) 0 5 (__list-with-capacity (5 + enc-len))
+    in tls13-seal-marked key (tls13-rec-nonce iv seq) data off n content-type (tls13-rec-aad enc-len) head __heap-save (5 + enc-len)
+
+ The record is reserved at its full length before a heap mark (arguments evaluate left to right), so sealing only
+ writes into it and the AES key schedule each record expands (about 34 KB) is given back. A record that does not
+ come out at its full length is returned without restoring the heap.
+
+  tls13-seal-marked : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  tls13-seal-marked (key) (nonce) (data) (off) (n) (ctype) (aad) (out) (mark) (total) =
+    let rec = aesgcm-seal-typed-into key nonce data off n ctype aad out
+    in if list-length rec /= total then rec
+    else tls13-seal-kept rec mark
+
+  tls13-seal-kept : List Integer, Integer -> List Integer
+  tls13-seal-kept (rec) (mark) =
+    let restored = __heap-restore mark
+    in rec
 
   tls13-record-decrypt : List Integer, List Integer, Integer, List Integer -> Maybe TlsInner
   tls13-record-decrypt (key) (iv) (seq) (wire) =
+    when tls13-record-open key iv seq wire
+      is None -> None
+      is Just (o) -> Just (tls13-open-inner o)
+
+ An opened record is its whole plaintext and the length of the content in it, so a caller appending the content
+ reads it in place; tls13-open-inner copies the content out as a TlsInner.
+
+  TlsOpen = record {
+    to-type : Integer,
+    to-plain : List Integer,
+    to-len : Integer
+  }
+
+  tls13-open-inner : TlsOpen -> TlsInner
+  tls13-open-inner (o) =
+    TlsInner { ti-type = o.to-type, ti-data = if o.to-len == 0 then [] else tls-slice (o.to-plain) 0 (o.to-len) (__list-with-capacity (o.to-len)) }
+
+  tls13-record-open : List Integer, List Integer, Integer, List Integer -> Maybe TlsOpen
+  tls13-record-open (key) (iv) (seq) (wire) =
     if list-length wire < 6 then None
     else let enc-len = list-at wire 3 * 256 + list-at wire 4
     in if enc-len < 17 then None
+    else if enc-len > tls13-max-cipher then None
     else if 5 + enc-len > list-length wire then None
     else let aad = tls-take-bytes wire 5
-    in let enc = tls-slice wire 5 enc-len []
-    in let ct = tls-take-bytes enc (enc-len - 16)
-    in let tag = tls-slice enc (enc-len - 16) 16 []
-    in when aesgcm-decrypt key (tls13-rec-nonce iv seq) ct aad tag
-      is Just (inner) -> tls13-strip-inner inner
+    in let tag = tls-slice wire (enc-len - 11) 16 []
+    in when aesgcm-decrypt-at key (tls13-rec-nonce iv seq) wire 5 (enc-len - 16) aad tag
+      is Just (inner) -> tls13-open-plain inner
       is None -> None
+
+ RFC 8446 5.2 and 5.4: a protected record's length is at most 2^14 + 256, and the content inside it at most 2^14
+ bytes; either past its bound is record_overflow, refused here as a record that does not open. RFC 8446 5.4: an
+ authentic record whose plaintext holds no nonzero byte has no content type and MUST end the connection with
+ unexpected_message, so it is handed back as type 0, which no caller takes, rather than refused like a forgery.
+
+  tls13-max-cipher : Integer = 16640
+  tls13-max-plain : Integer = 16384
 
   tls13-strip-inner : List Integer -> Maybe TlsInner
   tls13-strip-inner (inner) =
+    when tls13-open-plain inner
+      is None -> None
+      is Just (o) -> Just (tls13-open-inner o)
+
+  tls13-open-plain : List Integer -> Maybe TlsOpen
+  tls13-open-plain (inner) =
     let p = tls13-last-nonzero inner (list-length inner - 1)
-    in if p < 0 then None
-    else Just (TlsInner { ti-type = list-at inner p, ti-data = tls-take-bytes inner p })
+    in if p < 0 then Just (TlsOpen { to-type = 0, to-plain = inner, to-len = 0 })
+    else if p > tls13-max-plain then None
+    else Just (TlsOpen { to-type = list-at inner p, to-plain = inner, to-len = p })
 
   tls13-last-nonzero : List Integer, Integer -> Integer
   tls13-last-nonzero (bs) (i) =

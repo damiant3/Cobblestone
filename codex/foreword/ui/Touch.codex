@@ -2,8 +2,6 @@ Chapter: Touch
   cites UI chapter Event
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Types
 
   TouchPoint = record {
@@ -59,7 +57,7 @@ Section: Construction
     tst-points = [],
     tst-point-count = 0,
     tst-gestures = [],
-    tst-last-tap-time = 0,
+    tst-last-tap-time = 0 - 1,
     tst-last-tap-x = 0,
     tst-last-tap-y = 0,
     tst-swipe-threshold = 50,
@@ -88,9 +86,7 @@ Section: Event Handling
     in __record-set (__record-set (__record-set st "tst-points" (list-push (st.tst-points) pt)) "tst-point-count" (st.tst-point-count + 1)) "tst-gestures" []
 
   touch-on-move : TouchState, TouchEvent -> TouchState
-  touch-on-move (st) (ev) =
-    let updated = touch-update-point (st.tst-points) (ev.te-id) (ev.te-x) (ev.te-y) 0 (st.tst-point-count)
-    in __record-set st "tst-points" updated
+  touch-on-move (st) (ev) = st
 
   touch-on-up : TouchState, TouchEvent -> TouchState
   touch-on-up (st) (ev) =
@@ -100,8 +96,15 @@ Section: Event Handling
     in let s1 = __record-set st "tst-points" cleaned
     in let s2 = __record-set s1 "tst-point-count" (st.tst-point-count - 1)
     in let s3 = __record-set s2 "tst-gestures" gestures
-    in let s4 = __record-set s3 "tst-last-tap-time" (ev.te-timestamp)
+    in let s4 = __record-set s3 "tst-last-tap-time" (touch-tap-time gestures (ev.te-timestamp))
     in __record-set s4 "tst-last-tap-x" (ev.te-x)
+
+  touch-tap-time : List TouchGesture, Integer -> Integer
+  touch-tap-time (gestures) (t) =
+    if list-length gestures == 0 then 0 - 1
+    else when list-at gestures 0
+      is GestureTap (x) (y) -> t
+      is otherwise -> 0 - 1
 
   touch-on-cancel : TouchState, TouchEvent -> TouchState
   touch-on-cancel (st) (ev) =
@@ -124,8 +127,8 @@ Section: Classification
   touch-classify-tap : TouchState, TouchEvent, Integer -> List TouchGesture
   touch-classify-tap (st) (ev) (duration) =
     if duration > st.tst-long-press-ms then [GestureLongPress (ev.te-x) (ev.te-y)]
-    else let dt = ev.te-timestamp - st.tst-last-tap-time
-    in if dt < st.tst-double-tap-ms then [GestureDoubleTap (ev.te-x) (ev.te-y)]
+    else if st.tst-last-tap-time < 0 then [GestureTap (ev.te-x) (ev.te-y)]
+    else if ev.te-timestamp - st.tst-last-tap-time < st.tst-double-tap-ms then [GestureDoubleTap (ev.te-x) (ev.te-y)]
     else [GestureTap (ev.te-x) (ev.te-y)]
 
   touch-classify-swipe : Integer, Integer, Integer -> List TouchGesture
@@ -136,14 +139,6 @@ Section: Classification
       if dy > 0 then [GestureSwipeDown dist] else [GestureSwipeUp dist]
 
 Section: Point Management
-
-  touch-update-point : List TouchPoint, Integer, Integer, Integer, Integer, Integer -> List TouchPoint
-  touch-update-point (points) (id) (x) (y) (i) (len) =
-    if i >= len then points
-    else let pt = list-at points i
-    in if pt.tp-id == id then
-      list-set-at points i (__record-set (__record-set pt "tp-x" x) "tp-y" y)
-    else touch-update-point points id x y (i + 1) len
 
   touch-find-point : List TouchPoint, Integer, Integer, Integer -> Maybe TouchPoint
   touch-find-point (points) (id) (i) (len) =

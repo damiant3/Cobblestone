@@ -8,25 +8,11 @@ Chapter: OtaConfirmBoot
   cites Foreword chapter Maybe
   cites Foreword chapter Console
 
- `boot-commit` has existed since the OTA boot record did, and until now
- nothing outside a test called it: the commit worked and only the
- SCHEDULING was missing, which is a different fault from a path nothing
- has ever run. `fw-confirm-boot` is that schedule, and this is its gate.
-
- The two arms differ in ONE input, the registration verdict, and that is
- the point:
-
    1. Registered. The candidate is committed, so the next boot chooses it
       as primary with no candidate outstanding, and Update Result reads 1.
    2. NOT registered. Nothing is committed, the candidate is still
       outstanding, and five boots exhaust the attempt limit and fall back
       to A. Update Result stays 0.
-
- Arm 2 is what makes arm 1 mean anything: a confirm that committed
- unconditionally passes arm 1 exactly as well, and the fall-back to A is
- the only place the difference shows.
-
- We say:
 
 Section: Fixtures
 
@@ -34,6 +20,7 @@ Section: Fixtures
   rec-addr : Integer = 536883200
   slot-a-addr : Integer = 536887296
   slot-b-addr : Integer = 536891392
+  slot-size : Integer = 4096
 
   image-a : List Integer = [67, 68, 88, 49, 1, 1, 1, 1]
   image-b : List Integer = [67, 68, 88, 49, 2, 2, 2, 2]
@@ -110,7 +97,7 @@ Section: Staging
   run-five (brd) (n) (acc) =
    if n <= 0 then board-pair brd acc
    else act
-    r <- boot-run brd bank-base rec-addr slot-a-addr slot-b-addr
+    r <- boot-run brd bank-base rec-addr slot-a-addr slot-b-addr slot-size
     when r
      is (b1, s) -> run-five b1 (n - 1) (acc & show-slot s)
     end
@@ -121,13 +108,13 @@ Section: The Runs
   run-confirmed (x) = act
    brd0 <- board-open 0 0
    b4 <- setup-marked brd0
-   rf <- boot-run b4 bank-base rec-addr slot-a-addr slot-b-addr
+   rf <- boot-run b4 bank-base rec-addr slot-a-addr slot-b-addr slot-size
    when rf
     is (b5, first) -> act
       rc <- fw-confirm-boot b5 fw0 bank-base rec-addr True
       when rc
        is (b6, fw1) -> act
-         rs <- boot-run b6 bank-base rec-addr slot-a-addr slot-b-addr
+         rs <- boot-run b6 bank-base rec-addr slot-a-addr slot-b-addr slot-size
          when rs
           is (b7, second) -> act
             bc <- board-close b7

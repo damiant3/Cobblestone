@@ -1,0 +1,61 @@
+Chapter: Fat32AllocCost
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+
+ Every sector read or written allocates one 512-byte buffer that stays until
+ the heap mark is restored, so a write's heap delta counts its sector traffic.
+ Files of 16, 32 and 48 clusters, each on a freshly formatted FAT32 volume
+ (sector 2048, 20480 sectors) so that no write scans past another's clusters:
+ a cost linear in the cluster count makes the second difference of the three
+ deltas 0, and a chain walked from its head for every cluster added makes it
+ positive. The same three files on one volume measure the free-cluster search:
+ a search reading a sector per cluster it skips re-reads the earlier files'
+ clusters and makes that difference positive too.
+
+Section: Helpers
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0)
+
+  cost : Text, List Integer -> [Device.Block] Integer
+  cost (name) (data) = act
+    fmt <- fat32-format 2048 20480 "CODEX"
+    vol <- fat32-init 2048
+    let h = __heap-save
+    in act
+      w <- fat32-write-file vol name data
+      __heap-save - h
+    end
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    fmt <- fat32-format 2048 20480 "CODEX"
+    vol <- fat32-init 2048
+    let per = (vol.f32-sectors-per-cluster) * 512
+    in let d16 = zeros (per * 16) []
+    in let d32 = zeros (per * 32) []
+    in let d48 = zeros (per * 48) []
+    in act
+      c16 <- cost "A16.BIN" d16
+      c32 <- cost "A32.BIN" d32
+      c48 <- cost "A48.BIN" d48
+      print-line-uni ("second difference of the write costs " & show (c48 - 2 * c32 + c16))
+      fmt2 <- fat32-format 2048 20480 "CODEX"
+      vol2 <- fat32-init 2048
+      s16 <- cost-on vol2 "B16.BIN" d16
+      s32 <- cost-on vol2 "B32.BIN" d32
+      s48 <- cost-on vol2 "B48.BIN" d48
+      print-line-uni ("on one volume, second difference " & show (s48 - 2 * s32 + s16))
+    end
+  end
+
+  cost-on : Fat32Volume, Text, List Integer -> [Device.Block] Integer
+  cost-on (vol) (name) (data) =
+    let h = __heap-save
+    in act
+      w <- fat32-write-file vol name data
+      __heap-save - h
+    end

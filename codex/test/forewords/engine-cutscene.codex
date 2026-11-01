@@ -1,7 +1,38 @@
 Chapter: FwdCutsceneTest
   cites Engine chapter Cutscene
 
+Section: Fixtures
+
+  ctt-data : Boolean -> CutsceneData
+  ctt-data (skippable) = cs-add-track (cs-add-fade-in (cs-add-dialogue (css-new "intro" skippable) 0 1000 "A" "hi") 500 1000) 2000 500 (TrkEvent "boom")
+
+  ctt-locals : List CutsceneEvent, Integer, Text -> Text
+  ctt-locals (evs) (i) (acc) =
+    if i >= list-length evs then acc
+    else ctt-locals evs (i + 1) (acc & (if i == 0 then "" else " ") & show ((list-at evs i).ce-local-t) & "/" & show ((list-at evs i).ce-duration))
+
+  ctt-line : Text, CutsceneState -> Text
+  ctt-line (tag) (st) =
+    let evs = css-active-tracks st
+    in tag & ": " & format-cutscene-state st & ", active " & show (list-length evs) & " [" & ctt-locals evs 0 "" & "]"
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Engine/Cutscene OK"
-  end
+
+  opening : [Console] Nothing =
+    let at600 = css-tick (css-play (ctt-data True)) 600
+    in let line600 = ctt-line "tick 600" at600
+    in let at2100 = css-tick (css-tick (css-play (ctt-data True)) 600) 1500
+    in let line2100 = ctt-line "tick 2100" at2100
+    in let held = css-tick (css-pause (css-tick (css-play (ctt-data True)) 600)) 1000
+    in let line-held = ctt-line "paused, tick 1000" held
+    in let done = css-tick (css-resume (css-pause (css-tick (css-play (ctt-data True)) 600))) 5000
+    in let line-done = ctt-line "resumed, tick 5000" done
+    in act
+      print-line-uni (format-cutscene (ctt-data True))
+      print-line-uni line600
+      print-line-uni line2100
+      print-line-uni line-held
+      print-line-uni line-done
+      print-line-uni ("skip unskippable: " & format-cutscene-state (css-skip (css-play (ctt-data False))))
+      print-line-uni ("skip skippable: " & format-cutscene-state (css-skip (css-play (ctt-data True))))
+    end

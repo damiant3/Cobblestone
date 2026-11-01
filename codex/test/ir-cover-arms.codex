@@ -1,0 +1,74 @@
+Chapter: IrCoverArms
+  cites Codex chapter CoverArms
+  cites Codex chapter IR Chapter
+  cites Codex chapter Codex Types
+  cites Codex chapter Name
+  cites Codex chapter Source Text
+  cites Foreword chapter Console
+
+Section: Builders
+  sp : SourceSpan = synthetic-span
+
+  int : CodexType = int-ty-default
+
+  nm : Text -> IRExpr
+  nm (n) = IrName n BooleanTy sp
+
+  lit : Integer -> IRExpr
+  lit (v) = IrIntLit v sp
+
+  if3 : IRExpr, IRExpr, IRExpr -> IRExpr
+  if3 (c) (t) (e) = IrIf c t e int sp
+
+  branch : IRExpr -> IRBranch
+  branch (b) = IRBranch { pattern = IrWildPat sp, body = b, guard = IrBoolLit True sp, span = sp, alt-group = 0 }
+
+  def : Text, IRExpr -> IRDef
+  def (n) (b) = IRDef { name = n, params = [], type-val = int, body = b, chapter-slug = "t", is-punctual = False, wcet-budget = 0, unique-params = [], span = sp }
+
+Section: Cases
+  defs : List IRDef
+  defs = [
+    def "flat-if" (if3 (nm "c") (lit 1) (lit 2)),
+    def "nested-if" (if3 (nm "a") (if3 (nm "b") (lit 1) (lit 2)) (lit 3)),
+    def "match" (IrMatch (lit 0) [branch (lit 1), branch (lit 2)] int sp),
+    def "plain" (lit 9)
+  ]
+
+  ch : IRChapter = IRChapter { name = make-name "T", defs = defs, effect-op-names = [], span = sp }
+
+  sites-text : List CoverSite, Integer -> Text
+  sites-text (ss) (i) =
+    if i >= list-length ss then ""
+    else
+      let s = list-at ss i
+      in (if i > 0 then " " else "") & s.site-kind & ":" & show s.site-arm & sites-text ss (i + 1)
+
+  def-row : IRDef -> Text
+  def-row (d) =
+    let ss = cover-sites d.body []
+    in d.name & " sites=" & show (list-length ss) & " [" & sites-text ss 0 & "]"
+
+  rows : List IRDef, Integer -> [Console] Nothing
+  rows (ds) (i) =
+    if i >= list-length ds then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (def-row (list-at ds i))
+      rows ds (i + 1)
+    end
+
+  slots : List Integer, Integer, Integer -> Text
+  slots (m) (k) (n) = if k >= n then "" else (if k > 0 then " " else "") & show (cover-arm-slot m k) & slots m (k + 1) n
+
+  opening : [Console] Nothing = act
+    let walked = cover-arms-in-chapter ch
+    in let plan = cover-arm-plan walked.defs
+    in act
+      print-line-uni ("before: " & show (list-length (cover-sites (list-at defs 0).body [])) & " sites in flat-if")
+      rows walked.defs 0
+      print-line-uni ("plan count=" & show plan.cap-count & " map length=" & show (list-length plan.cap-map))
+      print-line-uni ("slots -1..9: " & show (cover-arm-slot plan.cap-map (0 - 1)) & " " & slots plan.cap-map 0 10)
+    end
+  end

@@ -121,7 +121,10 @@ it is measured:
   UI and code atlases survive pane closes. Close paths capture `da-fonts`
   before restoring the heap and place that surviving pointer in the fresh
   `DeskApps`. Never read the discarded `DeskApps` after the restore to recover
-  its font field. Other state that must outlive a close belongs in a `ds` block
+  its font field. `da-pad` follows the same rule: `usb-attach` allocates the
+  gamepad's state before `desk-run` runs, so close paths capture `da-pad`
+  before the restore and carry it into the fresh record, empty or not. Other
+  state that must outlive a close belongs in a `ds` block
   allocated in `desk-run`, which is how the Calculator keeps its number.
   **`GopEdit`'s 9 MB must not move into this record**: its POINTER is parked
   in a cell and only Edit's typed values belong here. This bullet said the
@@ -372,6 +375,24 @@ If the two namespaces overlapped, clicking a group would launch an app.
 `codex/test/apps/desk-menu-groups` asserts both directions, because one
 direction passes with a single function answering for both.
 
+**TYPING IN THE OPEN MENU SEARCHES IT.** A letter, digit or space scancode
+appends to a query held as scancode bytes in the `ps` block (`gpr-q-len-cell`,
+40 at most) and Backspace removes one; a Text cannot be kept there, because
+the per-iteration restore reclaims it. While the query is non-empty
+`gpr-menu-tree` is a `Search:` row over the `GlobalSearch` matches (label or
+group, case-folded), each a `gpr-row` so a click launches by the same
+`gpr-id-scan`. Each edit selects the first match, Up and Down move among the
+matches, Enter launches the selection, and Enter with no match stays open.
+Opening the menu clears the query (`gpr-ensure`). Pinned by
+`codex/test/desk-menu-search`.
+
+**THE MENU OPENS AT THE LAST APP LAUNCHED.** Every launch from the menu or the
+Programs pane passes through `gpr-launched`, which keeps the five most recent
+as scancode bytes in `ps` (`gpr-mru-n-cell`) by `AppLauncher`'s `al-add-recent`
+(newest first, no duplicates). `gpr-ensure` puts the selection on the newest,
+so its group is the open one, and search lists recent matches first. Pinned by
+`codex/test/desk-menu-recent`.
+
 **A PANEL DOES SIZE TO ITS CHILDREN, AND THIS FILE SAID IT DOES NOT.**
 `widget-measure` sets `wn-min-h` to `box-max` of the node's own minimum and the
 SUM of its children's, and `widget-layout` is `widget-arrange (widget-measure w
@@ -601,7 +622,7 @@ The block holds raw addresses and integer state shared with pane steps.
 | 88 | `dk-dif-cell` | pointer: the Diffusion pane's block (val, 2026-08-25), same shape and for the same reason |
 | 92 | `dk-sty-cell` | pointer: Settings block, 2176 bytes below the base mark. Window prefix 0-63; page at 64, status length at 68, read-failure lock at 72, scroll at 76, 120 CCE qwords at 80. Wallpaper's 384-byte raw state starts at 1088; its display cache is allocated before the base mark. Accessibility starts at 1472: focus ID length at +0, Shift state at +8, up to 96 CCE ID bytes at +16, the stored high-contrast Boolean at +112, and the 576-byte announcement channel at +128. That channel has sequence/length/live/truncation qwords at +0/+8/+16/+24 and up to 512 CCE bytes at +32; use `gax-read` for an owned stable copy. Numeric preferences remain scalar `ds` cells. No temporary record/text pointer survives a step. |
 | 96 | `dk-trk-cell` | pointer: the Issues pane's block (val, 2026-08-25). Same shape again, and the pane it belongs to keeps state without keeping a block: the filter is bare cell 32 and the selected row bare cell 40, two integers, so there was nothing a window slot could sit in |
-| 100 | `dk-mon-cell` | pointer: the Monitor's block (val, 2026-08-25). The first block that holds something the PAINTER cannot reach as well as the window slot: cell 0 is whether a USB HID keyboard was enumerated and cell 4 whether a mouse was, written once by `desk-mon-open`. `desk-wnd-paint-all` is handed the screen and `ds` and nothing else, so `kbd` and `mouse` are not in scope where this pane's tree is built, and what it wants of them is settled before `desk-run` takes the base mark and cannot change afterwards |
+| 100 | `dk-mon-cell` | pointer: the Monitor's block (val, 2026-08-25). The first block that holds something the PAINTER cannot reach as well as the window slot: cell 0 is whether a USB HID keyboard was enumerated and cell 4 whether a mouse was, written once by `desk-mon-open`; cell 8 is whether a gamepad was (`da-pad`, also from `desk-mon-open`) and cell 12 its buttons, written by `desk-loop` after every `pad-pump` (`desk-pad-step`). `desk-wnd-paint-all` is handed the screen and `ds` and nothing else, so `kbd` and `mouse` are not in scope where this pane's tree is built, and what it wants of them is settled before `desk-run` takes the base mark and cannot change afterwards |
 | 104 | `dk-scene-cell` | pointer: the 3D View's block (val, 2026-08-25). The window slot and nothing else: everything a scene pane keeps lives in `ScenePane`, which `DeskApps` carries, and everything about where it is drawn is derived from the rect these cells hold |
 | 108 | `dk-fish-cell` | pointer: the Aquarium's block, same shape. Two cells and not one shared, because two focus ids over one block is two windows over one rectangle |
 | 112 | `dk-bro-cell` | pointer: the Browser's block (val, 2026-08-25). The window slot and nothing else, for the same reason the two 3D panes' blocks hold nothing else: a heavy pane's own state is a typed record in `DeskApps`, which no cell can hold |
@@ -852,6 +873,14 @@ negative arm would have scored a deleted gesture as a pass.
 **A BOARD WITH NO HPET FLICKS NOTHING**, and so does a bed with a pinned
 clock. Every arm of the gesture is a speed or a deadline, so `build/desk.ps1
 -Rtc` cannot flick and a frozen-clock capture is not the instrument for it.
+
+**A SLOW RELEASE AT AN EDGE SNAPS; A FAST ONE FLICKS.** A drag released with
+the pointer within `snap-edge-margin` (16 device pixels) of the content box's
+edge places the window into the `WindowSnap` zone over the content box: left or
+right half, a quarter at a corner, the bottom half, and the whole box at the
+top edge. `dk-snap-at` measures from `dk-cbox-*`, so a docked pill strip moves
+the zones with it. A release `dk-flick-fast` accepts is a flick and never snaps.
+The geometry is `codex/test/desk-window-snap`.
 
 **A PILL GOES IN THE TASKBAR TREE, NEVER PAINTED INTO THE BAND** (val,
 2026-08-25). `desk-taskbar-clock` re-renders the whole taskbar subtree once a

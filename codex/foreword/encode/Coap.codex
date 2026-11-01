@@ -5,7 +5,6 @@ Chapter: Coap
 
  CoAP (Constrained Application Protocol) per RFC 7252.
  UDP-based RESTful protocol for constrained IoT devices.
- Each builder returns a List Integer (the raw packet bytes).
 
 Section: Message Types
 
@@ -92,12 +91,6 @@ Section: Packet Builder
    value : List Integer
   }
 
- A type argument is invariant (`docs/DevelopersGuide.md` "Variance of Type
- Arguments"), and the three fragments below are joined with & and so must
- carry the SAME element type. bit-and yields 0..255 while a subtraction
- yields a plain Integer, so without the widening the branches of one if,
- and then the joins, disagree.
-
   coap-encode-option : Integer, CoapOption -> List Integer
   coap-encode-option (prev-number) (opt) =
     let delta = opt.number - prev-number
@@ -144,16 +137,12 @@ Section: URI Path Helper
  own Uri-Path option, and an option value must not contain a slash. One
  option holding a whole path names a resource whose name has slashes in it,
  which on any conforming server is a different resource and usually no
- resource at all. Nothing caught it because every path this tree had ever
- asked for was a single segment -- "temperature", "actuator", "codex" in
- coap-interop-test -- and a single segment is the one case where the two
- spellings agree. An LwM2M path is /3/0/1 and needs three.
+ resource at all.
 
   coap-uri-path-options : Text -> List CoapOption
   coap-uri-path-options (path) = coap-split-opts (coap-text-to-bytes path) coap-opt-uri-path 47 0 0 []
 
- A query is Uri-Query (option 15), not part of the path. The caller passes
- the query alone, without the leading question mark, because the question
+ A query is Uri-Query (option 15), not part of the path, and the question
  mark separates the two and belongs to neither.
 
   coap-uri-query-options : Text -> List CoapOption
@@ -179,16 +168,6 @@ Section: URI Path Helper
         number = __narrow num,
         value = coap-slice bs start (stop - start)
       })
-
- A Uri-Path segment goes on the wire, so the conversion is an I/O
- boundary and runs through `to-unicode`. This said `char-code` alone
- until 2026-07-23, which answers the CCE code point and not the ASCII
- one -- `char-code` of "c" is not 99 -- so every path this chapter ever
- built named a resource no server could match. It was invisible for as
- long as the only reader was our own parser: both halves used the same
- mapping and agreed perfectly. aiocoap did not, and answered 4.04 for a
- resource that was there. Same bug, same cause and same hiding place as
- the TLS SNI hostname and the TLS key-schedule labels.
 
   coap-text-to-bytes : Text -> List Integer
   coap-text-to-bytes (s) = coap-text-to-bytes-loop s 0 (text-length s) []
@@ -284,7 +263,8 @@ Section: Parsing
  datagram; and when a payload marker has nothing behind it. That last one
  earns its place: an empty payload is spelled by omitting the marker, so
  a bare 0xFF is a lie about length, which is exactly the shape a
- truncation attack takes.
+ truncation attack takes. Section 4.1: an Empty message (code 0.00) is the
+ four-byte header alone, and any byte after it is a format error.
 
   CoapMessage = record {
    cm-type : Integer between 0 and 3,
@@ -308,7 +288,7 @@ Section: Parsing
   }
 
   coap-slice : List Integer, Integer, Integer -> List Integer
-  coap-slice (bytes) (off) (len) = coap-slice-loop bytes off len 0 []
+  coap-slice (bytes) (off) (len) = if len <= 0 then [] else coap-slice-loop bytes off len 0 (__list-with-capacity len)
 
   coap-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
   coap-slice-loop (bytes) (off) (len) (i) (acc) =
@@ -371,6 +351,7 @@ Section: Parsing
     in if ver /= 1 then None
     else if tkl > 8 then None
     else if 4 + tkl > n then None
+    else if list-at bytes 1 == 0 & n > 4 then None
     else let scan = coap-scan-options bytes (4 + tkl) n 0 []
     in if scan.co-ok == False then None
     else Just (CoapMessage {
@@ -385,15 +366,11 @@ Section: Parsing
 Section: Reading Options
 
  An option that is absent and an option whose value is zero are not the
- same thing, and CoAP spells the second one with an empty value -- so
- coap-find-option answers Maybe and the caller decides. No Block2 option
- at all means the whole body is here; a Block2 option with an empty value
- means block 0, no more, size 16. Collapsing those loses the difference
- between a server that is not doing block-wise transfer and one that is.
+ same thing, and CoAP spells the second one with an empty value. No Block2
+ option at all means the whole body is here; a Block2 option with an empty
+ value means block 0, no more, size 16.
 
- Uri-Path and Location-Path are repeatable and their ORDER is the path, so
- finding the first one answers a different question from reading the path.
- coap-find-option is right for a singleton option and wrong for these.
+ Uri-Path and Location-Path are repeatable and their ORDER is the path.
 
   coap-opt-location-path : Integer = 8
 
@@ -407,10 +384,7 @@ Section: Reading Options
     in if o.number == num then coap-find-options-loop opts num (i + 1) (list-push acc (o.value))
     else coap-find-options-loop opts num (i + 1) acc
 
- 2.04 Changed, which a Write and an Execute both answer with. The constant
- named coap-204-deleted above is 2.02 Deleted (response-code 2 2); its VALUE
- is right and its NAME is not, and it is left alone here rather than renamed
- under an unrelated change.
+ 2.04 Changed, which a Write and an Execute both answer with.
 
   coap-204-changed : Integer = coap-response-code 2 4
 

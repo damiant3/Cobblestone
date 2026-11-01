@@ -451,7 +451,9 @@ Chapter: CompositeStore
   cs-span : Integer, Integer, Integer -> Text
   cs-span (timing) (a) (b) = show (cs-microseconds (peek-qword timing (a * 8)) (peek-qword timing (b * 8)))
   cs-microseconds : Integer, Integer -> Integer
-  cs-microseconds (start) (stop) = (stop - start) * 1000000 / max 1 hpet-ticks-per-second
+  cs-microseconds (start) (stop) = cs-micros-at (stop - start) (max 1 hpet-ticks-per-second)
+  cs-micros-at : Integer, Integer -> Integer
+  cs-micros-at (d) (rate) = d / rate * 1000000 + int-mod d rate * 1000000 / rate
   cs-commit : CompositeOwner, Boolean -> [Console, Device.Block] Result Integer Text
   cs-commit (owner) (force) = cs-commit-as owner force False
  A spread commit (the 60 s save) encodes in its own round and leaves its delta to cs-flight-step, one bulk a world tick
@@ -616,7 +618,8 @@ Chapter: CompositeStore
                   & " events=" & show owner.state.vendor.currency.count & " copper=" & show owner.state.vendor.currency.copper.entry-count
                   & " silver=" & show owner.state.vendor.currency.silver.entry-count & " gold=" & show owner.state.vendor.currency.world.money.entry-count
                   & " trades=" & show owner.state.vendor.currency.world.trade-count & " timers=" & show owner.state.timers.used & " timers-peak=" & show owner.state.timers.peak
-                  & " families=" & show owner.state.housing.fam-count & cg-powder-said owner.state & cg-fleet-said owner.state)
+                  & " families=" & show owner.state.housing.fam-count & cg-powder-said owner.state & cg-fleet-said owner.state & cg-tinker-said owner.state)
+                guarded <- when owner.state.civic is None -> act 0 end is Just (c) -> slg-line owner.state.checkpoint.game.log slg-store slg-info ("GUARDS hour=" & show owner.state.vendor.currency.world.hour & cv-guards-said c 0 "" & cv-city-said c 0 "")
                 moves <- slg-line owner.state.checkpoint.game.log slg-store slg-info (gws-moves-said owner.state.spawns)
                 slotted <- if ws-slots-low owner.state.checkpoint.game.world then slg-line owner.state.checkpoint.game.log slg-store slg-warn ("WORLD SLOTS LOW " & ws-slots-text owner.state.checkpoint.game.world)
                   else act 0 end
@@ -881,20 +884,39 @@ Chapter: CompositeStore
  wheel line names the searches begun and the cells expanded since the last line, Britain's planner and the city towns'.
   cs-nav-text : CompositeGame -> Text
   cs-nav-text (s) = (when s.town is None -> "" is Just (t) -> " britain-searches=" & show t.nav.searches & " britain-cells=" & show t.nav.cells)
-    & " city-searches=" & show (cs-city-sum s.city-towns 0 True) & " city-cells=" & show (cs-city-sum s.city-towns 0 False)
+    & " city-searches=" & show (cs-city-sum s.city-towns 0 True (cs-britain-why s)) & " city-cells=" & show (cs-city-sum s.city-towns 0 False (cs-britain-why s)) & " job-cells=" & show (cs-job-cells s)
     & " tick-cells=" & show (peek-qword s.entry-cells 0) & " pulse-cells=" & show (peek-qword s.entry-cells 8) & " route-cells=" & show (peek-qword s.entry-cells 16) & " report-cells=" & show (peek-qword s.entry-cells 24)
-    & " meter-cells=" & show (peek-qword s.entry-cells 32 + peek-qword (s.kind-time + cg-kind-meter) 0)
-    & (when s.town is None -> "" is Just (t) -> " britain-why=" & cs-why-text t.nav.why 0) & " city-why=" & cs-city-why s.city-towns 0
- rte-why's slots: no-route/displaced/reused/ended/goal-changed/hit/refused/searched/searched-by-rte-toward/cells-for-rte-toward/cells-by-rte-plan/evicted, then searches and cells by direct rte-plan site (TownRoutes rte-plan-at), then probes rte-probe-budget ended, then the serials of the last walkers replanned for ended and for goal-changed (a serial in britain-why; city-why sums them, a nonzero sum only says a city walker did).
+    & " meter-cells=" & show (peek-qword s.entry-cells 32 + peek-qword (s.kind-time + cg-kind-meter) 0) & " meter-rebinds=" & show (peek-qword s.entry-cells 40)
+    & " navs=" & cs-nav-census s
+    & (when s.town is None -> "" is Just (t) -> " britain-why=" & cs-why-text t.nav.why 0) & " city-why=" & cs-city-why s.city-towns 0 (cs-britain-why s)
+ rte-why's slots: no-route/displaced/reused/ended/goal-changed/hit/refused/searched/searched-by-rte-toward/cells-for-rte-toward/cells-by-rte-plan/evicted, then searches and cells by direct rte-plan site (TownRoutes rte-plan-at), then probes rte-probe-budget ended, then the serials of the last walkers replanned for ended and for goal-changed (a serial in britain-why; city-why sums them, a nonzero sum only says a city walker did), then the cells expanded with no meter bound.
+ UOAIX-267: every planner the meter binds (cg-meter-bind), as britain, each city town, each city nav and the staff job:
+ cells/bound(1 when its meter is the live one)@identity (its why buffer), so a record counted twice or on another meter shows.
+  cs-nav-one : TlPath, Integer -> Text
+  cs-nav-one (p) (m) = show p.cells & "/" & (if p.meter == m then "1" else "0") & "@" & show p.why
+  cs-nav-towns : List TownLive, Integer, Integer -> Text
+  cs-nav-towns (ts) (m) (i) = if i >= list-length ts then "" else "," & cs-nav-one (list-at ts i).nav m & cs-nav-towns ts m (i + 1)
+  cs-nav-list : List TlPath, Integer, Integer -> Text
+  cs-nav-list (ps) (m) (i) = if i >= list-length ps then "" else "," & cs-nav-one (list-at ps i) m & cs-nav-list ps m (i + 1)
+  cs-nav-census : CompositeGame -> Text
+  cs-nav-census (s) = let m = s.kind-time + cg-kind-meter
+    in "b:" & (when s.town is None -> "-" is Just (t) -> cs-nav-one t.nav m) & " towns:" & cs-nav-towns s.city-towns m 0
+      & " navs:" & cs-nav-list s.city-navs m 0 & " job:" & (when s.staff is None -> "-" is Just (st) -> (when st.job is None -> "-" is Just (j) -> cs-nav-one j.nav m))
   cs-why-text : Integer, Integer -> Text
   cs-why-text (b) (i) = if i >= tl-why-slots then "" else (if i == 0 then "" else "/") & show (peek-qword b (i * 8)) & cs-why-text b (i + 1)
-  cs-city-why : List TownLive, Integer -> Text
-  cs-city-why (ts) (slot) = if slot >= tl-why-slots then "" else (if slot == 0 then "" else "/") & show (cs-city-why-sum ts slot 0) & cs-city-why ts (slot + 1)
-  cs-city-why-sum : List TownLive, Integer, Integer -> Integer
-  cs-city-why-sum (ts) (slot) (i) = if i >= list-length ts then 0 else peek-qword (list-at ts i).nav.why (slot * 8) + cs-city-why-sum ts slot (i + 1)
-  cs-city-sum : List TownLive, Integer, Boolean -> Integer
-  cs-city-sum (ts) (i) (searches) = if i >= list-length ts then 0
-    else (if searches then (list-at ts i).nav.searches else (list-at ts i).nav.cells) + cs-city-sum ts (i + 1) searches
+  cs-city-why : List TownLive, Integer, Integer -> Text
+  cs-city-why (ts) (slot) (skip) = if slot >= tl-why-slots then "" else (if slot == 0 then "" else "/") & show (cs-city-why-sum ts slot 0 skip) & cs-city-why ts (slot + 1) skip
+  cs-city-why-sum : List TownLive, Integer, Integer, Integer -> Integer
+  cs-city-why-sum (ts) (slot) (i) (skip) = if i >= list-length ts then 0 else (if (list-at ts i).nav.why == skip then 0 else peek-qword (list-at ts i).nav.why (slot * 8)) + cs-city-why-sum ts slot (i + 1) skip
+  cs-city-sum : List TownLive, Integer, Boolean, Integer -> Integer
+  cs-city-sum (ts) (i) (searches) (skip) = if i >= list-length ts then 0
+    else (if (list-at ts i).nav.why == skip then 0 else if searches then (list-at ts i).nav.searches else (list-at ts i).nav.cells) + cs-city-sum ts (i + 1) searches skip
+ Britain's town is the first city town (its nav is the same record), so the city sums skip it; the staff job's planner is
+ metered too and reported as job-cells.
+  cs-britain-why : CompositeGame -> Integer
+  cs-britain-why (s) = when s.town is None -> 0 is Just (t) -> t.nav.why
+  cs-job-cells : CompositeGame -> Integer
+  cs-job-cells (s) = when s.staff is None -> 0 is Just (st) -> (when st.job is None -> 0 is Just (j) -> j.nav.cells)
  The meter's cells by entry point: the world tick (0), session pulses (8), packet routes (16) and the tick's reports (24),
  since the last line.
   cs-meter : CompositeOwner -> Integer
@@ -902,7 +924,7 @@ Chapter: CompositeStore
   cs-entry : CompositeOwner, Integer, Integer -> Integer
   cs-entry (owner) (at) (m0) = let b = owner.state.entry-cells in poke-qword b at (peek-qword b at + cs-meter owner - m0)
   cs-nav-reset : CompositeGame -> Integer
-  cs-nav-reset (s) = let e = poke-qword s.entry-cells 0 0 in let f = poke-qword s.entry-cells 8 0 in let g = poke-qword s.entry-cells 16 0 in let r = poke-qword s.entry-cells 24 0 in let q = poke-qword s.entry-cells 32 (0 - peek-qword (s.kind-time + cg-kind-meter) 0) in let b = when s.town is None -> 0 is Just (t) -> cs-nav-zero t.nav in cs-city-reset s.city-towns 0
+  cs-nav-reset (s) = let e = poke-qword s.entry-cells 0 0 in let rb = poke-qword s.entry-cells 40 0 in let f = poke-qword s.entry-cells 8 0 in let g = poke-qword s.entry-cells 16 0 in let r = poke-qword s.entry-cells 24 0 in let q = poke-qword s.entry-cells 32 (0 - peek-qword (s.kind-time + cg-kind-meter) 0) in let b = when s.town is None -> 0 is Just (t) -> cs-nav-zero t.nav in let j = (when s.staff is None -> 0 is Just (st) -> (when st.job is None -> 0 is Just (jb) -> cs-nav-zero jb.nav)) in cs-city-reset s.city-towns 0
   cs-nav-zero : TlPath -> Integer
   cs-nav-zero (p) = let a = __record-set p "searches" 0 in let b = __record-set p "cells" 0 in let c = wd-zero p.why 0 (tl-why-slots * 8) in 0
   cs-city-reset : List TownLive, Integer -> Integer

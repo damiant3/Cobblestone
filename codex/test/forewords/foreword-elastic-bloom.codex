@@ -1,7 +1,57 @@
 Chapter: FwdElasticBloomTest
   cites Foreword chapter ElasticBloom
+  cites Foreword chapter ElasticHash
+
+Section: Fixtures
+
+  ebt-fill : ElasticBloomMap Integer, Integer, Integer -> ElasticBloomMap Integer
+  ebt-fill (m) (i) (n) =
+    if i >= n then m
+    else ebt-fill (eb-put m ("k" & show i) (i * 3)) (i + 1) n
+
+  ebt-found : ElasticBloomMap Integer, Integer, Integer, Integer -> Integer
+  ebt-found (m) (i) (n) (acc) =
+    if i >= n then acc
+    else let hit = when eb-get m ("k" & show i)
+        is Just (v) -> if v == i * 3 then 1 else 0
+        is None -> 0
+    in ebt-found m (i + 1) n (acc + hit)
+
+  ebt-exact : ElasticBloomMap Integer, Integer, Integer, Integer -> Integer
+  ebt-exact (m) (i) (n) (acc) =
+    if i >= n then acc
+    else ebt-exact m (i + 1) n (acc + (if eb-has-exact m ("k" & show i) then 1 else 0))
+
+  ebt-show : Maybe Integer -> Text
+  ebt-show (r) =
+    when r
+      is Just (v) -> show v
+      is None -> "none"
+
+  ebt-bool : Boolean -> Text
+  ebt-bool (b) = if b then "yes" else "no"
 
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Foreword/ElasticBloom OK"
-  end
+
+  opening : [Console] Nothing =
+    let small = eb-new 0
+    in let big = eb-new 100
+    in let m1 = eb-put (eb-put (eb-put (eb-new 16) "alpha" 1) "beta" 2) "gamma" 3
+    in let m2 = eb-put m1 "beta" 20
+    in let filled = ebt-fill (eb-new 64) 0 50
+    in let base = eb-new 16
+    in let after = eb-put base "x" 7
+    in let t-one = elastic-new 16
+    in let t-two = t-one
+    in let t-put = elastic-put t-two "y" 9
+    in act
+      print-line-uni ("capacity 0 -> " & show (eb-capacity small) & ", 100 -> " & show (eb-capacity big))
+      print-line-uni ("empty size: " & show (eb-size small))
+      print-line-uni ("three: size " & show (eb-size m1) & ", alpha " & ebt-show (eb-get m1 "alpha") & ", beta " & ebt-show (eb-get m1 "beta") & ", gamma " & ebt-show (eb-get m1 "gamma"))
+      print-line-uni ("missing delta: get " & ebt-show (eb-get m1 "delta") & ", exact " & ebt-bool (eb-has-exact m1 "delta"))
+      print-line-uni ("overwrite beta: size " & show (eb-size m2) & ", beta " & ebt-show (eb-get m2 "beta"))
+      print-line-uni ("fifty: size " & show (eb-size filled) & ", found " & show (ebt-found filled 0 50 0))
+      print-line-uni ("absent k50..k99 exact hits: " & show (ebt-exact filled 50 100 0))
+      print-line-uni ("eb-put writes in place: argument size " & show (eb-size base) & ", x " & ebt-bool (eb-has-exact base "x") & "; result size " & show (eb-size after) & ", x " & ebt-show (eb-get after "x"))
+      print-line-uni ("elastic-put through one name, seen through the other: y " & ebt-show (elastic-get t-one "y") & ", sizes " & show (elastic-size t-one) & " and " & show (elastic-size t-put))
+    end

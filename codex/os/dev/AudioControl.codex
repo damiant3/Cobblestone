@@ -137,7 +137,22 @@ Section: Device Management
   ac-remove-device : AudioControlState, Text -> AudioControlState
   ac-remove-device (st) (dev-id) =
     let filtered = ac-filter-devs (st.ac-devices) dev-id 0 (st.ac-device-count) []
-    in __record-set (__record-set st "ac-devices" filtered) "ac-device-count" (list-length filtered)
+    in let n = list-length filtered
+    in let st2 = __record-set (__record-set st "ac-devices" filtered) "ac-device-count" n
+    in let st3 = if st2.ac-default-output == dev-id then __record-set st2 "ac-default-output" (ac-first-serving filtered True 0 n)
+      else st2
+    in if st3.ac-default-input == dev-id then __record-set st3 "ac-default-input" (ac-first-serving filtered False 0 n)
+    else st3
+
+  ac-first-serving : List AudioDevice, Boolean, Integer, Integer -> Text
+  ac-first-serving (devs) (output) (i) (n) =
+    if i >= n then ""
+    else let dev = list-at devs i
+    in let serves = when dev.ad-kind
+      is AdkOutput -> output
+      is AdkInput -> not output
+      is AdkBoth -> True
+    in if serves then dev.ad-id else ac-first-serving devs output (i + 1) n
 
   ac-filter-devs : List AudioDevice, Text, Integer, Integer, List AudioDevice -> List AudioDevice
   ac-filter-devs (devs) (exclude) (i) (n) (acc) =
@@ -170,7 +185,8 @@ Section: Device Management
 
   ac-set-device-volume : AudioControlState, Text, Integer -> AudioControlState
   ac-set-device-volume (st) (dev-id) (vol) =
-    let updated = ac-update-dev (st.ac-devices) dev-id "volume" vol 0 (st.ac-device-count) []
+    let clamped = if vol < 0 then 0 else if vol > 100 then 100 else vol
+    in let updated = ac-update-dev (st.ac-devices) dev-id "volume" clamped 0 (st.ac-device-count) []
     in __record-set st "ac-devices" updated
 
   ac-toggle-device-mute : AudioControlState, Text -> AudioControlState

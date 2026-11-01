@@ -2,32 +2,12 @@ Chapter: Arm64 LIR Register File
 
 Section: The Register File
 
- An abstract allocator register `k` (a `LocReg k`) is the physical register
- `a64-lir-phys[k]`. A spill slot `k` (a `LocSlot k`) is the stack cell
- `[SP + k*8]`.
-
  **`[0, ncallee)` is `x19` through `x27`, nine callee-saved registers.** A
  value live across a call is confined here by the allocator's crossing
  analysis, and the callee preserves them. `x28` is callee-saved on AAPCS and
  is NOT in the file: it is the bump allocator (`a64-heap-reg`), the ARM64
  counterpart of x86-64's `R10`, and handing it to the allocator would hand
  out the heap.
-
- **Index `ncallee` alone is `x9`.** This is the slot x86-64 gives `RAX`: the
- register a value that does not cross a call prefers, and the one a leaf
- skips. It is deliberately NOT `x0`. On x86-64, `RAX` is the return register
- and is not an argument register, so one index can carry both roles. On ARM64
- `x0` is the return register AND argument zero, and giving one physical
- register two abstract indices would let the allocator believe it holds two
- independent values. `x9` is caller-saved, is not an argument register, and
- has no other role in this backend, so it takes the non-crosser role cleanly
- and `x0` keeps its single meaning as argument zero.
-
- **`[nargregs, nregs)` is `x0` through `x7`, the argument registers in
- argument order.** This is what makes a leaf's entry moves disappear: the
- parameters are scanned first against a free file, so parameter `i` is handed
- `a64-lir-phys[10 + i]`, which is the register it already arrived in, and the
- move is `mov x0, x0` and is elided.
 
   a64-lir-phys : List Integer = [19, 20, 21, 22, 23, 24, 25, 26, 27, 9, 0, 1, 2, 3, 4, 5, 6, 7]
 
@@ -55,21 +35,9 @@ Section: The Register File
   a64-lir-slot-off : Integer -> Integer
   a64-lir-slot-off (k) = k * 8
 
- The scratch pair, never handed out by the allocator. `x10` holds a spilled
- destination or an oversized immediate; `x11` holds a spilled or oversized
- second operand. Both are caller-saved, both are consumed inside a single
- instruction's selection, and neither is ever live across a call.
-
   a64-lir-scratch-reg : Integer = 10
 
   a64-lir-scratch2 : Integer = 11
-
- The number of callee-saved registers a function must save and restore: one
- past the highest `LocReg` index that is callee-saved (an abstract index below
- `ncallee`). Index 9 (`x9`) and the argument window above it are caller-saved
- and are never saved. Because the allocator hands out the callee pool
- lowest-free, the used callee indices are a prefix, so saving `[0, this)`
- saves exactly the ones in use.
 
   a64-lir-nused-callee : List Location, Integer, Integer, Integer -> Integer
   a64-lir-nused-callee (assign) (i) (n) (acc) =
@@ -86,12 +54,6 @@ Section: The Register File
      is LocReg (r) -> a64-lir-nslots assign (i + 1) n acc
 
 Section: The Frame
-
- The frame is one stack adjustment holding two regions. The spill slots sit at
- the bottom, so slot `k` stays at `[SP + k*8]` and `a64-lir-slot-off` needs no
- base added to it; the saved callee-saved registers sit above them. Nothing in
- a whitelisted body moves SP, so both addresses are stable from the prologue to
- the epilogue.
 
  The size is rounded up to sixteen bytes because AArch64 faults on an
  SP-relative access when SP is not sixteen-byte aligned, which is a rule about
@@ -122,11 +84,6 @@ Section: The Frame
   a64-lir-lr-off : A64LirFrame -> Integer
   a64-lir-lr-off (fr) = ((fr.nslots) + (fr.nused)) * 8
 
- Callee-saved index `i` is `a64-lir-phys[i]`, which the register file puts at
- `x19 + i` for the nine indices below `ncallee`. The allocator hands that pool
- out lowest-free, so the used indices are a prefix and saving `[0, nused)`
- saves exactly the registers the body will write.
-
   a64-lir-save-regs : A64State, Integer, Integer, Integer -> A64State
   a64-lir-save-regs (st) (i) (nused) (nslots) =
     if i >= nused then st
@@ -148,9 +105,6 @@ Section: The Frame
       a64-emit-stack-guard (a64-emit st1 (arm64-str a64-lr a64-sp (a64-lir-lr-off fr)))
     else st1
 
- The result is already in `x0` when the epilogue runs, and neither the saved
- pool nor the link register is `x0`, so restoring cannot disturb it.
-
   a64-lir-emit-epilogue : A64State, A64LirFrame -> A64State
   a64-lir-emit-epilogue (st) (fr) =
     let frame = a64-lir-frame-bytes fr
@@ -161,10 +115,6 @@ Section: The Frame
     in a64-emit (a64-lir-restore-regs st1 0 (fr.nused) (fr.nslots)) (arm64-add-imm a64-sp a64-sp frame)
 
 Section: Entry Moves
-
- These run after the prologue, which is required in both directions: a store
- into a spill slot needs the frame to exist, and a move into a callee-saved
- register must not happen before that register has been saved.
 
   a64-lir-emv-phys : Integer -> Integer
   a64-lir-emv-phys (i) =
@@ -191,17 +141,6 @@ Section: Entry Moves
 
 Section: The Construct Whitelist
 
- **This is the first construct that consumes the register assignment**, and
- therefore the first place a descriptor error can reach an emitted byte. It is
- also where the design doc's first open prediction is answered: x86-64's
- selector carries aliasing machinery (`lir-alias-r`, `lir-sel-bin-aliased`)
- because its ALU is two-operand and `op dst, src` destroys `dst`. **ARM64 is
- three-operand and needs none of it.** `add xd, xn, xm` reads both sources
- before it writes, so the case x86 has to detect -- the destination register
- already holding the right operand -- is simply correct here with no special
- case at all. That is not a shortcut taken; it is a machine difference, and it
- is why this arm is shorter than its x86 counterpart rather than longer.
-
   a64-lir-op-ok : LirOp -> Boolean
   a64-lir-op-ok (op) =
     when op
@@ -211,31 +150,6 @@ Section: The Construct Whitelist
      is LoRem -> False
      is LoDiv -> False
      is otherwise -> False
-
- **Only an eight-byte load is admitted, and the reason is the encoder rather
- than the selector.** A field's width comes from the shared width table, so a
- pointer, an unbounded integer and a sum payload are all eight bytes and a
- bounded integer like `Integer between 0 and 255` is narrower. `arm64-ldr`
- covers the eight-byte case exactly; the narrow cases need `ldrsw`, `ldrh`,
- `ldrsh` and `ldrsb`, none of which this encoder has, and adding four
- encodings is a separate change with its own sensitivity runs. A narrow load
- declines to the tree emitter, which reads it correctly today.
-
- **The offset gate cannot fire, and it is here because the encoder masks.**
- Fields pack widest-first from offset 8, so every eight-byte field lands at
- `8 + k*8` and the tag lands at 0 -- each of them a non-negative multiple of
- eight. But `arm64-ldr`'s unsigned form scales its immediate by eight and
- masks it to twelve bits, so an offset that was not a multiple of eight would
- be silently rounded down and one past 32760 silently truncated, and both are
- miscompiles rather than diagnostics. This is the same reasoning that bounds
- the frame at 4095 bytes in `a64-lir-alloc-ok`, and the same choice: refuse
- the shape rather than trust an encoder that cannot refuse it.
-
- `codex/test/lir-load-cross` pins the eight-byte shapes by answers and pins the
- decline as well: `Bytes` carries two one-byte fields, so they are ADJACENT at
- offsets 8 and 9, and an eight-byte load at 8 would answer `a + b * 256` while
- one at 9 would answer the same again (9/8 is 1). A gate that let them through
- changes both answers rather than merely the instructions.
 
   a64-lir-load-ok : Integer, Integer -> Boolean
   a64-lir-load-ok (off) (w) =
@@ -312,13 +226,6 @@ Section: The Construct Whitelist
          then a64-lir-blocks-ok blocks (i + 1) n
     else False
 
- The result of a zero-instruction function is either an immediate or a vreg,
- and with no instructions **every vreg is a parameter** -- vregs `0 ..
- nparams-1` are the parameters by construction, and nothing else ever defined
- one. So the result operand is a parameter index, and a parameter index is an
- argument register: parameter `i` arrives in `x_i` under the ABI, whatever the
- allocator later assigns it.
-
  The eight-argument bound is the ABI's: a ninth parameter arrives on the
  caller's stack, not in a register.
 
@@ -351,9 +258,6 @@ Section: Dispatch
      is LvImm (k) -> a64-emit-li st a64-x0 k
      is LvReg (r) -> if r == 0 then st else a64-emit st (arm64-mov a64-x0 (a64-x0 + r))
 
- The allocator never hands out `x10` or `x11`, so a loaded or materialised
- operand cannot land on top of a live value.
-
   A64LirSrc = record {
    state : A64State,
    reg : Integer
@@ -374,15 +278,12 @@ Section: Dispatch
      is LvImm (k) -> A64LirSrc { state = a64-emit-li st scratch k, reg = scratch }
      is LvReg (r) -> a64-lir-src-loc st (list-at assign r) scratch
 
- The ALU itself. Three operands, so the destination is written and never read,
- and `LoAdd`/`LoSub`/`LoMul` map one to one onto `add`/`sub`/`mul`.
-
   a64-lir-emit-alu : A64State, LirOp, Integer, Integer, Integer -> A64State
   a64-lir-emit-alu (st) (op) (rd) (rn) (rm) =
     when op
-     is LoAdd -> a64-emit st (arm64-add rd rn rm)
-     is LoSub -> a64-emit st (arm64-sub rd rn rm)
-     is LoMul -> a64-emit st (arm64-mul rd rn rm)
+     is LoAdd -> a64-emit-ovf-trap (a64-emit st (arm64-rrr #AB000000 rd rn rm)) 7
+     is LoSub -> a64-emit-ovf-trap (a64-emit st (arm64-rrr #EB000000 rd rn rm)) 7
+     is LoMul -> a64-emit-mul-checked st rd rn rm
      is LoRem -> st
      is LoDiv -> st
      is otherwise -> st
@@ -422,13 +323,6 @@ Section: Dispatch
     when (list-at assign dst)
      is LocReg (pr) -> a64-lir-load-into st (list-at a64-lir-phys pr) src assign
      is LocSlot (k) -> a64-emit (a64-lir-load-into st a64-lir-scratch-reg src assign) (arm64-str a64-lir-scratch-reg a64-sp (a64-lir-slot-off k))
-
- The base is a pointer the allocator placed, so it resolves through
- `a64-lir-src` into the SECOND scratch, leaving the first free for a spilled
- destination -- the same division of the pair that the arithmetic arm makes and
- that x86-64 makes at this instruction. A destination that IS the base register
- is safe without a third: `ldr xd, [xn, #off]` computes its address before it
- writes, so the write cannot disturb the address it was reading from.
 
   a64-lir-emit-load : A64State, Integer, LirValue, Integer, List Location -> A64State
   a64-lir-emit-load (st) (dst) (base) (off) (assign) =
@@ -567,17 +461,6 @@ Section: Dispatch
     if i >= n then st
     else a64-lir-emit-amvs (a64-lir-emit-amv st (list-at plan i) argvals) plan argvals (i + 1) n
 
- The result move has to happen before anything else writes `x0`, and nothing
- does: the next instruction is whatever the block holds, and a second call in
- the same block places its own arguments only after this move has run. A
- destination that IS `x0` -- abstract index `nargregs`, which the allocator
- hands to a value that does not cross a call -- emits nothing.
-
- Values live across this call are in the callee-saved pool or in spill slots,
- which is the crossing analysis in the descriptor doing its job: `ncallee` is 9
- and `x0` through `x7` sit above it, so the allocator will not leave a
- crossing value in an argument register for the callee to destroy.
-
   a64-lir-emit-call : A64State, Integer, Text, List LirValue, List Location -> A64State
   a64-lir-emit-call (st) (dst) (name) (args) (assign) =
     let plan = lir-amv-for lir-target-a64 args assign
@@ -635,14 +518,6 @@ Section: Dispatch
     else a64-patch-insn st (fx.at) (arm64-b-cond (fx.cond) rel)
     in a64-lir-apply-fixups st1 fixups boffs (i + 1) n
 
- The result of an arithmetic function is a vreg the allocator placed, so this
- reads `assign` where the zero-instruction path reads the parameter index. A
- result already sitting in `x0` still emits nothing, and a result in a spill
- slot is loaded out of the frame while the frame is still standing. The load
- must precede the epilogue for that reason, and a result in a callee-saved
- register must be copied out before the restore puts the caller's value back;
- both orderings are what `a64-lir-emit-framed` fixes.
-
   a64-lir-result-loc : A64State, Location -> A64State
   a64-lir-result-loc (st) (loc) =
     when loc
@@ -694,11 +569,6 @@ Section: Dispatch
     in if f.rets then stp
     else
       a64-emit (a64-lir-emit-epilogue (a64-lir-emit-result-alloc stp (f.result) assign) fr) arm64-ret
-
- The offset table is sized by the highest block id present, not by the block
- count, because the two are not the same number: ids are handed out eagerly
- across nested arms and a block that was numbered and then never emitted leaves
- a gap. Indexing by id into a table sized by count would write past its end.
 
   a64-lir-max-block-id : List LirBlock, Integer, Integer, Integer -> Integer
   a64-lir-max-block-id (blocks) (i) (n) (acc) =

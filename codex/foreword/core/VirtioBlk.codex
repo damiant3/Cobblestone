@@ -73,18 +73,6 @@ Section: Ring layout
  boundary satisfies every version including legacy, at the cost of one
  page.
 
- Offsets are from the caller's ring base, which must itself be page
- aligned and must not overlap code or heap. Where that is belongs to the
- caller and not to this chapter: the plug knows its own memory map and
- passes the base in.
-
- An earlier draft of this paragraph named 0x40204000 and said a ring base
- belongs ABOVE the heap with the heap bumped past it. Both halves went
- stale within the day -- the ARM64 heap is at 0x40202000, and the rings
- ended up at 0x40010000, below the heap AND below the ELF, in the gap
- under the load address. A memory map named in the wrong chapter is a fact
- with no owner, so this one names none.
-
   vb-queue-size : Integer = 8
 
   vb-ring-desc : Integer = 0
@@ -123,9 +111,6 @@ Section: Probing
     if i >= count then 0
     else if vb-slot-is-block (base + i * stride) then base + i * stride
     else vb-find-loop base stride count (i + 1)
-
- Answers the base address of the first block device, or 0 when the scan
- finds none.
 
   vb-find : Integer, Integer, Integer -> Integer
   vb-find (base) (stride) (count) = vb-find-loop base stride count 0
@@ -176,9 +161,6 @@ Section: Initialisation
     in let q2 = vb-write base vb-off-queue-ready 1
     in size
 
- Answers the negotiated queue size, or 0 if the device refused the
- features or offers no queue 0.
-
   vb-init : Integer, Integer -> Integer
   vb-init (base) (ring) =
     if vb-init-status base == 0 then 0
@@ -201,35 +183,6 @@ Section: Capacity
     else vb-read base vb-off-config
 
 Section: One-call entry points
-
- A plug's native builtin is a leaf routine with nowhere to hold state
- between calls, so these take the machine's slot geometry as arguments and
- do their own probing. That is also what keeps the geometry out of this
- chapter: the caller knows which machine it is on, and this chapter never
- has to.
-
- Capacity needs no queue. It is the probe and two config reads, so it
- exercises the MMIO path alone and answers before any ring exists, which
- makes it the cheapest thing to point at a real device first.
-
- Answers -1 when no block device is present, which `vb-capacity` also uses
- for a capacity it cannot represent. Both mean "do not believe a size from
- me", and neither can be confused with the 0 a device with no sectors
- would report.
-
- The three `-auto` entry points carry `Device.Mmio` and the rest of the
- chapter does not, which is deliberate and is the whole of what the row is
- for. Nothing here PERFORMS a checkable effect: `vb-read` and `vb-write` are
- `peek-32`/`poke-32`, whose row is empty because they are the general memory
- accessors, so no row on an inner function would be derived from anything
- and the checker cannot confirm one. What these three are is the chapter's
- door -- they are the IR emit roots the block builtins resolve to, and a row
- here is what makes a CITING program declare `Device`, which is what earns
- `cap-device` in its manifest. The ARM64 runtime then enforces it on the
- address (`a64-rt-guarded-access`, plugs 1.34): the declaration is checked
- where the device actually is, not here. A row on the inner functions would
- be an instrument reporting "gated" over a hole, since inlining the peeks
- walks around it.
 
   vb-capacity-auto : Integer, Integer, Integer -> [Device.Mmio] Integer
   vb-capacity-auto (mmio) (stride) (count) =
@@ -332,18 +285,6 @@ Section: One read request
     if i >= vb-poll-fuel then 0
     else if vb-ring-idx (ring + vb-ring-used) == bit-and want #FFFF then 1
     else vb-await-used ring want (i + 1)
-
- A read and a write differ in exactly two fields: the header's type, and
- whether the data descriptor is marked WRITE (which means the DEVICE
- writes it). Everything else -- the three-descriptor chain, the available
- ring entry, the index bump, the notify, the used-ring wait, the status
- check -- is identical, so it is written once. The ring dance is where the
- alignment fault lived, and a second copy of it is a second place for that
- class of bug to hide.
-
- Answers 1 on success and 0 on any refusal: a device that never completes,
- or one that completes with a non-zero status byte. The data buffer must
- have room for 512 bytes.
 
   vb-request : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   vb-request (base) (ring) (kind) (sector) (buf) (data-flags) =

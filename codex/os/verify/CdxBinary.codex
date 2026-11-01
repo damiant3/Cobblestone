@@ -4,13 +4,11 @@ Chapter: CdxBinary
   cites Foreword chapter Capability
   cites Foreword chapter MathLib (int-widen)
 
- We say:
-
 Section: Header Constants
 
   cdx-magic : List Integer = [67, 68, 88, 49]
 
-  cdx-format-version : Integer = 1
+  cdx-format-version : Integer = 2
 
   cdx-flag-bare-metal : Integer = 1
 
@@ -98,7 +96,8 @@ Section: Binary Builder
     in let text-offset = eff-offset + eff-size
     in let rodata-offset = text-offset + text-size
     in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes)
-    in let content-hash = sha256 content-bytes
+    in let unbound = encode-header parts cdx-zero-hash cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
+    in let content-hash = cdx-bound-hash unbound (cdxb-hash-words-to-bytes (sha256 content-bytes))
     in let header = encode-header parts content-hash cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
     in header & content-bytes
 
@@ -134,7 +133,8 @@ Section: Binary Builder
     in let text-offset = eff-offset + eff-size
     in let rodata-offset = text-offset + text-size
     in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes)
-    in let content-hash = sha256 content-bytes
+    in let unbound = encode-header parts cdx-zero-hash cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
+    in let content-hash = cdx-bound-hash unbound (cdxb-hash-words-to-bytes (sha256 content-bytes))
     in let content-hash-bytes = cdxb-hash-words-to-bytes content-hash
     in let sig = ed25519-sign private-key public-key content-hash-bytes
     in let header = encode-signed-header parts content-hash public-key sig cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
@@ -308,9 +308,18 @@ Section: Verification
     in if off < 0 | sz < 0 then False
     else sz <= list-length bytes - off
 
+  cdx-zero-hash : List Integer = [0, 0, 0, 0, 0, 0, 0, 0]
+
+  cdx-header-cover : List Integer -> List Integer
+  cdx-header-cover (hdr) = list-slice hdr 0 8 & list-slice hdr 136 cdx-header-fixed-size
+
+  cdx-bound-hash : List Integer, List Integer -> List Integer
+  cdx-bound-hash (hdr) (body-hash-bytes) = sha256 (cdx-header-cover hdr & body-hash-bytes)
+
   cdx-verify-content-hash : List Integer -> Boolean
   cdx-verify-content-hash (bytes) =
     if list-length bytes < cdx-header-fixed-size then False
+    else if cdx-read-le16 bytes 4 /= cdx-format-version then False
     else if cdx-section-fits bytes 136 == False then False
     else if cdx-section-fits bytes 152 == False then False
     else if cdx-section-fits bytes 168 == False then False
@@ -327,7 +336,7 @@ Section: Verification
       section-end
     else list-length bytes
     in let content = list-slice bytes cdx-header-fixed-size content-end
-    in let computed = sha256 content
+    in let computed = cdx-bound-hash bytes (cdxb-hash-words-to-bytes (sha256 content))
     in let computed-bytes = cdxb-hash-words-to-bytes computed
     in bytes-equal stored-hash computed-bytes 0 32
 
@@ -391,6 +400,7 @@ Section: Proof Encoding
   decode-proof-loop : List Integer, Integer, Integer, Integer, List CdxProofEntry -> List CdxProofEntry
   decode-proof-loop (binary) (off) (count) (i) (acc) =
     if i >= count then acc
+    else if off + 33 > list-length binary then acc
     else let kind = list-at binary off
     in let hb = list-slice binary (off + 1) (off + 33)
     in decode-proof-loop binary (off + 33) count (i + 1) (list-push acc (CdxProofEntry {
@@ -414,9 +424,6 @@ Section: Proof Encoding
     in let text-offset = eff-offset + eff-size
     in let rodata-offset = text-offset + text-size
     in let content-bytes = cap-bytes & eff-bytes & (parts.text-bytes) & (parts.rodata-bytes) & proof-bytes
-    in let content-hash = sha256 content-bytes
-    in let content-hash-bytes = cdxb-hash-words-to-bytes content-hash
-    in let sig = ed25519-sign private-key public-key content-hash-bytes
     in let proofed-parts = CdxBinaryParts {
       flags = __narrow (bit-or (parts.flags) cdx-flag-has-proofs),
       capabilities = parts.capabilities,
@@ -428,6 +435,10 @@ Section: Proof Encoding
       heap-size = parts.heap-size,
       trust-threshold = parts.trust-threshold
     }
+    in let unbound = encode-header proofed-parts cdx-zero-hash cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
+    in let content-hash = cdx-bound-hash unbound (cdxb-hash-words-to-bytes (sha256 content-bytes))
+    in let content-hash-bytes = cdxb-hash-words-to-bytes content-hash
+    in let sig = ed25519-sign private-key public-key content-hash-bytes
     in let header = encode-signed-header proofed-parts content-hash public-key sig cap-offset cap-size eff-offset eff-size text-offset text-size rodata-offset rodata-size
     in header & content-bytes
 

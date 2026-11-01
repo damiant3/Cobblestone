@@ -265,11 +265,10 @@ computation moves into Codex.
 | CDX signing | `codex/compiler/opening.codex` -- Ed25519 via inline program |
 | Container formats | `codex/plugs/{pe,elf,img}/` -- plug CDX binaries, never the compiler |
 
-**A name the compiler cannot keep does not belong in the emitter.** `write-file`
-used to print its content to the console and report success, which is silent
-data loss. `file-exists`, `read-file`, `list-files` and `list-directories` were
-all removed from `builtin-names` and the type environment, so a chapter that
-does not cite `Fat16` now gets CDX3002 rather than a lie.
+**A name the compiler cannot keep does not belong in the emitter.**
+`write-file`, `file-exists`, `read-file`, `list-files` and `list-directories`
+are absent from `builtin-names` and the type environment, so a chapter that
+does not cite `Fat16` gets CDX3002 rather than a silent answer.
 
 ### What still exists only in PS1
 
@@ -670,7 +669,7 @@ and both are "the boot partition" by some reading. 2048 survives as
 `fat16-fallback-partition-start` for a disk with no readable GPT.
 
 `gpt-read-after-hdr` refuses a header whose entry size is zero or above 512,
-which used to fault the machine with `!EXC=00` through a divide by zero.
+where a divide by zero would fault the machine with `!EXC=00`.
 
 **Still hardcoded: `DevConsoleBoot`'s `uefi-partition-start`**, used by
 `DriveManager` for the SOURCE volume in a dual-boot copy. That is a different
@@ -752,9 +751,7 @@ an entry holds** (L-BOTHARMS), so the arm that settles it is a verdict that
 differs: two chapters folding to the same 8.3 name in two directories, one
 compiling clean and one raising CDX2003.
 
-**DISK mode honours the path it is given.** It used to read the path line and
-compile `disk-default-path` regardless, which is an interface accepting what it
-does not honour. `SOURCE.SRC` is now the fallback rather than the only answer and
+**DISK mode honours the path it is given.** `SOURCE.SRC` is the fallback, and
 `build/test-disk-compile.ps1` takes `-DiskPath`, so the behaviour has an arm.
 
 **The img plug takes any number of sources.** The wire header carries a source
@@ -864,9 +861,9 @@ deliberately wrong `build/output/stage1.cdx` on disk and the run must still grad
 correctly, because it must never have read that file. An arm that only checked
 the timing fall would pass with the stale kernel in place.
 
-**A green `-Internal` no longer means the fixed point was proven.** An apps-only
-gate does not run that comparison and cannot quote it. The line is not weakened;
-it is absent, and an absent line quoted from habit is a false claim.
+**A green apps-only gate does not prove the fixed point.** It does not run that
+comparison and cannot quote it: the line is absent, and an absent line quoted
+from habit is a false claim.
 
 **The scope is `p4 opened` UNION `p4 diff2`, and the gate REFUSES when the stream
 is behind.** `diff2` reports a file that differs in EITHER DIRECTION, so a stream
@@ -886,29 +883,16 @@ The question per phase is not what it is ABOUT but what decides its answer.
 | `vm-differential` | `$tCompiler -or $tBuild` | host selection in `build/vm-config.ps1` | widened |
 | `deck-headroom` | `$tBuild -or $tCompiler` | `used` is measured by RUNNING the compiler; the divisor is `demand-check-floor` | widened |
 | `gen-scripts` | `$tBuild -or $tCompiler` | every generator is compiled by the current kernel | widened |
-| `plug-binary`, `plug-smoke` | `$tPlugs -or $tCompiler` | the graded SET, not the trigger | graded set widened |
-| `plug-selftest` | the changed plug ships a `test-*.ps1` | that harness, plus every `build*.ps1` the plug ships | added |
 | `sem-equiv`, `text-stage1` | `$coreRuns` | was `$tSemantic`, which left every compiler chapter outside the front end ungated (L-NOGATE) | widened |
 | `run-list` | `$tVm` | `tools/codex-vm.c`/`.exe`, `build/check-run-list.ps1` | added, per-file |
 | `app-sweep` | `$tApps -or $tCompiler` | cite-scoped on an apps change, the 30-unit stride only when `$tCompiler` | as today |
-| `wasm-bundles` | `$tApps -or $tPlugs -or $tCompiler` | the wasm plug and the nine `apps/*/build-wasm.ps1`, each built with `$SutCdx`; games builds its default game only | added |
-| `wasm-run` | `wasm` in `$changedPlugs` `-or $tCompiler` | `codex/plugs/wasm/hosted-wasm-test.ps1 -Kernel $SutCdx`: the harness default 60 of the hosted corpus RUN under wasmtime against `.expected` (plugs 2.16) | added |
-| `jonquil`, `cross-smoke`, `plug-binary`, `plug-smoke`, `app-sweep` | as above, plus their own runner per file | `build/jonquil.ps1`; `build/plug-source-digest.ps1`; `build/check-cross-smoke.ps1`, `test-cross.ps1`, `test-cross-batch.ps1`; `build/sweep-app-classes.ps1`, `sweep-classes.ps1`, `app-sweep-baseline.txt` | added, per-file |
+| `jonquil`, `app-sweep` | as above, plus their own runner per file | `build/jonquil.ps1`; `build/sweep-app-classes.ps1`, `sweep-classes.ps1`, `app-sweep-baseline.txt` | added, per-file |
 
-**The TRIGGER was never the gap for the plug phases; the GRADED SET was.** Both
-fired correctly on `$tPlugs` while grading hardcoded lists that between them
-omitted most of the plugs with a `build.ps1`, so changing one ran both phases,
-graded plugs it had not touched, and came back green. `$changedPlugs` now names
-the plug directories in the change and both lists append it, deduped. Safe to
-widen because `plug-smoke` asserts only that `run.ps1` exits 0 with non-empty
-output, so no target toolchain is required.
+No phase builds, runs or reports a plug or cross output (Damian, 2026-10-31).
 
-**`$tCompiler` is scoped to compiler SOURCE**, `^codex/compiler/.*\.codex$`. It
-used to be the whole directory, so a docs-only CL closing a `compiler-backlog.md`
-row switched on eight phases and rebuilt six plug binaries. It also VOIDED A
-CONTROL, which is how it was found: proving that the plug phases defer needs a
-change implicating neither, and an unrelated backlog file arriving from main ran
-them. **The discriminator is not the extension**: non-source files that DO decide
+**`$tCompiler` is scoped to compiler SOURCE**, `^codex/compiler/.*\.codex$`, so
+a docs-only CL closing a `compiler-backlog.md` row switches on no phase.
+**The discriminator is not the extension**: non-source files that DO decide
 an answer exist and keep their trigger, `build/app-sweep-baseline.txt` being the
 standing example.
 
@@ -943,9 +927,8 @@ makes the scoping testable without staging an edit.
 ### Kernel provenance: a class, not one script
 
 **A harness that cannot be told which compiler to use compiles with whatever
-`build-output` last held.** Three instances, all fixed 2026-09-07:
-`test-self-verify.ps1`, `check-generated-scripts.ps1` and `test-cross.ps1` now
-take `-Kernel`, defaulting to the depot seed, print the kernel and its digest,
+`build-output` last held.** `test-self-verify.ps1`,
+`check-generated-scripts.ps1` and `test-cross.ps1` therefore take `-Kernel`, defaulting to the depot seed, print the kernel and its digest,
 and refuse a `build-output` kernel whose digest differs from the seed unless
 `-AllowStaleKernel` says so. Both refusals fire BEFORE any guest.
 
@@ -1025,6 +1008,7 @@ one `test-cross-batch.ps1` sizes its admission by.
 
 | Source | JSON emission gap |
 |---|---|
+| `build/check-test-compile.ps1` (the gate's `test-compile`) | Ignores a chapter's `.arch-only` sidecar (L-SIDECAR): an arm64-only chapter compiled for x86-64 fails CDX2040 and has to be listed by hand in `build/test-compile-baseline.txt`; the U73 release gate (2026-11-01) needed rows for `arm64-gicv2-tick`, `arm64-gicv3-tick` and `arm64-pi4-tick` (main 53215). Skip, and report, a chapter whose `.arch-only` names another arch, as `test.ps1` does, then delete those baseline rows. |
 | `codex/build/applyannotationsScript.codex:34`, generated `build/apply-annotations.ps1:86` | The sidecar builder quotes target/kind/author without escaping and applies replacement only to body. Repair the generator, regenerate the script and prove quoted/backslash/control metadata round-trips. Source-inspected 2026-10-01 at main 33668. |
 
 - **Document-count patterns and published counts need reconciliation.** On

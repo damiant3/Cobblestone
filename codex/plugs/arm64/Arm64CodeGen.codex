@@ -65,10 +65,6 @@ Section: Architecture Profile
 
 Section: Codegen State
 
- A local's `reg` is one of two things: a physical register number below
- `a64-spill-base`, or a spill slot encoded as `a64-spill-base + slot`. The bound
- has to cover the second, and at 255 it did not.
-
  **4147 is the last slot a spill access can encode:** `ldr` and `str` scale a
  12-bit offset by 8, so `(reg - 64) * 8 + 96` reaches 32760 at slot 4083. A frame
  above 4095 bytes is set in two instructions, `LSL #12` for the high part and a
@@ -107,6 +103,7 @@ Section: Codegen State
    state-local : Integer,
    smp-boot : Boolean,
    darwin-boot : Boolean,
+   board : Integer,
    runtime-funcs : Integer,
    boot-cap-mask : Integer,
    boot-fs-scope : Text,
@@ -219,6 +216,7 @@ Section: State Constructors
       state-local = 0 - 1,
       smp-boot = False,
       darwin-boot = False,
+      board = 0,
       runtime-funcs = 0,
       boot-cap-mask = 0,
       boot-fs-scope = "",
@@ -628,11 +626,6 @@ Section: NOP Compaction
     in let w3 = __buf-write-byte (st.code-buf) (dp + 3) (peek-byte (st.code-buf) (sp + 3))
     in a64-slide-insns st nops (src + 1) (dst + 1) stop
 
- Every fixup list is appended at `insn-count`, so each is ordered by
- instruction index and the entries this function owns are a suffix. Only that
- suffix is rewritten, in place, which keeps compaction linear in the function
- rather than in the module.
-
   a64-shift-of : List Integer, Integer, Integer, Integer -> Integer
   a64-shift-of (nops) (idx) (fst) (fe) =
     if idx < fst then 0 else if idx < fe then a64-cnt-before nops idx 0 0 else list-length nops
@@ -928,10 +921,6 @@ Section: Function Emission
     in let st5 = a64-emit st4 (arm64-stp a64-x25 a64-x26 a64-sp 64)
     in a64-emit-stack-guard (a64-emit st5 (arm64-stp a64-x27 a64-xzr a64-sp 80))
 
- Valid only where the heap lies below the stack, which holds for the virt and
- UEFI boots and the spawn pool and not for a Darwin boot. x16 carries nothing
- into a function.
-
   a64-emit-stack-guard : A64State -> A64State
   a64-emit-stack-guard (st) =
     if (st.extra).darwin-boot then st
@@ -1123,11 +1112,6 @@ Section: Expression Emission
 
 Section: Name Emission
 
- An unwritten table slot reads zero, so an unhandled `read-line` must
- not be routed through it (`console-readline-cite` died on that call
- before its first print, 2026-07-23). An unhandled `read-line` answers
- the None cell, which is what x86-64's `__read_line` answers at EOF.
-
   a64-emit-name : A64State, Text, CodexType -> A64EmitResult
   a64-emit-name (st) (name) (ty) =
     let local-reg = a64-lookup-local (st.locals) name 0
@@ -1251,8 +1235,22 @@ Section: Binary Emission
      is IrIntLit (v) (s) -> if v >= 0 then if v <= 4095 then v + 1 else 0 else 0
      is _ -> 0
 
+  a64-int-checked : IRBinaryOp, CodexType -> Boolean
+  a64-int-checked (op) (ty) =
+    if int-ty-wraps ty then False
+    else when op
+     is IrAddInt -> True
+     is IrSubInt -> True
+     is IrMulInt -> True
+     is otherwise -> False
+
   a64-emit-binary : A64State, IRBinaryOp, IRExpr, IRExpr, CodexType -> A64EmitResult
   a64-emit-binary (st) (op) (left) (right) (ty) =
+    if a64-int-checked op ty then a64-emit-binary-reg st op left right ty
+    else a64-emit-binary-fast st op left right ty
+
+  a64-emit-binary-fast : A64State, IRBinaryOp, IRExpr, IRExpr, CodexType -> A64EmitResult
+  a64-emit-binary-fast (st) (op) (left) (right) (ty) =
     let mul-shift = when op is IrMulInt -> a64-mul-shift-amount right is otherwise -> 0
     in if mul-shift > 0 then
       let lr = a64-emit-expr st left
@@ -1296,39 +1294,12 @@ Section: Binary Emission
      is UnitTy (n) (inner) -> a64-strip-unit-ty inner
      is otherwise -> ty
 
- Which real comparison a compare op needs: 1 is the double family
- (fcmp-d), 2 is the f32 approx family (fcmp-s), 0 is not a real. The
- integer compare the ordered ops used for every non-vector operand
- orders IEEE bits by two's complement, which is correct for positive
- reals and WRONG for negative ones (real-compare-negative's pin).
-
   a64-real-cmp-kind : CodexType -> Integer
   a64-real-cmp-kind (ty) =
     when ty
      is RealTy (w) (m) -> if is-width-f32 w then 2 else 1
      is UnitTy (n) (inner) -> a64-real-cmp-kind inner
      is otherwise -> 0
-
- A sum equality compares the TAG and then that constructor's FIELDS, each by
- its own type. It is emitted inline, so it accepts only what can be decided
- without a function: exactly one constructor may carry fields, and no field may
- itself be a sum.
-
- BOTH RESTRICTIONS REFUSE RATHER THAN GUESS. A second field-carrying
- constructor needs a switch whose arms hold different field types at the same
- index, so a per-index type would be a guess. A sum-typed field needs recursion,
- which for a recursive type (`Nest = Leaf | Wrap (Nest)`) does not terminate at
- emit time. Both are what a per-sum HELPER FUNCTION answers, which is
- COMPILER-24's shape on x86-64 and belongs in a shared IR pass so that arm64 and
- riscv get it together. Until then a refusal is the honest answer: what stood
- here compared two heap POINTERS and returned a plausible wrong bit
- (plugs-backlog 1.90).
-
- THE CTORS COME FROM `defs`, NOT FROM THE TYPE. `IRTextEmitter` emits
- `(sum "Name" (args ...))` with no ctors, so every sum arriving over IR TEXT
- carries an empty ctor list; reading it is how this answered "no fields" for
- every sum and compared the tag alone. x86-64 never round-trips through IR text,
- which is why the defect is native-backends-only.
 
   a64-sum-ctors-for-type : CodexType, List ATypeDef -> List SumCtor
   a64-sum-ctors-for-type (ty) (defs) =
@@ -1352,13 +1323,6 @@ Section: Binary Emission
     in if list-length (c.fields) > 0 then i
     else a64-first-ctor-with-fields cs (i + 1)
 
- A FIELD IS ONLY A SUM IF IT RESOLVES TO CTORS. `a64-is-sum-type` answers True
- for `ConstructedTy`, and a TYPE PARAMETER arrives as exactly that -- a name
- with no arguments (`codex/test/eq-generic-fields` says so in its own words).
- Refusing on the predicate alone therefore refused COMPILER-24's own subject,
- which has nothing to do with nested sums. Resolving the name against `defs` is
- what separates them: a parameter resolves to no ctors.
-
   a64-sum-fields-simple : List CodexType, List ATypeDef, Integer -> Boolean
   a64-sum-fields-simple (fs) (defs) (i) =
     if i >= list-length fs then True
@@ -1369,10 +1333,6 @@ Section: Binary Emission
   a64-emit-sum-eq-refused (st) (why) =
     let msg = "[UNSUPPORTED] sum equality: " & why & ", which needs a per-sum helper function rather than an inline compare (refused rather than comparing pointers)"
     in a64-emit-int-lit (a64-add-shadow-warning st msg) 0
-
- One field at a time, folding into the accumulator LOCAL rather than a register,
- because `__str_eq` is a call and a call clobbers registers. The pointers are
- reloaded per field for the same reason.
 
   a64-emit-sum-field-eq : A64State, Integer, Integer, Integer, List CodexType, Integer -> A64State
   a64-emit-sum-field-eq (st) (ll) (rl) (acc) (fs) (i) =
@@ -1397,10 +1357,6 @@ Section: Binary Emission
     in let s4 = a64-emit (ap.state) (arm64-and (ap.reg) (ap.reg) a64-x0)
     in let s5 = a64-store-local s4 acc (ap.reg)
     in a64-emit-sum-field-eq s5 ll rl acc fs (i + 1)
-
- ONE forward branch in the whole routine, and it is the only patch. What stood
- here had four, hand-unrolled for nought, one and two fields, and the two-field
- arm was the cap that made a four-field constructor compare its first two.
 
   a64-emit-sum-eq : A64State, Integer, Integer, Integer, List SumCtor, List ATypeDef -> A64EmitResult
   a64-emit-sum-eq (st) (rd) (l-reg) (r-reg) (ctors) (defs) =
@@ -1454,16 +1410,6 @@ Section: Binary Emission
      is UnitTy (n) (inner) -> a64-is-sum-type inner
      is otherwise -> False
 
- Simple means the right operand can be emitted without disturbing the left,
- so the left needs no save. A bare name is only that when it names STORAGE.
- A name that resolves to no local is a zero-argument definition or an effect
- operation, and both are a call: the effect operation reaches its handler
- through a BLR, which lands its answer in x0 and destroys whatever the left
- operand left there. Disassembled from `with A (with B (get-a + get-b))`:
- `BLR X9` for get-a, `BLR X9` for get-b, then `ADD X21, X0, X0` -- 20 + 20
- where 22 + 20 was meant. Answering True for every IrName is the same
- predicate defect CL 9566 fixed on RISC-V, and it is why the lookup is here.
-
   a64-right-is-simple : A64State, IRExpr -> Boolean
   a64-right-is-simple (st) (e) =
     when e
@@ -1513,6 +1459,16 @@ Section: Binary Emission
  sdiv answers 0 for a zero divisor where x86-64's idiv raises #DE, so the
  zero case is refused here with the same brk the other guards use.
 
+  a64-emit-ovf-trap : A64State, Integer -> A64State
+  a64-emit-ovf-trap (st) (cond) = a64-emit (a64-emit st (arm64-b-cond cond 8)) (arm64-encode #D4200020)
+
+  a64-emit-mul-checked : A64State, Integer, Integer, Integer -> A64State
+  a64-emit-mul-checked (st) (rd) (rn) (rm) =
+    let s1 = a64-emit st (arm64-rrr #9B407C00 a64-x8 rn rm)
+    in let s2 = a64-emit s1 (arm64-mul rd rn rm)
+    in let s3 = a64-emit s2 (arm64-encode (bit-or (bit-or (bit-or #EB80FC00 (bit-shl rd 16)) (bit-shl a64-x8 5)) 31))
+    in a64-emit-ovf-trap s3 0
+
   a64-emit-div-guard : A64State, Integer -> A64State
   a64-emit-div-guard (st) (divisor) = a64-emit (a64-emit st (arm64-cbnz divisor 8)) (arm64-encode #D4200020)
 
@@ -1520,15 +1476,15 @@ Section: Binary Emission
   a64-emit-binary-op (st2) (op) (rd) (left-reg) (right-reg) (left) (right) (ty) =
     when op
      is IrAddInt -> A64EmitResult {
-       state = a64-emit st2 (arm64-add rd left-reg right-reg),
+       state = if int-ty-wraps ty then a64-emit st2 (arm64-add rd left-reg right-reg) else a64-emit-ovf-trap (a64-emit st2 (arm64-rrr #AB000000 rd left-reg right-reg)) 7,
        reg = rd
      }
      is IrSubInt -> A64EmitResult {
-       state = a64-emit st2 (arm64-sub rd left-reg right-reg),
+       state = if int-ty-wraps ty then a64-emit st2 (arm64-sub rd left-reg right-reg) else a64-emit-ovf-trap (a64-emit st2 (arm64-rrr #EB000000 rd left-reg right-reg)) 7,
        reg = rd
      }
      is IrMulInt -> A64EmitResult {
-       state = a64-emit st2 (arm64-mul rd left-reg right-reg),
+       state = if int-ty-wraps ty then a64-emit st2 (arm64-mul rd left-reg right-reg) else a64-emit-mul-checked st2 rd left-reg right-reg,
        reg = rd
      }
      is IrDivInt -> A64EmitResult {
@@ -1728,16 +1684,6 @@ Section: Real Arithmetic
     in let st4 = a64-emit (a64-emit st3 (arm64-b-cond 1 8)) (arm64-encode #D4200020)
     in A64EmitResult { state = st4, reg = r.reg }
 
- THE CLAMP IS BRANCHLESS AND THAT IS NOT A PERFORMANCE CHOICE. Both of
- these used to skip the clamp with a forward branch, which left the write to
- the result register on a path that a finite result never took. The
- mov-elimination peephole then folded the caller's `mov x0, rd` into that
- skipped instruction, and a finite saturating add, subtract, multiply or
- divide RETURNED ITS LEFT OPERAND. It was right only when the result
- overflowed to an infinity, which is why the one test covering it passed:
- three of its four lines overflow. `codex/test/ops/real-saturating-finite`
- is the finite case, on the record, in both argument orders.
-
  A `csel` writes the result on every path, so there is nothing for a fold to
  land behind. The peephole may still fold into the final `csel` and that is
  correct, because the `csel` always executes.
@@ -1811,30 +1757,10 @@ Section: Real Arithmetic
  input; an f64 `~` across a one-ULP straddle failed too and no line spelled it
  (plugs-backlog 1.91).
 
- THE ORDINAL IS BUILT WITHOUT `eor` OR AN IMMEDIATE `asr`, neither of which
- `Arm64Encoder.codex` has. x86-64 uses `sar 63` / `shr 1` / `xor` / `sub`; the
- same mapping is `ord = b < 0 ? INT64_MIN - b : b`, which needs only `sub`,
- `cmp` and `csel`. INT64_MIN itself comes from `1 << 63` rather than a 64-bit
- immediate.
-
  AN f32 IS SHIFTED UP 32 AND LEFT THERE. Shifting the ordinal back down would
  need the immediate `asr` we do not have; leaving it scaled costs nothing
  because one f32 ULP is then exactly 2^32, so the tolerance becomes
  `4 * 2^32` in a register instead of 4 as an immediate.
-
- BOTH OPERANDS ARE PARKED BEFORE ANY TEMP IS ALLOCATED, and that is the whole
- of a regression this cost. The ordinal of the left operand allocates several
- temps while the RIGHT operand is still live in its own register, and the pool
- rotates four, so one of those allocations is handed the right operand's
- register back. `approx-eq` went red on `1.0 ~ 1.0` with the ordinals computed
- from a clobbered second operand, while `real-approx-equality` stayed green
- because its operands come from named definitions reloaded fresh. The old
- `fcmp` code was safe by accident: it moved both operands into FP registers on
- its first two instructions.
-
- EVERY INTERMEDIATE IS PARKED IN A LOCAL. `a64-alloc-temp` rotates a pool of
- four and three live temps is the budget (the prose at `Arm64CodeGen2.codex`),
- and this sequence has more values in flight than that.
 
   a64-emit-real-ordinal : A64State, Integer, Boolean -> A64EmitResult
   a64-emit-real-ordinal (st) (b-reg) (f32) =

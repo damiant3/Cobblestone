@@ -6,8 +6,6 @@ Chapter: Optimizer
  state (momentum, adaptive learning rates) and produces updated
  weights from gradients. Uses fixed-point scale-1000 arithmetic.
 
- We say:
-
 Section: SGD
 
   SgdConfig = record {
@@ -54,6 +52,12 @@ Section: SGD
     in sgd-step-loop cfg state params grads n (i + 1) (list-push new-params p) (list-push new-vel v)
 
 Section: Adam
+
+ adam-v holds the second moment at scale 1e9, not 1000: (1 - beta2) g^2 at
+ scale 1000 truncates to 0 for every gradient below 1.0, and the step then
+ divides by epsilon alone. sqrt (v-hat * 1000) is at scale 1e6, so the
+ numerator and epsilon are lifted by 1000 to match. v-hat * 1000 overflows
+ 64 bits for a gradient past about 3000.0.
 
   AdamConfig = record {
     adam-lr : Integer,
@@ -115,10 +119,10 @@ Section: Adam
     }
     else let g = list-at grads i
     in let m = cfg.adam-beta1 * list-at (state.adam-m) i / 1000 + (1000 - cfg.adam-beta1) * g / 1000
-    in let v = cfg.adam-beta2 * list-at (state.adam-v) i / 1000 + (1000 - cfg.adam-beta2) * g * g / (1000 * 1000)
+    in let v = cfg.adam-beta2 * list-at (state.adam-v) i / 1000 + (1000 - cfg.adam-beta2) * g * g
     in let m-hat = m * 1000 / bc1
     in let v-hat = v * 1000 / bc2
-    in let update = cfg.adam-lr * m-hat / (cordic-sqrt (v-hat * 1000) + cfg.adam-epsilon)
+    in let update = cfg.adam-lr * m-hat * 1000 / (cordic-sqrt (v-hat * 1000) + cfg.adam-epsilon * 1000)
     in let p = list-at params i - update
     in adam-step-loop cfg state params grads n t bc1 bc2 (i + 1) (list-push new-params p) (list-push new-m m) (list-push new-v v)
 

@@ -3,23 +3,8 @@ Chapter: SafeTensorsBoundsGuard
   cites AI chapter Tensor
   cites AI chapter SafeTensors
 
- Track D item 19, the ai/ leg. st-parse-file is already defended -- a short file
- and a garbage header both answer valid=False, and codex/test/forewords/
- foreword-safetensors.codex covers both. The LOADERS are not.
-
- st-read-u32:48 reads four bytes with four bare list-at calls, and
- st-read-f16-loop:209 and st-read-bf16-loop:239 read theirs directly the same
- way. The offset is file.st-data-offset + meta.stm-offset-start, both taken from
- the file's JSON header, and the count is st-element-count, the PRODUCT of the
- file's declared shape. Nothing checks either against the bytes that arrived.
-
  The bound is written subtractively, count <= (length - off) / width, so a shape
- whose product overflows cannot pass it by wrapping. That is the same shape as
- lz4-fits and for the same reason.
-
- Row 9 is the discriminator: a tensor whose declared bytes END exactly at the
- last byte of the file is legitimate and must still load, so an off-by-one in
- the bound shows up there and nowhere else.
+ whose product overflows cannot pass it by wrapping.
 
 Section: Byte Building
 
@@ -89,6 +74,27 @@ Section: Operands
   hdr-far : Text
   hdr-far = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[900000,900008]}}"
 
+ A start offset of 2^63 - 8, which overflows when added to the data offset.
+
+  hdr-offset-top : Text
+  hdr-offset-top = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[9223372036854775800,9223372036854775807]}}"
+
+ Header lengths at the top of the u64 range: 2^63 - 8 and all-ones bytes.
+
+ A negative start offset, which added to the data offset lands in the header.
+
+  hdr-offset-neg : Text
+  hdr-offset-neg = "{\"t\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[-8,0]}}"
+
+  len-top : List Integer = [248, 255, 255, 255, 255, 255, 255, 127, 123, 125]
+
+  len-ones : List Integer = [255, 255, 255, 255, 255, 255, 255, 255, 123, 125]
+
+  file-row : Text, List Integer -> Text
+  file-row (label) (bs) =
+   let f = st-parse-file bs
+   in label & " valid=" & (if f.st-valid then "yes" else "no") & " tensors=" & show (f.st-tensor-count)
+
  A two-dimensional shape whose product overflows if it is multiplied out.
 
   hdr-overflow : Text
@@ -119,6 +125,10 @@ Section: Body
     print-line-uni (row "7-offset-far" hdr-far f32-raw 5 4)
     print-line-uni (row "8-shape-overflow" hdr-overflow f32-raw 5 4)
     print-line-uni (row "9-exact-fit" hdr-f32 f32-raw 5 4)
+    print-line-uni (row "10-offset-top" hdr-offset-top f32-raw 5 4)
+    print-line-uni (row "10b-offset-negative" hdr-offset-neg f32-raw 5 4)
+    print-line-uni (file-row "11-header-len-top" len-top)
+    print-line-uni (file-row "12-header-len-ones" len-ones)
   end
 
 Page 1

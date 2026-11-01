@@ -1,10 +1,5 @@
 Chapter: VmIde
-
- Virtual ATA PIO disk controller for VMX guests. Handles I/O port
- exits for the primary IDE channel (0x1F0-0x1F7, 0x3F6). Backs
- reads against a sector table in host memory. No DMA, no ATAPI.
-
- We say:
+  cites Foreword chapter CCE
 
 Section: Constants
 
@@ -44,7 +39,9 @@ Section: State
     ide-data-buf : Integer,
     ide-data-pos : Integer,
     ide-data-len : Integer,
-    ide-sectors-left : Integer
+    ide-sectors-left : Integer,
+    ide-writing : Boolean,
+    ide-ident-buf : Integer
   }
 
   vm-ide-new : VmIdeState
@@ -61,8 +58,13 @@ Section: State
     ide-data-buf = 0,
     ide-data-pos = 0,
     ide-data-len = 0,
-    ide-sectors-left = 0
+    ide-sectors-left = 0,
+    ide-writing = False,
+    ide-ident-buf = 0
   }
+
+ The IDENTIFY page is allocated once here, not per command, so a guest that
+ repeats IDENTIFY cannot grow the host heap.
 
   vm-ide-attach : Integer, Integer -> VmIdeState
   vm-ide-attach (disk-addr) (total-sectors) = VmIdeState {
@@ -78,7 +80,9 @@ Section: State
     ide-data-buf = 0,
     ide-data-pos = 0,
     ide-data-len = 0,
-    ide-sectors-left = 0
+    ide-sectors-left = 0,
+    ide-writing = False,
+    ide-ident-buf = alloc-bytes 512
   }
 
 Section: Port Ownership
@@ -93,53 +97,74 @@ Section: Command Execution
   vm-ide-get-lba (ide) =
     bit-or (ide.ide-lba-lo) (bit-or (bit-shl (ide.ide-lba-mid) 8) (bit-or (bit-shl (ide.ide-lba-hi) 16) (bit-shl (bit-and (ide.ide-drive-head) 15) 24)))
 
-  vm-ide-start-read : VmIdeState -> VmIdeState
-  vm-ide-start-read (ide) =
+  vm-ide-phase : VmIdeState, Integer, Integer, Integer, Integer, Integer, Boolean -> VmIdeState
+  vm-ide-phase (ide) (status) (error) (buf) (len) (left) (writing) = VmIdeState {
+    ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
+    ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
+    ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
+    ide-drive-head = ide.ide-drive-head,
+    ide-status = status, ide-error = error,
+    ide-data-buf = buf, ide-data-pos = 0, ide-data-len = len,
+    ide-sectors-left = left, ide-writing = writing, ide-ident-buf = ide.ide-ident-buf
+  }
+
+ Error register bits (ATA): 16 is IDNF, the sector is not on the disk; 4 is
+ ABRT, the command is refused.
+
+  vm-ide-start-transfer : VmIdeState, Boolean -> VmIdeState
+  vm-ide-start-transfer (ide) (writing) =
     let lba = vm-ide-get-lba ide
     in let count = if ide.ide-sect-count == 0 then 256 else ide.ide-sect-count
-    in if lba >= ide.ide-disk-sectors then VmIdeState {
-      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
-      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
-      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
-      ide-drive-head = ide.ide-drive-head,
-      ide-status = bit-or vm-ide-status-drdy vm-ide-status-err,
-      ide-error = 16,
-      ide-data-buf = 0, ide-data-pos = 0, ide-data-len = 0, ide-sectors-left = 0
-    }
-    else let sector-addr = ide.ide-disk-addr + lba * 512
-    in VmIdeState {
-      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
-      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
-      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
-      ide-drive-head = ide.ide-drive-head,
-      ide-status = bit-or vm-ide-status-drdy vm-ide-status-drq,
-      ide-error = 0,
-      ide-data-buf = sector-addr, ide-data-pos = 0, ide-data-len = 512,
-      ide-sectors-left = count - 1
-    }
+    in if lba >= ide.ide-disk-sectors | count > ide.ide-disk-sectors - lba then
+      vm-ide-phase ide (bit-or vm-ide-status-drdy vm-ide-status-err) 16 0 0 0 False
+    else vm-ide-phase ide (bit-or vm-ide-status-drdy vm-ide-status-drq) 0 (ide.ide-disk-addr + lba * 512) 512 (count - 1) writing
 
   vm-ide-advance-sector : VmIdeState -> VmIdeState
   vm-ide-advance-sector (ide) =
-    if ide.ide-sectors-left <= 0 then VmIdeState {
-      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
-      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
-      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
-      ide-drive-head = ide.ide-drive-head,
-      ide-status = vm-ide-status-drdy,
-      ide-error = 0,
-      ide-data-buf = 0, ide-data-pos = 0, ide-data-len = 0, ide-sectors-left = 0
-    }
-    else let next-buf = ide.ide-data-buf + 512
-    in VmIdeState {
-      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
-      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
-      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
-      ide-drive-head = ide.ide-drive-head,
-      ide-status = bit-or vm-ide-status-drdy vm-ide-status-drq,
-      ide-error = 0,
-      ide-data-buf = next-buf, ide-data-pos = 0, ide-data-len = 512,
-      ide-sectors-left = ide.ide-sectors-left - 1
-    }
+    if ide.ide-sectors-left <= 0 then vm-ide-phase ide vm-ide-status-drdy 0 0 0 0 False
+    else vm-ide-phase ide (bit-or vm-ide-status-drdy vm-ide-status-drq) 0 (ide.ide-data-buf + 512) 512 (ide.ide-sectors-left - 1) ide.ide-writing
+
+  vm-ide-identify : VmIdeState -> VmIdeState
+  vm-ide-identify (ide) =
+    if ide.ide-ident-buf == 0 then vm-ide-phase ide (bit-or vm-ide-status-drdy vm-ide-status-err) 4 0 0 0 False
+    else let filled = vm-ide-fill-identify ide.ide-ident-buf ide.ide-disk-sectors
+    in vm-ide-phase ide (bit-or vm-ide-status-drdy vm-ide-status-drq) 0 ide.ide-ident-buf 512 0 False
+
+Section: IDENTIFY DEVICE
+
+ Word layout per ATA/ATAPI-8 ACS 7.16: word 0 bit 6 fixed device; 10-19
+ serial, 23-26 firmware, 27-46 model, each string two ASCII bytes per word
+ with the first character in the high byte, space padded; word 49 bit 9
+ LBA supported; words 60-61 the LBA28 sector count, low word first.
+
+  vm-ide-put-word : Integer, Integer, Integer -> Integer
+  vm-ide-put-word (buf) (word) (value) =
+    let lo = poke-byte buf (word * 2) (bit-and value 255)
+    in poke-byte buf (word * 2 + 1) (bit-and (bit-shru value 8) 255)
+
+  vm-ide-ascii-at : Text, Integer -> Integer
+  vm-ide-ascii-at (s) (i) = if i >= text-length s then 32 else to-unicode (char-code-at s i)
+
+  vm-ide-put-string : Integer, Integer, Integer, Text, Integer -> Integer
+  vm-ide-put-string (buf) (word) (words) (s) (i) =
+    if i >= words then 0
+    else let w = vm-ide-put-word buf (word + i) (bit-or (bit-shl (vm-ide-ascii-at s (i * 2)) 8) (vm-ide-ascii-at s (i * 2 + 1)))
+    in vm-ide-put-string buf word words s (i + 1)
+
+  vm-ide-zero : Integer, Integer -> Integer
+  vm-ide-zero (buf) (i) = if i >= 512 then 0 else let z = poke-byte buf i 0 in vm-ide-zero buf (i + 1)
+
+  vm-ide-fill-identify : Integer, Integer -> Integer
+  vm-ide-fill-identify (buf) (sectors) =
+    let lba28 = if sectors > #0FFFFFFF then #0FFFFFFF else sectors
+    in let z = vm-ide-zero buf 0
+    in let a = vm-ide-put-word buf 0 64
+    in let b = vm-ide-put-string buf 10 10 "CODEXVM00000001" 0
+    in let c = vm-ide-put-string buf 23 4 "1.0" 0
+    in let d = vm-ide-put-string buf 27 20 "Codex VM IDE disk" 0
+    in let e = vm-ide-put-word buf 49 512
+    in let f = vm-ide-put-word buf 60 (bit-and lba28 65535)
+    in vm-ide-put-word buf 61 (bit-shru lba28 16)
 
 Section: Output Handling
 
@@ -152,9 +177,21 @@ Section: Output Handling
     else if reg == vm-ide-lba-hi then __record-set ide "ide-lba-hi" (bit-and value 255)
     else if reg == vm-ide-drive-head then __record-set ide "ide-drive-head" (bit-and value 255)
     else if reg == vm-ide-command then
-      if value == vm-ide-cmd-read then vm-ide-start-read ide
+      if value == vm-ide-cmd-read then vm-ide-start-transfer ide False
+      else if value == vm-ide-cmd-write then vm-ide-start-transfer ide True
+      else if value == vm-ide-cmd-identify then vm-ide-identify ide
       else __record-set ide "ide-status" vm-ide-status-drdy
+    else if reg == vm-ide-data then vm-ide-write-word ide value
     else ide
+
+  vm-ide-write-word : VmIdeState, Integer -> VmIdeState
+  vm-ide-write-word (ide) (value) =
+    if not ide.ide-writing | ide.ide-data-pos >= ide.ide-data-len then ide
+    else let lo = poke-byte (ide.ide-data-buf) (ide.ide-data-pos) (bit-and value 255)
+    in let hi = poke-byte (ide.ide-data-buf) (ide.ide-data-pos + 1) (bit-and (bit-shru value 8) 255)
+    in let new-pos = ide.ide-data-pos + 2
+    in if new-pos >= ide.ide-data-len then vm-ide-advance-sector (__record-set ide "ide-data-pos" new-pos)
+    else __record-set ide "ide-data-pos" new-pos
 
 Section: Input Handling
 
@@ -170,7 +207,7 @@ Section: Input Handling
     in if reg == vm-ide-status then VmIdeInResult { iir-value = ide.ide-status, iir-state = ide }
     else if reg == vm-ide-error then VmIdeInResult { iir-value = ide.ide-error, iir-state = ide }
     else if reg == vm-ide-data then
-      if ide.ide-data-pos >= ide.ide-data-len then VmIdeInResult { iir-value = 0, iir-state = ide }
+      if ide.ide-writing | ide.ide-data-pos >= ide.ide-data-len then VmIdeInResult { iir-value = 0, iir-state = ide }
       else let lo = peek-byte (ide.ide-data-buf) (ide.ide-data-pos)
       in let hi = peek-byte (ide.ide-data-buf) (ide.ide-data-pos + 1)
       in let word = bit-or lo (bit-shl hi 8)

@@ -10,8 +10,6 @@ Chapter: LoraResident
   cites Diffusion chapter UNet
   cites Diffusion chapter ClipEncoder
 
- We say:
-
 Section: Patch
 
   lr-put16 : Integer, List Integer, List Integer, Integer, Integer -> Boolean
@@ -27,18 +25,12 @@ Section: Patch
     else if gpu-buf-write (list-at hs i) 0 (n * 4) buf == False then False
     else lr-put32 h32 hs e0s n buf (i + 1)
 
- Restoring puts back what the loader uploaded: each range read from the file
- with the loader's own conversion (a 1-D tensor to f32, the rest to f16).
-
   lr-restore : Text, Integer, Integer, List Integer, List Integer, Integer, Boolean, Integer -> Boolean
   lr-restore (path) (off) (dtype) (hs) (e0s) (n) (wide) (i) =
     if i >= list-length hs then True
     else let dst = if wide then gpu-dt-f32 else gpu-dt-f16
     in if gpu-buf-upload (list-at hs i) 0 path (off + list-at e0s i * st-dtype-width dtype) n (ckpt-gpu-dtype dtype) dst /= n * (if wide then 4 else 2) then False
     else lr-restore path off dtype hs e0s n wide (i + 1)
-
- A merge starts from the resident copy, which the loader or lora-resident-restore
- left equal to the file: each handle widened on the device into the f32 scratch.
 
   lr-fill : Integer, List Integer, List Integer, Integer, Boolean, Integer -> Boolean
   lr-fill (h32) (hs) (e0s) (n) (wide) (i) =
@@ -70,7 +62,8 @@ Section: UNet
     else let h = list-at (u.uf-handles) j
     in let rows = list-at (m.stm-shape) 0
     in let total = st-element-count m
-    in let r = if h == 0 then 0 else lr-patch (u.uf-path) ((u.uf-file).st-data-offset + m.stm-offset-start) (m.stm-dtype) total rows ls (lora-slots (m.stm-name) rows 2 sdxl-te-l sdxl-te-g) [h] [0] total (list-length (m.stm-shape) == 1) restore
+    in let r = if h == 0 then 0 else (lr-patch (u.uf-path) ((u.uf-file).st-data-offset + m.stm-offset-start) (m.stm-dtype) total rows ls
+      (lora-slots (m.stm-name) rows 2 sdxl-te-l sdxl-te-g) [h] [0] total (list-length (m.stm-shape) == 1) restore)
     in lr-unet u ls restore (i + 1) (j + 1) (lr-tally acc r)
 
 Section: Text Encoders
@@ -79,7 +72,8 @@ Section: Text Encoders
   lr-named (path) (file) (ls) (name) (hs) (e0s) (n) (wide) (restore) =
     when st-find-tensor file name
      is None -> 0
-     is Just (m) -> lr-patch path (file.st-data-offset + m.stm-offset-start) (m.stm-dtype) (st-element-count m) (list-at (m.stm-shape) 0) ls (lora-slots name (list-at (m.stm-shape) 0) 2 sdxl-te-l sdxl-te-g) hs e0s n wide restore
+     is Just (m) -> (lr-patch path (file.st-data-offset + m.stm-offset-start) (m.stm-dtype) (st-element-count m) (list-at (m.stm-shape) 0) ls
+       (lora-slots name (list-at (m.stm-shape) 0) 2 sdxl-te-l sdxl-te-g) hs e0s n wide restore)
 
   lr-one : Text, SafeTensorFile, List LoraFile, Text, Integer, Integer, Boolean, Boolean -> Integer
   lr-one (path) (file) (ls) (name) (h) (n) (wide) (restore) = lr-named path file ls name [h] [0] n wide restore
@@ -114,9 +108,6 @@ Section: Entry
 
   lora-resident-apply : UNetFile, ClipWeights, ClipWeights, List LoraFile -> Integer
   lora-resident-apply (u) (wl) (wg) (ls) = lr-walk u wl wg ls False
-
- Every tensor the LoRAs in ls name, put back as the loader left it; the count
- restored, or negative when an upload refused.
 
   lora-resident-restore : UNetFile, ClipWeights, ClipWeights, List LoraFile -> Integer
   lora-resident-restore (u) (wl) (wg) (ls) = lr-walk u wl wg ls True

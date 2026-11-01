@@ -7,11 +7,7 @@ Chapter: DiffieHellman
  for constant-time execution. Field arithmetic modulo 2^255 - 19
  reuses the 16-limb little-endian field from the Ed25519 chapter
  (fe-mul, fe-add, fe-sub, fe-carry, fe-invert, fe-from-bytes,
- fe-to-bytes), which is byte-exact against RFC 8032. The earlier
- implementation operated on native Integer values and was structurally
- unable to represent 255-bit field elements in a 64-bit word.
-
- We say:
+ fe-to-bytes), which is byte-exact against RFC 8032.
 
 Section: Constants
 
@@ -61,16 +57,33 @@ Section: Montgomery Ladder
       []
     else let scalar = x25519-clamp scalar-bytes
     in let x1 = fe-from-bytes u-bytes
-    in let final = x25519-ladder scalar x1 (fe-copy fe-one) (fe-copy fe-zero) (fe-copy x1) (fe-copy fe-one) 254
-    in let inv = fe-invert (fe-copy (final.z2))
-    in fe-to-bytes (fe-mul (final.x2) inv)
+    in let x2 = fe-copy fe-one
+    in let z2 = fe-copy fe-zero
+    in let x3 = fe-copy x1
+    in let z3 = fe-copy fe-one
+    in let out = for b in u-bytes -> 0
+    in let done = x25519-ladder scalar x1 x2 z2 x3 z3 254
+    in let mark = __heap-save
+    in let inv = fe-invert (fe-copy z2)
+    in let bytes = fe-to-bytes (fe-mul (fe-copy x2) inv)
+    in let w = x25519-store out bytes 0 32
+    in let r = __heap-restore mark
+    in out
 
-  x25519-ladder : List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, Integer -> X25519State
+  x25519-ladder : List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, Integer -> Integer
   x25519-ladder (scalar) (x1) (x2) (z2) (x3) (z3) (i) =
-    if i < 0 then X25519State { x2 = x2, z2 = z2, x3 = x3, z3 = z3 }
-    else let b = bit-at scalar i
-    in let s = x25519-ladder-step b x1 x2 z2 x3 z3
-    in x25519-ladder scalar x1 (s.x2) (s.z2) (s.x3) (s.z3) (i - 1)
+    if i < 0 then 0
+    else let mark = __heap-save
+    in let s = x25519-ladder-step (bit-at scalar i) x1 x2 z2 x3 z3
+    in let w = x25519-store x2 (s.x2) 0 16 + x25519-store z2 (s.z2) 0 16 + x25519-store x3 (s.x3) 0 16 + x25519-store z3 (s.z3) 0 16
+    in let r = __heap-restore mark
+    in x25519-ladder scalar x1 x2 z2 x3 z3 (i - 1)
+
+  x25519-store : List Integer, List Integer, Integer, Integer -> Integer
+  x25519-store (dst) (src) (i) (n) =
+    if i >= n then 0
+    else let w = list-set-at dst i (list-at src i)
+    in x25519-store dst src (i + 1) n
 
   x25519-ladder-step : Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> X25519State
   x25519-ladder-step (b) (x1) (x2) (z2) (x3) (z3) =

@@ -23,29 +23,6 @@ Chapter: KeyInput
  `0` means no key, which is the idle value every event loop already
  tests.
 
- **This chapter used to emit ASCII, and two things were wrong with that.**
-
- The first was the encoding. The keyboard is an input boundary, and rule 5
- of this project says conversion happens at boundaries and everything
- inside is CCE. This chapter converted the wrong way: it turned a scancode
- into ASCII and handed that to application code, which is inside. Two
- character alphabets then circulated at once, kept apart by warnings in
- prose rather than by anything a compiler could check, and the warnings
- were real: `key-upper` carried one, `apps/browser` had CCE tokenizer
- values sitting beside ASCII key values, and every chapter crossing the
- seam wrote its own conversion. There is one alphabet now.
-
- The second was that characters and named keys shared one integer space.
- The named keys were DOM key codes, and DOM key codes land on printable
- characters: **Up was 38 and so was shift+7, Right was 39 and so was the
- apostrophe**, F1 through F10 were 112-121 which are the letters `p`
- through `y`, and F5 was 116 which is `t`. Measured, not reasoned: a
- `-keys-file` timeline typing shift+7, Up, apostrophe and Right returned
- 38, 38, 39, 39. The old contract stated both halves of that collision on
- adjacent lines of this very prose and nobody noticed, because no test
- typed a character and its colliding named key in the same timeline.
- `codex/test/keys-collision` is that test now.
-
  A named key is deliberately outside anything CCE can represent, so if one
  ever leaks into text it renders as the replacement character rather than
  as a plausible wrong letter. `codex/test/keys-collision` pins that too.
@@ -67,12 +44,7 @@ Chapter: KeyInput
  A letter comes back cased by **shift XOR caps** -- lowercase (97-122) when
  exactly one of them is active, uppercase (65-90) when both or neither --
  and the shifted number row and punctuation come back as their shifted
- symbols. This is a change of contract from the pre-shift world: a letter
- used to be its uppercase IDENTITY regardless of shift, so a call site that
- reads a letter as a command shortcut (`== 81` for Q) needs `key-upper`
- (below). Text entry is the winner: a passphrase read through poll-key is
- case-sensitive, which is why every identity provisioned before the shift
- change stops unlocking (the migration was chosen deliberately).
+ symbols.
 
  `poll-mods` reports the held modifiers -- shift 1, ctrl 2, alt 4, the same
  bit values `UI chapter Event` uses (`mod-shift`, `mod-ctrl`, `mod-alt`) --
@@ -94,8 +66,6 @@ Chapter: KeyInput
 
   kbd-mod-addr : Integer = 36752
 
- We say:
-
 Section: Named Keys
 
  A named key is not a character and must never be confused with one, so it
@@ -106,10 +76,6 @@ Section: Named Keys
  sits far enough above that band that CCE growth cannot reach it: CCE is a
  compaction of Unicode's assigned code points, of which there are roughly
  150000, so a base of 2^20 has an order of magnitude of headroom.
-
- The margin is a claim, so it is tested rather than asserted:
- `codex/test/keys-collision` requires `to-unicode key-f1` to answer the
- replacement character, which fails the day the two spaces meet.
 
   key-named-base : Integer = 1048576
 
@@ -165,16 +131,6 @@ Section: Poll
  Cost worth knowing: uefi-read-key-ex performs a LocateProtocol on every call,
  so this is a slower poll than reading a cell. Correctness first; caching the
  interface is a later change and belongs in the helper, not here.
-
- The test is `== -1` and not `> 0` deliberately. -1 is the helper's documented
- and only failure value, for both "no key" and "no SystemTable", so testing it
- directly says exactly what is meant. A sign test additionally MEASURED WRONG
- on 2026-08-02: with the shift-state fold corrected, a probe confirmed the
- returned key has bit 63 clear and is neither 0 nor -1, which makes `k > 0`
- necessarily true, and `k > 0` still took the false branch across five runs on
- two independently built images. That is an open question about the comparison
- rather than about the keyboard, recorded in red-workplan; `== -1` is correct
- regardless of how it resolves.
 
   poll-key : Integer
   poll-key =
@@ -240,20 +196,6 @@ Section: Poll
     else if sc == 224 then mod-set mods 32
     else key-emit (decode-key sc mods)
 
- The translation tables below still work in ASCII, because ASCII is the
- alphabet a PS/2 layout is written in and rewriting a hundred table entries
- by hand is a way to introduce errors, not to remove them. `key-emit` is
- the single point where a character crosses into CCE, which is what makes
- this a boundary rather than a smear: one conversion, through
- `from-unicode`, which is the mapping the encoding chapter already tests.
-
- A named key passes through untouched, and so does the idle zero. Every
- printable ASCII character has a CCE code point (tier 0 carries exactly the
- thirty-two punctuation slots ASCII needs, which is not a coincidence), so
- the conversion cannot lose one; `codex/test/keys-collision` walks the
- printable range and requires every answer to be non-negative rather than
- taking that on trust.
-
   key-emit : Integer -> Integer
   key-emit (k) =
     if k <= 0 then 0
@@ -264,14 +206,6 @@ Section: Poll
   poll-mods = bit-and (atomic-load kbd-mod-addr) 7
 
 Section: Numpad
-
- `decode-key` runs for every key that is not a modifier. It consumes the
- `0xE0` one-shot (bit 5): a prefixed key is the dedicated arrow, decoded
- straight through `scancode-to-keycode` and independent of NumLock. A bare
- key routes through `numpad-or-default`: when NumLock (bit 4) is on and the
- code is a numpad digit, it becomes that digit; otherwise it falls through
- to the ordinary translation, which maps the bare numpad codes to the
- arrows exactly as before.
 
   decode-key : Integer, Integer -> Integer
   decode-key (sc) (mods) =
@@ -323,20 +257,11 @@ Section: Modifiers
  It operates on CCE now, where lowercase is 13-38 and uppercase 39-64, so
  it is the same `+26` that `Foreword chapter CCE`'s own `to-upper` performs
  rather than a second implementation of casing in a different alphabet.
- That divergence was the thing the old warning here existed to manage, and
- the warning is gone because the divergence is. A named key is not a letter
- and passes through.
 
   key-upper : Integer -> Integer
   key-upper (k) =
     if k >= 13 then if k <= 38 then k + 26 else k
     else k
-
- A letter is cased by shift XOR caps; a non-letter takes its shifted symbol
- only when shift is held (caps does not shift punctuation). This still runs
- in ASCII, before `key-emit` converts, because the shifted-symbol table is
- a property of the keyboard layout rather than of the encoding. A named key
- takes neither: there is no shifted Up arrow.
 
   apply-mods : Integer, Integer -> Integer
   apply-mods (k) (mods) =
@@ -460,12 +385,6 @@ Section: Translation
     else if sc == 48 then 66
     else if sc == 49 then 78
     else 77
-
- The navigation block and the function row are named keys. They used to be
- DOM key codes, which is where the collision with the character space came
- from: 36 is `$`, 38 is `&`, 39 is the apostrophe, and 112-123 are the
- letters `p` through `{`. The numpad `-` and `+` stay characters, because
- that is what they are.
 
   sk-high : Integer -> Integer
   sk-high (sc) =

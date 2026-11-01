@@ -3,13 +3,14 @@ Chapter: PolicyProse
   cites Foreword chapter StringUtils
   cites Foreword chapter Parse
   cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Trust chapter NameBook
+  cites Trust chapter Approval
 
  Days are numbered zero for Monday through six for Sunday. A week
  minute is day times 1440 plus minute of day, which lets the
  existing PolicyEngine TimeWindow condition express day-and-time
  grants with no engine changes.
-
- We say:
 
 Section: Policy Facts
 
@@ -20,7 +21,10 @@ Section: Policy Facts
     start-minute : Integer,
     stop-minute : Integer,
     quota-minutes : Integer,
-    quota-period : Text
+    quota-period : Text,
+    approvers : List Text,
+    approval-when : ApprovalCondition,
+    approval-zone : Text
   }
 
   ProseDenial = record {
@@ -36,15 +40,18 @@ Section: Policy Facts
 
 Section: Small Builders
 
-  pol-make-grant : Text, Text, List Integer, Integer, Integer, Integer, Text -> ProseGrant
-  pol-make-grant (subject) (cap) (days) (ws) (we) (qm) (qp) = ProseGrant {
+  pol-make-grant : Text, Text, List Integer, Integer, Integer, Integer, Text, ProseApproval -> ProseGrant
+  pol-make-grant (subject) (cap) (days) (ws) (we) (qm) (qp) (ap) = ProseGrant {
     subject = subject,
     capability = cap,
     days = days,
     start-minute = ws,
     stop-minute = we,
     quota-minutes = qm,
-    quota-period = qp
+    quota-period = qp,
+    approvers = ap.names,
+    approval-when = ap.condition,
+    approval-zone = ap.zone
   }
 
   pol-with-grant : ProsePolicy, ProseGrant -> ProsePolicy
@@ -104,122 +111,482 @@ Section: Text Helpers
     in if i < 0 then list-push acc (pol-trim rest)
     else pol-split-loop s (start + i + 1) len (list-push acc (pol-trim (text-take rest i)))
 
-  pol-cut-at : Text, Text -> Text
-  pol-cut-at (s) (marker) =
-    let i = text-index-of s marker
-    in if i < 0 then s else text-take s i
+Section: The Approval Clause
 
-Section: Clause Parsing
+ The clause is "with approval from NAME[, NAME] [when CONDITION] [in ZONE]".
+ A clause that does not read completely refuses the whole grant, because a
+ when names the calls that need approval and a misread one would waive the
+ rest. "and" binds tighter than "or"; the "and" inside "between A and B" is
+ the window's own.
 
-  pol-clean-capability : Text -> Text
-  pol-clean-capability (raw) =
-    let s0 = if text-starts-with raw "the " then text-drop raw 4 else raw
-    in let s1 = pol-cut-at s0 " under any circumstances"
-    in let s2 = pol-cut-at s1 " on "
-    in let s3 = pol-cut-at s2 " between "
-    in let s4 = pol-cut-at s3 " for no more than "
-    in let s5 = pol-cut-at s4 ","
-    in let s6 = pol-cut-at s5 "."
-    in pol-trim s6
+  ProseApproval = record { ok : Boolean, names : List Text, condition : ApprovalCondition, zone : Text }
 
-  pol-parse-days : Text -> List Integer
-  pol-parse-days (s) =
-    if text-contains s "on weekends" then [5, 6]
-    else if text-contains s "on Saturdays and Sundays" then [5, 6]
-    else if text-contains s "on weekdays" then [0, 1, 2, 3, 4]
-    else [0, 1, 2, 3, 4, 5, 6]
+  pol-no-approval : ProseApproval
+  pol-no-approval = ProseApproval { ok = True, names = [], condition = CondAlways, zone = "" }
 
-  pol-parse-clock : Text -> Integer
-  pol-parse-clock (s) =
-    let h = parse-decimal s 0
-    in let k = text-index-of s ":"
-    in let m = if k < 0 then 0 else parse-decimal s (k + 1)
-    in h * 60 + m
+  pol-approval-bad : ProseApproval
+  pol-approval-bad = ProseApproval { ok = False, names = [], condition = CondAlways, zone = "" }
 
-  pol-window-start : Text -> Integer
-  pol-window-start (s) =
-    let i = text-index-of s " between "
-    in if i < 0 then 0
-    else pol-parse-clock (text-drop s (i + 9))
+  pol-strip-period : Text -> Text
+  pol-strip-period (s) =
+    let t = pol-trim s
+    in if text-length t > 0 & substring t (text-length t - 1) 1 == "." then pol-trim (text-take t (text-length t - 1)) else t
 
-  pol-window-stop : Text -> Integer
-  pol-window-stop (s) =
-    let i = text-index-of s " between "
-    in if i < 0 then 1439
-    else let rest = text-drop s (i + 9)
-    in let j = text-index-of rest " and "
-    in if j < 0 then 1439
-    else pol-parse-clock (text-drop rest (j + 5))
+  pol-parse-approval : Text -> ProseApproval
+  pol-parse-approval (clause) =
+    let c = " " & pol-strip-period clause
+    in let zi = text-index-of c " in "
+    in let zone = if zi < 0 then "" else pol-trim (text-drop c (zi + 4))
+    in let body = if zi < 0 then c else text-take c zi
+    in let wi = text-index-of body " when "
+    in let names = pol-names (if wi < 0 then body else text-take body wi)
+    in if list-length names == 0 then pol-approval-bad
+    else if zi >= 0 & (text-length zone == 0 | text-index-of zone " " >= 0) then pol-approval-bad
+    else if wi < 0 then ProseApproval { ok = True, names = names, condition = CondAlways, zone = zone }
+    else let r = pol-cond-parse (pol-words (text-drop body (wi + 6)))
+    in if r.ok == False then pol-approval-bad
+    else ProseApproval { ok = True, names = names, condition = r.cond, zone = zone }
 
-  pol-quota-minutes : Text -> Integer
-  pol-quota-minutes (s) =
-    let i = text-index-of s " for no more than "
-    in if i < 0 then 0 - 1
-    else let rest = text-drop s (i + 18)
-    in let n = parse-decimal rest 0
-    in if text-contains rest "hour" then n * 60 else n
+  pol-split-on : Text, Text, List Text -> List Text
+  pol-split-on (s) (sep) (acc) =
+    let i = text-index-of s sep
+    in if i < 0 then pol-push-nonempty acc (pol-trim s)
+    else pol-split-on (text-drop s (i + text-length sep)) sep (pol-push-nonempty acc (pol-trim (text-take s i)))
 
-  pol-quota-period : Text -> Text
-  pol-quota-period (s) =
-    if text-contains s "per day" then "day" else "session"
+  pol-push-nonempty : List Text, Text -> List Text
+  pol-push-nonempty (acc) (t) = if text-length t == 0 then acc else acc & [t]
 
-Section: The Compiler
+  pol-names : Text -> List Text
+  pol-names (s) = pol-names-loop (pol-split-on s "," []) 0 []
 
-  compile-policy : Text -> ProsePolicy
-  compile-policy (src) =
-    let lines = pol-split-lines src
-    in pol-lines lines 0 (list-length lines) (ProsePolicy {
-      grants = [],
-      denials = [],
-      commentary = []
-    })
+  pol-names-loop : List Text, Integer, List Text -> List Text
+  pol-names-loop (parts) (i) (acc) =
+    if i >= list-length parts then acc
+    else pol-names-loop parts (i + 1) (acc & pol-split-on (list-at parts i) " and " [])
 
-  pol-lines : List Text, Integer, Integer, ProsePolicy -> ProsePolicy
-  pol-lines (lines) (i) (n) (pol) =
-    if i >= n then pol
-    else pol-lines lines (i + 1) n (pol-line (list-at lines i) pol)
+  pol-words : Text -> List Text
+  pol-words (s) = pol-split-on s " " []
 
-  pol-line : Text, ProsePolicy -> ProsePolicy
-  pol-line (line) (pol) =
-    if text-length line == 0 then pol
-    else if text-contains line " may never use " then pol-add-denial line " may never use " pol
-    else if text-contains line " may not use " then pol-add-denial line " may not use " pol
-    else if text-contains line " may use " then pol-add-grant line pol
-    else pol-with-commentary pol line
+  PcResult = record { ok : Boolean, cond : ApprovalCondition, next : Integer }
 
-  pol-add-denial : Text, Text, ProsePolicy -> ProsePolicy
-  pol-add-denial (line) (marker) (pol) =
-    let i = text-index-of line marker
-    in let subject = pol-trim (text-take line i)
-    in let rest = text-drop line (i + text-length marker)
-    in pol-with-denial pol (ProseDenial {
-      subject = subject,
-      capability = pol-clean-capability rest
-    })
+  pc-fail : PcResult
+  pc-fail = PcResult { ok = False, cond = CondAlways, next = 0 }
 
-  pol-add-grant : Text, ProsePolicy -> ProsePolicy
-  pol-add-grant (line) (pol) =
-    let i = text-index-of line " may use "
-    in let subject = pol-trim (text-take line i)
-    in let rest = text-drop line (i + 9)
-    in let cap = pol-clean-capability rest
-    in let days = pol-parse-days rest
-    in let ws = pol-window-start rest
-    in let we = pol-window-stop rest
-    in let qm = pol-quota-minutes rest
-    in let qp = if qm < 0 then "" else pol-quota-period rest
-    in pol-with-grant pol (pol-make-grant subject cap days ws we qm qp)
+  pc-word : List Text, Integer -> Text
+  pc-word (ws) (i) = if i < list-length ws then list-at ws i else ""
+
+  pol-cond-parse : List Text -> PcResult
+  pol-cond-parse (ws) =
+    let r = pc-or ws 0
+    in if r.ok & r.next == list-length ws then r else pc-fail
+
+  pc-or : List Text, Integer -> PcResult
+  pc-or (ws) (i) =
+    let a = pc-and ws i
+    in if a.ok == False then a else pc-or-more ws a.next [a.cond]
+
+  pc-or-more : List Text, Integer, List ApprovalCondition -> PcResult
+  pc-or-more (ws) (i) (acc) =
+    if pc-word ws i == "or" then
+      let b = pc-and ws (i + 1)
+      in if b.ok == False then b else pc-or-more ws b.next (acc & [b.cond])
+    else PcResult { ok = True, cond = if list-length acc == 1 then list-at acc 0 else CondAny acc, next = i }
+
+  pc-and : List Text, Integer -> PcResult
+  pc-and (ws) (i) =
+    let a = pc-atom ws i
+    in if a.ok == False then a else pc-and-more ws a.next [a.cond]
+
+  pc-and-more : List Text, Integer, List ApprovalCondition -> PcResult
+  pc-and-more (ws) (i) (acc) =
+    if pc-word ws i == "and" then
+      let b = pc-atom ws (i + 1)
+      in if b.ok == False then b else pc-and-more ws b.next (acc & [b.cond])
+    else PcResult { ok = True, cond = if list-length acc == 1 then list-at acc 0 else CondAll acc, next = i }
+
+  pc-value : List Text, Integer -> Boolean
+  pc-value (ws) (i) =
+    let w = pc-word ws i
+    in text-length w > 0 & w /= "and" & w /= "or"
+
+  pc-atom : List Text, Integer -> PcResult
+  pc-atom (ws) (i) =
+    let w = pc-word ws i
+    in if w == "marked" & pc-value ws (i + 1) then PcResult { ok = True, cond = FlagSet (pc-word ws (i + 1)), next = i + 2 }
+    else if w == "answering" & pc-value ws (i + 1) then PcResult { ok = True, cond = FieldIs "answering" (pc-word ws (i + 1)), next = i + 2 }
+    else if w == "to" & pc-value ws (i + 1) then PcResult { ok = True, cond = FieldIs "to" (pc-word ws (i + 1)), next = i + 2 }
+    else if w == "between" then pc-window ws i "and" False
+    else if w == "outside" then pc-window ws i "to" True
+    else if w == "on" then pc-on-days ws i
+    else pc-fail
+
+  pc-days : Text -> List Integer
+  pc-days (w) = if w == "weekdays" then [0, 1, 2, 3, 4] else if w == "weekends" then [5, 6] else []
+
+  pc-on-days : List Text, Integer -> PcResult
+  pc-on-days (ws) (i) =
+    let days = pc-days (pc-word ws (i + 1))
+    in if list-length days == 0 then pc-fail
+    else PcResult { ok = True, cond = WeekWindow days 0 1440, next = i + 2 }
+
+  pc-window : List Text, Integer, Text, Boolean -> PcResult
+  pc-window (ws) (i) (sep) (outside) =
+    let a = pol-clock-strict (pc-word ws (i + 1))
+    in let b = pol-clock-strict (pc-word ws (i + 3))
+    in if a < 0 | b < 0 | a >= b | pc-word ws (i + 2) /= sep then pc-fail
+    else let named = if pc-word ws (i + 4) == "on" then pc-days (pc-word ws (i + 5)) else []
+    in let days = if list-length named == 0 then [0, 1, 2, 3, 4, 5, 6] else named
+    in let next = if list-length named == 0 then i + 4 else i + 6
+    in let window = WeekWindow days a b
+    in PcResult { ok = True, cond = if outside then CondNot window else window, next = next }
+
+ A clock is H:MM or HH:MM, at most 24:00; anything else answers -1.
+
+  pol-clock-strict : Text -> Integer
+  pol-clock-strict (t) =
+    let n = text-length t
+    in if n < 4 | n > 5 then 0 - 1
+    else if substring t (n - 3) 1 /= ":" then 0 - 1
+    else let h = pol-digits t 0 (n - 3) 0
+    in let m = pol-digits t (n - 2) n 0
+    in if h < 0 | m < 0 | m > 59 | h * 60 + m > 1440 then 0 - 1
+    else h * 60 + m
+
+  pol-digits : Text, Integer, Integer, Integer -> Integer
+  pol-digits (t) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let d = char-code (char-at t i) - char-code (char-at "0" 0)
+    in if d < 0 | d > 9 then 0 - 1
+    else pol-digits t (i + 1) stop (acc * 10 + d)
+
+Section: The Checked Reader
+
+  PolicyRead = record { ok : Boolean, policy : ProsePolicy, line : Integer, word : Text, reason : Text }
+
+  PckSlots = record {
+    ok : Boolean,
+    days : List Integer,
+    ws : Integer,
+    we : Integer,
+    qm : Integer,
+    qp : Text,
+    ap : ProseApproval,
+    next : Integer,
+    word : Text,
+    reason : Text
+  }
+
+  pck-empty : ProsePolicy
+  pck-empty = ProsePolicy { grants = [], denials = [], commentary = [] }
+
+  pck-refuse : Text, Text -> PolicyRead
+  pck-refuse (word) (reason) = PolicyRead { ok = False, policy = pck-empty, line = 0, word = word, reason = reason }
+
+  pck-tok : List Text, Integer -> Text
+  pck-tok (ts) (i) = if i >= 0 & i < list-length ts then list-at ts i else ""
+
+  pck-ends : Text, Text -> Boolean
+  pck-ends (s) (t) = text-length s > text-length t & substring s (text-length s - text-length t) (text-length t) == t
+
+  pck-split-word : Text, Boolean -> List Text
+  pck-split-word (w) (last) =
+    if pck-ends w "," then [substring w 0 (text-length w - 1), ","]
+    else if last & pck-ends w "." then [substring w 0 (text-length w - 1), "."]
+    else [w]
+
+  pck-split-words : List Text, Integer, List Text -> List Text
+  pck-split-words (ws) (i) (acc) =
+    if i >= list-length ws then acc
+    else pck-split-words ws (i + 1) (acc & pck-split-word (list-at ws i) (i == list-length ws - 1))
+
+  pck-quoted : List Text, Integer, Text, List Text -> List Text
+  pck-quoted (ts) (i) (open) (acc) =
+    if i >= list-length ts then (if text-length open > 0 then acc & [open] else acc)
+    else let t = list-at ts i
+    in if text-length open > 0 then
+      (if pck-ends (open & " " & t) "\"" then pck-quoted ts (i + 1) "" (acc & [open & " " & t]) else pck-quoted ts (i + 1) (open & " " & t) acc)
+    else if text-length t > 1 & substring t 0 1 == "\"" & pck-ends t "\"" == False then pck-quoted ts (i + 1) t acc
+    else pck-quoted ts (i + 1) "" (acc & [t])
+
+  pck-tokens : Text -> List Text
+  pck-tokens (line) = pck-quoted (pck-split-words (pol-words line) 0 []) 0 "" []
+
+  pck-banned : Text -> Boolean
+  pck-banned (w) =
+    w == "it" | w == "this" | w == "they" | w == "some" | w == "many" | w == "few" | w == "etc" | w == "so"
+      | w == "since" | w == "while" | w == "might" | w == "should" | w == "may"
+
+  pck-first-banned : List Text, Integer -> Integer
+  pck-first-banned (ts) (i) =
+    if i >= list-length ts then 0 - 1
+    else if pck-banned (list-at ts i) then i
+    else pck-first-banned ts (i + 1)
+
+  pck-label-char : Text, Integer -> Boolean
+  pck-label-char (w) (i) =
+    let c = char-at w i
+    in is-letter c | (char-code c >= char-code (char-at "0" 0) & char-code c <= char-code (char-at "9" 0)) | char-code c == char-code (char-at "." 0) | char-code c == char-code (char-at "-" 0)
+
+  pck-label : Text, Integer -> Boolean
+  pck-label (w) (i) = if i >= text-length w then text-length w > 0 else if pck-label-char w i then pck-label w (i + 1) else False
+
+  pck-quoted-name : Text -> Boolean
+  pck-quoted-name (w) = text-length w > 2 & substring w 0 1 == "\"" & pck-ends w "\""
+
+  pck-name : Text -> Boolean
+  pck-name (w) = pck-quoted-name w | pck-label w 0
+
+  pck-cap-name : Text -> Text
+  pck-cap-name (w) = if pck-quoted-name w then substring w 1 (text-length w - 2) else w
+
+  pck-gap : Text -> Boolean
+  pck-gap (w) = text-length w == 0 | w == "." | w == ","
+
+  compile-policy-checked : Text -> PolicyRead
+  compile-policy-checked (src) = pck-block (pol-split-lines src) 0 pck-empty
+
+  pck-block : List Text, Integer, ProsePolicy -> PolicyRead
+  pck-block (lines) (i) (pol) =
+    if i >= list-length lines then PolicyRead { ok = False, policy = pck-empty, line = 0, word = "We say:", reason = "no rule block" }
+    else let line = list-at lines i
+    in if line == "We say:" then pck-lines lines (i + 1) pol
+    else pck-block lines (i + 1) (if text-length line == 0 then pol else pol-with-commentary pol line)
+
+  pck-lines : List Text, Integer, ProsePolicy -> PolicyRead
+  pck-lines (lines) (i) (pol) =
+    if i >= list-length lines then PolicyRead { ok = True, policy = pol, line = 0, word = "", reason = "" }
+    else let line = list-at lines i
+    in if text-length line == 0 then pck-lines lines (i + 1) pol
+    else let r = pck-rule (pck-tokens line) pol
+    in if r.ok == False then PolicyRead { ok = False, policy = pck-empty, line = i + 1, word = r.word, reason = r.reason }
+    else pck-lines lines (i + 1) r.policy
+
+  pck-at : List Text, Integer -> PolicyRead
+  pck-at (ts) (i) = if pck-gap (pck-tok ts i) then pck-refuse (pck-tok ts (i - 1)) "missing slot" else pck-refuse (pck-tok ts i) "unknown word"
+
+  pck-rule : List Text, ProsePolicy -> PolicyRead
+  pck-rule (ts) (pol) =
+    let b = pck-first-banned ts 0
+    in let subject = pck-tok ts 0
+    in if b >= 0 then pck-refuse (list-at ts b) "banned word"
+    else if subject == "is" then pck-refuse "is" "missing slot"
+    else if pck-name subject == False then pck-refuse subject "unknown word"
+    else if pck-tok ts 1 /= "is" then pck-at ts 1
+    else if pck-tok ts 2 == "permitted" then pck-verb ts 3 True (pck-cap-name subject) pol
+    else if pck-tok ts 2 /= "never" then pck-at ts 2
+    else if pck-tok ts 3 /= "permitted" then pck-at ts 3
+    else pck-verb ts 4 False (pck-cap-name subject) pol
+
+  pck-verb : List Text, Integer, Boolean, Text, ProsePolicy -> PolicyRead
+  pck-verb (ts) (i) (grant) (subject) (pol) =
+    let c = if pck-tok ts (i + 2) == "the" then i + 3 else i + 2
+    in let cap = pck-tok ts c
+    in if pck-tok ts i /= "to" then pck-at ts i
+    else if pck-tok ts (i + 1) /= "use" then pck-at ts (i + 1)
+    else if pck-gap cap then pck-refuse (pck-tok ts (c - 1)) "missing slot"
+    else if pck-name cap == False then pck-refuse cap "not a capability"
+    else if grant then pck-grant ts (c + 1) subject (pck-cap-name cap) pol
+    else pck-denial ts (c + 1) subject (pck-cap-name cap) pol
+
+  pck-end : List Text, Integer -> Integer
+  pck-end (ts) (i) = if pck-tok ts i == "." & i == list-length ts - 1 then i + 1 else i
+
+  pck-denial : List Text, Integer, Text, Text, ProsePolicy -> PolicyRead
+  pck-denial (ts) (i) (subject) (cap) (pol) =
+    let j = if pck-tok ts i == "under" & pck-tok ts (i + 1) == "any" & pck-tok ts (i + 2) == "circumstances" then i + 3 else i
+    in let k = pck-end ts j
+    in if k < list-length ts then pck-refuse (list-at ts k) "unknown word"
+    else PolicyRead { ok = True, policy = pol-with-denial pol (ProseDenial { subject = subject, capability = cap }), line = 0, word = "", reason = "" }
+
+  pck-grant : List Text, Integer, Text, Text, ProsePolicy -> PolicyRead
+  pck-grant (ts) (i) (subject) (cap) (pol) =
+    let s = pck-slots ts i
+    in if s.ok == False then pck-refuse s.word s.reason
+    else let k = pck-end ts s.next
+    in if k < list-length ts then pck-refuse (list-at ts k) "unknown word"
+    else PolicyRead { ok = True, policy = pol-with-grant pol (pol-make-grant subject cap s.days s.ws s.we s.qm s.qp s.ap), line = 0, word = "", reason = "" }
+
+  pck-comma : List Text, Integer -> Integer
+  pck-comma (ts) (i) = if pck-tok ts i == "," then i + 1 else i
+
+  pck-fail : Integer, Text, Text -> PckSlots
+  pck-fail (i) (word) (reason) = PckSlots { ok = False, days = [], ws = 0, we = 0, qm = 0, qp = "", ap = pol-no-approval, next = i, word = word, reason = reason }
+
+  pck-open : List Integer, Integer -> PckSlots
+  pck-open (days) (next) = PckSlots { ok = True, days = days, ws = 0, we = 1439, qm = 0 - 1, qp = "", ap = pol-no-approval, next = next, word = "", reason = "" }
+
+  pck-slots : List Text, Integer -> PckSlots
+  pck-slots (ts) (i0) =
+    let i = pck-comma ts i0
+    in if pck-tok ts i == "always" then pck-limits ts (pck-open [0, 1, 2, 3, 4, 5, 6] (i + 1))
+    else let d = pck-days ts i
+    in if d.ok == False then d
+    else let w = pck-window ts (pck-comma ts d.next) d.days
+    in if w.ok == False then w
+    else pck-limits ts w
+
+  pck-limits : List Text, PckSlots -> PckSlots
+  pck-limits (ts) (w) =
+    let q = pck-quota ts (pck-comma ts w.next) w
+    in if q.ok == False then q
+    else pck-approval ts (pck-comma ts q.next) q
+
+  pck-day : Text -> Integer
+  pck-day (w) =
+    if w == "Monday" | w == "Mondays" then 0
+    else if w == "Tuesday" | w == "Tuesdays" then 1
+    else if w == "Wednesday" | w == "Wednesdays" then 2
+    else if w == "Thursday" | w == "Thursdays" then 3
+    else if w == "Friday" | w == "Fridays" then 4
+    else if w == "Saturday" | w == "Saturdays" then 5
+    else if w == "Sunday" | w == "Sundays" then 6
+    else 0 - 1
+
+  pck-mask-days : Integer, Integer, List Integer -> List Integer
+  pck-mask-days (mask) (d) (acc) =
+    if d > 6 then acc
+    else pck-mask-days mask (d + 1) (if bit-and mask (bit-shl 1 d) == 0 then acc else acc & [d])
+
+  pck-day-list : List Text, Integer, Integer, Boolean -> PckSlots
+  pck-day-list (ts) (i) (mask) (last) =
+    let w = pck-tok ts i
+    in let d = pck-day w
+    in if pck-gap w then pck-fail i (pck-tok ts (i - 1)) "missing slot"
+    else if d < 0 | bit-and mask (bit-shl 1 d) /= 0 then pck-fail i w "unknown word"
+    else let m = bit-or mask (bit-shl 1 d)
+    in if last then pck-open (pck-mask-days m 0 []) (i + 1)
+    else if pck-tok ts (i + 1) == "and" then pck-day-list ts (i + 2) m True
+    else if pck-tok ts (i + 1) == "," & pck-day (pck-tok ts (i + 2)) >= 0 then pck-day-list ts (i + 2) m False
+    else pck-open (pck-mask-days m 0 []) (i + 1)
+
+  pck-days : List Text, Integer -> PckSlots
+  pck-days (ts) (i) =
+    let a = pck-tok ts (i + 1)
+    in if pck-tok ts i /= "on" then pck-open [0, 1, 2, 3, 4, 5, 6] i
+    else if a == "weekends" then pck-open [5, 6] (i + 2)
+    else if a == "weekdays" then pck-open [0, 1, 2, 3, 4] (i + 2)
+    else if a == "every" & pck-tok ts (i + 2) == "day" then pck-open [0, 1, 2, 3, 4, 5, 6] (i + 3)
+    else pck-day-list ts (i + 1) 0 False
+
+  pck-window : List Text, Integer, List Integer -> PckSlots
+  pck-window (ts) (i) (days) =
+    if pck-tok ts i == "at" & pck-tok ts (i + 1) == "any" & pck-tok ts (i + 2) == "time" then pck-open days (i + 3)
+    else if pck-tok ts i /= "between" then pck-open days i
+    else let a = pol-clock-strict (pck-tok ts (i + 1))
+    in let b = pol-clock-strict (pck-tok ts (i + 3))
+    in if a < 0 then pck-fail i (pck-tok ts (i + 1)) (if text-length (pck-tok ts (i + 1)) == 0 then "missing slot" else "unknown word")
+    else if pck-tok ts (i + 2) /= "and" then pck-fail i (pck-tok ts (i + 2)) "unknown word"
+    else if b < 0 | b <= a then pck-fail i (pck-tok ts (i + 3)) (if text-length (pck-tok ts (i + 3)) == 0 then "missing slot" else "unknown word")
+    else PckSlots { ok = True, days = days, ws = a, we = b, qm = 0 - 1, qp = "", ap = pol-no-approval, next = i + 4, word = "", reason = "" }
+
+  pck-quota : List Text, Integer, PckSlots -> PckSlots
+  pck-quota (ts) (i) (w) =
+    let keep = PckSlots { ok = True, days = w.days, ws = w.ws, we = w.we, qm = 0 - 1, qp = "", ap = pol-no-approval, next = i, word = "", reason = "" }
+    in if pck-tok ts i == "with" & pck-tok ts (i + 1) == "no" & pck-tok ts (i + 2) == "limit" then PckSlots { ok = True, days = w.days, ws = w.ws, we = w.we, qm = 0 - 1, qp = "", ap = pol-no-approval, next = i + 3, word = "", reason = "" }
+    else if pck-tok ts i /= "for" then keep
+    else if pck-tok ts (i + 1) /= "no" | pck-tok ts (i + 2) /= "more" | pck-tok ts (i + 3) /= "than" then pck-fail i (pck-tok ts (i + 1)) "unknown word"
+    else let n = pol-digits (pck-tok ts (i + 4)) 0 (text-length (pck-tok ts (i + 4))) 0
+    in let measure = pck-tok ts (i + 5)
+    in let per = pck-tok ts (i + 7)
+    in if n < 0 | text-length (pck-tok ts (i + 4)) == 0 | text-length (pck-tok ts (i + 4)) > 6 then pck-fail i (pck-tok ts (i + 4)) "unknown word"
+    else if measure /= "minute" & measure /= "minutes" & measure /= "hour" & measure /= "hours" then pck-fail i measure "unknown word"
+    else if pck-tok ts (i + 6) /= "per" then pck-fail i (pck-tok ts (i + 6)) "unknown word"
+    else if per /= "day" & per /= "session" then pck-fail i per "unknown word"
+    else PckSlots { ok = True, days = w.days, ws = w.ws, we = w.we, qm = if measure == "hour" | measure == "hours" then n * 60 else n, qp = per, ap = pol-no-approval, next = i + 8, word = "", reason = "" }
+
+  pck-join : List Text, Integer, Integer, Text -> Text
+  pck-join (ts) (i) (stop) (acc) = if i >= stop then acc else pck-join ts (i + 1) stop (if text-length acc == 0 then list-at ts i else acc & " " & list-at ts i)
+
+  pck-approval : List Text, Integer, PckSlots -> PckSlots
+  pck-approval (ts) (i) (q) =
+    if pck-tok ts i /= "with" then q
+    else if pck-tok ts (i + 1) /= "approval" | pck-tok ts (i + 2) /= "from" then pck-fail i (pck-tok ts (i + 1)) "unknown word"
+    else let stop = if pck-tok ts (list-length ts - 1) == "." then list-length ts - 1 else list-length ts
+    in let ap = pol-parse-approval (pck-join ts (i + 3) stop "")
+    in if ap.ok == False then pck-fail i "with" "unknown word"
+    else PckSlots { ok = True, days = q.days, ws = q.ws, we = q.we, qm = q.qm, qp = q.qp, ap = ap, next = stop, word = "", reason = "" }
 
 Section: Lowering to PolicyEngine
 
   policy-week-minute : Integer, Integer -> Integer
   policy-week-minute (day) (minute) = day * 1440 + minute
 
-  lower-policy : ProsePolicy, Text -> Policy
-  lower-policy (pp) (name) =
-    let p0 = policy-empty name
+ A grant's subject is a name in the grant text and a policy context names an
+ agent by its key, so a grant lowers only through a NameBook the grantor signed:
+ the grant is restricted to the key the book binds its subject to. A book that
+ does not verify, or a subject it does not hold, refuses the whole policy, so a
+ name can never widen to every agent. A denial stays global: narrowing it to
+ one key would widen what the text forbids.
+
+  lower-policy : ProsePolicy, Text, NameBook, List Integer -> Maybe Policy
+  lower-policy (pp) (name) (book) (grantor) =
+    if name-book-valid book grantor == False then None
+    else if pol-subjects-bound pp book 0 == False then None
+    else if pol-approvals-admissible pp 0 == False then None
+    else if pol-cover-conflict pp 0 0 then None
+    else let p0 = policy-empty name
     in let p1 = pol-lower-denials pp p0 0 (list-length (pp.denials))
-    in pol-lower-grants pp p1 0 (list-length (pp.grants))
+    in Just (pol-lower-grants pp book p1 0 (list-length (pp.grants)))
+
+ Every approver must be in the book too, and an approver whose key is the
+ subject's own is refused: a grant the agent could approve for itself gates
+ nothing.
+
+ An approval condition relaxes the gate, so until a field's provenance can be
+ shown (AccpInformationFlow.md) it may read no call field at all, and a week
+ window, which is local time, needs the zone the clause names
+ (HumanApprovalGrant.md section 4).
+
+ A guarded grant is bypassed when the same subject holds an unguarded grant
+ whose capability covers it: the same label, or its family before the dot.
+ Such a policy refuses whole. A cover across families (Network beside
+ Email.Send) needs the resource each gated label reaches, which the runner's
+ link surface declares (HumanApprovalGrant.md rung 4).
+
+  pol-cover-conflict : ProsePolicy, Integer, Integer -> Boolean
+  pol-cover-conflict (pp) (i) (j) =
+    if i >= list-length (pp.grants) then False
+    else if j >= list-length (pp.grants) then pol-cover-conflict pp (i + 1) 0
+    else let g = list-at (pp.grants) i
+    in let h = list-at (pp.grants) j
+    in if list-length (g.approvers) > 0 & list-length (h.approvers) == 0 & g.subject == h.subject & (h.capability == g.capability | apv-family (g.capability) 0 == h.capability) then True
+    else pol-cover-conflict pp i (j + 1)
+
+  pol-approvals-admissible : ProsePolicy, Integer -> Boolean
+  pol-approvals-admissible (pp) (i) =
+    if i >= list-length (pp.grants) then True
+    else let g = list-at (pp.grants) i
+    in if list-length (g.approvers) > 0 & list-length (approval-fields-read (g.approval-when)) > 0 then False
+    else if list-length (g.approvers) > 0 & approval-uses-clock (g.approval-when) & text-length (g.approval-zone) == 0 then False
+    else pol-approvals-admissible pp (i + 1)
+
+  pol-subjects-bound : ProsePolicy, NameBook, Integer -> Boolean
+  pol-subjects-bound (pp) (book) (i) =
+    if i >= list-length (pp.grants) then True
+    else let g = list-at (pp.grants) i
+    in when name-book-key book (g.subject)
+      is None -> False
+      is Just (k) -> if pol-approvers-bound book (g.approvers) k 0 then pol-subjects-bound pp book (i + 1) else False
+
+  pol-approvers-bound : NameBook, List Text, List Integer, Integer -> Boolean
+  pol-approvers-bound (book) (names) (subject-key) (i) =
+    if i >= list-length names then True
+    else when name-book-key book (list-at names i)
+      is None -> False
+      is Just (k) -> if name-book-key-hex k == name-book-key-hex subject-key then False else pol-approvers-bound book names subject-key (i + 1)
+
+  pol-approver-keys : NameBook, List Text, Integer, List (List Integer) -> List (List Integer)
+  pol-approver-keys (book) (names) (i) (acc) =
+    if i >= list-length names then acc
+    else when name-book-key book (list-at names i)
+      is None -> pol-approver-keys book names (i + 1) acc
+      is Just (k) -> pol-approver-keys book names (i + 1) (acc & [k])
+
+  pol-subject-hex : NameBook, Text -> Text
+  pol-subject-hex (book) (subject) =
+    when name-book-key book subject
+      is None -> ""
+      is Just (k) -> name-book-key-hex k
 
   pol-lower-denials : ProsePolicy, Policy, Integer, Integer -> Policy
   pol-lower-denials (pp) (pol) (i) (n) =
@@ -227,11 +594,16 @@ Section: Lowering to PolicyEngine
     else let d = list-at (pp.denials) i
     in pol-lower-denials pp (policy-add-rule pol (rule-deny ("deny:" & d.capability) (CapabilityMatch (d.capability) 2) "denied by policy")) (i + 1) n
 
-  pol-lower-grants : ProsePolicy, Policy, Integer, Integer -> Policy
-  pol-lower-grants (pp) (pol) (i) (n) =
+  pol-lower-grants : ProsePolicy, NameBook, Policy, Integer, Integer -> Policy
+  pol-lower-grants (pp) (book) (pol) (i) (n) =
     if i >= n then pol
     else let g = list-at (pp.grants) i
-    in pol-lower-grants pp (policy-add-rule pol (rule-allow ("grant:" & g.capability) (AllOf [CapabilityMatch (g.capability) 2, AnyOf (pol-grant-windows g)]))) (i + 1) n
+    in let who = AgentIs (pol-subject-hex book (g.subject))
+    in let cond = AllOf [who, CapabilityMatch (g.capability) 2, AnyOf (pol-grant-windows g)]
+    in let rule = if list-length (g.approvers) == 0 then rule-allow ("grant:" & g.capability) cond
+      else rule-allow-approved ("grant:" & g.capability) cond (pol-approver-keys book (g.approvers) 0 []) (approval-condition-bytes (g.approval-when)) (g.approval-zone)
+    in let lowered = if g.quota-minutes < 0 then rule else rule-with-quota rule (g.quota-minutes) (g.quota-period)
+    in pol-lower-grants pp book (policy-add-rule pol lowered) (i + 1) n
 
   pol-grant-windows : ProseGrant -> List PolicyCondition
   pol-grant-windows (g) = pol-windows-loop g 0 (list-length (g.days)) []
@@ -299,14 +671,26 @@ Section: The Clarifier
   pol-grants-text (pp) (i) (n) (acc) =
     if i >= n then acc
     else let g = list-at (pp.grants) i
-    in let entry = "grant: " & g.subject & " may use \"" & g.capability & "\"\n  days: " & pol-days-text (g.days) & "\n  window: " & pol-window-text g & "\n  quota: " & pol-quota-text g
+    in let entry = "grant: " & g.subject & " is permitted to use \"" & g.capability & "\"\n  days: " & pol-days-text (g.days) & "\n  window: " & pol-window-text g & "\n  quota: " & pol-quota-text g & pol-approval-text g
     in pol-grants-text pp (i + 1) n (acc & "\n" & entry)
+
+  pol-approval-text : ProseGrant -> Text
+  pol-approval-text (g) =
+    if list-length (g.approvers) == 0 then ""
+    else let c = approval-condition-text (g.approval-when)
+    in let reads = approval-fields-read (g.approval-when)
+    in "\n  approval: " & pol-join (g.approvers) 0 "" & (if c == "always" then "" else " when " & c)
+      & (if text-length (g.approval-zone) == 0 then "" else " in " & g.approval-zone)
+      & "\n  approval reads: " & (if list-length reads == 0 then "no call fields" else pol-join reads 0 "")
+
+  pol-join : List Text, Integer, Text -> Text
+  pol-join (xs) (i) (acc) = if i >= list-length xs then acc else pol-join xs (i + 1) (acc & (if i == 0 then "" else ", ") & list-at xs i)
 
   pol-denials-text : ProsePolicy, Integer, Integer, Text -> Text
   pol-denials-text (pp) (i) (n) (acc) =
     if i >= n then acc
     else let d = list-at (pp.denials) i
-    in pol-denials-text pp (i + 1) n (acc & "\ndenial: " & d.subject & " may never use \"" & d.capability & "\"")
+    in pol-denials-text pp (i + 1) n (acc & "\ndenial: " & d.subject & " is never permitted to use \"" & d.capability & "\"")
 
 Section: The Simulator
 
@@ -317,7 +701,8 @@ Section: The Simulator
       direction = 2,
       trust-score = 0,
       current-time = policy-week-minute day minute,
-      agent-id = who
+      agent-id = who,
+      scope = ""
     }
     in let d = eval-policy pol ctx
     in pol-day-name day & " " & pol-clock-text minute & " " & cap & " -> " & (if d.allowed then "ALLOW" else "DENY") & " (" & d.matched-rule & ")"

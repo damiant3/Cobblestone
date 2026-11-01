@@ -1,8 +1,44 @@
 Chapter: FwdAbilitySystemTest
   cites Engine chapter AbilitySystem
-  cites Engine chapter GameplayTags
+
+Section: Fixtures
+
+  abt-dur : Text, Integer -> GameplayEffect
+  abt-dur (name) (d) = ge-durational name d [] tc-empty
+
+  abt-with : Text, Integer, StackPolicy -> GameplayEffect
+  abt-with (name) (d) (policy) = GameplayEffect { ge-name = name, ge-duration = Durational d, ge-stacking = policy, ge-modifiers = [], ge-grant-tags = tc-empty, ge-remove-tags = tc-empty }
+
+  abt-apply-n : ActiveEffects, GameplayEffect, Integer -> ActiveEffects
+  abt-apply-n (aes) (fx) (n) = if n <= 0 then aes else abt-apply-n (aes-apply aes attr-default fx) fx (n - 1)
+
+  abt-inf : GameplayEffect
+  abt-inf =GameplayEffect { ge-name = "aura", ge-duration = Infinite, ge-stacking = StackNone, ge-modifiers = [], ge-grant-tags = tc-empty, ge-remove-tags = tc-empty }
+
+  abt-spell : Integer -> GameplayAbility
+  abt-spell (cost) = GameplayAbility { ga-name = "bolt", ga-required-tags = tc-empty, ga-blocked-tags = tc-empty, ga-cost-mana = cost, ga-cooldown = 100, ga-effects = [] }
+
+  abt-names : ActiveEffects, Integer, Text -> Text
+  abt-names (a) (i) (acc) =
+    if i >= a.aes-count then acc
+    else abt-names a (i + 1) (acc & (if i == 0 then "" else " ") & (list-at (a.aes-list) i).ae-effect.ge-name & ":" & show ((list-at (a.aes-list) i).ae-remaining))
 
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Engine/AbilitySystem OK"
-  end
+
+  opening : [Console] Nothing =
+    let hit = gas-apply-instant attr-default (ge-instant "hit" [AttributeModifier { am-attr-idx = 0, am-delta = 0 - 300 }, AttributeModifier { am-attr-idx = 2, am-delta = 0 - 600 }])
+    in let healed = gas-apply-instant attr-default (ge-instant "heal" [AttributeModifier { am-attr-idx = 0, am-delta = 500 }])
+    in let three = aes-apply (aes-apply (aes-apply aes-empty attr-default (abt-dur "a" 100)) attr-default abt-inf) attr-default (abt-dur "c" 100)
+    in let three-count = three.aes-count
+    in let ticked = aes-tick three 10
+    in let twice = aes-apply (aes-apply aes-empty attr-default (abt-dur "a" 100)) attr-default (abt-dur "a" 100)
+    in let done = aes-tick (aes-apply aes-empty attr-default (abt-dur "a" 100)) 100
+    in act
+      print-line-uni ("hit: " & format-attrs hit & "; heal at full: " & format-attrs healed)
+      print-line-uni ("modify idx 9: " & format-attrs (attr-modify attr-default 9 5) & "; attack +25: " & show ((attr-modify attr-default 4 25).attr-attack))
+      print-line-uni ("a 100, aura, c 100 then tick 10: before " & show three-count & ", after " & show (ticked.aes-count) & " [" & abt-names ticked 0 "" & "]")
+      print-line-uni ("same effect applied twice: " & show (twice.aes-count) & "; expired after 100: " & show (done.aes-count) & "; instant kept: " & show ((aes-apply aes-empty attr-default (ge-instant "x" [])).aes-count))
+      print-line-uni ("refresh: after tick 60 then reapply, remaining " & show ((list-at ((aes-apply (aes-tick (aes-apply aes-empty attr-default (abt-dur "a" 100)) 60) attr-default (abt-dur "a" 100)).aes-list) 0).ae-remaining) & "; count 3 applied 4 times: entries " & show ((abt-apply-n aes-empty (abt-with "s" 100 (StackCount 3)) 4).aes-count) & " stacks " & show ((list-at ((abt-apply-n aes-empty (abt-with "s" 100 (StackCount 3)) 4).aes-list) 0).ae-stacks) & "; none twice: " & show ((abt-apply-n aes-empty (abt-with "n" 100 StackNone) 2).aes-count))
+      print-line-uni ("activate: ready " & format-activation (ability-can-activate (abt-spell 100) tc-empty attr-default abs-ready) & ", cooling " & format-activation (ability-can-activate (abt-spell 100) tc-empty attr-default (AbilityState { abs-cooldown-remaining = 50 })) & ", cost 600 " & format-activation (ability-can-activate (abt-spell 600) tc-empty attr-default abs-ready))
+      print-line-uni ("cooldown 50 tick 30: " & show ((abs-tick (AbilityState { abs-cooldown-remaining = 50 }) 30).abs-cooldown-remaining) & ", ready tick: " & show ((abs-tick abs-ready 30).abs-cooldown-remaining))
+    end

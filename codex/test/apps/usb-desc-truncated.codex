@@ -1,0 +1,61 @@
+Chapter: UsbDescTruncatedTest
+  cites Works chapter GopXhci
+  cites Works chapter GopUsbMsc
+  cites Works chapter GopUsbKbd
+  cites Foreword chapter Console
+
+ Config buffers of 512 bytes walked to a total of 255. The truncated one has a
+ 9-byte configuration header, a 241-byte class-specific descriptor (type 36)
+ to offset 250, and a mass-storage interface (type 4, class 8, subclass 6,
+ protocol 80) at 250 whose 9 bytes run past 255. The control holds the same
+ interface at offset 9. The short one has an interrupt IN endpoint (type 5,
+ address 0x81, attributes 3) at offset 9 with bLength 4.
+
+Section: Fixtures
+
+  put-iface : Integer, Integer -> Integer
+  put-iface (b) (at) =
+    let a0 = poke-byte b at 9
+    in let a1 = poke-byte b (at + 1) 4
+    in let a5 = poke-byte b (at + 5) 8
+    in let a6 = poke-byte b (at + 6) 6
+    in poke-byte b (at + 7) 80
+
+  header : Integer -> Integer
+  header (b) =
+    let h0 = poke-byte b 0 9
+    in poke-byte b 1 2
+
+  truncated : Integer
+  truncated =
+    let b = alloc-bytes 512
+    in let h = header b
+    in let c0 = poke-byte b 9 241
+    in let c1 = poke-byte b 10 36
+    in let i = put-iface b 250
+    in b
+
+  control : Integer
+  control =
+    let b = alloc-bytes 512
+    in let h = header b
+    in let i = put-iface b 9
+    in b
+
+  short-ep : Integer
+  short-ep =
+    let b = alloc-bytes 512
+    in let h = header b
+    in let e0 = poke-byte b 9 4
+    in let e1 = poke-byte b 10 5
+    in let e2 = poke-byte b 11 129
+    in let e3 = poke-byte b 12 3
+    in b
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("control interface at " & show (msc-find-interface control 9 255))
+    print-line-uni ("truncated interface at " & show (msc-find-interface truncated 9 255))
+    print-line-uni ("short endpoint at " & show (kbd-find-int-in short-ep 9 255))
+  end

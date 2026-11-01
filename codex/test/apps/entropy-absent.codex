@@ -1,0 +1,44 @@
+Chapter: EntropyAbsent
+  cites Net chapter NetworkStack
+  cites Net chapter HttpFetch
+  cites Net chapter DhcpIO
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter Random
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ Run under codex-vm -no-rdrand (the .vmargs sidecar): CPUID tells the guest it has no RDRAND, so the hardware word
+ is refused, and every draw that must be unguessable refuses with it.
+
+Section: Arms
+
+  me : List Integer = [10, 0, 2, 15]
+  peer : List Integer = [10, 0, 2, 2]
+
+  listener : Integer -> NetSession
+  listener (n) = (net-listen (net-session-new [2, 0, 0, 0, 0, 1] me peer 9443 0 peer 1000)).session
+
+  syn : List Integer =
+    let tcp = tcp-with-checksum (tcp-build-segment 50000 9443 7000 0 tcp-flag-syn 8192 []) peer me
+    in eth-build-frame [2, 0, 0, 0, 0, 1] [2, 0, 0, 0, 0, 2] eth-type-ipv4 (ip-build-packet peer me ip-proto-tcp tcp)
+
+  said : Maybe (List Integer) -> Text
+  said (m) = when m is None -> "refused" is Just (ws) -> "drawn"
+
+  dns-said : Maybe HttpDnsQuery -> Text
+  dns-said (m) = when m is None -> "refused" is Just (q) -> "drawn"
+
+  xid-said : Maybe Integer -> Text
+  xid-said (m) = when m is None -> "refused" is Just (x) -> "drawn"
+
+  opening : [Console] Nothing =
+    let c = net-connect (net-session-new [2, 0, 0, 0, 0, 1] me peer 50001 80 peer 1000)
+    in let s = net-process-frame (listener 0) syn
+    in act
+      print-line-uni ("hardware words: " & said (hardware-random-words 1))
+      print-line-uni ("tcp connect: " & c.output & " frames=" & show (net-outbox-count (c.session)))
+      print-line-uni ("tcp syn to a listener: " & s.output & " frames=" & show (net-outbox-count (s.session)))
+      print-line-uni ("dns query: " & dns-said (http-dns-fresh 1) & ", error " & http-resolve-error "example.com")
+      print-line-uni ("dhcp xid: " & xid-said (dhcp-io-fresh-xid 0))
+    end

@@ -11,7 +11,7 @@ is still real is never quietly dropped.
 
 ## The shared mixer
 
-`Foreword chapter Random` supplies `mix-bits` and `rand-in-range` (CL 10493),
+`Foreword chapter Random` supplies `mix-bits` and `rand-in-range`,
 and its prose carries the whole account: why an unfolded multiply-add has no
 usable low bits, why that is invisible to a balance check, and -- the part
 that matters most -- **why it is only a defect where the consumer reads low
@@ -213,3 +213,11 @@ children's digest bytes and `dht-bucket-index` measures the XOR distance over by
 nothing builds a handshake yet, and `codex/test/apps/fileshare-bytes` proves the
 32-byte fields round-trip (both other lines go red with the old code). Open: the three
 held persisted sites, DamianDecisions 3.12 and 3.13.
+
+**CORE-24. `ota-check-preconditions` has no degenerate arm (L-DEGENERATE).** `codex/foreword/core/OtaUpdate.codex` refuses an update on a battery below `min-battery` or a version not newer than the current one, and `ComplianceEvidence.codex` cites it; no test feeds it either class (`build/checks/degenerate-arms.json` carries the row as open, 2026-11-01). Open: an arm with a battery one below the floor, at the floor, and an equal version.
+
+**CORE-25. `dtls-open-near` has no degenerate arm (L-DEGENERATE).** `codex/foreword/encode/Dtls.codex` reconstructs a record's full sequence number from its low bits and opens it through `dtls-open-raw`; `DtlsEndpoint.codex` calls it, and `dtls-degenerate` arms `dtls-open` only, so the reconstruction (a low part that wraps, an `expected` far from the record) is unarmed (registry row open, 2026-11-01). Open: an arm calling `dtls-open-near`.
+
+## Test coverage
+
+5 library chapters are reached by no computing test (2026-10-31), and each declares only effects (`Audio`, `Microphone`, `Network`, `Time`, `State`), holding nothing a test can compute. Open: for each, a definition to test or a deletion.

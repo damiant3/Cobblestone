@@ -1,7 +1,7 @@
 # Nettool -- open capabilities
 
 App-domain backlog. The shape and priority order for the platform live in
-`docs/PM/CurrentPlan.md`; there is no platform-wide register any more.
+`docs/PM/CurrentPlan.md`; there is no platform-wide register.
 Anything that is this application's own behaviour lives here.
 
 The rules are the standing ones: an entry says what is still missing and
@@ -11,3 +11,7 @@ is still real is never quietly dropped.
 ## Open
 
 Nothing open.
+
+## Test coverage
+
+4 of 4 library chapters are reached by no computing test. `pwsh build/coverage-census.ps1 -Tree apps/nettool -List` names them (2026-10-26). Open: a computing test for each, or a deletion.

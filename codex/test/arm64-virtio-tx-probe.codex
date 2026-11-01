@@ -4,25 +4,6 @@ Chapter: Arm64VirtioTxProbe
   cites Kernel chapter VirtioNet
   cites Foreword chapter Maybe
 
- A wire dump outside the guest showed slirp ARPing for 10.0.2.15 twice and
- NOTHING from the guest, so the guest transmits nothing and the hostfwd SYN
- never arrives. This probe splits that into states the serial console can
- tell apart, because the console is the one channel that does not depend on
- virtio-net.
-
- It does NOT call virtio-net-send-frame: that function ends in
- virtio-poll-used, whose 50-million-try cap returns exactly what a fast
- success returns, so a timeout there is indistinguishable from a completion.
- The send is inlined with a bounded poll that reports its own try count.
-
- The QSEL line is printed and is NOT a verdict. It read 0 while the queue
- select was broken, which is what first pointed at the cause, and it still
- reads 0 now that TX demonstrably works -- so `queue_select` reading back 0
- does not mean the selection failed, and an earlier version of this file
- said it did. The signal that means something is `used-idx` advancing and a
- frame appearing in a wire dump.
-
- The states, in the order they discriminate:
    notify-mult=0     the notify capability did not parse; every notify has
                      been writing to the same address whatever the queue
    used-idx stays 0  the device never completed the descriptor: it did not
@@ -47,11 +28,6 @@ Section: Frame
     10, 0, 2, 2]
 
 Section: Notify Burst
-
- Seven, because the trace showed exactly three notifies and neither an
- address nor a value interpretation of the three arms explains three
- identical zeros. If the trace still shows three after this, the notifies
- it is showing belong to the firmware's device and ours reach nothing.
 
   probe-notify-burst : Integer, Integer, Integer -> Integer
   probe-notify-burst (addr) (i) (n) =

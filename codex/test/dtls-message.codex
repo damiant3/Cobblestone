@@ -63,6 +63,26 @@ Section: Parse
       is None -> "dm rt=REJECTED"
       is Just (m) -> "dm rt=" & show (tls13-ct-equal (dtls-msg-to-transcript m) m-tr)
 
+ A seeded single-byte mutation sweep over a valid handshake message: every
+ byte is flipped and run through dtls-msg-parse and, when it parses, through
+ reassembly; each must return and never read past the message.
+
+  dm-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dm-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else dm-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  dm-touch : List Integer -> Integer
+  dm-touch (m) =
+    when dtls-msg-parse m
+      is None -> 0
+      is Just (msg) -> (let r = dtls-reasm-add dtls-reasm-new msg in if dtls-reasm-complete r then list-length (dtls-reasm-body r) else 1)
+
+  dm-sweep : Integer, Integer, Integer -> Integer
+  dm-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else dm-sweep (pos + 1) n (acc + dm-touch (dm-mutate m-wire pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []))
+
 Section: Finished
 
  RFC 8448's published finished_key for the server handshake traffic
@@ -122,4 +142,5 @@ Section: Entry
     print-line-uni test-finished-ok
     print-line-uni test-finished-bad
     print-line-uni test-ack
+    print-line-uni ("dm msg-sweep completed=" & (if dm-sweep 0 (list-length m-wire) 0 >= 0 then "True" else "False"))
   end

@@ -5,15 +5,6 @@ Chapter: GpuDoorbell
   cites AI chapter Tensor
   cites Foreword chapter Maybe
 
- The bridge used to drive a polled serial line and spend two VM exits on
- every byte in each direction, so a dispatch cost a multiple of the
- operand size: 160 exits for the 2x2 matmul below, 112 for its relu, and
- 24,640 for the 32x32. It now builds the command in guest memory and
- rings a doorbell, which is four exits whatever the operand is. Measured
- with CODEX_VM_COM3_STAT.
-
- We say:
-
 Section: Operands
 
   bridge : GpuBridge
@@ -108,10 +99,6 @@ Section: Reports
 
 Section: The Other Operations
 
- These are dumped rather than asserted against named constants, and the
- expected file is the assertion. Each line is hand-checkable, and the
- numbers below are what exact arithmetic gives at scale 1000:
-
    softmax over four equal values is four times 250, because a uniform
      distribution over four outcomes is a quarter each. An identity
      transport would answer the input instead, which is nothing like it.
@@ -165,10 +152,6 @@ Section: The Other Operations
   strip : Tensor
   strip = Tensor { data = [1000, 2000], rows = 1, cols = 2 }
 
- conv1d, max-pool and clamp fit the doorbell's shape header with no
- protocol change, and each case is chosen so an identity or a wrong
- parameter answers something the expected file does not hold:
-
  conv1d slides kernel [1,2] over [1,2,3,4] at stride 1, valid, no flip, so out[o] = in[o] + 2*in[o+1]: 1+4, 2+6, 3+8 = 5, 8, 11. None of those is an input, and a flipped kernel or a wrong stride misses.
  max-pool takes the max of each stride-2 window of width 2 over [1,3,2,5,4,0]: max(1,3), max(2,5), max(4,0) = 3, 5, 4. An identity answers the six inputs; a stride-1 pool answers five values.
  clamp holds [1,4,5,9] to [3,7]: the ends move to the bounds and the interior passes, giving 3, 4, 5, 7. An identity leaves 1 and 9; a clamp that ignored its bounds would too.
@@ -184,12 +167,6 @@ Section: The Other Operations
 
   clamp-in : Tensor
   clamp-in = Tensor { data = [1000, 4000, 5000, 9000], rows = 1, cols = 4 }
-
- conv2d carries eight shape fields in a header of its own, so it also
- tests that the alternate header reaches the host. A 2x2 all-ones kernel
- over the 3x3 [[1,2,3],[4,5,6],[7,8,9]] at stride 1, valid, sums each
- 2x2 window: 1+2+4+5, 2+3+5+6, 4+5+7+8, 5+6+8+9 = 12, 16, 24, 28. None of
- those is an input value, so an identity or a dropped kernel term misses.
 
   conv2d-in : Tensor
   conv2d-in = Tensor { data = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000], rows = 3, cols = 3 }

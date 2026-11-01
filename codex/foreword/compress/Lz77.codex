@@ -5,19 +5,14 @@ Chapter: Lz77
  RATIO and never correctness. That is what makes the two cheap bounds below safe:
  the walk gives up after lz77-chain-limit candidates, and it stops if a link ever
  fails to point strictly backwards. Neither can produce a wrong match; both stop
- a pathological input from turning the search quadratic again.
-
- We say:
+ a pathological input from turning the search quadratic.
 
 Section: Constants
 
- The window is RFC 1951's. THE LONGEST MATCH IS NO LONGER A CONSTANT, because
- serving both formats from the tighter of the two limits was costing Brotli most
- of its ratio: 258 is Deflate's exact maximum and Brotli's is 16779333, so a
- periodic input was being cut into a copy command every 258 bytes where one long
- copy would do. Measured on the interop corpus, the 78000-byte cross-region case
- came to 933 bytes against .NET's 170, and roughly 271 needless commands is where
- that difference lived.
+ The window is RFC 1951's. The longest match is the caller's: 258 is Deflate's
+ exact maximum and Brotli's is 16779333, and a periodic input cut into a copy
+ command every 258 bytes where one long copy would do costs Brotli most of its
+ ratio (the 78000-byte cross-region interop case: 933 bytes against .NET's 170).
 
   lz77-window-size : Integer = 32768
   lz77-window-mask : Integer = 32767
@@ -29,17 +24,14 @@ Section: Constants
 
  How many candidates a position will look at before settling for the best it has
  found. Repetitive input can otherwise put every earlier position in one chain,
- which is the quadratic case the old scan had by construction.
+ which makes the search quadratic.
 
   lz77-chain-limit : Integer = 128
 
- At a 255-byte window it could not do much harm: nothing was far enough away for
- the distance to cost much. At 32768 it can, and it did. On input drawn from a
+ At a 32768-byte window the distance costs real bits. On input drawn from a
  sixteen-symbol alphabet a literal is worth four bits, so a four-byte match
  reaching two thousand bytes back replaces sixteen bits of literals with twenty
- odd bits of codes, and a mixed test case grew by THREE PER CENT the moment the
- window was widened. Every case with byte-valued literals improved at the same
- time, which is what makes this a pricing question and not a bug.
+ odd bits of codes: a pricing question, not a correctness one.
 
   lz77-match-overhead : Integer = 12
 
@@ -132,8 +124,7 @@ Section: Compression
  working and doing nothing. An input whose halves differ -- a stretch of
  sixteen-symbol data followed by a stretch of noise, which is exactly the shape
  that showed the problem -- has 256 distinct bytes taken as a whole, so a single
- global reading reports eight bits everywhere and prices the cheap half wrong. It
- was measured that way first and moved the answer by two bytes.
+ global reading reports eight bits everywhere and prices the cheap half wrong.
 
   lz77-est-window : Integer = 4096
 
@@ -196,15 +187,24 @@ Section: Compression
 
 Section: Decompression
   lz77-decompress : List Integer -> List Integer
-  lz77-decompress (tokens) = lz77-decompress-loop tokens 0 (list-length tokens) []
+  lz77-decompress (tokens) = lz77-decompress-capped tokens 1000000000
 
-  lz77-decompress-loop : List Integer, Integer, Integer, List Integer -> List Integer
-  lz77-decompress-loop (tokens) (i) (tlen) (output) =
-    if i >= tlen then output
+ A caller feeding the decoder a token stream it did not produce passes its own
+ output ceiling. The plain entry keeps a ceiling above any stream this project
+ produces, so every round trip is byte-identical; the cap bounds a hostile token
+ stream, where each match expands up to lz77-max-match bytes from three tokens.
+
+  lz77-decompress-capped : List Integer, Integer -> List Integer
+  lz77-decompress-capped (tokens) (cap) = lz77-decompress-loop tokens 0 (list-length tokens) [] cap
+
+  lz77-decompress-loop : List Integer, Integer, Integer, List Integer, Integer -> List Integer
+  lz77-decompress-loop (tokens) (i) (tlen) (output) (cap) =
+    if list-length output >= cap then output
+    else if i >= tlen then output
     else let tag = list-at tokens i
     in if tag == 0 then
       if i + 1 >= tlen then output
-      else lz77-decompress-loop tokens (i + 2) tlen (list-push output (list-at tokens (i + 1)))
+      else lz77-decompress-loop tokens (i + 2) tlen (list-push output (list-at tokens (i + 1))) cap
     else if tag == 1 then
       if i + 2 >= tlen then output
       else let off = list-at tokens (i + 1)
@@ -213,15 +213,16 @@ Section: Decompression
       in if off <= 0 then output
       else if start < 0 then output
       else if mlen > lz77-max-match then output
-      else let expanded = lz77-copy-match output start mlen
-      in lz77-decompress-loop tokens (i + 3) tlen expanded
-    else lz77-decompress-loop tokens (i + 1) tlen output
+      else let expanded = lz77-copy-match output start mlen cap
+      in lz77-decompress-loop tokens (i + 3) tlen expanded cap
+    else lz77-decompress-loop tokens (i + 1) tlen output cap
 
-  lz77-copy-match : List Integer, Integer, Integer -> List Integer
-  lz77-copy-match (output) (src) (remaining) =
+  lz77-copy-match : List Integer, Integer, Integer, Integer -> List Integer
+  lz77-copy-match (output) (src) (remaining) (cap) =
     if remaining <= 0 then output
+    else if list-length output >= cap then output
     else let byte = list-at output src
-    in lz77-copy-match (list-push output byte) (src + 1) (remaining - 1)
+    in lz77-copy-match (list-push output byte) (src + 1) (remaining - 1) cap
 
 Section: Queries
   lz77-ratio : List Integer, List Integer -> Text

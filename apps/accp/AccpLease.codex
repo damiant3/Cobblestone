@@ -1,0 +1,104 @@
+Chapter: AccpLease
+
+Section: Covering
+
+ The conduit cannot cite compiler chapters, so the label and scope relations
+ of `effect-covered-by` and `scope-subsumes` (Types/TypeChecker.codex) are
+ restated here and graded against the same cases by codex/test/apps/accp-lease-cover.
+ A path scope with an empty, "." or ".." segment is refused rather than compared,
+ because path containment here is textual (AccpRequesterAuth.md section 4).
+
+  al-dot-at : Text, Integer -> Integer
+  al-dot-at (s) (i) =
+    if i >= text-length s then 0 - 1
+    else if char-code (char-at s i) == char-code (char-at "." 0) then i
+    else al-dot-at s (i + 1)
+
+  al-label-covered : Text, Text -> Boolean
+  al-label-covered (granted) (label) =
+    if label == granted then True
+    else let d = al-dot-at label 0
+    in if d >= 0 then substring label 0 d == granted else False
+
+  al-kind : Text -> Integer
+  al-kind (label) =
+    if text-starts-with label "Network" then 1
+    else if text-starts-with label "Console" then 2
+    else 0
+
+  al-char-at : Text, Text, Integer -> Integer
+  al-char-at (s) (c) (i) =
+    if i >= text-length s then 0 - 1
+    else if char-code (char-at s i) == char-code (char-at c 0) then i
+    else al-char-at s c (i + 1)
+
+  al-host : Text -> Text
+  al-host (a) = let p = al-char-at a ":" 0 in if p < 0 then a else substring a 0 p
+
+  al-port : Text -> Text
+  al-port (a) = let p = al-char-at a ":" 0 in if p < 0 then "" else substring a (p + 1) (text-length a - p - 1)
+
+  al-slash-at : Text, Integer -> Boolean
+  al-slash-at (s) (i) = i < text-length s & char-code (char-at s i) == char-code (char-at "/" 0)
+
+  al-path-within : Text, Text -> Boolean
+  al-path-within (outer) (inner) =
+    if inner == outer then True
+    else if text-starts-with inner outer == False then False
+    else if text-length outer == 0 then True
+    else if al-slash-at outer (text-length outer - 1) then True
+    else al-slash-at inner (text-length outer)
+
+  al-segment-bad : Text, Integer, Integer -> Boolean
+  al-segment-bad (s) (start) (stop) =
+    let seg = substring s start (stop - start)
+    in seg == "." | seg == ".."
+
+  al-path-clean-from : Text, Integer, Integer -> Boolean
+  al-path-clean-from (s) (i) (start) =
+    if i >= text-length s then al-segment-bad s start i == False
+    else if al-slash-at s i then
+      (if i > 0 & i == start then False
+      else if al-segment-bad s start i then False
+      else al-path-clean-from s (i + 1) (i + 1))
+    else al-path-clean-from s (i + 1) start
+
+  al-path-clean : Text -> Boolean
+  al-path-clean (s) = al-path-clean-from s 0 0
+
+  al-scope-within : Text, Text, Text -> Boolean
+  al-scope-within (label) (outer) (inner) =
+    let k = al-kind label
+    in if k == 1 then
+      (if al-host outer /= al-host inner then False
+      else let op = al-port outer in text-length op == 0 | al-port inner == op)
+    else if k == 2 then inner == outer
+    else al-path-clean outer & al-path-clean inner & al-path-within outer inner
+
+ Direction is LeaseManager's: 0 grants `.Read` labels, 1 `.Write` labels, 2 both;
+ a label with neither suffix needs 2.
+
+  al-ends : Text, Text -> Boolean
+  al-ends (s) (tail) =
+    text-length s >= text-length tail & substring s (text-length s - text-length tail) (text-length tail) == tail
+
+  al-direction-covers : Integer, Text -> Boolean
+  al-direction-covers (dir) (label) =
+    if dir == 2 then True
+    else if dir == 0 then al-ends label ".Read"
+    else if dir == 1 then al-ends label ".Write"
+    else False
+
+  al-covers : Text, Integer, Text, Text, Text -> Boolean
+  al-covers (granted) (dir) (lease-scope) (label) (label-scope) =
+    al-label-covered granted label & al-direction-covers dir label & al-scope-within label lease-scope label-scope
+
+Section: Window
+
+  al-current : Integer, Integer, Integer -> Boolean
+  al-current (not-before) (expires) (now) = not-before <= now & now < expires
+
+  al-bounded : Integer, Integer, Integer -> Boolean
+  al-bounded (not-before) (expires) (max-seconds) = expires > not-before & expires - not-before <= max-seconds
+
+Page 1

@@ -1,7 +1,6 @@
 Chapter: Parse
   cites Foreword chapter CCE
-
- We say:
+  cites Foreword chapter Maybe
 
 Section: Hex Character Support
 
@@ -71,5 +70,72 @@ Section: Hexadecimal Parsing
         else parse-hex s 0
       else parse-hex s 0
     else parse-hex s 0
+
+Section: Refusing Parsers
+
+ The forms above trap (!EXC=06) once a run of digits passes 9223372036854775807, and have no value to say so; text
+ from outside the program goes through these instead. Each answers exactly what its trapping form answers, Just of
+ it, and None where that form would trap.
+
+  parse-int-max : Integer = 9223372036854775807
+
+  parse-decimal-maybe : Text, Integer -> Maybe Integer
+  parse-decimal-maybe (s) (start) =
+    let len = text-length s
+    in if start >= len then Just 0
+    else if to-unicode (char-code (char-at s start)) == 45 then pdm-negate (pdm-loop s (start + 1) len 0)
+    else pdm-loop s start len 0
+
+  pdm-negate : Maybe Integer -> Maybe Integer
+  pdm-negate (m) = when m is None -> None is Just (n) -> Just (0 - n)
+
+  pdm-loop : Text, Integer, Integer, Integer -> Maybe Integer
+  pdm-loop (s) (i) (len) (acc) =
+    if i >= len then Just acc
+    else if is-digit (char-at s i) == False then Just acc
+    else if acc > (parse-int-max - digit-value (char-at s i)) / 10 then None
+    else pdm-loop s (i + 1) len (acc * 10 + digit-value (char-at s i))
+
+  parse-decimal-full-maybe : Text -> Maybe Integer
+  parse-decimal-full-maybe (s) = parse-decimal-maybe s 0
+
+  text-to-int-maybe : Text -> Maybe Integer
+  text-to-int-maybe (s) = parse-decimal-maybe s 0
+
+  parse-hex-maybe : Text, Integer -> Maybe Integer
+  parse-hex-maybe (s) (start) = phm-loop s start (text-length s) 0
+
+  phm-loop : Text, Integer, Integer, Integer -> Maybe Integer
+  phm-loop (s) (i) (len) (acc) =
+    if i >= len then Just acc
+    else if is-hex-digit (char-at s i) == False then Just acc
+    else if acc > (parse-int-max - hex-digit-value (char-at s i)) / 16 then None
+    else phm-loop s (i + 1) len (acc * 16 + hex-digit-value (char-at s i))
+
+  parse-hex-full-maybe : Text -> Maybe Integer
+  parse-hex-full-maybe (s) =
+    let len = text-length s
+    in if len < 2 then parse-hex-maybe s 0
+    else if to-unicode (char-code (char-at s 0)) /= 48 then parse-hex-maybe s 0
+    else if to-unicode (char-code (char-at s 1)) == 120 then parse-hex-maybe s 2
+    else if to-unicode (char-code (char-at s 1)) == 88 then parse-hex-maybe s 2
+    else parse-hex-maybe s 0
+
+ The -or forms name, at the call site, what a refused number becomes.
+
+  parse-or : Maybe Integer, Integer -> Integer
+  parse-or (m) (fallback) = when m is None -> fallback is Just (n) -> n
+
+  parse-decimal-or : Text, Integer, Integer -> Integer
+  parse-decimal-or (s) (start) (fallback) = parse-or (parse-decimal-maybe s start) fallback
+
+  parse-decimal-full-or : Text, Integer -> Integer
+  parse-decimal-full-or (s) (fallback) = parse-or (parse-decimal-maybe s 0) fallback
+
+  text-to-int-or : Text, Integer -> Integer
+  text-to-int-or (s) (fallback) = parse-or (parse-decimal-maybe s 0) fallback
+
+  parse-hex-or : Text, Integer, Integer -> Integer
+  parse-hex-or (s) (start) (fallback) = parse-or (parse-hex-maybe s start) fallback
 
 Page 1

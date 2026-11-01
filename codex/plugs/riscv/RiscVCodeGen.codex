@@ -35,14 +35,6 @@ Section: Architecture Profile
 
 Section: Codegen State
 
- The reg field holds real register numbers below rv-spill-base and
- SPILL SLOT numbers (base 64, unbounded by function size) above it, so
- its band must fit the largest spilled function, not a byte: at 255 the
- __narrow in rv-bind-local trapped UD2 the moment a big function's
- spill count crossed the band (gop-render-clamp and gop-text-clip,
- measured 2026-07-28 -- exactly 1223 bytes of exception dump where the
- wire should be, arm64 fine on identical source).
-
   RvLocal = record {
    name : Text,
    reg : Integer between 0 and 1048575
@@ -849,7 +841,7 @@ Section: Call Emission
   rv-emit-call-to : RvState, Text -> RvState
   rv-emit-call-to (st) (target) =
     let st1 = rv-add-call-patch st target
-    in rv-emit st1 rv-nop
+    in rv-emit (rv-emit st1 (rv-auipc rv-ra 0)) (rv-jalr rv-ra rv-ra 0)
 
   rv-emit-load-func-addr : RvState, Integer, Text -> RvState
   rv-emit-load-func-addr (st) (rd) (target) =
@@ -1170,39 +1162,12 @@ Section: Binary Emission
      is UnitTy (n) (inner) -> rv-strip-unit-ty inner
      is otherwise -> ty
 
- Approx is the f32 half of the real family and compares through
- flt.s/fle.s on w-moved bits, so it needs its own predicate and its
- own comparison emitter; the d-width path above cannot read f32 bits
- (reek's ops/real-mode-compare pinned the gap: approx neg lt neg
- answered 00 on this lane, 2026-07-28).
-
   rv-is-real-approx-type : CodexType -> Boolean
   rv-is-real-approx-type (ty) =
     when ty
      is RealTy (w) (m) -> is-width-f32 w
      is UnitTy (n) (inner) -> rv-is-real-approx-type inner
      is otherwise -> False
-
- A SUM EQUALITY COMPARES THE TAG AND THEN THAT CONSTRUCTOR'S FIELDS, EACH BY ITS
- OWN TYPE. What stood here loaded the tag and then TWO WORDS at `+8` and `+16`
- unconditionally, for every sum of every shape: a nullary constructor had two
- words of whatever followed the object compared as integers, a `Text` field had
- its POINTER compared rather than its bytes, and a constructor with three fields
- had its third ignored. The arm is `codex/test/sum-field-eq`, built for 1.90
- with nine rows that fail in both directions (plugs-backlog 1.107).
-
- THE CTORS COME FROM `defs`, NOT FROM THE TYPE. `IRTextEmitter` emits
- `(sum "Name" (args ...))` with no ctors, so every sum arriving over IR TEXT
- carries an empty ctor list, and reading that list is how a backend answers "no
- fields" for every sum and compares the tag alone. x86-64 never round-trips
- through IR text, which is why the defect is native-backends-only.
-
- BOTH RESTRICTIONS REFUSE RATHER THAN GUESS. A second field-carrying
- constructor needs a switch whose arms hold different field types at the same
- index, so a per-index type would be a guess; a sum-typed field needs recursion,
- which for a recursive type does not terminate at emit time. Both are what a
- per-sum HELPER FUNCTION answers, which is COMPILER-24's shape on x86-64 and
- belongs in a shared IR pass so that arm64 and riscv get it together.
 
   rv-sum-ctors-for-type : CodexType, List ATypeDef -> List SumCtor
   rv-sum-ctors-for-type (ty) (defs) =
@@ -1226,12 +1191,6 @@ Section: Binary Emission
     in if list-length (c.fields) > 0 then i
     else rv-first-ctor-with-fields cs (i + 1)
 
- A FIELD IS ONLY A SUM IF IT RESOLVES TO CTORS. `rv-is-sum-type` answers True
- for `ConstructedTy`, and a TYPE PARAMETER arrives as exactly that, so refusing
- on the predicate alone refuses COMPILER-24's own subject, which has nothing to
- do with nested sums. Resolving the name against `defs` separates them: a
- parameter resolves to no ctors. arm64 paid for this one (1.90).
-
   rv-sum-fields-simple : List CodexType, List ATypeDef, Integer -> Boolean
   rv-sum-fields-simple (fs) (defs) (i) =
     if i >= list-length fs then True
@@ -1242,10 +1201,6 @@ Section: Binary Emission
   rv-emit-sum-eq-refused (st) (why) =
     let msg = "[UNSUPPORTED] sum equality: " & why & ", which needs a per-sum helper function rather than an inline compare (refused rather than comparing pointers)"
     in rv-emit-int-lit (rv-add-shadow-warning st msg) 0
-
- One field at a time, folding into the accumulator LOCAL rather than a register,
- because `__str_eq` is a call and a call clobbers registers. The pointers are
- reloaded per field for the same reason.
 
   rv-emit-sum-field-eq : RvState, Integer, Integer, Integer, List CodexType, Integer -> RvState
   rv-emit-sum-field-eq (st) (ll) (rl) (acc) (fs) (i) =
@@ -1269,9 +1224,6 @@ Section: Binary Emission
     in let s4 = rv-emit (ap.state) (rv-and (ap.reg) (ap.reg) rv-a0)
     in let s5 = rv-store-local s4 acc (ap.reg)
     in rv-emit-sum-field-eq s5 ll rl acc fs (i + 1)
-
- ONE forward branch in the whole routine, and it is the only patch. The tag is
- reloaded to test it because the accumulator fold has run since.
 
   rv-emit-sum-eq : RvState, Integer, Integer, Integer, List SumCtor, List ATypeDef -> RvEmitResult
   rv-emit-sum-eq (st) (rd) (l-reg) (r-reg) (ctors) (defs) =
@@ -1326,7 +1278,29 @@ Section: Binary Emission
 
   rv-emit-binary : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
   rv-emit-binary (st) (op) (left) (right) (ty) =
-    rv-emit-binary-inner st op left right ty
+    if rv-int-checked op ty then rv-emit-binary-reg st op left right ty
+    else rv-emit-binary-inner st op left right ty
+
+  rv-int-checked : IRBinaryOp, CodexType -> Boolean
+  rv-int-checked (op) (ty) =
+    if int-ty-wraps ty then False
+    else when op
+     is IrAddInt -> True
+     is IrSubInt -> True
+     is IrMulInt -> True
+     is otherwise -> False
+
+  rv-mulh : Integer, Integer, Integer -> List Integer
+  rv-mulh (rd) (rs1) (rs2) = rv-r-type #33 rd 1 rs1 rs2 1
+
+  rv-emit-checked-op : RvState, IRBinaryOp, Integer, Integer, Integer -> RvState
+  rv-emit-checked-op (st) (op) (rd) (a) (b) =
+    let s3 = when op
+     is IrMulInt -> rv-emit (rv-emit (rv-emit st (rv-mulh rv-t1 a b)) (rv-mul rv-t0 a b)) (rv-srai rv-t2 rv-t0 63)
+     is IrSubInt -> rv-emit (rv-emit (rv-emit st (rv-sub rv-t0 a b)) (rv-slt rv-t1 rv-zero b)) (rv-slt rv-t2 rv-t0 a)
+     is otherwise -> rv-emit (rv-emit (rv-emit st (rv-add rv-t0 a b)) (rv-slti rv-t1 b 0)) (rv-slt rv-t2 rv-t0 a)
+    in let s4 = rv-emit (rv-emit s3 (rv-beq rv-t1 rv-t2 8)) rv-ebreak
+    in rv-emit s4 (rv-addi rd rv-t0 0)
 
   rv-emit-binary-inner : RvState, IRBinaryOp, IRExpr, IRExpr, CodexType -> RvEmitResult
   rv-emit-binary-inner (st) (op) (left) (right) (ty) =
@@ -1362,14 +1336,6 @@ Section: Binary Emission
       else rv-emit-binary-reg st op left right ty
     else rv-emit-binary-reg st op left right ty
 
- A name that resolves to nothing is a top-level definition, and a top-level
- definition is a function. `three` and `seven` are not storage, they are a
- `jal`, and a `jal` clobbers a0 and a1. Answering True for those is what let
- `rv-emit-two-arg-call` stage a literal into a0 and then call straight over
- it: `f-two 2 seven` put 2 in a0, called `seven`, and handed the callee 7 and
- 7. The same predicate drives `skip-save` in `rv-emit-binary-reg`, so such a
- name also cost the left operand of a binary expression.
-
   rv-right-is-simple : RvState, IRExpr -> Boolean
   rv-right-is-simple (st) (e) =
     when e
@@ -1400,9 +1366,9 @@ Section: Binary Emission
     in let st2 = rd-alloc.state
     in let rd = rd-alloc.reg
     in when op
-     is IrAddInt -> RvEmitResult { state = rv-emit st2 (rv-add rd left-reg right-reg), reg = rd }
-     is IrSubInt -> RvEmitResult { state = rv-emit st2 (rv-sub rd left-reg right-reg), reg = rd }
-     is IrMulInt -> RvEmitResult { state = rv-emit st2 (rv-mul rd left-reg right-reg), reg = rd }
+     is IrAddInt -> RvEmitResult { state = if int-ty-wraps ty then rv-emit st2 (rv-add rd left-reg right-reg) else rv-emit-checked-op st2 op rd left-reg right-reg, reg = rd }
+     is IrSubInt -> RvEmitResult { state = if int-ty-wraps ty then rv-emit st2 (rv-sub rd left-reg right-reg) else rv-emit-checked-op st2 op rd left-reg right-reg, reg = rd }
+     is IrMulInt -> RvEmitResult { state = if int-ty-wraps ty then rv-emit st2 (rv-mul rd left-reg right-reg) else rv-emit-checked-op st2 op rd left-reg right-reg, reg = rd }
      is IrDivInt -> RvEmitResult {
        state = rv-emit (rv-emit-div-guard st2 right-reg) (rv-div rd left-reg right-reg),
        reg = rd
@@ -1664,21 +1630,8 @@ Section: Real Arithmetic
  ordinal answer for that one input; an f64 `~` across a one-ULP straddle failed
  too and no line spelled it (plugs-backlog 1.91).
 
- THE MAPPING IS x86-64's: `slli 1` / `srli 1` strips the sign bit, `srai 63` is
- the sign mask, and `xor` / `sub` negates under it, so a negative pattern's
- magnitude becomes its negation and the two halves join into one ordered
- integer. arm64 spells the same mapping with `csel` because its encoder has no
- `eor` or immediate `asr`; `RiscVEncoder.codex` has all four instructions, so
- this is the direct form.
-
  AN f32 IS SHIFTED UP 32 AND LEFT THERE, so one f32 ULP is exactly 2^32 and the
  tolerance is `4 * 2^32` (17179869184) rather than 4.
-
- BOTH OPERANDS ARE PARKED BEFORE ANY TEMP IS ALLOCATED. The ordinal of the left
- operand allocates temps while the RIGHT operand is still live in its own
- register, and `rv-alloc-temp` rotates four, so without the parking one of those
- allocations is handed the right operand's register back. This is the regression
- the arm64 half of 1.91 paid for on `1.0 ~ 1.0`.
 
   rv-emit-real-ordinal : RvState, Integer, Boolean -> RvEmitResult
   rv-emit-real-ordinal (st) (b-reg) (f32) =
@@ -1939,11 +1892,6 @@ Section: Real Arithmetic
     in let st3 = rv-emit-vec-f32-binop-lane st2 (ll.reg) (rl.reg) (out-loc.reg) fp-op 0 lanes
     in rv-load-local (rv-restore-reserved st3 mask) (out-loc.reg)
 
- A local past s11 is a stack slot numbered from rv-spill-base, not a
- register, so every pointer is re-materialised through rv-load-local at
- its use. The lane loops own t3 and t4, which the caller reserves, so a
- spilled local loads into t5 or t6.
-
   rv-emit-vec-f32-binop-lane : RvState, Integer, Integer, Integer, (Integer, Integer, Integer -> List Integer), Integer, Integer -> RvState
   rv-emit-vec-f32-binop-lane (st) (l-ptr) (r-ptr) (out-ptr) (fp-op) (i) (n) =
     if i >= n then st
@@ -2177,11 +2125,6 @@ Section: Real Arithmetic
     in let st2 = rv-emit st1 (rv-andi t t 1)
     in rv-emit-mask4-count-bits (rv-emit st2 (rv-add acc acc t)) m acc t (i + 1)
 
- Lane-wise equality answers a mask, bit i for lane i. kind 0 is ==, 1 is
- /=, 2 is ~ (4 ULPs, 4 * 2^32 for an f32 lane, rv-emit-approx-eq's
- scale) and 3 is ~0. Every value that must survive rv-emit-approx-eq is a
- local, because that routine allocates temps in rotation.
-
   rv-emit-vec-eq-call : RvState, List IRExpr, Integer -> RvEmitResult
   rv-emit-vec-eq-call (st) (args) (kind) =
     let lr = rv-emit-expr st (list-at args 0)
@@ -2252,9 +2195,6 @@ Section: Real Arithmetic
     in let st2 = rv-emit st1 (rv-addi rv-heap-reg rv-heap-reg (rv-vec-bytes lanes stride))
     in let r = rv-emit-vec-select-lanes st2 (out.reg) (ml.reg) (al.reg) (bl.reg) 0 lanes stride
     in rv-load-local r (out.reg)
-
- Mask, operands and result are locals, reloaded per lane, so the loop
- holds one temp of its own across a lane and needs no reservation.
 
   rv-emit-vec-select-lanes : RvState, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> RvState
   rv-emit-vec-select-lanes (st) (out) (m) (a) (b) (i) (n) (stride) =
@@ -2350,16 +2290,6 @@ Section: Real Arithmetic
 
   rv-emit-div-guard : RvState, Integer -> RvState
   rv-emit-div-guard (st) (divisor) = rv-emit (rv-emit st (rv-bne divisor rv-zero 8)) rv-ebreak
-
- A bitwise builtin against a literal takes the I-type form and never
- materialises the literal into a register at all.
-
- That is a code-size win second and a CORRECTNESS fix first.
- `let pf = ... in bit-shl pf 8` emitted `sll rd, r, r` and computed
- `bit-shl 8 8`: 2048 where every other lane answers 42496. Reduced from
- `j1939-encode` (`j1939-pgn`, the PDU1 arm, 2277 for 65253) and pinned
- by `codex/test/rv-frameless-imm`. The register form of the same defect
- is pinned by `codex/test/rv-frameless-temp`.
 
  The shift amount is bounded at 63 rather than trusted, because
  `rv-slli` MASKS an oversized shamt with #3F instead of refusing it: an

@@ -1,0 +1,80 @@
+Chapter: DtlsSession
+  cites Foreword chapter SessionTypes
+  cites Encode chapter DtlsHandshake
+
+ RFC 9147 section 5.7 figure 7: the client sends ClientHello; the server
+ answers with either a HelloRetryRequest carrying a cookie, after which
+ the client sends ClientHello again, or its flight (ServerHello through
+ Finished); the client sends its Finished, and the server ACKs it.
+ RFC 8446 section 4.1.4: a client that receives a second
+ HelloRetryRequest in the same connection MUST abort the handshake.
+ RFC 9147 section 5.1: the server keeps no state before the cookie
+ verifies, so a server session exists only for a ClientHello whose cookie
+ verifies; a ClientHello without one is answered with a stateless
+ HelloRetryRequest (flight 2). The server's flight is flight 4, and it
+ ACKs the client's Finished (flight 5).
+
+Section: Messages
+
+  ClientHello = | MkClientHello
+  HelloRetry = | MkHelloRetry
+  ServerFlight = | MkServerFlight
+  ClientFinished = | MkClientFinished
+  HandshakeAck = | MkHandshakeAck
+
+Section: Steps
+
+  dtls-session-open : linear Session (SSend ClientHello (SOffer (SRecv HelloRetry (SSend ClientHello (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd))))) (SRecv ServerFlight (SSend ClientFinished (SRecv HandshakeAck SEnd))))) DtlsHsStep
+  dtls-session-open = session-open (dtls-hs-idle dtls-hs-new)
+
+  dtls-session-hello : linear Session (SSend ClientHello p) DtlsHsStep, Integer -> linear Session p DtlsHsStep
+  dtls-session-hello (x) (now) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-send s (dtls-hs-step (v.step-state) (EvStart now))
+
+  dtls-session-retry : linear Session (SRecv HelloRetry (SSend ClientHello p)) DtlsHsStep, List Integer, Integer -> linear Session p DtlsHsStep
+  dtls-session-retry (x) (cookie) (now) =
+    when session-peek x
+      is MkPeeked (v) (s) -> dtls-session-both s (dtls-hs-step (v.step-state) (EvHelloRetry cookie now))
+
+  dtls-session-flight : linear Session (SRecv ServerFlight (SSend ClientFinished p)) DtlsHsStep, Integer -> linear Session p DtlsHsStep
+  dtls-session-flight (x) (now) =
+    when session-peek x
+      is MkPeeked (v) (s) -> dtls-session-both s (dtls-hs-step (v.step-state) (EvServerFlight now))
+
+  dtls-session-both : linear Session (SRecv m (SSend n p)) DtlsHsStep, DtlsHsStep -> linear Session p DtlsHsStep
+  dtls-session-both (s) (r) = session-send (session-recv s r) r
+
+  dtls-session-ack : linear Session (SRecv HandshakeAck p) DtlsHsStep, Integer -> linear Session p DtlsHsStep
+  dtls-session-ack (x) (now) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-recv s (dtls-hs-step (v.step-state) (EvAck now))
+
+  dtls-session-timeout : linear Session p DtlsHsStep, Integer -> linear Session p DtlsHsStep
+  dtls-session-timeout (x) (now) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-stay s (dtls-hs-step (v.step-state) (EvTimeout now))
+
+  dtls-session-done : linear Session SEnd DtlsHsStep -> DtlsHsStep
+  dtls-session-done (x) = session-close x
+
+Section: Server
+
+  dtls-flight-server : Integer = 4
+
+  dtls-session-admit : List Integer, List Integer, List Integer -> Answered (SSend ServerFlight (SRecv ClientFinished (SSend HandshakeAck SEnd))) DtlsAction
+  dtls-session-admit (secret) (client-addr) (cookie) =
+    let v = dtls-server-verdict secret client-addr cookie
+    in when v
+      is ActDeliverKeys -> Accepted (session-open v)
+      is otherwise -> Rejected v
+
+  dtls-session-server-flight : linear Session (SSend ServerFlight p) DtlsAction -> linear Session p DtlsAction
+  dtls-session-server-flight (x) = session-send x (ActSendFlight dtls-flight-server)
+
+  dtls-session-client-fin : linear Session (SRecv ClientFinished (SSend HandshakeAck p)) DtlsAction -> linear Session p DtlsAction
+  dtls-session-client-fin (x) = session-send (session-recv x ActDeliverKeys) ActAck
+
+  dtls-session-server-done : linear Session SEnd DtlsAction -> DtlsAction
+  dtls-session-server-done (x) = session-close x
+Page 1

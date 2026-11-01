@@ -1,0 +1,38 @@
+Chapter: DistributedConfigTtlTest
+  cites Net chapter DistributedConfig
+  cites Foreword chapter KvStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Console
+
+ cache.a is set at 100 with a ttl of 10, so it expires at 110; a plain set
+ at 108 keeps the ttl and moves the expiry to 118. The watch on "net." is
+ added at version 2, after the two first sets.
+
+Section: Fixtures
+
+  dtt-meta : ConfigStore, Text -> Text
+  dtt-meta (st) (key) = when cs-get st key
+    is Just (e) -> "meta " & e.ce-value
+    is None -> "meta absent"
+
+  dtt-keys : List ConfigEntry, Integer -> Text
+  dtt-keys (es) (i) =
+    if i >= list-length es then ""
+    else (list-at es i).ce-key & "=" & (list-at es i).ce-value & (if i + 1 < list-length es then "," else "") & dtt-keys es (i + 1)
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let s1 = cs-set (cs-set-ttl config-store-new "cache.a" "1" 10 100) "net.port" "80" 101
+    in let e1 = cs-expire s1 105
+    in let e2 = cs-expire s1 110
+    in act
+      print-line-uni ("at 105: cache.a " & cs-get-value e1 "cache.a" "gone" & ", " & dtt-meta e1 "cache.a" & ", entries " & show (e1.cs-meta-count) & ", version " & show (e1.cs-version))
+      print-line-uni ("at 110: cache.a " & cs-get-value e2 "cache.a" "gone" & ", " & dtt-meta e2 "cache.a" & ", entries " & show (e2.cs-meta-count) & ", values " & show ((e2.cs-values).kv-count) & ", net.port " & cs-get-value e2 "net.port" "gone" & ", version " & show (e2.cs-version))
+      let r = cs-expire (cs-set s1 "cache.a" "2" 108) 115
+      in print-line-uni ("a set keeps the ttl: at 115 cache.a " & cs-get-value r "cache.a" "gone")
+      let w = cs-add-watch s1 "net." "reload"
+      in let w2 = cs-set (cs-set w "net.port" "81" 120) "cache.b" "x" 121
+      in print-line-uni ("watch: at add [" & dtt-keys (cs-watch-changes w 1) 0 & "], after two sets [" & dtt-keys (cs-watch-changes w2 1) 0 & "], after seen [" & dtt-keys (cs-watch-changes (cs-watch-seen w2 1) 1) 0 & "], unknown [" & dtt-keys (cs-watch-changes w2 9) 0 & "]")
+    end
+  end

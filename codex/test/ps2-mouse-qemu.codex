@@ -1,0 +1,40 @@
+Chapter: Ps2MouseQemu
+  cites Kernel chapter Mouse
+  cites Foreword chapter Console
+
+ Kernel chapter Mouse's aux handshake against QEMU's i8042 and PS/2 mouse,
+ so codex-vm's model is not the driver's only referee (ps2-mouse.qemu-x86).
+ With no controller the handshake must report not ready.
+
+ After the ready line the runner moves QEMU's mouse through its monitor
+ (the inject line in ps2-mouse-qemu.qemu-x86): right 10, left button down,
+ up 20, left 300, button up. QEMU's PS/2 model clamps a packet to 127 counts
+ per axis (hw/input/ps2.c, ps2_mouse_send_packet), so 300 is three packets
+ and a button change is its own: seven packets, ending at (30, 220).
+
+Section: Packets
+
+  pmq-yn : Boolean -> Text
+  pmq-yn (b) = if b then "yes" else "no"
+
+  pmq-wait : MouseState, Integer -> [Device.Port] MouseState
+  pmq-wait (st) (n) = act
+    next <- mouse-poll st
+    if next.m-packets >= 7 | n >= 60000000 then next else pmq-wait next (n + 1)
+  end
+
+  pmq-report : MouseState -> [Console, Device.Port] Nothing
+  pmq-report (st) =
+    if st.m-ready == False then print-line-uni "no pointer to read"
+    else act
+      done <- pmq-wait st 0
+      print-line-uni ("injected pointer: at " & show (done.mx) & "," & show (done.my) & ", last delta " & show (done.mdx) & "," & show (done.mdy) & ", left " & pmq-yn (done.m-left) & ", packets " & show (done.m-packets))
+    end
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    st <- mouse-init (mouse-new 640 480)
+    print-line-uni ("aux device ready " & pmq-yn (st.m-ready))
+    pmq-report st
+  end

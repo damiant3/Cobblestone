@@ -8,6 +8,7 @@ Chapter: ImageTo3d
   cites AI chapter Conv2d
   cites Encode chapter Gltf
   cites Foreword chapter Maybe
+  cites Foreword chapter MathLib
 
  The pipeline:
    1. Encode input image to feature grid (image encoder MLP)
@@ -18,8 +19,6 @@ Chapter: ImageTo3d
    6. Export as GLB via Gltf.codex
 
  Fixed-point (scale 1000).
-
- We say:
 
 Section: Types
   Recon3dConfig = record {
@@ -149,7 +148,7 @@ Section: Occupancy Query
     else let val = list-at a i + list-at b i + list-at c i
     in r3-add-features a b c dim (i + 1) (list-push acc val)
 
-Section: Marching Cubes (simplified)
+Section: Surface Extraction
   r3-extract-mesh : TriplaneFeatures, Recon3dState -> GltfMesh
   r3-extract-mesh (tp) (state) =
     let cfg = state.r3s-config
@@ -179,50 +178,115 @@ Section: Marching Cubes (simplified)
     else let result = r3-march-cell grid res threshold x y z verts indices
     in r3-march-grid grid res threshold (x + 1) y z (result.mc-verts) (result.mc-indices)
 
+ A cell is cut into the six tetrahedra around its diagonal from corner 0
+ to corner 6. The split is the same in every cell, so a face two cells
+ share is cut along the same diagonal from both sides and the surface
+ closes, which the 256-case cube table does not guarantee on its
+ ambiguous faces. Corners: 0 (0,0,0), 1 (1,0,0), 2 (1,1,0), 3 (0,1,0),
+ 4 (0,0,1), 5 (1,0,1), 6 (1,1,1), 7 (0,1,1). The grid spans -1000..1000.
+
+  R3Point = record {
+    rp-x : Integer,
+    rp-y : Integer,
+    rp-z : Integer,
+    rp-v : Integer
+  }
+
+  r3-corner-offsets : List Integer
+  r3-corner-offsets = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1]
+
+  r3-tets : List Integer
+  r3-tets = [0, 1, 2, 6, 0, 2, 3, 6, 0, 3, 7, 6, 0, 7, 4, 6, 0, 4, 5, 6, 0, 5, 1, 6]
+
   r3-march-cell : List Integer, Integer, Integer, Integer, Integer, Integer, List GltfVertex, List Integer -> MarchResult
   r3-march-cell (grid) (res) (threshold) (x) (y) (z) (verts) (indices) =
-    let v000 = r3-grid-at grid res x y z
-    in let v100 = r3-grid-at grid res (x + 1) y z
-    in let v010 = r3-grid-at grid res x (y + 1) z
-    in let v001 = r3-grid-at grid res x y (z + 1)
-    in let inside-count = r3-count-inside v000 v100 v010 v001 threshold
-    in if inside-count == 0 then MarchResult { mc-verts = verts, mc-indices = indices }
-    else if inside-count == 4 then MarchResult { mc-verts = verts, mc-indices = indices }
-    else r3-emit-surface-cell x y z res inside-count (list-length verts) verts indices
+    let pts = r3-cell-points grid res x y z 0 []
+    in r3-march-tets pts threshold 0 (MarchResult { mc-verts = verts, mc-indices = indices })
+
+  r3-cell-points : List Integer, Integer, Integer, Integer, Integer, Integer, List R3Point -> List R3Point
+  r3-cell-points (grid) (res) (x) (y) (z) (k) (acc) =
+    if k >= 8 then acc
+    else let gx = x + list-at r3-corner-offsets (k * 3)
+    in let gy = y + list-at r3-corner-offsets (k * 3 + 1)
+    in let gz = z + list-at r3-corner-offsets (k * 3 + 2)
+    in let p = R3Point { rp-x = r3-grid-pos gx res, rp-y = r3-grid-pos gy res, rp-z = r3-grid-pos gz res, rp-v = r3-grid-at grid res gx gy gz }
+    in r3-cell-points grid res x y z (k + 1) (list-push acc p)
+
+  r3-grid-pos : Integer, Integer -> Integer
+  r3-grid-pos (g) (res) = g * 2000 / (res - 1) - 1000
 
   r3-grid-at : List Integer, Integer, Integer, Integer, Integer -> Integer
   r3-grid-at (grid) (res) (x) (y) (z) =
     let idx = z * res * res + y * res + x
     in if idx < list-length grid then list-at grid idx else 0
 
-  r3-count-inside : Integer, Integer, Integer, Integer, Integer -> Integer
-  r3-count-inside (v0) (v1) (v2) (v3) (threshold) =
-    let c0 = if v0 >= threshold then 1 else 0
-    in let c1 = if v1 >= threshold then 1 else 0
-    in let c2 = if v2 >= threshold then 1 else 0
-    in let c3 = if v3 >= threshold then 1 else 0
-    in c0 + c1 + c2 + c3
+  r3-march-tets : List R3Point, Integer, Integer, MarchResult -> MarchResult
+  r3-march-tets (pts) (threshold) (t) (acc) =
+    if t >= 6 then acc
+    else let a = list-at pts (list-at r3-tets (t * 4))
+    in let b = list-at pts (list-at r3-tets (t * 4 + 1))
+    in let c = list-at pts (list-at r3-tets (t * 4 + 2))
+    in let d = list-at pts (list-at r3-tets (t * 4 + 3))
+    in r3-march-tets pts threshold (t + 1) (r3-march-tet [a, b, c, d] threshold acc)
 
-  r3-emit-surface-cell : Integer, Integer, Integer, Integer, Integer, Integer, List GltfVertex, List Integer -> MarchResult
-  r3-emit-surface-cell (x) (y) (z) (res) (inside) (base-idx) (verts) (indices) =
-    let cx = x * 2000 / res - 1000
-    in let cy = y * 2000 / res - 1000
-    in let cz = z * 2000 / res - 1000
-    in let half = 1000 / res
-    in let v0 = gltf-vertex cx cy cz 0 0 1000 (x * 1000 / res) (y * 1000 / res)
-    in let v1 = gltf-vertex (cx + half) cy cz 0 0 1000 ((x + 1) * 1000 / res) (y * 1000 / res)
-    in let v2 = gltf-vertex (cx + half) (cy + half) cz 0 0 1000 ((x + 1) * 1000 / res) ((y + 1) * 1000 / res)
-    in let v3 = gltf-vertex cx (cy + half) cz 0 0 1000 (x * 1000 / res) ((y + 1) * 1000 / res)
-    in let new-verts = verts & [v0, v1, v2, v3]
-    in let new-indices = indices & [
-      base-idx,
-      base-idx + 1,
-      base-idx + 2,
-      base-idx,
-      base-idx + 2,
-      base-idx + 3
-    ]
-    in MarchResult { mc-verts = new-verts, mc-indices = new-indices }
+  r3-march-tet : List R3Point, Integer, MarchResult -> MarchResult
+  r3-march-tet (corners) (threshold) (acc) =
+    let ins = r3-split-corners corners threshold True 0 []
+    in let outs = r3-split-corners corners threshold False 0 []
+    in let n = list-length ins
+    in if n == 1 then
+      let l = list-at ins 0
+      in r3-emit-tri (r3-cross-edge l (list-at outs 0) threshold) (r3-cross-edge l (list-at outs 1) threshold) (r3-cross-edge l (list-at outs 2) threshold) l (list-at outs 0) acc
+    else if n == 3 then
+      let l = list-at outs 0
+      in r3-emit-tri (r3-cross-edge (list-at ins 0) l threshold) (r3-cross-edge (list-at ins 1) l threshold) (r3-cross-edge (list-at ins 2) l threshold) (list-at ins 0) l acc
+    else if n == 2 then
+      let a = list-at ins 0
+      in let b = list-at ins 1
+      in let c = list-at outs 0
+      in let d = list-at outs 1
+      in let ac = r3-cross-edge a c threshold
+      in let bd = r3-cross-edge b d threshold
+      in r3-emit-tri ac bd (r3-cross-edge b c threshold) a c (r3-emit-tri ac (r3-cross-edge a d threshold) bd a c acc)
+    else acc
+
+  r3-split-corners : List R3Point, Integer, Boolean, Integer, List R3Point -> List R3Point
+  r3-split-corners (corners) (threshold) (want-inside) (i) (acc) =
+    if i >= 4 then acc
+    else let p = list-at corners i
+    in r3-split-corners corners threshold want-inside (i + 1) (if (p.rp-v >= threshold) == want-inside then list-push acc p else acc)
+
+  r3-cross-edge : R3Point, R3Point, Integer -> R3Point
+  r3-cross-edge (p) (q) (threshold) =
+    let t = (threshold - p.rp-v) * 1000 / (q.rp-v - p.rp-v)
+    in R3Point { rp-x = p.rp-x + (q.rp-x - p.rp-x) * t / 1000, rp-y = p.rp-y + (q.rp-y - p.rp-y) * t / 1000, rp-z = p.rp-z + (q.rp-z - p.rp-z) * t / 1000, rp-v = threshold }
+
+  r3-emit-tri : R3Point, R3Point, R3Point, R3Point, R3Point, MarchResult -> MarchResult
+  r3-emit-tri (p1) (p2) (p3) (inside) (outside) (acc) =
+    let ux = p2.rp-x - p1.rp-x
+    in let uy = p2.rp-y - p1.rp-y
+    in let uz = p2.rp-z - p1.rp-z
+    in let vx = p3.rp-x - p1.rp-x
+    in let vy = p3.rp-y - p1.rp-y
+    in let vz = p3.rp-z - p1.rp-z
+    in let nx = uy * vz - uz * vy
+    in let ny = uz * vx - ux * vz
+    in let nz = ux * vy - uy * vx
+    in let len = math-isqrt (nx * nx + ny * ny + nz * nz)
+    in let facing = nx * (outside.rp-x - inside.rp-x) + ny * (outside.rp-y - inside.rp-y) + nz * (outside.rp-z - inside.rp-z)
+    in if len == 0 then acc
+    else if facing < 0 then r3-push-tri p1 p3 p2 (0 - nx * 1000 / len) (0 - ny * 1000 / len) (0 - nz * 1000 / len) acc
+    else r3-push-tri p1 p2 p3 (nx * 1000 / len) (ny * 1000 / len) (nz * 1000 / len) acc
+
+  r3-push-tri : R3Point, R3Point, R3Point, Integer, Integer, Integer, MarchResult -> MarchResult
+  r3-push-tri (p1) (p2) (p3) (nx) (ny) (nz) (acc) =
+    let base = list-length (acc.mc-verts)
+    in let verts = list-push (list-push (list-push (acc.mc-verts) (r3-mesh-vertex p1 nx ny nz)) (r3-mesh-vertex p2 nx ny nz)) (r3-mesh-vertex p3 nx ny nz)
+    in let indices = list-push (list-push (list-push (acc.mc-indices) base) (base + 1)) (base + 2)
+    in MarchResult { mc-verts = verts, mc-indices = indices }
+
+  r3-mesh-vertex : R3Point, Integer, Integer, Integer -> GltfVertex
+  r3-mesh-vertex (p) (nx) (ny) (nz) = gltf-vertex (p.rp-x) (p.rp-y) (p.rp-z) nx ny nz ((p.rp-x + 1000) / 2) ((p.rp-y + 1000) / 2)
 
 Section: Full Pipeline
   image-to-3d : ImageData, Recon3dState -> Recon3dOutput

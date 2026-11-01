@@ -1,10 +1,5 @@
 Chapter: UNetGraph
 
- The SDXL UNet (ldm openaimodel.py) as a graph over a UNetOps value, whose
- first field argument is the weight file.
-
- We say:
-
 Section: Op Set
 
   UNetOps a = record {
@@ -58,9 +53,6 @@ Section: Attention
     let v = ops.linear-b u x rows c c (p & "to_v") False
     in ops.free (ops.linear u v rows c c (p & "to_out.0")) v
 
- Self-attention in the explicit form, 64-wide heads, handing its softmax to
- ops.probs before the values.
-
   un-rec-attn-with : UNetOps a, a, Integer, Integer, Integer, Text -> Integer
   un-rec-attn-with (ops) (u) (x) (rows) (c) (p) =
     let q = ops.linear-b u x rows c c (p & "to_q") False
@@ -82,7 +74,9 @@ Section: Attention
   un-tblock-with : UNetOps a, a, Integer, Integer, Integer, Integer, Text -> Integer
   un-tblock-with (ops) (u) (x) (rows) (c) (ctx) (p) =
     let n1 = ops.layer-norm u x rows c (p & "norm1")
-    in let a1 = if ops.self-v (p & "attn1.") then un-value-attn-with ops u n1 rows c (p & "attn1.") else if ops.probs-at (p & "attn1.") then un-rec-attn-with ops u n1 rows c (p & "attn1.") else ops.attention u n1 rows c n1 rows c (p & "attn1.")
+    in let a1 = if ops.self-v (p & "attn1.") then un-value-attn-with ops u n1 rows c (p & "attn1.")
+      else if ops.probs-at (p & "attn1.") then un-rec-attn-with ops u n1 rows c (p & "attn1.")
+      else ops.attention u n1 rows c n1 rows c (p & "attn1.")
     in let x1 = ops.add x a1 (rows * c)
     in let n2 = ops.layer-norm u x1 rows c (p & "norm2")
     in let a2 = ops.attention u n2 rows c ctx (ops.ctx-len ctx) 2048 (p & "attn2.")
@@ -159,15 +153,11 @@ Section: Blocks
   unet-half : Integer -> Integer
   unet-half (n) = (n + 1) / 2
 
- A ResBlock and, at depth above zero, its SpatialTransformer.
-
   unet-stage-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Text, Integer -> Integer
   unet-stage-with (ops) (u) (x) (embs) (ctx) (cin) (cout) (h) (w) (p) (depth) =
     let r = unet-resblock-with ops u x embs cin cout h w (p & "0.")
     in if depth == 0 then r
     else ops.free (unet-transformer-with ops u r cout h w ctx (p & "1.") depth) r
-
- An output block: the running tensor concatenated with its skip, then the stage.
 
   unet-out-stage-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   unet-out-stage-with (ops) (u) (x) (skip) (embs) (ctx) (cx) (cs) (cout) (h) (w) (k) =
@@ -175,9 +165,6 @@ Section: Blocks
     in let patched = ops.out-patch x skip cx cs h w
     in let cat = if patched then ops.concat x skip cx cs (h * w) else 0
     in ops.free (unet-stage-with ops u cat embs ctx (cx + cs) cout h w ("output_blocks." & show k & ".") depth) cat
-
- One SDXL UNet step on a 4 x h x w latent: the 20 block outputs in the
- order of UNetReference, the last being the predicted noise.
 
   unet-forward-with : UNetOps a, a, Integer, Integer, Integer, Integer, Integer -> List Integer
   unet-forward-with (ops) (u) (x) (embs) (ctx) (h) (w) =

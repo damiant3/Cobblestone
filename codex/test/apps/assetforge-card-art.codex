@@ -1,0 +1,72 @@
+Chapter: AssetforgeCardArt
+  cites AssetForge chapter CardArtPipeline
+  cites AssetForge chapter AssetForge
+  cites Diffusion chapter Txt2Img
+  cites Diffusion chapter ImageOut
+  cites AI chapter ClipBpe
+  cites AI chapter ImageTo3d
+  cites AI chapter NeuralNet
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter FactDisk
+  cites Foreword chapter Console
+
+ The disk is build/mint-clip-bpe-disk.ps1's (CLIP's vocab.json and
+ merges.txt). The checksum is the Adler-32 of the saved scanlines.
+
+Section: Disk
+
+  ac-load : Integer, Integer -> [Device.Block] Integer
+  ac-load (start) (len) =
+    let secs = (len + 511) / 512
+    in let buf = alloc-bytes (secs * 512)
+    in act
+      l <- fd-load-sectors start secs buf 0
+      buf
+    end
+
+Section: Renders
+
+  ac-config : Integer, Text -> ForgeConfig
+  ac-config (seed) (out) = forge-with-seed forge-fast-config seed out
+
+  ac-sum : Integer, Integer -> Integer
+  ac-sum (w) (h) = io-adler io-raw (io-raw + h * (1 + w * 3)) 1 0
+
+  ac-none : Recon3dState
+  ac-none = Recon3dState { r3s-config = triposr-config-low, r3s-encoder = nn-new, r3s-decoder = nn-new, r3s-triplane-proj = [], r3s-triplane-bias = [] }
+
+  ac-run : ClipBpe -> List Text
+  ac-run (bpe) =
+    let card = card-generate-art bpe test-card-dragon (ac-config 42 "assetforge-card-art.png") ac-none
+    in let s1 = ac-sum 512 512
+    in let direct = txt2img bpe (forge-request (card-art-prompt test-card-dragon) (ac-config 42 "assetforge-direct.png"))
+    in let s2 = ac-sum 512 512
+    in let other = txt2img bpe (forge-request (card-art-prompt test-card-dragon) (ac-config 43 "assetforge-seed43.png"))
+    in let s3 = ac-sum 512 512
+    in [format-card-result card, "direct txt2img: " & direct, "seed 43: " & other, "card art pixels equal the direct render: " & (if s1 == s2 then "yes" else "NO"), "seed 43 differs: " & (if s3 /= s1 then "yes" else "NO")]
+
+Section: Entry
+
+  ac-print : List Text, Integer -> [Console] Nothing
+  ac-print (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      ac-print ls (i + 1)
+    end
+
+  ac-go : Integer, Integer -> [Console, Device.Block] Nothing
+  ac-go (vlen) (mlen) =
+    act
+      vbuf <- ac-load 1 vlen
+      mbuf <- ac-load (1 + (vlen + 511) / 512) mlen
+      ac-print (ac-run (clip-bpe-load vbuf vlen mbuf mlen)) 0
+    end
+
+  opening : [Console, Device.Block] Nothing
+  opening = act
+    h <- block-read-sector 0
+    ac-go (peek-32 h 0) (peek-32 h 4)
+  end

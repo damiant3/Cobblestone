@@ -22,20 +22,6 @@ Chapter: DiffusionDriverCore
   cites Foreword chapter TextSearch
   cites Foreword chapter Console
 
- The resident CDX apps/diffusion/serve.ps1 boots once (Diffusion.md, stage 7):
- request-<n>.txt under the -gpu-files root holds key=value lines (prompt,
- negative, model, lora, sampler, steps, cfg, seed, width, height, path, and
- for img2img, inpaint and hires fix image, mask, denoise, mask_blur,
- inpainting_fill, inpaint_full_res, inpaint_full_res_padding, hr_scale, hr_denoise, hr_steps, hr_cfg); image and mask name files the
- server staged beside the request, width x height RGBA bytes. The PNG goes
- to path under -gpu-out. The disk is build/mint-clip-bpe-disk.ps1's, with
- FLUX.1's T5 tokenizer.json as its first extra when Flux is to be served.
- The bridge has no length query, therefore the request's length is found by
- halving: an upload past the end of a file is refused. The answer is "ok ..."
- or the reason for a refusal.
-
- We say:
-
 Section: Request File
 
   dr-cap : Integer = 65536
@@ -97,8 +83,6 @@ Section: Fields
     in let e = text-index-of l "="
     in if e > 0 & dr-clean (substring l 0 e) == key then True else dr-has lines key (i + 1)
 
- A decimal like 2, 2.5 or 0.75 as a Real.
-
   dr-frac : Text, Integer, Real, Real -> Real
   dr-frac (s) (i) (acc) (scale) =
     if i >= text-length s then acc
@@ -108,14 +92,14 @@ Section: Fields
   dr-real : Text -> Real
   dr-real (s) =
     let d = text-index-of s "."
-    in if d < 0 then real-from-int (text-to-int s)
-    else real-from-int (text-to-int (substring s 0 d)) + dr-frac s (d + 1) 0.0 0.1
+    in if d < 0 then real-from-int ((text-to-int-or s 0))
+    else real-from-int ((text-to-int-or (substring s 0 d) 0)) + dr-frac s (d + 1) 0.0 0.1
 
  A value compared exactly against Forge's arithmetic comes as its IEEE bits,
  because dr-real's digit sum is not correctly rounded.
 
   dr-bits : List Text, Text, Real -> Real
-  dr-bits (ls) (k) (d) = if dr-has ls k 0 then bits-to-real (text-to-int (dr-get ls k 0 "")) else d
+  dr-bits (ls) (k) (d) = if dr-has ls k 0 then bits-to-real ((text-to-int-or (dr-get ls k 0 "") 0)) else d
 
   dr-lora-lines : List Text, Integer, List Text -> List Text
   dr-lora-lines (ls) (i) (acc) =
@@ -161,7 +145,11 @@ Section: Fields
 
   dr-params : List Text -> Text
   dr-params (ls) =
-    dr-get ls "prompt" 0 "" & dr-lora-tags (dr-lora-lines ls 0 []) 0 "" & "\nNegative prompt: " & dr-get ls "negative" 0 "" & "\nSteps: " & dr-get ls "steps" 0 "6" & ", Sampler: " & dr-get ls "sampler" 0 "DPM++ SDE" & dr-schedule-label ls & ", CFG scale: " & dr-get ls "cfg" 0 "2" & ", Seed: " & dr-get ls "seed" 0 "0" & ", Size: " & dr-get ls "width" 0 "1024" & "x" & dr-get ls "height" 0 "1024" & ", Model: " & dr-get ls "model" 0 "" & dr-params-variation ls & dr-params-i2i ls & dr-params-extras ls
+    dr-get ls "prompt" 0 "" & dr-lora-tags (dr-lora-lines ls 0 []) 0 "" & "\nNegative prompt: " & dr-get ls "negative" 0 ""
+    & "\nSteps: " & dr-get ls "steps" 0 "6" & ", Sampler: " & dr-get ls "sampler" 0 "DPM++ SDE" & dr-schedule-label ls
+    & ", CFG scale: " & dr-get ls "cfg" 0 "2" & ", Seed: " & dr-get ls "seed" 0 "0"
+    & ", Size: " & dr-get ls "width" 0 "1024" & "x" & dr-get ls "height" 0 "1024" & ", Model: " & dr-get ls "model" 0 ""
+    & dr-params-variation ls & dr-params-i2i ls & dr-params-extras ls
 
  Forge writes the variation keys after the model (processing.py:758-760): the
  seed and strength only when the strength is not 0, the resize as W x H only
@@ -175,17 +163,50 @@ Section: Fields
   dr-params-extras (ls) =
     (if dr-has ls "dynthres_mimic_scale" 0 then ", dynthres_enabled: True, dynthres_mimic_scale: " & dr-get ls "dynthres_mimic_scale" 0 "" & ", dynthres_threshold_percentile: " & dr-get ls "dynthres_threshold_percentile" 0 "" & ", dynthres_mimic_mode: " & dr-get ls "dynthres_mimic_mode" 0 "" & ", dynthres_mimic_scale_min: " & dr-get ls "dynthres_mimic_scale_min" 0 "" & dr-params-dt ls else "")
     & (if dr-has ls "freeu_b1" 0 then ", freeu_enabled: True, freeu_b1: " & dr-get ls "freeu_b1" 0 "" & ", freeu_b2: " & dr-get ls "freeu_b2" 0 "" & ", freeu_s1: " & dr-get ls "freeu_s1" 0 "" & ", freeu_s2: " & dr-get ls "freeu_s2" 0 "" & ", freeu_start: " & dr-get ls "freeu_start" 0 "0.0" & ", freeu_end: " & dr-get ls "freeu_end" 0 "1.0" else "")
-    & (if dr-has ls "sag_scale" 0 & (dr-real (dr-get ls "cfg" 0 "2") > 1.0 | (dr-has ls "hr_scale" 0 & dr-real (dr-get ls "hr_cfg" 0 "2") > 1.0)) then ", sag_enabled: True, sag_scale: " & dr-get ls "sag_scale" 0 "" & ", sag_blur_sigma: " & dr-get ls "sag_blur_sigma" 0 "" & ", sag_threshold: " & dr-get ls "sag_threshold" 0 "" else "")
+    & (if dr-has ls "sag_scale" 0 & (dr-real (dr-get ls "cfg" 0 "2") > 1.0 | (dr-has ls "hr_scale" 0 & dr-real (dr-get ls "hr_cfg" 0 "2") > 1.0)) then
+      ", sag_enabled: True, sag_scale: " & dr-get ls "sag_scale" 0 "" & ", sag_blur_sigma: " & dr-get ls "sag_blur_sigma" 0 ""
+      & ", sag_threshold: " & dr-get ls "sag_threshold" 0 ""
+    else "")
     & (if dr-has ls "pag_scale" 0 then ", PerturbedAttentionGuidance_enabled: True, PerturbedAttentionGuidance_scale: " & dr-get ls "pag_scale" 0 "" else "")
 
   dr-params-dt : List Text -> Text
   dr-params-dt (ls) = ", dynthres_cfg_mode: " & dr-get ls "dynthres_cfg_mode" 0 "" & ", dynthres_cfg_scale_min: " & dr-get ls "dynthres_cfg_scale_min" 0 "" & ", dynthres_sched_val: " & dr-get ls "dynthres_sched_val" 0 "" & ", dynthres_separate_feature_channels: " & dr-get ls "dynthres_separate_feature_channels" 0 "" & ", dynthres_scaling_startpoint: " & dr-get ls "dynthres_scaling_startpoint" 0 "" & ", dynthres_variability_measure: " & dr-get ls "dynthres_variability_measure" 0 "" & ", dynthres_interpolate_phi: " & dr-get ls "dynthres_interpolate_phi" 0 ""
 
   dr-dt : List Text -> List DtSet
-  dr-dt (ls) = if dr-has ls "dynthres_mimic_scale" 0 == False then [] else [DtSet { dt-mimic = dr-real (dr-get ls "dynthres_mimic_scale" 0 "7"), dt-pct = dr-real (dr-get ls "dynthres_threshold_percentile" 0 "1"), dt-mimic-mode = ti-name-index dt-modes (dr-get ls "dynthres_mimic_mode" 0 "Constant") 0, dt-mimic-min = dr-real (dr-get ls "dynthres_mimic_scale_min" 0 "0"), dt-cfg-mode = ti-name-index dt-modes (dr-get ls "dynthres_cfg_mode" 0 "Constant") 0, dt-cfg-min = dr-real (dr-get ls "dynthres_cfg_scale_min" 0 "0"), dt-sched = dr-real (dr-get ls "dynthres_sched_val" 0 "1"), dt-sep = dr-get ls "dynthres_separate_feature_channels" 0 "enable" == "enable", dt-zero = dr-get ls "dynthres_scaling_startpoint" 0 "MEAN" == "ZERO", dt-std = dr-get ls "dynthres_variability_measure" 0 "AD" == "STD", dt-phi = dr-real (dr-get ls "dynthres_interpolate_phi" 0 "1") }]
+  dr-dt (ls) = if dr-has ls "dynthres_mimic_scale" 0 == False then []
+    else [DtSet {
+      dt-mimic = dr-real (dr-get ls "dynthres_mimic_scale" 0 "7"),
+      dt-pct = dr-real (dr-get ls "dynthres_threshold_percentile" 0 "1"),
+      dt-mimic-mode = ti-name-index dt-modes (dr-get ls "dynthres_mimic_mode" 0 "Constant") 0,
+      dt-mimic-min = dr-real (dr-get ls "dynthres_mimic_scale_min" 0 "0"),
+      dt-cfg-mode = ti-name-index dt-modes (dr-get ls "dynthres_cfg_mode" 0 "Constant") 0,
+      dt-cfg-min = dr-real (dr-get ls "dynthres_cfg_scale_min" 0 "0"),
+      dt-sched = dr-real (dr-get ls "dynthres_sched_val" 0 "1"),
+      dt-sep = dr-get ls "dynthres_separate_feature_channels" 0 "enable" == "enable",
+      dt-zero = dr-get ls "dynthres_scaling_startpoint" 0 "MEAN" == "ZERO",
+      dt-std = dr-get ls "dynthres_variability_measure" 0 "AD" == "STD",
+      dt-phi = dr-real (dr-get ls "dynthres_interpolate_phi" 0 "1")
+    }]
 
   dr-extras : List Text -> TiExtras
-  dr-extras (ls) = TiExtras { tx-freeu = (if dr-has ls "freeu_b1" 0 then [dr-real (dr-get ls "freeu_b1" 0 ""), dr-real (dr-get ls "freeu_b2" 0 ""), dr-real (dr-get ls "freeu_s1" 0 ""), dr-real (dr-get ls "freeu_s2" 0 ""), dr-bits ls "freeu_start_bits" 0.0, dr-bits ls "freeu_end_bits" 1.0] else []), tx-pag = dr-real (dr-get ls "pag_scale" 0 "0"), tx-sag = (if dr-has ls "sag_scale" 0 then [dr-real (dr-get ls "sag_scale" 0 ""), dr-real (dr-get ls "sag_blur_sigma" 0 ""), dr-real (dr-get ls "sag_threshold" 0 "")] else []), tx-dt = dr-dt ls, tx-step = (if dr-has ls "freeu_b1" 0 then [0, 0, 0, 1] else []) }
+  dr-extras (ls) = TiExtras {
+    tx-freeu = (if dr-has ls "freeu_b1" 0 then [
+      dr-real (dr-get ls "freeu_b1" 0 ""),
+      dr-real (dr-get ls "freeu_b2" 0 ""),
+      dr-real (dr-get ls "freeu_s1" 0 ""),
+      dr-real (dr-get ls "freeu_s2" 0 ""),
+      dr-bits ls "freeu_start_bits" 0.0,
+      dr-bits ls "freeu_end_bits" 1.0
+    ] else []),
+    tx-pag = dr-real (dr-get ls "pag_scale" 0 "0"),
+    tx-sag = (if dr-has ls "sag_scale" 0 then [
+      dr-real (dr-get ls "sag_scale" 0 ""),
+      dr-real (dr-get ls "sag_blur_sigma" 0 ""),
+      dr-real (dr-get ls "sag_threshold" 0 "")
+    ] else []),
+    tx-dt = dr-dt ls,
+    tx-step = (if dr-has ls "freeu_b1" 0 then [0, 0, 0, 1] else [])
+  }
 
   dr-params-variation : List Text -> Text
   dr-params-variation (ls) =
@@ -193,10 +214,22 @@ Section: Fields
     & (if dr-has ls "seed_resize_from_w" 0 then ", Seed resize from: " & dr-get ls "seed_resize_from_w" 0 "0" & "x" & dr-get ls "seed_resize_from_h" 0 "0" else "")
 
   dr-soft-cfg : List Text -> SoftCfg
-  dr-soft-cfg (ls) = SoftCfg { sc-power = dr-real (dr-get ls "soft_power" 0 "1"), sc-scale = dr-real (dr-get ls "soft_scale" 0 "0.5"), sc-detail = dr-real (dr-get ls "soft_detail" 0 "4"), sc-infl = dr-real (dr-get ls "soft_influence" 0 "0"), sc-thresh = dr-real (dr-get ls "soft_threshold" 0 "0.5"), sc-contrast = dr-real (dr-get ls "soft_contrast" 0 "2") }
+  dr-soft-cfg (ls) = SoftCfg {
+    sc-power = dr-real (dr-get ls "soft_power" 0 "1"),
+    sc-scale = dr-real (dr-get ls "soft_scale" 0 "0.5"),
+    sc-detail = dr-real (dr-get ls "soft_detail" 0 "4"),
+    sc-infl = dr-real (dr-get ls "soft_influence" 0 "0"),
+    sc-thresh = dr-real (dr-get ls "soft_threshold" 0 "0.5"),
+    sc-contrast = dr-real (dr-get ls "soft_contrast" 0 "2")
+  }
 
   dr-variation : List Text -> Variation
-  dr-variation (ls) = Variation { va-subseed = text-to-int (dr-get ls "subseed" 0 "0"), va-strength = dr-real (dr-get ls "subseed_strength" 0 "0"), va-from-w = text-to-int (dr-get ls "seed_resize_from_w" 0 "0"), va-from-h = text-to-int (dr-get ls "seed_resize_from_h" 0 "0") }
+  dr-variation (ls) = Variation {
+    va-subseed = (text-to-int-or (dr-get ls "subseed" 0 "0") 0),
+    va-strength = dr-real (dr-get ls "subseed_strength" 0 "0"),
+    va-from-w = (text-to-int-or (dr-get ls "seed_resize_from_w" 0 "0") 0),
+    va-from-h = (text-to-int-or (dr-get ls "seed_resize_from_h" 0 "0") 0)
+  }
 
  The schedule as Forge's get_sigmas labels it: Automatic resolved to the
  sampler's own, and nothing where that is the predictor's (Uniform) or the
@@ -233,9 +266,17 @@ Section: Fields
  Forge's infotext keys for the same settings (processing.py:1310, 1685,
  1716).
 
+  dr-params-mask : List Text -> Text
+  dr-params-mask (ls) =
+    if dr-has ls "mask" 0 then
+      let area = if dr-get ls "inpaint_full_res" 0 "0" == "1" then ", Inpaint area: Only masked, Masked area padding: " & dr-get ls "inpaint_full_res_padding" 0 "32" else ""
+      in ", Mask blur: " & dr-get ls "mask_blur" 0 "4" & area & dr-params-fill (dr-get ls "inpainting_fill" 0 "1")
+    else if dr-has ls "outpaint_pixels" 0 then dr-params-outpaint ls
+    else ""
+
   dr-params-i2i : List Text -> Text
   dr-params-i2i (ls) =
-    if dr-has ls "image" 0 then ", Denoising strength: " & dr-get ls "denoise" 0 "0.75" & dr-clip-key ls & dr-params-soft ls & (if dr-has ls "mask" 0 then ", Mask blur: " & dr-get ls "mask_blur" 0 "4" & (if dr-get ls "inpaint_full_res" 0 "0" == "1" then ", Inpaint area: Only masked, Masked area padding: " & dr-get ls "inpaint_full_res_padding" 0 "32" else "") & dr-params-fill (dr-get ls "inpainting_fill" 0 "1") else if dr-has ls "outpaint_pixels" 0 then dr-params-outpaint ls else "")
+    if dr-has ls "image" 0 then ", Denoising strength: " & dr-get ls "denoise" 0 "0.75" & dr-clip-key ls & dr-params-soft ls & dr-params-mask ls
     else if dr-has ls "hr_scale" 0 then dr-params-hires ls & dr-params-hires-size ls
     else dr-clip-key ls
 
@@ -243,7 +284,7 @@ Section: Fields
  parameters, only above 1 (processing.py:761-763).
 
   dr-clip-key : List Text -> Text
-  dr-clip-key (ls) = if text-to-int (dr-get ls "clip_skip" 0 "1") <= 1 then "" else ", Clip skip: " & dr-get ls "clip_skip" 0 "1"
+  dr-clip-key (ls) = if (text-to-int-or (dr-get ls "clip_skip" 0 "1") 0) <= 1 then "" else ", Clip skip: " & dr-get ls "clip_skip" 0 "1"
 
  Forge's hires keys in its order (processing.py:1247-1340): the sampler only
  where it differs from the first pass's, the prompts only where they differ
@@ -289,8 +330,8 @@ Section: Fields
 
   dr-params-outpaint : List Text -> Text
   dr-params-outpaint (ls) =
-    let b = text-to-int (dr-get ls "outpaint_mask_blur" 0 "4")
-    in let d = text-to-int (dr-get ls "outpaint_dirs" 0 "15")
+    let b = (text-to-int-or (dr-get ls "outpaint_mask_blur" 0 "4") 0)
+    in let d = (text-to-int-or (dr-get ls "outpaint_dirs" 0 "15") 0)
     in if dr-get ls "outpaint_mode" 0 "poor" == "mk2" then (if bit-and d 3 /= 0 & bit-and d 12 /= 0 & b > 0 then ", Mask blur: " & show (4 * b) else "")
     else ", Mask blur: " & show (2 * b) & dr-params-fill (dr-get ls "inpainting_fill" 0 "0")
 
@@ -300,12 +341,62 @@ Section: Fields
   dr-request : List Text -> Txt2Img
   dr-request (ls) =
     let sampler = dr-get ls "sampler" 0 "DPM++ SDE"
-    in Txt2Img { ti-ckpt = dr-get ls "model" 0 "", ti-prompt = dr-get ls "prompt" 0 "", ti-negative = dr-get ls "negative" 0 "", ti-sampler = ti-name-index ti-sampler-names sampler 0, ti-scheduler = ti-name-index ti-scheduler-names (dr-get ls "scheduler" 0 "Automatic") 0, ti-steps = text-to-int (dr-get ls "steps" 0 "6"), ti-cfg = dr-real (dr-get ls "cfg" 0 "2"), ti-seed = text-to-int (dr-get ls "seed" 0 "0"), ti-width = text-to-int (dr-get ls "width" 0 "1024"), ti-height = text-to-int (dr-get ls "height" 0 "1024"), ti-out = dr-get ls "path" 0 "", ti-params = dr-params ls, ti-clip-skip = text-to-int (dr-get ls "clip_skip" 0 "1"), ti-extras = dr-extras ls }
+    in Txt2Img {
+      ti-ckpt = dr-get ls "model" 0 "",
+      ti-prompt = dr-get ls "prompt" 0 "",
+      ti-negative = dr-get ls "negative" 0 "",
+      ti-sampler = ti-name-index ti-sampler-names sampler 0,
+      ti-scheduler = ti-name-index ti-scheduler-names (dr-get ls "scheduler" 0 "Automatic") 0,
+      ti-steps = (text-to-int-or (dr-get ls "steps" 0 "6") 0),
+      ti-cfg = dr-real (dr-get ls "cfg" 0 "2"),
+      ti-seed = (text-to-int-or (dr-get ls "seed" 0 "0") 0),
+      ti-width = (text-to-int-or (dr-get ls "width" 0 "1024") 0),
+      ti-height = (text-to-int-or (dr-get ls "height" 0 "1024") 0),
+      ti-out = dr-get ls "path" 0 "",
+      ti-params = dr-params ls,
+      ti-clip-skip = (text-to-int-or (dr-get ls "clip_skip" 0 "1") 0),
+      ti-extras = dr-extras ls
+    }
 
   dr-i2i : List Text -> I2i
   dr-i2i (ls) =
     let r = dr-request ls
-    in I2i { i2-base = r, i2-image = dr-get ls "image" 0 "", i2-mask = dr-get ls "mask" 0 "", i2-denoise = dr-real (dr-get ls "denoise" 0 "0.75"), i2-blur = text-to-int (dr-get ls "mask_blur" 0 "4"), i2-hr-scale = dr-real (dr-get ls "hr_scale" 0 "0"), i2-hr-denoise = dr-real (dr-get ls "hr_denoise" 0 "0.7"), i2-hr-steps = text-to-int (dr-get ls "hr_steps" 0 "0"), i2-hr-cfg = dr-real (dr-get ls "hr_cfg" 0 (dr-get ls "cfg" 0 "2")), i2-hr-upscaler = dr-get ls "hr_upscaler" 0 "", i2-var = dr-variation ls, i2-src-w = text-to-int (dr-get ls "image_w" 0 "0"), i2-src-h = text-to-int (dr-get ls "image_h" 0 "0"), i2-resize = text-to-int (dr-get ls "resize_mode" 0 "0"), i2-fill = text-to-int (dr-get ls "inpainting_fill" 0 "1"), i2-refiner = dr-get ls "refiner" 0 "", i2-switch = dr-real (dr-get ls "refiner_switch_at" 0 "0.8"), i2-hr-sampler = (if dr-has ls "hr_sampler" 0 then ti-name-index ti-sampler-names (dr-get ls "hr_sampler" 0 "") 0 else 0 - 1), i2-hr-scheduler = (if dr-has ls "hr_scheduler" 0 then ti-name-index ti-scheduler-names (dr-get ls "hr_scheduler" 0 "") 0 else 0 - 1), i2-hr-prompt = dr-get ls "hr_prompt" 0 "", i2-hr-negative = dr-get ls "hr_negative" 0 "", i2-area = text-to-int (dr-get ls "inpaint_full_res" 0 "0"), i2-padding = text-to-int (dr-get ls "inpaint_full_res_padding" 0 "32"), i2-hr-ckpt = dr-get ls "hr_checkpoint" 0 (if dr-has ls "hr_vae" 0 then dr-get ls "model" 0 "" else ""), i2-hr-vae = dr-get ls "hr_vae" 0 "", i2-soft = (if dr-get ls "soft_inpainting" 0 "0" == "1" then 1 else 0), i2-sc = dr-soft-cfg ls, i2-out-px = text-to-int (dr-get ls "outpaint_pixels" 0 "0"), i2-out-blur = text-to-int (dr-get ls "outpaint_mask_blur" 0 "4"), i2-out-dirs = text-to-int (dr-get ls "outpaint_dirs" 0 "15"), i2-post = 0 - 1, i2-out-mk2 = (if dr-get ls "outpaint_mode" 0 "poor" == "mk2" then 1 else 0), i2-out-q = dr-real (dr-get ls "outpaint_noise_q" 0 "1"), i2-out-cv = dr-real (dr-get ls "outpaint_color_variation" 0 "0.05") }
+    in I2i {
+      i2-base = r,
+      i2-image = dr-get ls "image" 0 "",
+      i2-mask = dr-get ls "mask" 0 "",
+      i2-denoise = dr-real (dr-get ls "denoise" 0 "0.75"),
+      i2-blur = (text-to-int-or (dr-get ls "mask_blur" 0 "4") 0),
+      i2-hr-scale = dr-real (dr-get ls "hr_scale" 0 "0"),
+      i2-hr-denoise = dr-real (dr-get ls "hr_denoise" 0 "0.7"),
+      i2-hr-steps = (text-to-int-or (dr-get ls "hr_steps" 0 "0") 0),
+      i2-hr-cfg = dr-real (dr-get ls "hr_cfg" 0 (dr-get ls "cfg" 0 "2")),
+      i2-hr-upscaler = dr-get ls "hr_upscaler" 0 "",
+      i2-var = dr-variation ls,
+      i2-src-w = (text-to-int-or (dr-get ls "image_w" 0 "0") 0),
+      i2-src-h = (text-to-int-or (dr-get ls "image_h" 0 "0") 0),
+      i2-resize = (text-to-int-or (dr-get ls "resize_mode" 0 "0") 0),
+      i2-fill = (text-to-int-or (dr-get ls "inpainting_fill" 0 "1") 0),
+      i2-refiner = dr-get ls "refiner" 0 "",
+      i2-switch = dr-real (dr-get ls "refiner_switch_at" 0 "0.8"),
+      i2-hr-sampler = (if dr-has ls "hr_sampler" 0 then ti-name-index ti-sampler-names (dr-get ls "hr_sampler" 0 "") 0 else 0 - 1),
+      i2-hr-scheduler = (if dr-has ls "hr_scheduler" 0 then ti-name-index ti-scheduler-names (dr-get ls "hr_scheduler" 0 "") 0 else 0 - 1),
+      i2-hr-prompt = dr-get ls "hr_prompt" 0 "",
+      i2-hr-negative = dr-get ls "hr_negative" 0 "",
+      i2-area = (text-to-int-or (dr-get ls "inpaint_full_res" 0 "0") 0),
+      i2-padding = (text-to-int-or (dr-get ls "inpaint_full_res_padding" 0 "32") 0),
+      i2-hr-ckpt = dr-get ls "hr_checkpoint" 0 (if dr-has ls "hr_vae" 0 then dr-get ls "model" 0 "" else ""),
+      i2-hr-vae = dr-get ls "hr_vae" 0 "",
+      i2-soft = (if dr-get ls "soft_inpainting" 0 "0" == "1" then 1 else 0),
+      i2-sc = dr-soft-cfg ls,
+      i2-out-px = (text-to-int-or (dr-get ls "outpaint_pixels" 0 "0") 0),
+      i2-out-blur = (text-to-int-or (dr-get ls "outpaint_mask_blur" 0 "4") 0),
+      i2-out-dirs = (text-to-int-or (dr-get ls "outpaint_dirs" 0 "15") 0),
+      i2-post = 0 - 1,
+      i2-out-mk2 = (if dr-get ls "outpaint_mode" 0 "poor" == "mk2" then 1 else 0),
+      i2-out-q = dr-real (dr-get ls "outpaint_noise_q" 0 "1"),
+      i2-out-cv = dr-real (dr-get ls "outpaint_color_variation" 0 "0.05")
+    }
 
   dr-i2i-wanted : I2i -> Boolean
   dr-i2i-wanted (q) = q.i2-image /= "" | q.i2-hr-scale > 0.0
@@ -331,8 +422,12 @@ Section: Fields
     else if q.i2-area < 0 | q.i2-area > 1 then "refused: inpaint_full_res must be 0 (whole picture) or 1 (only masked)"
     else if q.i2-padding < 0 | q.i2-padding > 256 then "refused: inpaint_full_res_padding must be within 0 and 256"
     else if q.i2-out-px > 0 & (q.i2-image == "" | q.i2-mask /= "" | q.i2-hr-scale > 0.0 | q.i2-soft == 1 | q.i2-area == 1 | q.i2-resize /= 0 | q.i2-refiner /= "") then "refused: outpainting takes an image alone, with no mask, hires fix, refiner, soft inpainting, inpaint area or resize mode"
-    else if q.i2-out-px > 0 & (q.i2-out-px < 8 | q.i2-out-px > 256 | q.i2-out-px >= r.ti-width | q.i2-out-px >= r.ti-height | q.i2-out-dirs < 1 | q.i2-out-dirs > 15 | q.i2-out-blur < 0 | q.i2-out-blur > 64) then "refused: outpaint_pixels within 8 and 256 and below the tile size, outpaint_dirs within 1 and 15, outpaint_mask_blur within 0 and 64"
-    else if q.i2-out-mk2 == 1 & (int-mod (q.i2-out-px) 64 /= 0 | int-mod (if q.i2-src-w > 0 then q.i2-src-w else r.ti-width) 64 /= 0 | int-mod (if q.i2-src-h > 0 then q.i2-src-h else r.ti-height) 64 /= 0) then "refused: outpainting mk2 is built for pictures and outpaint_pixels in multiples of 64"
+    else if q.i2-out-px > 0 & (q.i2-out-px < 8 | q.i2-out-px > 256 | q.i2-out-px >= r.ti-width | q.i2-out-px >= r.ti-height
+      | q.i2-out-dirs < 1 | q.i2-out-dirs > 15 | q.i2-out-blur < 0 | q.i2-out-blur > 64) then
+      "refused: outpaint_pixels within 8 and 256 and below the tile size, outpaint_dirs within 1 and 15, outpaint_mask_blur within 0 and 64"
+    else if q.i2-out-mk2 == 1 & (int-mod (q.i2-out-px) 64 /= 0 | int-mod (if q.i2-src-w > 0 then q.i2-src-w else r.ti-width) 64 /= 0
+      | int-mod (if q.i2-src-h > 0 then q.i2-src-h else r.ti-height) 64 /= 0) then
+      "refused: outpainting mk2 is built for pictures and outpaint_pixels in multiples of 64"
     else if q.i2-soft == 1 & q.i2-mask == "" then "refused: soft inpainting needs a mask"
     else if q.i2-fill < 0 | q.i2-fill > 3 then "refused: inpainting_fill must be 0 (fill), 1 (original), 2 (latent noise) or 3 (latent nothing)"
     else if q.i2-hr-scale > 0.0 & (q.i2-hr-scale < 1.0 | q.i2-hr-scale > 4.0) then "refused: hr_scale must be within 1 and 4"
@@ -402,7 +497,22 @@ Section: Flux
     else let why = dr-flux-refusal ls tok
     in if why /= "" then why
     else let q = dr-request ls
-    in let r = Txt2Img { ti-ckpt = q.ti-ckpt, ti-prompt = q.ti-prompt, ti-negative = "", ti-sampler = ti-euler, ti-scheduler = ti-name-index ti-scheduler-names "Simple" 0, ti-steps = q.ti-steps, ti-cfg = 1.0, ti-seed = q.ti-seed, ti-width = q.ti-width, ti-height = q.ti-height, ti-out = q.ti-out, ti-params = dr-flux-params ls, ti-clip-skip = q.ti-clip-skip, ti-extras = ti-no-extras }
+    in let r = Txt2Img {
+      ti-ckpt = q.ti-ckpt,
+      ti-prompt = q.ti-prompt,
+      ti-negative = "",
+      ti-sampler = ti-euler,
+      ti-scheduler = ti-name-index ti-scheduler-names "Simple" 0,
+      ti-steps = q.ti-steps,
+      ti-cfg = 1.0,
+      ti-seed = q.ti-seed,
+      ti-width = q.ti-width,
+      ti-height = q.ti-height,
+      ti-out = q.ti-out,
+      ti-params = dr-flux-params ls,
+      ti-clip-skip = q.ti-clip-skip,
+      ti-extras = ti-no-extras
+    }
     in let fs = dr-loras (dr-lora-lines ls 0 []) 0 []
     in let bad = dr-loras-bad fs 0
     in let res = if bad /= "" then "refused: " & bad & " is not a readable LoRA" else flux-txt2img bpe tok r fs
@@ -507,7 +617,7 @@ Section: Entry
 
   dr-answer : ClipBpe, T5Tok, I2Model, I2Model, List LoraFile, Text, Integer, Integer, Integer, Integer, Integer, Text -> [Console] Nothing
   dr-answer (bpe) (tok) (m0) (m) (fs) (key) (base) (mm) (mk) (h1) (n) (req) =
-    let res = dr-run bpe (i2-skip m (text-to-int (dr-get (text-split req "\n") "clip_skip" 0 "1"))) req
+    let res = dr-run bpe (i2-skip m ((text-to-int-or (dr-get (text-split req "\n") "clip_skip" 0 "1") 0))) req
     in let drained = gpu-buf-pool-drain 0
     in let s = dr-save-text ("done-" & show n & ".txt") res
     in act

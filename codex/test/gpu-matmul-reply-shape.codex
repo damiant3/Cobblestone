@@ -1,0 +1,34 @@
+Chapter: GpuMatmulReplyShape
+
+  cites Kernel chapter GpuBridge
+  cites AI chapter GpuProxy
+  cites Foreword chapter Maybe
+
+ The reply header is status at +0 (2 is complete), rows at +4 and cols at +8,
+ then the result words. A reply is forged in the reply region and parsed for a
+ 2 x 3 result.
+
+Section: Entry
+
+  forge : Integer, Integer -> Integer
+  forge (rr) (rc) =
+    let s = poke-32 gpu-reply-buf 0 2
+    in let r = poke-32 gpu-reply-buf 4 rr
+    in poke-32 gpu-reply-buf 8 rc
+
+  verdict : Maybe Tensor -> Text
+  verdict (m) =
+    when m
+     is Just (t) -> "accepted " & show (t.rows) & " x " & show (t.cols) & ", " & show (list-length (t.data)) & " words"
+     is None -> "refused"
+
+  opening : [Console] Nothing = act
+    let a = forge 2 3
+    in act
+      print-line-uni ("matching shape: " & verdict (gpu-matmul-reply 2 3))
+      b <- forge 4096 4096
+      print-line-uni ("oversized reply: " & verdict (gpu-matmul-reply 2 3))
+      c <- forge 3 2
+      print-line-uni ("transposed reply: " & verdict (gpu-matmul-reply 2 3))
+    end
+  end

@@ -1,0 +1,44 @@
+Chapter: Ps2Mouse
+  cites Kernel chapter Mouse
+  cites Foreword chapter Console
+
+ The scripted pointer (ps2-mouse.vmargs) moves right 10, then up 20 with the
+ left button down, then left 300 with it still down, then releases it: five
+ packets, because 300 counts on one axis is two packets (255 and 45). From
+ the centre of a 640 x 480 screen that ends at (30, 220). A packet whose
+ byte 0 sets the X overflow bit (64) or the Y overflow bit (128) carries no
+ valid count on that axis (the PS/2 mouse protocol), so that axis does not
+ move; the other axis and the buttons still apply.
+
+Section: Fixtures
+
+  pm-yn : Boolean -> Text
+  pm-yn (b) = if b then "yes" else "no"
+
+  pm-feed : MouseState, List Integer, Integer -> MouseState
+  pm-feed (st) (bytes) (i) =
+    if i >= list-length bytes then st
+    else pm-feed (mouse-take-byte st (list-at bytes i)) bytes (i + 1)
+
+  pm-line : MouseState -> Text
+  pm-line (st) = "at " & show (st.mx) & "," & show (st.my) & ", last delta " & show (st.mdx) & "," & show (st.mdy) & ", left " & pm-yn (st.m-left) & ", packets " & show (st.m-packets)
+
+  pm-wait : MouseState, Integer -> [Device.Port] MouseState
+  pm-wait (st) (n) = act
+    next <- mouse-poll st
+    if next.m-packets >= 5 | n >= 3000000 then next else pm-wait next (n + 1)
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    print-line-uni ("bytes, resync on a byte without bit 3: " & pm-line (pm-feed (mouse-new 640 480) [0, 9, 10, 0] 0))
+    print-line-uni ("bytes, negative x and y: " & pm-line (pm-feed (mouse-new 640 480) [56, 251, 254] 0))
+    print-line-uni ("bytes, clamped at the left edge: " & pm-line (pm-feed (mouse-new 640 480) [24, 1, 0, 24, 1, 0] 0))
+    print-line-uni ("bytes, x overflow drops x: " & pm-line (pm-feed (mouse-new 640 480) [89, 200, 3] 0))
+    print-line-uni ("bytes, y overflow drops y: " & pm-line (pm-feed (mouse-new 640 480) [137, 4, 200] 0))
+    st <- mouse-init (mouse-new 640 480)
+    print-line-uni ("aux device ready " & pm-yn (st.m-ready))
+    done <- pm-wait st 0
+    print-line-uni ("scripted pointer: " & pm-line done)
+  end

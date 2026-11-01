@@ -20,7 +20,7 @@ A self-hosted e-commerce suite providing a product catalog, shopping cart, check
 - **MarketHtml** -- Server-side HTML generation: product grid/detail, cart, admin, auction cards, merchant storefront
 - **MarketMaui** -- XAML/C# generation for .NET MAUI cross-platform app
 - **MarketWeb** -- HTTP server: route dispatch, page rendering, API endpoints, demo store seed
-- **tests/TestMarket** -- Unit tests for money, tax, cart, coupon, checkout
+- **codex/test/apps/market-market-suite** -- Unit tests for money, tax, cart, coupon, checkout
 
 ## Completeness
 

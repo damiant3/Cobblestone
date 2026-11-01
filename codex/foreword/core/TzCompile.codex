@@ -1,0 +1,287 @@
+Chapter: TzCompile
+  cites Foreword chapter TzRules
+  cites Foreword chapter StringUtils
+
+ One zone's transitions from its parsed lines, the way zic(8) builds a
+ TZif file. A zone line is an era from the previous line's UNTIL to its own;
+ an era with named rules takes every rule instance in its years, converts
+ each from its at-kind to UTC using the standard offset and the save in
+ force just before it, and the latest instance at or before the era's start
+ decides the type the era opens with. With no earlier instance the era opens
+ in standard time with the letter of the earliest instance whose save is 0.
+ A transition that changes neither the offset nor the abbreviation is
+ dropped. Transitions are generated through tz-year-last.
+
+Section: Calendar
+
+  tz-year-last : Integer = 2037
+
+  tz-floor-div : Integer, Integer -> Integer
+  tz-floor-div (a) (b) = if a >= 0 then a / b else 0 - ((0 - a + b - 1) / b)
+
+  tz-mod : Integer, Integer -> Integer
+  tz-mod (a) (b) = a - b * tz-floor-div a b
+
+ Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's
+ days_from_civil), valid for negative years.
+
+  tz-days : Integer, Integer, Integer -> Integer
+  tz-days (y) (m) (d) =
+    let yy = if m <= 2 then y - 1 else y
+    in let era = tz-floor-div yy 400
+    in let yoe = yy - era * 400
+    in let mp = if m > 2 then m - 3 else m + 9
+    in let doy = (153 * mp + 2) / 5 + d - 1
+    in let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    in era * 146097 + doe - 719468
+
+  tz-year-of-days : Integer -> Integer
+  tz-year-of-days (days) =
+    let z = days + 719468
+    in let era = tz-floor-div z 146097
+    in let doe = z - era * 146097
+    in let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    in let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    in let mp = (5 * doy + 2) / 153
+    in let m = if mp < 10 then mp + 3 else mp - 9
+    in yoe + era * 400 + (if m <= 2 then 1 else 0)
+
+  tz-weekday-of : Integer -> Integer
+  tz-weekday-of (days) = tz-mod (days + 4) 7
+
+  tz-month-end : Integer, Integer -> Integer
+  tz-month-end (y) (m) = if m == 12 then tz-days (y + 1) 1 1 - 1 else tz-days y (m + 1) 1 - 1
+
+  tz-day-days : Integer, Integer, TzDay -> Integer
+  tz-day-days (y) (m) (d) =
+    if d.kind == tz-day-fixed then tz-days y m (d.num)
+    else if d.kind == tz-day-last then
+      (let e = tz-month-end y m in e - tz-mod (tz-weekday-of e - d.weekday) 7)
+    else let n = tz-days y m (d.num)
+    in if d.kind == tz-day-geq then n + tz-mod (d.weekday - tz-weekday-of n) 7
+    else n - tz-mod (tz-weekday-of n - d.weekday) 7
+
+  tz-utc-of : Integer, Integer, Integer, Integer -> Integer
+  tz-utc-of (local) (kind) (stdoff) (save) =
+    if kind == tz-at-utc then local
+    else if kind == tz-at-std then local - stdoff
+    else local - stdoff - save
+
+Section: Types
+
+  TzType = record { utoff : Integer, dst : Boolean, abbr : Text }
+
+  TzTrans = record { at : Integer, kind : TzType }
+
+  TzFooter = record { stdoff : Integer, format : Text, rules : List TzRule }
+
+  TzCompiled = record { initial : TzType, trans : List TzTrans, footer : TzFooter }
+
+  tz-two : Integer -> Text
+  tz-two (n) = if n < 10 then "0" & show n else show n
+
+  tz-numeric : Integer -> Text
+  tz-numeric (off) =
+    let a = if off < 0 then 0 - off else off
+    in let h = a / 3600
+    in let mi = (a - h * 3600) / 60
+    in let s = a - h * 3600 - mi * 60
+    in (if off < 0 then "-" else "+") & tz-two h & (if mi /= 0 | s /= 0 then tz-two mi else "") & (if s /= 0 then tz-two s else "")
+
+  tz-abbr : Text, Text, Boolean, Integer -> Text
+  tz-abbr (fmt) (letter) (dst) (utoff) =
+    let slash = text-index-of fmt "/"
+    in if slash >= 0 then (if dst then text-drop fmt (slash + 1) else text-take fmt slash)
+    else if text-contains fmt "%s" then text-replace fmt "%s" letter
+    else if text-contains fmt "%z" then text-replace fmt "%z" (tz-numeric utoff)
+    else fmt
+
+Section: Rule Instances
+
+  TzEvent = record { local : Integer, kind : Integer, save : Integer, dst : Boolean, letter : Text }
+
+  tz-rule-set : TzDb, Text -> List TzRule
+  tz-rule-set (db) (name) = tz-rules-loop (db.rules) name 0 []
+
+  tz-rules-loop : List TzRule, Text, Integer, List TzRule -> List TzRule
+  tz-rules-loop (rs) (name) (i) (acc) =
+    if i >= list-length rs then acc
+    else tz-rules-loop rs name (i + 1) (if (list-at rs i).name == name then list-push acc (list-at rs i) else acc)
+
+  tz-events : List TzRule, Integer, Integer -> List TzEvent
+  tz-events (rs) (y0) (y1) = tz-events-rules rs 0 y0 y1 []
+
+  tz-events-rules : List TzRule, Integer, Integer, Integer, List TzEvent -> List TzEvent
+  tz-events-rules (rs) (i) (y0) (y1) (acc) =
+    if i >= list-length rs then acc
+    else let r = list-at rs i
+    in let lo = if r.from > y0 then r.from else y0
+    in let hi = if r.to < y1 then r.to else y1
+    in tz-events-rules rs (i + 1) y0 y1 (tz-events-years r lo hi acc)
+
+  tz-events-years : TzRule, Integer, Integer, List TzEvent -> List TzEvent
+  tz-events-years (r) (y) (hi) (acc) =
+    if y > hi then acc
+    else tz-events-years r (y + 1) hi (list-push acc (TzEvent {
+      local = tz-day-days y (r.month) (r.day) * 86400 + r.at,
+      kind = r.at-kind, save = r.save, dst = r.save-dst, letter = r.letter
+    }))
+
+ Instances sort by their local time with the UTC kinds compared through the
+ standard offset: no two rules of one set fall within a day of each other,
+ so this order is the UTC order.
+
+  tz-sort-key : TzEvent, Integer -> Integer
+  tz-sort-key (e) (stdoff) = if e.kind == tz-at-utc then e.local + stdoff else e.local
+
+  tz-sort : List TzEvent, Integer -> List TzEvent
+  tz-sort (es) (stdoff) = tz-sort-loop es 0 stdoff []
+
+  tz-sort-loop : List TzEvent, Integer, Integer, List TzEvent -> List TzEvent
+  tz-sort-loop (es) (i) (stdoff) (acc) =
+    if i >= list-length es then acc
+    else tz-sort-loop es (i + 1) stdoff (tz-insert acc (list-at es i) stdoff 0 [])
+
+  tz-insert : List TzEvent, TzEvent, Integer, Integer, List TzEvent -> List TzEvent
+  tz-insert (sorted) (e) (stdoff) (i) (acc) =
+    if i >= list-length sorted then list-push acc e
+    else let s = list-at sorted i
+    in if tz-sort-key e stdoff < tz-sort-key s stdoff then tz-insert-rest sorted i (list-push acc e)
+    else tz-insert sorted e stdoff (i + 1) (list-push acc s)
+
+  tz-insert-rest : List TzEvent, Integer, List TzEvent -> List TzEvent
+  tz-insert-rest (sorted) (i) (acc) =
+    if i >= list-length sorted then acc
+    else tz-insert-rest sorted (i + 1) (list-push acc (list-at sorted i))
+
+Section: Eras
+
+  TzRun = record {
+    trans : List TzTrans,
+    last : TzType,
+    started : Boolean,
+    initial : TzType,
+    save : Integer,
+    dst : Boolean,
+    letter : Text,
+    stdoff : Integer
+  }
+
+  tz-type-none : TzType
+  tz-type-none = TzType { utoff = 0, dst = False, abbr = "" }
+
+  tz-emit : TzRun, Integer, TzType -> TzRun
+  tz-emit (run) (at) (t) =
+    if run.started == False then
+      TzRun { trans = run.trans, last = t, started = True, initial = t, save = run.save, dst = run.dst, letter = run.letter, stdoff = run.stdoff }
+    else if t.utoff == run.last.utoff & t.abbr == run.last.abbr then run
+    else TzRun { trans = list-push (run.trans) (TzTrans { at = at, kind = t }), last = t, started = True, initial = run.initial, save = run.save, dst = run.dst, letter = run.letter, stdoff = run.stdoff }
+
+  tz-with-state : TzRun, Integer, Boolean, Text -> TzRun
+  tz-with-state (run) (save) (dst) (letter) =
+    TzRun { trans = run.trans, last = run.last, started = run.started, initial = run.initial, save = save, dst = dst, letter = letter, stdoff = run.stdoff }
+
+  tz-with-stdoff : TzRun, Integer -> TzRun
+  tz-with-stdoff (run) (stdoff) =
+    TzRun { trans = run.trans, last = run.last, started = run.started, initial = run.initial, save = run.save, dst = run.dst, letter = run.letter, stdoff = stdoff }
+
+  tz-until-local : TzUntil -> Integer
+  tz-until-local (u) = tz-day-days (u.year) (u.month) (u.day) * 86400 + u.at
+
+  tz-far : Integer = 9000000000000
+
+  tz-compile : TzDb, TzZone -> TzCompiled
+  tz-compile (db) (z) =
+    let run = tz-eras db (z.lines) 0 (0 - tz-far) (TzRun { trans = [], last = tz-type-none, started = False, initial = tz-type-none, save = 0, dst = False, letter = "", stdoff = 0 })
+    in TzCompiled { initial = run.initial, trans = run.trans, footer = tz-footer-of db (z.lines) }
+
+ The rules that run past tz-year-last: the last zone line's own rules whose
+ TO is later than tz-year-last (max, or an explicit later year: Palestine's
+ predicted transitions run to 2086). A zone whose last line has fixed or no rules has none, and its
+ last transition holds for ever.
+
+  tz-footer-of : TzDb, List TzZoneLine -> TzFooter
+  tz-footer-of (db) (lines) =
+    let zl = list-at lines (list-length lines - 1)
+    in TzFooter {
+      stdoff = zl.stdoff, format = zl.format,
+      rules = if zl.rules-kind /= tz-rules-named | zl.has-until then [] else tz-open-rules (tz-rule-set db (zl.rules-name)) 0 []
+    }
+
+  tz-open-rules : List TzRule, Integer, List TzRule -> List TzRule
+  tz-open-rules (rs) (i) (acc) =
+    if i >= list-length rs then acc
+    else tz-open-rules rs (i + 1) (if (list-at rs i).to > tz-year-last then list-push acc (list-at rs i) else acc)
+
+ The footer's transitions for the years after tz-year-last through year,
+ continuing from the type the table ends with.
+
+  tz-footer-trans : TzFooter, TzType, Integer -> List TzTrans
+  tz-footer-trans (ft) (last) (year) =
+    if list-length (ft.rules) == 0 | year <= tz-year-last then []
+    else let es = tz-sort (tz-events (ft.rules) (tz-year-last + 1) year) (ft.stdoff)
+    in let zl = TzZoneLine { stdoff = ft.stdoff, rules-kind = tz-rules-named, rules-name = "", rules-save = 0, format = ft.format, has-until = False, until = TzUntil { year = 0, month = 1, day = TzDay { kind = tz-day-fixed, num = 1, weekday = 0 }, at = 0, at-kind = 0 } }
+    in let run = TzRun { trans = [], last = last, started = True, initial = last, save = last.utoff - ft.stdoff, dst = last.dst, letter = "", stdoff = ft.stdoff }
+    in (tz-within es 0 zl run).run.trans
+
+  tz-eras : TzDb, List TzZoneLine, Integer, Integer, TzRun -> TzRun
+  tz-eras (db) (lines) (i) (start) (run) =
+    if i >= list-length lines then run
+    else let zl = list-at lines i
+    in let ended = tz-era db zl start run
+    in tz-eras db lines (i + 1) (ended.at) (tz-with-stdoff (ended.run) (zl.stdoff))
+
+  TzEraEnd = record { run : TzRun, at : Integer }
+
+  tz-era : TzDb, TzZoneLine, Integer, TzRun -> TzEraEnd
+  tz-era (db) (zl) (start) (run) =
+    if zl.rules-kind /= tz-rules-named then
+      (let save = if zl.rules-kind == tz-rules-fixed then zl.rules-save else 0
+      in let dst = save /= 0
+      in let utoff = zl.stdoff + save
+      in let run1 = tz-emit (tz-with-state run save dst "") start (TzType { utoff = utoff, dst = dst, abbr = tz-abbr (zl.format) "" dst utoff })
+      in TzEraEnd { run = run1, at = if zl.has-until then tz-utc-of (tz-until-local (zl.until)) (zl.until.at-kind) (zl.stdoff) save else tz-far })
+    else let rs = tz-rule-set db (zl.rules-name)
+    in let ys = if start <= 0 - tz-far then 0 - 9999 else tz-year-of-days (tz-floor-div start 86400)
+    in let y0 = if start <= 0 - tz-far then 0 - 9999 else tz-latest-year rs (ys - 1) 0 (0 - 9999)
+    in let y1 = if zl.has-until then zl.until.year + 1 else tz-year-last
+    in let es = tz-sort (tz-events rs y0 y1) (zl.stdoff)
+    in let first-std = tz-first-std-letter es 0
+    in let opened = tz-before es 0 start (run.stdoff) (run.save) (tz-with-state run 0 False first-std)
+    in let utoff0 = zl.stdoff + opened.run.save
+    in let run1 = tz-emit (opened.run) start (TzType { utoff = utoff0, dst = opened.run.dst, abbr = tz-abbr (zl.format) (opened.run.letter) (opened.run.dst) utoff0 })
+    in tz-within es (opened.next) zl run1
+
+  tz-first-std-letter : List TzEvent, Integer -> Text
+  tz-first-std-letter (es) (i) =
+    if i >= list-length es then ""
+    else if (list-at es i).save == 0 then (list-at es i).letter
+    else tz-first-std-letter es (i + 1)
+
+  TzOpened = record { run : TzRun, next : Integer }
+
+  tz-before : List TzEvent, Integer, Integer, Integer, Integer, TzRun -> TzOpened
+  tz-before (es) (i) (start) (prev-stdoff) (prev-save) (run) =
+    if i >= list-length es then TzOpened { run = run, next = i }
+    else let e = list-at es i
+    in let at = tz-utc-of (e.local) (e.kind) prev-stdoff prev-save
+    in if at > start then TzOpened { run = run, next = i }
+    else tz-before es (i + 1) start prev-stdoff prev-save (tz-with-state run (e.save) (e.dst) (e.letter))
+
+  tz-latest-year : List TzRule, Integer, Integer, Integer -> Integer
+  tz-latest-year (rs) (ys) (i) (best) =
+    if i >= list-length rs then (if best < 0 - 9998 then ys else best)
+    else let r = list-at rs i
+    in let y = if r.from > ys then 0 - 9999 else if r.to < ys then r.to else ys
+    in tz-latest-year rs ys (i + 1) (if y > best then y else best)
+
+  tz-within : List TzEvent, Integer, TzZoneLine, TzRun -> TzEraEnd
+  tz-within (es) (i) (zl) (run) =
+    let until-at = if zl.has-until then tz-utc-of (tz-until-local (zl.until)) (zl.until.at-kind) (zl.stdoff) (run.save) else tz-far
+    in if i >= list-length es then TzEraEnd { run = run, at = until-at }
+    else let e = list-at es i
+    in let at = tz-utc-of (e.local) (e.kind) (zl.stdoff) (run.save)
+    in if at >= until-at then TzEraEnd { run = run, at = until-at }
+    else let utoff = zl.stdoff + e.save
+    in let run1 = tz-emit (tz-with-state run (e.save) (e.dst) (e.letter)) at (TzType { utoff = utoff, dst = e.dst, abbr = tz-abbr (zl.format) (e.letter) (e.dst) utoff })
+    in tz-within es (i + 1) zl run1

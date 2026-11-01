@@ -1,28 +1,68 @@
 Chapter: SessionTypes
 
- Session types for protocol-safe channels. A session protocol is a
- sequence of send and receive steps encoded as nested phantom types.
- The channel type SChan s carries the current protocol state s; each
- operation (s-send, s-recv, s-close) consumes the channel and returns
- a new one at the next state. The type checker verifies the protocol
- is followed in order.
+Section: Protocol States
 
- Protocol definition example:
-
-   MyProto = SSend Integer (SRecv Text SEnd)
-
- We say:
-
-Section: Protocol State Types
-
-  SSend a s = | MkSSend
-  SRecv a s = | MkSRecv
+  SSend m p = | MkSSend
+  SRecv m p = | MkSRecv
   SEnd = | MkSEnd
+  SOffer l r = | MkSOffer
 
-  SChan s = | MkSChan (Integer)
+Section: Pure Sessions
 
-Section: Dual
+  Session p a = | MkSession (a)
 
-  SDual s = | MkSDual
+  Peeked p a = | MkPeeked (a) (linear Session p a)
+
+  Offered l r a =
+    | TookLeft (linear Session l a)
+    | TookRight (linear Session r a)
+    | Refused (a)
+
+  Answered p a =
+    | Accepted (linear Session p a)
+    | Rejected (a)
+
+  session-open : a -> linear Session p a
+  session-open (v) = MkSession v
+
+  session-peek : linear Session p a -> Peeked p a
+  session-peek (x) =
+    when x
+      is MkSession (v) -> MkPeeked v (MkSession v)
+
+  session-send : linear Session (SSend m p) a, a -> linear Session p a
+  session-send (x) (v) =
+    when x
+      is MkSession (old) -> MkSession v
+
+  session-recv : linear Session (SRecv m p) a, a -> linear Session p a
+  session-recv (x) (v) =
+    when x
+      is MkSession (old) -> MkSession v
+
+  session-left : linear Session (SOffer l r) a -> linear Session l a
+  session-left (x) =
+    when x
+      is MkSession (v) -> MkSession v
+
+  session-right : linear Session (SOffer l r) a -> linear Session r a
+  session-right (x) =
+    when x
+      is MkSession (v) -> MkSession v
+
+  session-stay : linear Session p a, a -> linear Session p a
+  session-stay (x) (v) =
+    when x
+      is MkSession (old) -> MkSession v
+
+  session-close : linear Session SEnd a -> a
+  session-close (x) =
+    when x
+      is MkSession (v) -> v
+
+  session-abandon : linear Session p a -> a
+  session-abandon (x) =
+    when x
+      is MkSession (v) -> v
 
 Page 1

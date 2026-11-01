@@ -63,8 +63,14 @@ Section: Service State
     in let mask = poke-qword blk gopweb-blk-mask 0
     in let dns = poke-qword blk gopweb-blk-dns 0
     in let duration = poke-qword blk gopweb-blk-lease-seconds 0
-    in act
-      cfg <- dhcp-io-configure-window net-driver-mac "cobblestone" (305419896 + get-ticks) gopweb-dhcp-window (\ignored -> peek-qword blk gopweb-blk-command-seq == sequence)
+    in when dhcp-io-fresh-xid 0
+      is None -> (let failed = gopweb-state blk 4 in m)
+      is Just (xid) -> gopweb-configure-xid blk m sequence xid
+
+  gopweb-configure-xid : Integer, WebMux, Integer, Integer -> [Concurrent, Network.Read, Network.Write] WebMux
+  gopweb-configure-xid (blk) (m) (sequence) (xid) =
+    act
+      cfg <- dhcp-io-configure-window net-driver-mac "cobblestone" xid gopweb-dhcp-window (\ignored -> peek-qword blk gopweb-blk-command-seq == sequence)
       if net-is-configured cfg == False | cfg.lease-time <= 0 then
         let failed = if peek-qword blk gopweb-blk-command-seq == sequence then gopweb-state blk 4 else 0 in m
       else let leased = gopweb-lease blk cfg

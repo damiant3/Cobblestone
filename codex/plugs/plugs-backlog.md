@@ -27,93 +27,7 @@ hands `cb` the reply carrying its id. Messages from any other window are ignored
 `localStorage` (it throws in an opaque origin), so the pages it runs must not call the storage primitives.
 `fetch-get-then` parses JSON; fetch page text with `fetch-with-then`. `node codex/plugs/html/arms/frame.mjs` grades the
 round trip, the sandbox and the ignored foreign message in headless Edge (4 checks, 2026-10-09).
-### HTML-NOISE-BANK -- exact words and job-local worker ownership
-
-Main 33680 adds `gpu-noise-bank-then`, which runs the packaged `sdxl-noise`
-Wasm module in a fresh worker. It transfers the native f32 bank, terminates
-the worker before the callback and uploads the bytes directly. Negative
-progress cancels; worker,
-shape, upload and timeout failures share the same cleanup. The page byte
-heap does not hold the tree. Physical memory reclamation remains a browser
-decision. `gpu-buf-copy-range` copies aligned, bounded bytes between distinct
-live buffers without passing the words through floating-point arithmetic.
-
-`node apps/diffusion/noise-bank.mjs <new-output-directory>` builds and runs the
-native witness and compares every Wasm word. Then run
-`node codex/plugs/html/arms/noise-bank.mjs <arm.html> <noise.wasm> <evidence-dir>`
-using the SdxlArm build in `docs/Designs/Active/Apps/InBrowserDiffusion.md`.
-The 21 fixtures pass native/Wasm/GPU byte equality (2026-10-01), including
-65536 values and 50 steps together. Repeated jobs and failure controls end
-with 39 created/terminated workers, zero live handles and unchanged page
-byte heap. The bridge retains O(bank bytes) transfer storage; Wasm work and
-arena storage follow the native tree. Each job releases arena ownership.
-
-### HTML-GPU-TRIM -- release pooled model storage
-
-Main 33426 adds `gpu-trim-then` in WebGpu/HtmlEmitter. At invocation it
-detaches the current free-buffer pool, submits pending work, then destroys
-that snapshot after queue completion. Active handles and buffers freed
-after invocation survive. The callback runs once, with empty text for
-success or error text. Close a model and await trim before loading another.
-`callback-once.mjs` passes 26 checks including snapshot ownership, no-device
-completion, rejection and throwing callbacks (2026-10-01). The diffusion
-chooser grade also switches SD1.5/SDXL/SD1.5 and ends with no active or
-pooled buffers. Trim uses O(pooled-buffer count) temporary references and
-destruction work; queued work determines wait time. Driver-reported memory
-need not fall immediately, and live buffers and shader caches remain.
-
-### HTML-RANDOM-INTEGER -- Integer results from browser primitives
-
-Fix main 33360 keeps `random-int` bounds and results as BigInt. Number
-results broke MusicGen's seeded bit operations, including the default
-random-seed path; fixed-seed grades did not expose the mismatch. Random-word
-rejection sampling preserves inclusive bounds beyond Number precision;
-reversed bounds throw. Math.random supplies the random words.
-After rebuilding the HTML plug, run
-`node codex/plugs/html/arms/random-int.mjs`. The compiled fixture composes
-random values with bit operations and rejects accidental stub emission;
-runtime controls cover wide singleton bounds, signed endpoints and
-rejection. On 2026-10-01 all 6 checks and all 21 HTML arm scripts passed.
-For fixed-width Integer ranges, transient storage is bounded and runtime
-is expected constant time, with no worst-case bound on rejection retries.
-The compiled draw is controlled, so the arm is not a distribution grade.
-
-The XL graders terminate only Edge processes bearing their unique profile
-and verify that none remain. Numerical checks passing before cleanup is
-not a successful process exit. Main 33360 replaced PID-tree cleanup after
-one CLIP XL cleanup process exited 4294967295; the affected arms then exited 0.
-
-### HTML-WAVE-F32 -- generated audio analysis
-
-Fix main 33324 extends `HtmlEmitter.codex` audio analysis from PCM16 to
-finite IEEE-f32 WAVE, including MusicGen's 18-byte format and fact chunks.
-Sample amplitudes remain unclipped. Bad headers, truncated chunks, invalid
-alignment, empty data, unsupported formats and nonfinite samples refuse.
-After `pwsh codex/plugs/html/build.ps1`, run
-`node codex/plugs/html/arms/wave-analyze.mjs`: the compiled callback checks
-PCM/f32 equivalence, unequal stereo mixing and malformed-input refusals.
-The Spark arms are `node apps/spark/audio-analyze.mjs` and the same command
-with `--float32`; the latter converts original PCM fixtures to identical
-f32 samples before analysis, while the WPF/NAudio oracle remains independent.
-On 2026-10-01 the plug arm passed 13 checks, Spark PCM passed 10 and Spark
-f32 passed 11 over 14 tracks; all 19 HTML arm scripts exited 0 on compiler
-`D2C01E16DD7E342F`. The SDXL arms need the explicit HTML/base/extra-WGSL
-arguments printed by their usage checks. The converted-fixture grade proves
-analysis; playback of actual generated WAVE is covered by Spark's MusicGen
-integration grade, not by replacement of already-cached media URLs.
-
-### HTML-NESTED-CTOR -- nested variant guards
-
-Fix main 33066 repairs `HtmlEmitter.codex`'s constructor condition emission:
-`Just (JsonInt n)` must reject `Just (JsonNum value)` before binding the
-payload. The Spark video malformed-timeline arm exposed the missing inner
-tag check. All 15 HTML arm scripts passed on 2026-09-30, including the new
-nested-constructor arm; the Spark video grader passed 17 arms.
-`codex/plugs/html/arms/nested-ctor.mjs` grades wrong inner and outer tags,
-three nested constructors, a literal leaf and the fallback binding. Rebuild
-with `pwsh codex/plugs/html/build.ps1`, then run every `.mjs` directly under
-`codex/plugs/html/arms` serially with `node`; every process must exit 0.
-The GPU/model arms require their named local checkpoints and fixtures.
+### Plug-wide hazards
 
 **A STDIO PLUG'S IR ARRIVES AS UTF-8 AND `PlugStdio` DECODES IT.** Every feeder (the pages' `runW`, the
 `codex_run` service) sends the compiler's `IR-UNI` through `TextEncoder`; `read-file-uni` maps only bytes
@@ -142,8 +56,8 @@ already maps that spelling correctly where a Boolean appears as an
 EXPRESSION, and did not where it appears as a PATTERN** -- the two paths are
 separate in every plug and the pattern path gets written by copying the
 integer case. Measured by running the emitted programs: csharp CS0103,
-javascript `ReferenceError: True is not defined`, zig undeclared identifier,
-all three fixed 2026-08-26. Python, Haskell, Ada and Pascal spell their
+javascript `ReferenceError: True is not defined`, zig undeclared identifier, and all three
+now emit their own Boolean spelling. Python, Haskell, Ada and Pascal spell their
 Booleans the way the wire does and are safe by coincidence, not by handling
 it. **Two further defects surfaced only once the first fix let the programs
 run further, which is the part to generalise: a literal-pattern bug hides
@@ -253,7 +167,8 @@ subjects".
 **Another's, or blocked:** 1.3 (Damian's battery call), 1.96's
 upstream half (COMPILER-30), 2.02 (Steve Howell's), 2.13 (a representation
 decision), 2.21 (red; class 6 blocked on representation), 2.28 (unverified
-reports), 2.42 (blocked on encoding).
+reports), 2.38 (the remaining plugs need an analyzer of their emitted text), 2.113
+(red), 2.118 (val), 2.119 (red).
 
 **1.1 -- lift the plug type reconstruction into shared code. DEFERRED**
 (Damian, 2026-08-05): a de-risking rehearsal, not a prerequisite. The group-3
@@ -637,14 +552,14 @@ that stopped the assembler. A source grep for builtin names cannot answer this: 
 
 THE CONTRACT (root, COMPILER-36). `add-int`, `sub-int` and `mul-int` on a plain Integer TRAP on signed overflow. The wrapping band is spelled `add-int-wrapping` / `sub-int-wrapping` / `mul-int-wrapping` and its node type reads `(int i64-min 9223372036854775807 ov-wrap)`. `codex/plugs/common/IRTextParser.codex` collapses both spellings to the plain op and `ir-parse-expr-binary` (`IRTextParser.codex:729`) parses the node TYPE, so every plug already holds the mode per node and keys on `int-ty-wraps ty` (`codex/compiler/Types/CodexType.codex:142`, a chapter every bundle carries). The gap is at the EMIT sites only; the parser needs nothing. The contract also reaches a plug's own PROGRAM, where `plug-selftest` is the only runner that sees it: a byte assembler is a shift, not a multiply.
 
-DONE. x86-64 bare metal traps. wasm: `emit-wat-binary` keys on `int-ty-wraps` and calls `$cx_add_trap` / `$cx_sub_trap` / `$cx_mul_trap`, three preamble helpers ending in `unreachable`. Text family 1, zig / csharp / rust: zig emits `+` `-` `*` against `+%` `-%` `*%`, csharp `checked(...)` against the unchecked default, rust `checked_*(...).expect("integer overflow")` against `wrapping_*`. Text family 2, groovy / go: groovy's operators promote to BigInteger rather than wrapping, so the band narrows with an explicit `(long)` and a plain Integer takes `Math.addExact` / `subtractExact` / `multiplyExact` on coerced longs; go has no checked primitive and gets three hand-written helpers that panic, the mul check by quotient after answering a zero operand and the two `-1` cases.
+OPEN, the native cross plugs: arm64 and riscv trap on no plain Integer overflow, `add-int` and `mul-int` alike (red, 2026-10-31: `ar 10^18 0` and `mr 10^18 0` print -8446744073709551616 on both QEMU beds where x86-64 and wasm halt); `codex/test/mul-trap-recursive` and `mul-trap-plain` carry `.fatal` only and take a `.cross-fatal` with the fix; grade with `build/test-cross-batch.ps1 -Arch riscv64 -Jobs 3 -Filter mul-` and the same with `-Arch arm64` (the QEMU beds on this box). DONE. x86-64 bare metal traps, including the LIR multiply by an immediate in a frameless self-recursive def (COMPILER-156, `lir-sel-mul-rri`). arm64 and riscv64 trap on both cross beds: a plain Integer `add`/`sub`/`mul` (`int-ty-wraps` False) skips every shortcut path and emits a checked sequence, arm64 `adds`/`subs` then `b.vc` over `brk #1` and `smulh x8` then `cmp x8, rd, asr #63` over `brk #1` (x8 is in neither the temp pool, the frameless locals nor the LIR register file), riscv64 the specification's `slti`/`slt` pair and `mulh`/`srai` in t0 to t2 over `ebreak`; the arm64 LIR emitter checks `LoAdd`/`LoSub`/`LoMul` unconditionally, because LIR refuses a wrapping op. Graded by `codex/test/ops/int-add-trap` and `int-mul-trap` (`.fatal` and `.cross-fatal`, PASS on both beds, FAIL_RUNTIME on the depot plugs) with `int-add-wrapping` and `int-mul-wrapping` unmoved; self-recursive `acc * 10 + d`, COMPILER-156's `mr` and a `sub` underflow fault on both beds. wasm: `emit-wat-binary` keys on `int-ty-wraps` and calls `$cx_add_trap` / `$cx_sub_trap` / `$cx_mul_trap`, three preamble helpers ending in `unreachable`. Text family 1, zig / csharp / rust: zig emits `+` `-` `*` against `+%` `-%` `*%`, csharp `checked(...)` against the unchecked default, rust `checked_*(...).expect("integer overflow")` against `wrapping_*`. Text family 2, groovy / go: groovy's operators promote to BigInteger rather than wrapping, so the band narrows with an explicit `(long)` and a plain Integer takes `Math.addExact` / `subtractExact` / `multiplyExact` on coerced longs; go has no checked primitive and gets three hand-written helpers that panic, the mul check by quotient after answering a zero operand and the two `-1` cases.
 
 OPEN, AS SEVEN CLASSES (root's ruling 2026-09-07: one CL per class, class = the target's overflow mechanism, and REFUSE with a named diagnostic wherever the class has no way to honour the contract). 48 plugs carry an emitter; 6 are done. Each of the remaining 42 carries its OWN `is IrAddInt` arm, so there is no shared site and no delegation: measured 2026-09-07, only 1 of 6 front-end wrappers checked emits through the javascript emitter, and the wrappers do not share a target (compose is Kotlin, maui/winforms/wpf are C#, qt/gtk are C++, flutter is Dart). **The REFUSAL IDIOM already exists and is `wgsl-refuse` (`WgslEmitter.codex:30`): `"CODEX_REFUSED_" & what`, an undefined identifier carrying its own reason, so the target toolchain fails with the name in its error and no value reaches a caller (L-BAILVALUE, L-ACCEPTED).** **A PLUG IS CLASSED BY THE LANGUAGE IT EMITS, NEVER BY THE NAME OF ITS TOOLKIT, and the second reading is what caught it: qt emits QML with a JavaScript block and gtk emits Python (PyGObject), so neither is C++ and both were in the wrong class; compose emits Kotlin, flutter Dart, maui/winforms/wpf C#, swiftui Swift, and react/vue/svelte/angular/electron/html JavaScript.** The wrapper plugs emit the language of their HOST RUNTIME, not the language the toolkit is implemented in. Membership below is MEASURED on each plug's emitted literal and operator; the overflow MECHANISM in each heading is a claim about the language, not something this box can run, and no toolchain here grades any of these.
 
 - **Class 1, checked primitive, 64-bit. DONE** (csharp, clojure, maui, winforms, wpf, julia). csharp, maui, winforms and wpf all emit C# with `L` literals and take one arm: `checked(...)` for a plain Integer, the unchecked default for the band. clojure needed no helper at all, its `+` on a long already throws ArithmeticException and `unchecked-add` already wraps. julia has both natively too: Int64 wraps and `Base.Checked.checked_add` and its siblings throw OverflowError, which is why it belongs here rather than with the bignum targets its language family suggests. GRADED: csharp answers 57 of 57 against x86-64 truth on `plug-oracle-test`; the other five have no toolchain on this box and are accepted by EMISSION only.
 - **Class 2, wrapping-only 64-bit, no checked primitive. DONE** (d, fortran, objc, flutter). The go shape: a helper per op in the plug's own preamble, so the emission carries one grammar rather than four closure syntaxes. Two members are NOT plain wraps and the difference is in the code: **objc** is C, where signed overflow is UNDEFINED rather than wrapping, so its band does the arithmetic in `NSUInteger` and converts back, and its trap computes the same way before reading the sign, because the check must not be the thing that overflows; **fortran** has no unsigned type at all, so its band is the bare operator and rests on gfortran wrapping in practice rather than on the standard, which leaves `integer(8)` overflow undefined. Fortran also has no exceptions: `error stop` is the only way one of its procedures can refuse to return. d and flutter (Dart on the VM) genuinely wrap, so their bands are the bare operator. EMISSION ONLY: no toolchain for any of the four is on this box (g++, gcc, clang, dmd, ldc2, gfortran, dart all absent, measured 2026-09-07) and none is oracle-wired, so nothing here is graded by running. Dart on the WEB is a double, where neither arm holds; that build would take the class 5 treatment. **FOR WHOEVER INSTALLS A TOOLCHAIN, START WITH FORTRAN, AND THE QUESTION IS REFUSE-OR-WRAP:** its band is the one arm in this class resting on a compiler's habit rather than on a language guarantee, so `gfortran -ftrapv` or a future release turning overflow into a trap would make the WRAPPING band abort instead of wrapping, which is the contract inverted rather than merely unimplemented. The two outcomes to distinguish on the first real run are a band row answering the wrapped value (the arm is sound and the standard's silence is harmless here) against a band row aborting (the plug cannot express the band at all and belongs in class 5 with a named refusal, not in this one). Nothing on this box can tell those apart today.
-- **Class 3, trapping by default. DONE** (zig, swift, swiftui, nim, ada). **The PLAIN arm needed nothing and the BAND was the entire job**, which is the reverse of every other class: these targets already trap, so what was wrong is that the wrapping band trapped too, inverting the contract rather than leaving it unimplemented. The row previously called this class "nothing but a sentence" and that reading had it backwards. swift and swiftui take the masking operators `&+` `&-` `&*`; nim has no such operator, so its band goes through `uint`, whose arithmetic wraps by definition, and casts back; ada needs a MODULAR type and `Unsigned_64` is the one that matches the width, but converting a negative `Long_Long_Integer` to it would itself raise, so the band is two `Ada.Unchecked_Conversion` instantiations with the arithmetic done in the modular type. **The PLAIN arm in two of them rests on a compiler setting rather than on the language, the same shape as fortran's band in class 2:** nim's overflow checks are on by default but `-d:release` turns them off unless `--overflowChecks:on` is passed, and swift's trap is off under `-Ounchecked`. Neither is expressible in the emission; both are the build's to guarantee. EMISSION ONLY: no swift, nim or ada toolchain on this box.
-- **Class 4, bignum, no fixed width.** python, ruby, elixir, scheme, javascript DONE (main 22426). **gtk joins this class and is done with them**: it emits Python (PyGObject), not C++. GRADED where a runtime exists: javascript and python each 57 of 57 values against x86-64 truth. The band rows overflow, so a bignum plug without the truncation cannot match, and they cannot pass by accident (L-VACUOUS). The trap arm's throw is not exercised: the oracle cannot grade a program that traps.
+- **Class 3, trapping by default. DONE** (zig, swift, swiftui, nim, ada). **The PLAIN arm needed nothing and the BAND was the entire job**, which is the reverse of every other class: these targets already trap, so what was wrong is that the wrapping band trapped too, inverting the contract rather than leaving it unimplemented. swift and swiftui take the masking operators `&+` `&-` `&*`; nim has no such operator, so its band goes through `uint`, whose arithmetic wraps by definition, and casts back; ada needs a MODULAR type and `Unsigned_64` is the one that matches the width, but converting a negative `Long_Long_Integer` to it would itself raise, so the band is two `Ada.Unchecked_Conversion` instantiations with the arithmetic done in the modular type. **The PLAIN arm in two of them rests on a compiler setting rather than on the language, the same shape as fortran's band in class 2:** nim's overflow checks are on by default but `-d:release` turns them off unless `--overflowChecks:on` is passed, and swift's trap is off under `-Ounchecked`. Neither is expressible in the emission; both are the build's to guarantee. EMISSION ONLY: no swift, nim or ada toolchain on this box.
+- **Class 4, bignum, no fixed width.** python, ruby, elixir, scheme, javascript DONE. **gtk joins this class and is done with them**: it emits Python (PyGObject), not C++. GRADED where a runtime exists: javascript and python each 57 of 57 values against x86-64 truth. The band rows overflow, so a bignum plug without the truncation cannot match, and they cannot pass by accident (L-VACUOUS). The trap arm's throw is not exercised: the oracle cannot grade a program that traps.
 - **Class 5, double-valued, cannot represent i64. DONE** (typescript, angular, react, vue, svelte, electron, html, qt). Every one emits JavaScript or, for qt, QML with a JavaScript block, so a Codex Integer is a Number and a double holds an exact integer only to 2^53. **BOTH ARMS REFUSE and the node type is not consulted**: the band cannot wrap at 64 bits and the plain arm cannot tell an overflow from a rounding, and in range the two agree anyway, so there is nothing for `int-ty-wraps` to decide. The guard is on the VALUES (`Number.isSafeInteger` of both operands and the result), so a program whose integers fit a double still computes and only the unrepresentable case refuses; refusing every integer add outright would forfeit the 55 oracle rows that are correct today to answer the 2 that are not. The marker is `CODEX_REFUSED_integer_exceeds_double_precision`, which `plug-oracle-test.ps1` reads as its REFUSED verdict. **typescript left this class with 2.43** (a Codex Integer is a BigInt there) and answers the oracle subject in full, PASS 57/57. **html left too**: its integers are BigInt, the band is `BigInt.asIntN(64, ...)` when `int-ty-wraps`, and the plain arm traps `CODEX_TRAP_integer_overflow`; graded 2026-09-29 by Hamt's djb2 on a 43-character string against an independent PowerShell BigInteger oracle, where the refusing arm had thrown. The other six carry the refusal arm. The six are not oracle-wired and could not be: they emit framework sources (React components, Vue and Svelte single-file components, an Electron main, an HTML page, QML) rather than a program node can run, so for them the build is the only instrument. lua and php remain OUT of this class: the row places them here by a language claim nobody has measured, and each needs its integer width established first. **perl is DONE and is its own mechanism**: a 64-bit IV that silently PROMOTES past 2^63, to an unsigned UV and then to a double, so it neither traps nor wraps. Its band runs under `use integer`, which wraps in two's complement; its plain arm is three preamble helpers (`pl-int-helpers`, `PerlEmitter.codex`) that compute the wrapped value, test the sign, and for multiply also the quotient and the two -1 cases, and on overflow print `CODEX_TRAP_integer_overflow` and EXIT 255 rather than die, because `try` lowers to eval and an x86-64 trap is not recoverable. GRADED BY RUNNING under Git for Windows' perl 5.38 (2026-10-16): 12 boundary and band values equal x86-64's, three trap probes (add, sub, mul) stop with the marker where x86-64 raises `!EXC=06`, an in-range control runs to completion on both, and the pre-change plug gets all four band rows wrong (16000000000000000000, 9223372036854775808, -9.22337203685478e+18, 9223372037000250000). perl is oracle-wired (`plug-oracle-test -Only perl`, Git for Windows' perl).
 - **Class 6, integer narrower than 64 bits.** DONE for the JVM plugs (java, kotlin, scala, compose): all four emit 64-bit `L` literals and longs, so a plain Integer takes `Math.addExact` / `subtractExact` / `multiplyExact` and the band the bare long operator. EMISSION ONLY (no JDK, permanently): on `plug-oracle-arith` each emits 7 / 26 / 2 exact calls where it emitted none, with both band rows bare (2026-09-29). OPEN: ocaml (native `int` is 63-bit), wgsl (i32, already refuses a literal wider than 32 bits), and haskell, which emits bare literals with no `:: Int`, so GHC defaults them to `Integer` and its width is not what the class name assumes. A checked primitive applied to a narrow int traps at the wrong boundary, which is worse than the wrap.
 - **Class 7, not general-purpose expression emitters. RULED OUT OF 2.21, not deferred** (babbage, cobol, pascal, ptx, t3isa). The first question was whether the contract applies at all, and measured on what each emits, it does not. **babbage** and **cobol** return a structured result (a store-and-operate record, `PIC S9(18)` fixed decimal) rather than an expression, and neither target has a 64-bit two's-complement integer for the band to wrap in: COBOL's `PIC S9(18)` is 18 DECIMAL digits, not 2^63. **ptx** (`add.s64`) and **t3isa** (`TADD`) are machine targets whose add IS the hardware's, so the band is already whatever the ISA does and a trap would have to be synthesised in emitted instructions. **pascal** is the one worth revisiting if anyone installs a toolchain: it is a real expression language, so the class is a statement about the other four rather than about it. Nothing here is blocked; the contract simply does not reach these emitters, and saying so is the answer rather than a deferral.
@@ -686,80 +601,6 @@ the 88 tracked `.wgsl` files pass it and a planted missing callee fails it (red,
 leaves in `build-output/plug-oracle` and fails on a name that is called, bound
 nowhere in the file, and not a global of the language's own runtime (python's
 `ast` and `builtins`; node's `typeof globalThis`); zig by `zig ast-check`, csharp by a Roslyn build (CS0103), wasm by `wat2wasm --enable-tail-call`, and perl by `B::Xref` (a `main` sub used and defined nowhere), each of which resolves every function including those nothing calls. Seven rows; `-SelfTest` plants a missing callee per analyzer. Measured 2026-09-25 on freshly built plugs: python 57, javascript 50, typescript 75, zig 109, csharp 92 and wasm 71 callees, all PASS; perl 25, PASS (red, 2026-10-26, Git for Windows' perl 5.38). The box carries no toolchain for any other text plug (on PATH 2026-09-25: python, node, zig, dotnet, wat2wasm, wasmtime; no JVM, Go, Rust, Ruby, Lua, PHP, GHC, OCaml, Julia, Nim, Swift, D, Fortran, Pascal, Ada, COBOL, Elixir or Scheme), and the framework plugs (react, vue, svelte, angular, electron, compose) take UI IR the oracle's subject is not. Each of those joins with a toolchain install or an analyzer written for it.
-
-## 2.42 -- OPEN (reek, measured 2026-09-07): the compiler lifts every lambda before IR text, so no compiled subject can reach any plug's lambda arms; hand-authored IR is the only route
-
-The transport supports it at both ends and the plugs implement it, but nothing produces
-one. `IRTextEmitter` emits `(lambda (params ...) ...)` and `IRTextParser.codex:714` parses
-that atom, so the wire is capable. In fortran, `fort-collect-lams`, `fort-emit-lam-def`,
-`fort-dispatch-lams`, `fort-lam-key-of` and `fort-lam-name` all exist to serve it.
-
-Measured through `-Passes 'text-plug'`, which is what EVERY plug `run.ps1` compiles with:
-zero `(lambda` in `codex/test/roc-closure-captures-list.codex` (whose source carries
-`\ignored -> xs`), zero in `factorial.codex`, zero in the page's lens subject, and **zero
-in the compiler's own 1,299,513-byte IR-UNI**, whose 856,125 bytes of emitted Fortran
-contain no `cx_lam_` at all. Its 205 `cx_apply` arms come from `fort-dispatch-defs`,
-partial application of NAMED definitions, not from lambdas.
-
-**THE CAUSE IS MEASURED (reek, 2026-09-07): the compiler LIFTS every lambda to a named
-definition before it emits IR text, and the pipeline is not the variable.** Compiled with
-the DEFAULT pipeline and with `-Passes 'text-plug'`, `roc-closure-captures-list.codex`
-gives BYTE-IDENTICAL IR, 2,132 bytes each, zero `(lambda` in both. Its source
-`\ignored -> xs` arrives as:
-
-    (def "__lam_0" "" (params (param "xs" ...) (param "ignored" ...)) ... (name "xs" ...))
-
-with the site rewritten to `(apply (name "__lam_0" ...) (name "xs" ...))`. The capture
-became an explicit leading parameter. So a plug is handed a partial application of a NAMED
-DEFINITION, which is what `fort-dispatch-defs` serves and why the compiler's own Fortran
-carries 205 such arms and no `cx_lam_`.
-
-**The route that does reach it is hand-authored IR text.** A plug reads IR from stdin and
-`IRTextParser.codex:714` accepts the `lambda` atom, so a `(lambda ...)` written by hand
-reaches the arms without any compiler in the path. That is almost certainly what the
-2026-08-18 probe did (`FortranEmitter.codex:524`, five lambdas, which is why the key is a
-hash of the emitted body rather than a span). A grading harness for these arms should feed
-IR text directly rather than compile a subject; no choice of subject or pass can do it.
-
-**RULED (root, 2026-09-07): GRADE, never delete.** An arm is deleted only if a REACHED arm
-proves the code wrong, never because it was unreached.
-
-**DONE for fortran, and the arms are correct.** The route works and costs no guest at all,
-since the module runs under `wasmtime` on the host. Take a compiled IR, replace the lifted
-`(apply (name "__lam_0" ...) (name "xs" ...))` with
-
-    (lambda (params (param "ignored" int-default)) (name "xs" (list int-default)) (fn int-default (list int-default)))
-
-which is the shape `ir-parse-expr-lambda` reads (`(lambda <params> <body> <type>)`), and
-feed it to `fortran-stdio.wasm`. It answers 15,265 bytes containing
-
-    function cx_lam_120762235(ignored, xs) result(cx_lam_120762235_r)
-        cx_lam_120762235_r = xs
-
-with the capture as a parameter, 2 `cx_apply` arms and one `cx_fun` value. The key is a
-real hash rather than 0, which is what grades the `fort-collect-lams` change: it emits
-the body, hashes it, restores the heap, and only then allocates the record, so a restore
-that freed something live would give a garbage key or a trap.
-
-**DONE for zig and perl, by running (red, 2026-10-19).** IR-UNI from `compile.ps1 -IrUni
--Passes text-plug` (the text between `IR-BEGIN` and `IR-END` in the log), each lifted site
-replaced by `(lambda <params> <body> <type>)` taken from its `__lam_N` def, fed to
-`<plug>-stdio.wasm` under wasmtime, and the output run: `codex/test/fn-param-apply`'s three
-non-capturing lambdas answer 7 18 13 40 30 and a capturing subject (`\n -> n * k`,
-`\n -> n + a - b`, the captures free in the body) answers 42 104 -18, x86-64's values, under
-`zig run` and Git for Windows' perl, with no call of a lifted `__lam_N` in either emission.
-Running perl found its local-parameter map written in place (`list-insert-at`, L-ALIAS),
-which trapped the stdio module; fixed by inserting into a copy.
-
-**The residue is byte parity for this path, and it is blocked on ENCODING rather than on
-the plug.** `build/plug-run.ps1:93` writes a hardcoded mode byte 1 (IR-CCE) and that file
-is generated from the shell DSL, so hand-authored IR-UNI cannot be handed to the bare-metal
-plug for a whole-program comparison without a CCE encoder for hand-written text. The wasm
-arm is graded by inspection above; the whole-program arm is not graded on any lambda.
-
-Until then this is L-UNCALLED at transport scale: every lambda arm in all 45 plugs is code
-no test can execute, and a change to one of them lands ungraded no matter how carefully it
-is graded on everything else. That happened here, deliberately and on the record, for `fort-collect-lams`.
 
 ## 2.57 -- the arm64 Darwin Mach-O host wrap is the contributor's, outside the tree
 
@@ -811,66 +652,55 @@ No runtime for any of the four is on this box, so the oracle cannot grade a repa
 reads text only (L-VACUOUS): a repair here needs a toolchain decision first (WE DO NOT DO TOOLCHAINS,
 Damian 2026-09-07), or a refusal of guarded matches as the honest answer.
 
-## 2.111 -- the perl plug answers 63 of `codex/test/ops`'s 71 graded subjects
+## 2.118 -- the wasm plug refuses `race` and `await-any`
 
-Measured 2026-10-26 (red, seed 031D2953): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/perl/run.ps1`, run under Git for Windows' perl 5.38 with the console read as UTF-8, and its stdout compared to the `.expected` line by line: 63 PASS, 8 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only perl` passes). The failures, by first cause:
+Measured 2026-10-26 (val, seed 9E200018, `hosted-wasm-test.ps1`): a forked body runs at the fork, so nothing is ever pending and the winner of a race or an await-any, which x86-64 decides by which task its scheduler finishes first, has no answer here. Both emit `(codex-refused-<name>-on-wasm)`, pinned by the `.wasm-refusal` of `race-first`, `race-blocked-loser`, `race-nested-loser` and `waiters-mixed`. A task is a record (value, spent): a second await of a handle at top level fails like `fail` (`await-twice` answers refused, as x86-64 does), and an await inside a forked body never spends it, standing for x86-64's waiter registered while the task was pending (`two-awaiters` 14). Open: a scheduler on wasm (stack switching, or a lowering of forked bodies to resumable state) would let both run.
 
-- **Text is Unicode, not CCE (6):** the cross-plug gap 2.114.
-- **Bare metal's heap (2):** `variant-address` asserts `address-of` inside a `__heap-save` window, and `list-growth` measures heap growth; a hosted runtime has neither.
-
-Owner red.
-
-## 2.114 -- python, javascript and perl answer Unicode where x86-64 answers CCE, on six `codex/test/ops` subjects
-
-Measured 2026-10-26 (red, seed 031D2953), each subject through the plug's `run.ps1` and its runtime, stdout against the `.expected`: python, javascript and perl each fail these six, the same way; C# fails only `collate-order` and passes the other five. A Char is a codepoint, so `char-code-at` answers 97 where the `.expected` has 15 (`char-at-bounds`) and text built from codes prints the codepoint of the number (`tier0-cyrillic-print`, `tier0-cyrillic-print-uni`: codes 113-127 print as `qrstuvwxyz{|}~`); `text-compare` orders by codepoint, not CCE collation (`collate-order`, `text-order-allowed`: `cmp-d-b` answers 1 where the `.expected` has -1); `bytes-to-text` is absent or decodes Unicode (`unicode-bytes-roundtrip`). The model is C#'s (root, 2026-10-26): the program's text is CCE at run time and converts only at its edges, by a `_Cce` class the plug emits (`emit-cce-runtime`, `CSharpEmitter.codex`: a `_toUni` table, `CceToUni` at output, `UniToCce` and `FromUnicode` at input), so character codes and comparisons are CCE's; python, javascript and perl take the same runtime class to close this.
-
-Owner red.
-
-## 2.115 -- the python plug answers 63 of `codex/test/ops`'s 71 graded subjects
-
-Measured 2026-10-26 (red, seed BA856C62): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/python/run.ps1`, run under python 3.11 with `PYTHONIOENCODING=utf-8`, and its stdout compared to the `.expected` line by line: 63 PASS, 8 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only python`: 59 values match x86-64). The failures, by first cause:
-
-- **Text is Unicode, not CCE (6):** the cross-plug gap 2.114.
-- **Heap (2):** `variant-address` and `list-growth` probe bare metal's heap, which a hosted runtime does not have.
-
-Owner red.
-
-## 2.116 -- the javascript plug answers 43 of `codex/test/ops`'s 71 graded subjects
-
-Measured 2026-10-26 (red, seed BA856C62): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/javascript/run.ps1`, run under node, and its stdout compared to the `.expected` line by line: 43 PASS, 28 FAIL, 7 skipped for other sidecars (`plug-oracle-test -Only javascript`: 59 values match x86-64). The failures are the shapes 2.115 closed for python (main 49044 to 49058), by first cause:
-
-- **Real numbers (1):** `text-to-double-bits` of empty text answers NaN's bits where x86-64 answers 0 (`real-literal-rounding`).
-- **Text is Unicode, not CCE (6):** the cross-plug gap 2.114.
-- **Heap and byte buffers (6):** `alloc-bytes`, `address-of` and the vector builtins are absent (`cap-word-64`, `runtime-bytes-unsigned`, `variant-address`, `vec-lanes-smoke`); `list-growth` and `list-index-bounds` answer wrong values.
-- **Bit operations (5):** `bit-shru` is absent (`cap-grant-arm64`, `cap-grant-riscv`), a shift does not wrap at 64 bits (`int-min-literal`: `shl63`), `int-pow` throws on a negative exponent, `lir-bitops-shadow` calls the builtin a user definition shadows.
-- **Printing (2):** `print-line` is absent (`char-encode-bands`, `match-shadowed-arm`).
-- **Equality and names (3):** `list-equality`, `record-equality`, `record-generic-eq` emit javascript that does not parse.
-- **Patterns (3):** a nested pattern binds nothing (`native-nested-pattern`, `native-nested-tags`), and `unit-pattern-lit` emits a text literal unquoted.
-- **Other (3):** `cap-grant-emit` fails to run, `bounded-modes-smoke` keeps an out-of-bounds field, `unit-show` answers wrong text.
-
-Owner red.
-
-## 2.117 -- the C# plug answers 30 of `codex/test/ops`'s 71 graded subjects
-
-Measured 2026-10-26 (red, seed BA856C62): each `codex/test/ops/*.codex` with an `.expected` and no other sidecar, emitted through `codex/plugs/csharp/run.ps1`, built with `dotnet build` (net9.0, the project `check-plug-callees.ps1` uses) and run, its stdout compared to the `.expected` line by line: 30 PASS, 41 FAIL, 7 skipped for other sidecars. The failures, by first cause:
-
-- **Real numbers (18):** the Real builtins are absent (`real_to_bits`, `bits_to_real`, `to_real_approx`, `real_to_int`, `to_real_trapping` and the rest, CS0103); `int-min-literal` and `vec-lanes-smoke` reach one first.
-- **Equality and vector types (5):** `list-equality`, `record-equality`, `record-generic-eq`, `record-equality-vector` and `vec-sized` emit C# that does not compile (CS1003, CS1026, CS1031).
-- **Heap (5):** `poke-qword` is absent (`cap-word-64`); `runtime-bytes-unsigned`, `variant-address`, `list-growth` answer wrong values; `list-index-bounds` passes a `List<long>` where a string is expected.
-- **Unit types (4):** a unit-typed parameter or local is emitted `void` (`unit-pattern-lit`, `unit-real-arith`, `unit-real-compare`, `unit-show`; CS1536, CS1547).
-- **Records passed as text (3):** `cap-grant-arm64`, `cap-grant-emit`, `cap-grant-riscv` pass a `Machine` where a string is expected (CS1503).
-- **Other (6):** `_cx_ipow` is absent (`int-pow`), `-` is applied to a string (`int-wrapping-spelling`), a nested pattern binds nothing (`native-nested-pattern`), `lir-bitops-shadow` calls the builtin a user definition shadows, `bounded-modes-smoke` keeps an out-of-bounds field, and `collate-order` orders by codepoint (2.114).
-
-Owner red.
-
-## 2.118 -- the wasm plug runs `fork` at once and `await` as the identity, and has no `race` or `await-any`
-
-Measured 2026-10-26 (red, Update 72 release gate, seed 9E200018): `WasmEmitter.codex` emits `IrFork` as an immediate `clo_apply1` and `IrAwait` as its operand, so a task has no handle and no state. `await-twice` answers `stale: 505` where x86-64 refuses a second await of a spent handle; `race-first`, `race-blocked-loser`, `race-nested-loser` and `waiters-mixed` trap on the emitter's `unreachable` bail at `race`'s `await-any`. The five are known red in `wasm-run-baseline.txt`. Open: a task record (value, done, awaited) with a refused second await, and `await-any` over already-run tasks, which the synchronous model can answer as the first ready.
-
-Owner red.
+Owner val.
 
 ## 2.113 -- OPEN: a call of `par` is unchecked on rust
 
-Python, JavaScript and C# run `par` to x86-64's answer: `build/plug-oracle-test.ps1 -Subject codex/test/plug-oracle-par.codex` (negative values, a lambda capturing a value lifted inside `par`, an empty list) passes 3 of 3 values on each (red, 2026-10-26), and the Python emitter before its fix fails it with the original AttributeError. The JavaScript plug runs `fork` eagerly (`{ v: f(null) }`, `await` reads `.v`) because its functions are not `async`. Open: rust, no `rustc` on the box. The harness is run by hand; no gate runs either subject.
+Python, JavaScript and C# run `par` to x86-64's answer: `build/plug-oracle-test.ps1 -Subject codex/test/plug-oracle-par.codex` (negative values, a lambda capturing a value lifted inside `par`, an empty list) passes 3 of 3 values on each (red, 2026-10-26), and the Python emitter before its fix fails it with the original AttributeError. The JavaScript plug runs `fork` eagerly (`{ v: f(null) }`, `await` reads `.v`) because its functions are not `async`. perl fails it at head, printing a code reference for each value (blu, 2026-10-31, seed EA68DD69). Open: rust, no `rustc` on the box. The harness is run by hand; no gate runs either subject.
 
 Owner red (moved from val by root, 2026-10-26).
+## 2.119 -- OPEN: the index contract (list-at, list-set-at, list-insert-at, char-at, char-code-at, substring) on every backend
+
+THE CONTRACT is x86-64's: `list-at`, `list-set-at` and `char-at` trap on `i < 0` or `i >= length`, `list-insert-at` on `i > length`, `substring` on a negative start or length or a length past `length - start` (`emit-index-bounds`, `emit-list-set-at`, `lir-sel-list-at`, `emit-substring-bounds`). arm64 and riscv trap the same way (`a64-rt-index-guard`, `rv-rt-index-guard`). The arms are `codex/test/list-oob-negative`, `-read`, `-write`, `-write-negative`, `-wide` (index 2^32 + 1), `char-at-negative`, `char-at-past-end` and `substring-over-read`, each `.fatal` + `.cross-fatal`; both cross beds fault on all of them (2026-10-31).
+
+DONE 2026-10-31 (red), GRADED BY RUNNING the 8 arms (40 of 40 runs stop with no value): wasm (`$cx_index_guard` in `$list_at`, `$list_set_at`, `$char_at` and `char-code-at`, i64 checks in `$substring` and `$list_insert_at`, `$cx_lane_guard` on `vec-extract` against the vector type's lane count; before, all 8 ran to exit 0, `list-oob-negative` read the header 12884901891 and `-wide` read element 1), python, javascript, perl (helpers raising or exiting `CODEX_TRAP_index`), csharp (`checked((int)i)`; `(int)` truncated 2^32 + 1 to 1). typescript and the six web plugs (angular, electron, html, qt, react, vue, svelte) carry the guard in their `list_at` / `char_at` preludes, graded only by a node run of the guard body.
+
+SAFE BY THE TARGET, read and not run: zig (its prelude refuses to build without runtime safety), cil (`conv.ovf.i4` and `List.get_Item`), go, rust (`as usize` of a negative is huge and panics), swift, haskell (`!!`), ocaml (`List.nth`), julia (`BoundsError`), d while its bounds checks are compiled in (`-release` and `-boundscheck=off` remove them; the build's to guarantee).
+
+OPEN:
+- fortran short-circuits `&` and `|` and lowers a guard in a def body or a `let` value to statements since 2026-10-31 (`FortranPlug` runs `ShortCircuit.codex` `sc-defs`; `fort-emit-let-stmt` sends an `IrIf` or `IrMatch` value through `fort-emit-assign`): in `and-guards-index` exactly `next_is` and `past_or` moved (12 lines), and the guarded `fort_list_at` and `fort_char_code_at` now sit in the branch the guard admits; EMISSION ONLY, no Fortran compiler on the box. OPEN: an `IrIf` nested in an operand or an argument is still `merge(t, el, c)` (`fort-emit-expr-at`, `FortranEmitter.codex` 820, and match arms at 943), which evaluates both branches, so `1 + (if i < n then list-at xs i else 0)` runs `list-at xs i` and stops on its `CODEX_TRAP_index` guard (L-EAGER); it needs a temporary assigned under `if ... then ... else` before the enclosing statement. cil (`and`, opcode 95) short-circuits since 2026-10-31: `CilStdio` runs `codex/plugs/common/ShortCircuit.codex` `sc-defs` before emitting, graded by running (`codex/plugs/cil/test.mjs` case `guards` and `test-managed.ps1`: `Index was out of range` before, 73 of 73 PASS after); the ModBuilder page embeds its own copy of `cil-stdio.wasm` (`apps/modbuilder/build-site.ps1`), refreshed at the next site build. arm64, riscv and wasm short-circuit `&` and `|` (`ShortCircuit.codex` rewrites both to `IrIf` before the native codegen; `codex/test/and-guards-index` is the arm, and faulted on both beds before).
+- silent, no toolchain on the box: php (`$a[i]` answers null), ruby and lua (`nil`, and ruby counts a negative index from the end).
+- the JVM plugs (java, kotlin, scala, compose) narrow every list, char and substring index with `Math.toIntExact` (`Math.addExact` for a substring end), so 2^32 + 1 throws where `.toInt()` read element 1; EMISSION ONLY, no JDK on the box: on `list-oob-wide` each emits one `toIntExact` and no truncating cast (2026-10-31).
+- the table-driven plugs, read on what each EMITS for `list-oob-read` (2026-10-31): objc (`objectAtIndex`), clojure (`nth`) and scheme (`list-ref`) refuse by the language; nim (`t[i]`, unless built `-d:danger`) and pascal (a Variant array index) rest on the target's checks. ada answered 0 or "" past the end, fortran indexed `xs(int(i) + 1)` with no check, elixir took `Enum.at` (nil, and negative counts from the end) and groovy `t[i]` (null): each now refuses `CODEX_TRAP_index` (`raise Constraint_Error`, `error stop`, `raise`, `IndexOutOfBoundsException`), EMISSION ONLY, no toolchain on the box. cobol refuses `CODEX_TRAP_index` (`RETURN-CODE` 1) on `list-at`, `char-at` and `substring` out of range and on an append, cons, push or `text-split` past its fixed `OCCURS` table (256 integers, 64 texts), refuses a list literal over 256 elements at emission, and refuses a call it has no definition for, which used to answer the call's first argument, so `char-code-at`, `char-code`, `char-encode`, `code-to-char` and `list-set-at` subjects (`char-at-*`, `list-oob-write*`, `plug-oracle-arith`, `and-guards-index`) now refuse with exit 6; EMISSION ONLY, no toolchain on the box (2026-10-31). OPEN: maui emits nothing for the subject.
+- typescript has no emitter for `list-set-at`, `substring`, `bit-shl` or `char-to-text`, so it refuses `lz4-test` and `char-at-bounds` rather than answering.
+- `hosted-wasm-test.ps1` grades every `.cross-fatal` subject on wasm (a wasm trap passes; `-Calibrate` requires the mangled subject not to trap): 15 of 15 pass (2026-10-31), the bounded Integer parameter and return guards included (`$cx_bound_guard`, `$cx_bound_ret`). `build/plug-oracle-test.ps1 -Subject <arm> -ExpectTrap` grades one trap arm on every wired text plug (x86-64 must fault; a plug passes on a non-zero exit that is not a refusal marker). Over the 15 arms (2026-10-31): python, javascript and perl 12 of 15, csharp 10, zig 11, typescript 7. OPEN from that matrix: python, javascript, perl, csharp, typescript and zig guard a bounded Integer parameter at entry and a bounded return (`_cx_bound`, `_Buf.cx_bound_ok`, `CODEX_TRAP_bound`; the return of an effectful or self-tail-recursive def is not checked, and csharp guards neither a self-tail-recursive nor a generic-lambda def); (`bounded-param-trap`, `bounded-param-ninth`, `bounded-return-trap` run to exit 0); csharp fails to build `exc-div-zero` and `vec-lane-computed-oob`; typescript has no emitter for `list-set-at`, `substring`, `vec-extract` or `to-real-trapping`, and zig none for `vec-extract`. No gate runs the matrix.
+- the raw primitives (`__buf-write-byte`, `__buf-write-bytes`, `__buf-read-bytes`, `poke-*`) take an address and offset on every backend, x86-64 included, and carry no length; their bound belongs to the chapter that owns the buffer.
+
+Owner red.
+
+## 2.121 -- OPEN, parked by 2.122 (Damian, 2026-10-31: cross outputs wait for paying customers): 3 riscv64 cross-battery reds, listed by subject in `codex/plugs/riscv/cross-reds.txt`
+
+Measured 2026-10-31 (fester, `build/test-cross-batch.ps1 -Arch riscv64 -Jobs 16`, riscv plug at main 51496 plus fester 51701 and 51702): 745 pass, 14 compile only, 69 refused as designed, 4 red, of which `cover-arms` has since gained its `.cross-refusal` for `__cover-arm` (only the x86-64 runtime writes COVER lines). Subjects that reach a construct both cross plugs refuse carry a `.cross-refusal`; slow subjects correct under emulation carry a `.cross-budget` sized by a measurement alone (its comment holds it). Riscv calls are `auipc ra` + `jalr`, so a program past 1 MiB of code links. A subject's `.flags` reaches the cross compile (`-RawFlags` through `compile-riscv.ps1` and `compile-arm64.ps1`, both generated). `build/test-cross-batch.ps1` exits 1 when any subject ends other than PASS_EXPECTED, PASS_COMPILE_ONLY or PASS_REFUSED; no script invokes it, so no gate turns red at head. Open:
+- `wycheproof-ecdsa-p256` and `wycheproof-x25519` fault in `list-at` at their second line (`!EXC=3` at +0xC, the bounds trap; `!EXC=5` at +0x4, a load at 0x1425F2F16, past the guest's RAM). Recipe: find the caller from `test-output-cross\riscv64\<t>\<t>.map` and `ra` in a QEMU `-d int` run; suspect first the heap passing the 1 GiB guest (no GC, hundreds of vectors). `wycheproof-rsa-pkcs1` passes in 73.5 s.
+- `await-twice` answers 505 where x86-64 refuses: the riscv runtime runs a fork at the fork, so a second await always finds a finished task, and a consumed flag that refuses it also refuses `two-awaiters`' second, legitimate await (the flag turned `two-awaiters` into `!EXC=3`). It closes with a riscv scheduler or with COMPILER-138's linear `Task` (Damian's decision).
+Owner fester (parked).
+
+## 2.122 -- Deferred (Damian, 2026-10-31): the cross outputs are not release work
+
+Damian, 2026-10-31: "We should not gate a x86 good release on plugs, or other outputs than .cdx or .codex from the compiler itself. any deficiencies in riscv or arm or wasm are secondary. do not put that in the release at all, even to report. it is a seperate processes when we have customers on those architectures that care and want to pay for the tokens." The release gate keeps no cross phase (the shelved `cross-battery` phase, CL 51576, is deleted), and arm64, riscv64 and wasm defects are worked only when that separate process starts. The open cross reds at head: riscv64 in `codex/plugs/riscv/cross-reds.txt` (8); arm64 in root's full run, `D:\Projects\Cobblestone-root\test-output-cross\arm64_cross_results.md` (2026-10-31, 21 FAIL, `lir-bitops-shadow` fixed since). The arm64 `__hardware-random-word` ruling for that day (root, 2026-10-31): `mrs RNDR` guarded by `ID_AA64ISAR0_EL1` bits 60-63, -1 when absent so `net-isn` takes its clock fallback, the arm64 bed on a FEAT_RNG CPU; the refusal is not lifted, because a clock ISN is a weaker TCP sequence number. Diagnosed 2026-10-31 (red, root's logs): `ir-fidelity-summary`, `lambda-lift-shape` and `codex-text-roundtrip` cite `Codex chapter Opening`, whose `serial-byte` (`codex/compiler/opening.codex:341`) reaches `port-out-byte`, so all three are the `check-empty-fidelity-lifetime` shape and want its two sidecars (`.cross-refusal port-out-byte`, `.cross-budget compile 240`); the 120 s "timeouts" are about 100 s of IR compile plus 15 s of plug. `ctor-return-parser` is a real arm64 miscompile: its second line prints `|0|0` for `First|0|0`, so `token-text (ctor.name)` is empty after the `__heap-save` / `deck-record` / `__heap-restore` sequence, and the run stalls after it.
+
+## 2.127 -- OPEN, parked by 2.122: the shift-count rule (COMPILER-158) on the cross and source plugs
+
+Damian, 2026-11-01: a shift count of 64 or more answers 0 (the sign fill for `bit-shr`) and a negative count is refused. x86-64 does so since main 52498 (`emit-shift-guarded`, `codex/test/shift-range`). arm64 (`a64-emit-bit-shift`, `a64-emit-bit-shl`, `Arm64CodeGen2.codex`: LSL, LSR and ASR by register take the count modulo 64), riscv64 (SLL, SRL and SRA take its low six bits) and wasm (`WasmEmitter.codex` `bit-shl`/`bit-shr`/`bit-shru`: i64.shl and i64.shr take it modulo 64) still answer the wrapped shift; arm64 has `arm64-cmp-imm`, `arm64-csel`, `arm64-tbnz` and `arm64-b-cond` for the guard. A constant negative count is refused at compile time for every target (CDX2074). The csharp plug follows the rule (`_Shf` in `CSharpEmitter.codex`'s prelude; `build/plug-oracle-test.ps1 -Only csharp` passes `shift-range` and, with `-ExpectTrap`, `shift-negative-count`). Each other source plug lowers to its own language's shift operator, not measured against the rule. **Open:** each remaining plug answers `codex/test/shift-range` as x86-64 does.
+
+## 2.124 -- OPEN: an arm64 image past 0x40200000 is overwritten by its own runtime
+
+Measured 2026-10-31 (val, seed EA68DD69, arm64 plug rebuilt from the depot, `build/test-cross.ps1 -Arch arm64`): `Arm64Runtime.codex` fixes the CCE tables at `#40200000`, `#40201000` and `#40201100` and the heap at `a64-heap-start` `#40202000`, while the image loads at `#40100080` with text then rodata. An image whose segment ends past `#40200000` (about 1 MiB of image) is overwritten at boot by the table setup and the first allocations, and the plug emits it without a word. `wycheproof-x25519` (1,323,752 bytes) and `wycheproof-rsa-pkcs1` (1,715,792) print `cases = 0`: their integer-literal lists are shared constants in rodata past the line. A scratch unit of one 518-literal list and N rows of 32 literals passes at 1,024 rows (868,992 bytes) and faults at 1,600 (1,343,616) with `!A64FAULT ESR=0000000002000000 ELR=0000000040200000`, executing the overwritten bytes. Open: place the tables and the heap above the image (or refuse an image that reaches them, as `a64-effect-op-overrun` refuses an overrun, L-BAILVALUE). `codex/plugs/pe/Arm64PeWriter.codex:257` maps `0x40200000-0x403FFFFF` as device memory and must move with them. Owner unowned (root, 2026-10-31: cross plug defects are secondary).
+
+## 2.126 -- OPEN, parked by 2.122: `brotli-compress` traps on arm64 and riscv64
+
+Measured 2026-11-01 (val, seed 3DB708D76D735D16, `build/test-cross.ps1`, depot `Brotli.codex` and val's 52120 alike): `brotli-compress` of the 600-byte input `make-skew 600` (`codex/test/apps/brotli-hostile` row 3) prints `!A64FAULT V=4 EL=1 ESR=00000000F2000001 ELR=0000000040102A84` on arm64 and `!EXC=0000000000000003 PC=000000008000A6E0` on riscv64 before the call returns; x86-64 answers 18 bytes. A 200-byte uniform input compresses on both. `brotli-hostile` therefore fails from row 3 on both beds. The decoder is clean there: `codex/test/apps/brotli-stages` (decompress only) passes on arm64, riscv64 and wasm. Recipe: the riscv `!EXC=3` is the `list-at` bounds trap (2.121); find the caller from the subject's `.map` at that PC. Owner unowned (root, 2026-11-01: cross defects wait).

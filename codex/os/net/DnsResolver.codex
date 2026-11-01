@@ -5,8 +5,6 @@ Chapter: DnsResolver
   cites Foreword chapter Hamt
   cites Foreword chapter CCE
 
- We say:
-
 Section: DNS Records
 
   DnsRecord =
@@ -178,9 +176,12 @@ Section: Query Construction
 
 Section: Response Parsing
   DnsAnswer = record {
+    owner : List Integer,
     rtype : Integer,
+    rclass : Integer,
     ttl : Integer,
-    rdata : List Integer
+    rdata : List Integer,
+    target : List Integer
   }
 
   DnsResponse = record {
@@ -234,12 +235,54 @@ Section: Response Parsing
     if count <= 0 then acc
     else if off + 10 > list-length data then acc
     else let name-end = dns-skip-name data off
-    in let rtype = read-be16 data name-end
+    in if name-end + 10 > list-length data then acc
+    else let rtype = read-be16 data name-end
     in let ttl = dns-read-be32 data (name-end + 4)
     in let rdlen = read-be16 data (name-end + 8)
-    in let rdata = dns-extract-rdata data (name-end + 10) rdlen []
-    in let answer = DnsAnswer { rtype = rtype, ttl = ttl, rdata = rdata }
+    in if name-end + 10 + rdlen > list-length data then acc
+    else let rdata = dns-extract-rdata data (name-end + 10) rdlen []
+    in let target = if rtype == dns-type-cname then dns-read-name data (name-end + 10) else []
+    in let answer = DnsAnswer { owner = dns-read-name data off, rtype = rtype, rclass = read-be16 data (name-end + 2), ttl = ttl, rdata = rdata, target = target }
     in dns-parse-answers data (name-end + 10 + rdlen) (count - 1) (list-push acc answer)
+
+ RFC 1035 sections 2.3.4 and 4.1.4: a label is at most 63 bytes, a name at most
+ 255, and the top two bits 11 mark a 14-bit pointer (01 and 10 are reserved).
+ A pointer must land strictly before the run that holds it, so every jump moves
+ the floor down and a pointer loop is refused rather than followed. Labels are
+ lowered to ASCII lower case because names compare case-blind (RFC 4343). An
+ empty list is a refused name and equals no encoded name, which ends in 0.
+
+  dns-name-max : Integer = 255
+
+  dns-read-name : List Integer, Integer -> List Integer
+  dns-read-name (data) (off) = dns-read-name-at data off off []
+
+  dns-read-name-at : List Integer, Integer, Integer, List Integer -> List Integer
+  dns-read-name-at (data) (off) (low) (acc) =
+    if off >= list-length data then []
+    else let b = list-at data off
+    in if b == 0 then dns-name-end acc
+    else if bit-and b 192 == 192 then dns-read-name-jump data off low acc
+    else if b > 63 then []
+    else if off + 1 + b > list-length data then []
+    else if list-length acc + 1 + b >= dns-name-max then []
+    else dns-read-name-at data (off + 1 + b) low (dns-lower-label data (off + 1) (off + 1 + b) (list-push acc b))
+
+  dns-name-end : List Integer -> List Integer
+  dns-name-end (acc) = if list-length acc + 1 > dns-name-max then [] else acc & [0]
+
+  dns-read-name-jump : List Integer, Integer, Integer, List Integer -> List Integer
+  dns-read-name-jump (data) (off) (low) (acc) =
+    if off + 2 > list-length data then []
+    else let dest = bit-or (bit-shl (bit-and (list-at data off) 63) 8) (list-at data (off + 1))
+    in if dest >= low then []
+    else dns-read-name-at data dest dest acc
+
+  dns-lower-label : List Integer, Integer, Integer, List Integer -> List Integer
+  dns-lower-label (data) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let c = list-at data i
+    in dns-lower-label data (i + 1) stop (list-push acc (if c >= 65 & c <= 90 then c + 32 else c))
 
   dns-read-be32 : List Integer, Integer -> Integer
   dns-read-be32 (data) (off) =
@@ -257,29 +300,64 @@ Section: Response Parsing
     else dns-extract-rdata data (off + 1) (len - 1) (list-push acc (list-at data off))
 
 Section: Response Extraction
-  dns-first-a-record : DnsResponse -> Maybe (List Integer)
-  dns-first-a-record (resp) =
-    if resp.valid == False then None
-    else dns-find-a-in-answers (resp.answers) 0 (list-length (resp.answers))
+ RFC 1034 section 3.6.2: an answer for the name asked is an A record owned by
+ that name, or by the end of a CNAME chain starting at it, in class IN. A chain
+ longer than 16 links is refused, which bounds the chase at 17 scans of the
+ answer list however many answers the datagram carries.
 
-  dns-find-a-in-answers : List DnsAnswer, Integer, Integer -> Maybe (List Integer)
-  dns-find-a-in-answers (answers) (i) (len) =
+  dns-cname-max : Integer = 16
+
+  dns-first-a-record : DnsResponse, Text -> Maybe (List Integer)
+  dns-first-a-record (resp) (name) =
+    when dns-a-answer resp name
+      is None -> None
+      is Just (a) -> Just (a.rdata)
+
+  dns-first-a-ttl : DnsResponse, Text -> Integer
+  dns-first-a-ttl (resp) (name) =
+    when dns-a-answer resp name
+      is None -> 0
+      is Just (a) -> a.ttl
+
+  dns-a-answer : DnsResponse, Text -> Maybe DnsAnswer
+  dns-a-answer (resp) (name) =
+    if resp.valid == False then None
+    else let want = dns-read-name (dns-encode-name name) 0
+    in if list-length want == 0 then None
+    else dns-chase (resp.answers) want 0 (list-length (resp.answers))
+
+  dns-chase : List DnsAnswer, List Integer, Integer, Integer -> Maybe DnsAnswer
+  dns-chase (answers) (want) (links) (len) =
+    when dns-find-owned answers want dns-type-a 0 len
+      is Just (a) -> Just a
+      is None -> if links >= dns-cname-max then None else dns-chase-cname answers (dns-find-owned answers want dns-type-cname 0 len) links len
+
+  dns-chase-cname : List DnsAnswer, Maybe DnsAnswer, Integer, Integer -> Maybe DnsAnswer
+  dns-chase-cname (answers) (found) (links) (len) =
+    when found
+      is None -> None
+      is Just (c) -> if list-length (c.target) == 0 then None else dns-chase answers (c.target) (links + 1) len
+
+  dns-find-owned : List DnsAnswer, List Integer, Integer, Integer, Integer -> Maybe DnsAnswer
+  dns-find-owned (answers) (want) (rtype) (i) (len) =
     if i >= len then None
     else let a = list-at answers i
-    in if a.rtype == dns-type-a then
-      if list-length (a.rdata) == 4 then Just (a.rdata)
-      else dns-find-a-in-answers answers (i + 1) len
-    else dns-find-a-in-answers answers (i + 1) len
+    in if dns-answer-fits a want rtype then Just a
+    else dns-find-owned answers want rtype (i + 1) len
 
-  dns-first-a-ttl : DnsResponse -> Integer
-  dns-first-a-ttl (resp) = dns-find-a-ttl (resp.answers) 0 (list-length (resp.answers))
+  dns-answer-fits : DnsAnswer, List Integer, Integer -> Boolean
+  dns-answer-fits (a) (want) (rtype) =
+    if a.rtype /= rtype then False
+    else if a.rclass /= dns-class-in then False
+    else if rtype == dns-type-a & list-length (a.rdata) /= 4 then False
+    else dns-same-bytes (a.owner) want 0 (list-length want)
 
-  dns-find-a-ttl : List DnsAnswer, Integer, Integer -> Integer
-  dns-find-a-ttl (answers) (i) (len) =
-    if i >= len then 0
-    else let a = list-at answers i
-    in if a.rtype == dns-type-a then a.ttl
-    else dns-find-a-ttl answers (i + 1) len
+  dns-same-bytes : List Integer, List Integer, Integer, Integer -> Boolean
+  dns-same-bytes (xs) (ys) (i) (n) =
+    if list-length xs /= n then False
+    else if i >= n then True
+    else if list-at xs i /= list-at ys i then False
+    else dns-same-bytes xs ys (i + 1) n
 
 Section: UDP Integration
   dns-build-udp-query : List Integer, List Integer, Integer, Text -> List Integer

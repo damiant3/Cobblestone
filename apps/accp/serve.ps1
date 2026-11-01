@@ -1,20 +1,75 @@
 [CmdletBinding()]
-param([string]$Bundle = '', [string]$Journal = '', [ValidateRange(1048576,33554432)][int]$JournalBytes=33554432, [switch]$Mcp, [string]$ProtocolLog='')
+param([string]$Bundle = '', [string]$Journal = '', [ValidateRange(1048576,33554432)][int]$JournalBytes=33554432, [switch]$Mcp, [string]$ProtocolLog='',
+      [string]$Requester='', [string]$Grantors='', [string]$Identity='', [ValidateRange(1,86400)][int]$MaxLeaseSeconds=3600,
+      [string]$Policy='', [string]$NameBook='', [string]$UsageLedger='', [switch]$RequestBinding)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$binding = $null
+if ($RequestBinding) {
+    if ($Mcp) { throw 'Request binding is for the L2 wire; the MCP conduit takes instance binding' }
+    if ($Requester) { throw 'A request-bound instance takes no -Requester: each request names and signs its own' }
+    if (-not ($Grantors -and $Identity)) { throw 'A request-bound instance needs -Grantors and -Identity' }
+}
+$seenNonces = @{}
+$issuedNonces = @{}
+function Drop-Expired([hashtable]$Table, [long]$Now) {
+    foreach ($k in @($Table.Keys)) { if ($Table[$k] -lt $Now) { $Table.Remove($k) } }
+}
+$policyText = ''; $policyHash = ''; $nameBookHex = ''
+if (($Policy -or $NameBook -or $UsageLedger) -and -not ($Requester -or $Grantors -or $Identity)) { throw 'A held policy or usage ledger needs an instance binding (-Requester, -Grantors, -Identity)' }
+$usage = @{}
+$quotaCharge = $null
+if ($UsageLedger) {
+    if (-not (Test-Path -LiteralPath $UsageLedger)) { [IO.File]::WriteAllText($UsageLedger, '') }
+    foreach ($line in [IO.File]::ReadAllLines((Resolve-Path -LiteralPath $UsageLedger).Path)) {
+        if ($line.Trim() -eq '') { continue }
+        $u = $line | ConvertFrom-Json
+        $k = "$($u.grantor)|$($u.holder)|$($u.rule)|$($u.period_key)"
+        $usage[$k] = [long]($(if ($usage.ContainsKey($k)) { $usage[$k] } else { 0 })) + [long]$u.ms
+    }
+    $UsageLedger = (Resolve-Path -LiteralPath $UsageLedger).Path
+}
+if ($Requester -or $Grantors -or $Identity) {
+    $keyForm = '^[0-9a-f]{64}$'
+    if (-not $RequestBinding -and $Requester -cnotmatch $keyForm) { throw 'Requester must be an Ed25519 public key as 64 lowercase hex digits' }
+    if ($Identity -cnotmatch $keyForm) { throw 'Identity must be an Ed25519 public key as 64 lowercase hex digits' }
+    $grantorKeys = @($Grantors -split ',' | Where-Object { $_ -ne '' })
+    if ($grantorKeys.Count -eq 0) { throw 'An instance binding names at least one grantor key' }
+    foreach ($g in $grantorKeys) { if ($g -cnotmatch $keyForm) { throw 'Every grantor must be an Ed25519 public key as 64 lowercase hex digits' } }
+    $sortedGrantors = [string[]]$grantorKeys; [Array]::Sort($sortedGrantors, [StringComparer]::Ordinal)
+    for ($i = 1; $i -lt $sortedGrantors.Count; $i++) { if ($sortedGrantors[$i] -ceq $sortedGrantors[$i-1]) { throw 'A grantor key is listed twice' } }
+    if ($grantorKeys -ccontains $Requester) { throw 'The requester key is in the grantor set, so every lease it presented would be self-granted' }
+    if ($grantorKeys -ccontains $Identity -or ($Requester -and $Identity -ceq $Requester)) { throw 'The instance identity key must differ from the requester and every grantor' }
+    if ($Policy -or $NameBook) {
+        if (-not ($Policy -and $NameBook)) { throw 'A held policy needs both -Policy (the grantor''s prose) and -NameBook (the book the grantor signed, as hex)' }
+        $policyBytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Policy).Path)
+        if ($policyBytes.Length -eq 0 -or $policyBytes.Length -gt 65536) { throw 'The policy file must hold 1 to 65536 bytes' }
+        $policyText = [Text.UTF8Encoding]::new($false, $true).GetString($policyBytes)
+        $policyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($policyBytes)).ToLowerInvariant()
+        $nameBookHex = ([IO.File]::ReadAllText((Resolve-Path -LiteralPath $NameBook).Path)).Trim()
+        if ($nameBookHex -cnotmatch '^([0-9a-f]{2}){1,32768}$') { throw 'The name book file must hold lowercase hex' }
+    }
+    $binding = [ordered]@{
+        transport = $(if ($RequestBinding) { 'request' } else { 'stdio' }); requester = $Requester; identity = $Identity
+        grantors_sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($sortedGrantors -join ','))).ToLowerInvariant()
+        grantor_count = $sortedGrantors.Count; grantor_keys = ($sortedGrantors -join ','); max_lease_seconds = $MaxLeaseSeconds
+        policy_sha256 = $policyHash
+    }
+}
 if (-not $IsWindows) { throw 'The first ACCP adapter requires Windows Job Objects.' }
 Add-Type -Path (Join-Path $PSScriptRoot 'HostIo.cs')
 if (-not $Bundle) { $Bundle = Join-Path $PSScriptRoot 'build-output' }
 $Bundle = (Resolve-Path $Bundle).Path
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
+$stdoutWriter = [IO.StreamWriter]::new([Console]::OpenStandardOutput(), [Text.UTF8Encoding]::new($false)); $stdoutWriter.AutoFlush = $true; [Console]::SetOut($stdoutWriter)
 $manifest = Get-Content -LiteralPath (Join-Path $Bundle 'manifest.json') -Raw | ConvertFrom-Json
 $entry=if($Mcp){'AccpMcp'}else{'Accp'}
-foreach ($name in @("$entry.cdx","$entry.exe",'codex-compiler.wasm','wasm-stdio.wasm','runtime.json','math.codex','physics.codex','experiment.codex')) {
+foreach ($name in @("$entry.cdx","$entry.exe",'codex-compiler.wasm','wasm-stdio.wasm','runtime.json','math.codex','physics.codex','experiment.codex','exact.codex')) {
     $actual = (Get-FileHash -LiteralPath (Join-Path $Bundle $name)).Hash.ToLowerInvariant()
     if ($actual -cne $manifest.files.$name) { throw "Artifact digest mismatch: $name" }
 }
 $libraries = @{}
-foreach ($name in @('math','physics','experiment')) {
+foreach ($name in @('math','physics','experiment','exact')) {
     $bytes = [IO.File]::ReadAllBytes((Join-Path $Bundle ($name+'.codex')))
     if ($bytes.Length -gt 65536) { throw 'Library exceeds source_bytes' }
     $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
@@ -35,7 +90,8 @@ $meta = [ordered]@{
     engine_sha256=(Get-FileHash $wasmtime).Hash.ToLowerInvariant()
     adapter_sha256=(Get-FileHash $PSCommandPath).Hash.ToLowerInvariant()
     host_io_sha256=(Get-FileHash (Join-Path $PSScriptRoot 'HostIo.cs')).Hash.ToLowerInvariant()
-    libraries=@{math=$manifest.files.'math.codex';physics=$manifest.files.'physics.codex';experiment=$manifest.files.'experiment.codex'}
+    libraries=@{math=$manifest.files.'math.codex';physics=$manifest.files.'physics.codex';experiment=$manifest.files.'experiment.codex';exact=$manifest.files.'exact.codex'}
+    binding=$binding
 }
 $metaJson = $meta | ConvertTo-Json -Compress
 $sessionName = 'accp-' + [Guid]::NewGuid().ToString('N')
@@ -140,7 +196,7 @@ try {
         if ($frame.Eof) { break }
         $lastResponseSent=$false
         if ($journalStream.Length -gt $JournalBytes-1MB) { throw 'journal_bytes: execution refused' }
-        $requestClock.Restart(); $budgetMs=10000; $stdoutCap=65536
+        $requestClock.Restart(); $budgetMs=10000; $stdoutCap=65536; $quotaCharge=$null
         $phaseTimes=[ordered]@{compile=0;lens=0;assemble=0;run=0;total=0}
         $sourceHash=Hash-Text ''; $inputHash=Hash-Text ''; $compiledSourceHash=$null
         $requestHash=$frame.Sha256
@@ -172,7 +228,7 @@ try {
                             $budgetMs=[Math]::Min(10000,[int]$cmd.limits.ms); $stdoutCap=[Math]::Min(65536,[int]$cmd.limits.stdout_bytes)
                             $cache=$cached['codex-compiler.wasm']
                             if ((Get-FileHash $cache.path).Hash -ne $cache.hash) { throw 'compiler native image changed' }
-                            $data=$utf8.GetBytes("IR-UNI decks=12`n"+[string]$cmd.source+[char]0)
+                            $mode=if($cmd.PSObject.Properties['prose'] -and $cmd.prose -eq $true){'IR-UNI decks=12 prose'}else{'IR-UNI decks=12'}; $data=$utf8.GetBytes($mode+"`n"+[string]$cmd.source+[char]0)
                             $reply=Invoke-Tool $wasmtime @('run','--allow-precompiled','-W','epoch-interruption=y,timeout=10000ms,max-wasm-stack=16777216,max-memory-size=536870912,trap-on-grow-failure=y',$cache.path) $data (Remaining) 16MB
                             $phaseTimes.compile=$reply.ms
                             $reply=@{status=$reply.status;reason=$reply.reason;text=$reply.text}
@@ -196,11 +252,54 @@ try {
                             } else { $reply=@{status=$reply.status;reason=$reply.reason} }
                         }
                         'execute' {
-                            $reply=Invoke-Tool $wasmtime @('run','-W','epoch-interruption=y,timeout=10000ms,max-wasm-stack=16777216,max-memory-size=67108864,trap-on-grow-failure=y',(Join-Path $sessionRoot 'program.wasm')) $utf8.GetBytes([string]$cmd.input) (Remaining) $stdoutCap
+                            $execMs=Remaining
+                            if($quotaCharge){$execMs=[int][Math]::Min($execMs,$quotaCharge.remaining)}
+                            $reply=Invoke-Tool $wasmtime @('run','-W','epoch-interruption=y,timeout=10000ms,max-wasm-stack=16777216,max-memory-size=67108864,trap-on-grow-failure=y',(Join-Path $sessionRoot 'program.wasm')) $utf8.GetBytes([string]$cmd.input) $execMs $stdoutCap
                             $phaseTimes.run=$reply.ms
+                            if($quotaCharge){
+                                $charged=[long][Math]::Max(1,[long]$reply.ms)
+                                $entry=[ordered]@{grantor=$quotaCharge.grantor;holder=$quotaCharge.holder;rule=$quotaCharge.rule;period_key=$quotaCharge.period_key;ms=$charged;lease_id=$quotaCharge.lease_id}
+                                [IO.File]::AppendAllText($UsageLedger,($entry|ConvertTo-Json -Compress)+"`n",$utf8)
+                                $usage[$quotaCharge.key]=[long]$(if($usage.ContainsKey($quotaCharge.key)){$usage[$quotaCharge.key]}else{0})+$charged
+                                $quotaCharge=$null
+                            }
                             $reply=@{status=$reply.status;reason=$reply.reason;text=$reply.text;bytes=$reply.bytes;sha256=$reply.sha256}
                         }
                         'clock' { $phaseTimes.total=$requestClock.ElapsedMilliseconds; $reply=@{ms=$phaseTimes} }
+                        'now' { $local=[DateTime]::Now; $reply=@{status='ok';seconds=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds();week_minute=((([int]$local.DayOfWeek)+6)%7)*1440+$local.Hour*60+$local.Minute} }
+                        'quota' {
+                            if(-not $UsageLedger){$reply=@{status='none'}}
+                            else{
+                                $periodKey=if([string]$cmd.period -eq 'day'){[DateTime]::Now.ToString('yyyy-MM-dd')}else{'lease:'+[string]$cmd.lease_id}
+                                $k="$($cmd.grantor)|$($cmd.holder)|$($cmd.rule)|$periodKey"
+                                $spent=[long]$(if($usage.ContainsKey($k)){$usage[$k]}else{0})
+                                $limit=[long]$cmd.minutes*60000
+                                $quotaCharge=@{key=$k;grantor=[string]$cmd.grantor;holder=[string]$cmd.holder;rule=[string]$cmd.rule;period_key=$periodKey;lease_id=[string]$cmd.lease_id;remaining=[long][Math]::Max(0,$limit-$spent)}
+                                $reply=@{status='ok';spent_ms=$spent;period_key=$periodKey}
+                            }
+                        }
+                        'nonce' {
+                            if(-not $RequestBinding){throw 'nonce bridge on an instance without request binding'}
+                            $n=[string]$cmd.nonce; if($n -cnotmatch '^[0-9a-f]{64}$'){throw 'malformed nonce'}
+                            $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); Drop-Expired $seenNonces $now
+                            if($seenNonces.ContainsKey($n)){$reply=@{status='refused';reason='nonce was seen inside the window'}}
+                            elseif($seenNonces.Count -ge 4096){$reply=@{status='refused';reason='nonce table is full'}}
+                            else{$seenNonces[$n]=$now+121;$reply=@{status='ok'}}
+                        }
+                        'challenge' {
+                            if(-not $RequestBinding){throw 'challenge bridge on an instance without request binding'}
+                            $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); Drop-Expired $issuedNonces $now
+                            if($issuedNonces.Count -ge 256){$reply=@{status='refused';reason='too many outstanding challenges'}}
+                            else{$n=[Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant();$issuedNonces[$n]=$now+60;$reply=@{status='ok';nonce=$n}}
+                        }
+                        'spend' {
+                            if(-not $RequestBinding){throw 'spend bridge on an instance without request binding'}
+                            $n=[string]$cmd.nonce
+                            $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); Drop-Expired $issuedNonces $now
+                            if($issuedNonces.ContainsKey($n)){$issuedNonces.Remove($n);$reply=@{status='ok'}}
+                            else{$reply=@{status='refused'}}
+                        }
+                        'policy' { if(-not $policyHash){$reply=@{status='none'}}else{$reply=@{status='ok';text=$policyText;name_book=$nameBookHex}} }
                         'digest-response' { $reply=@{sha256=(Hash-Text $doc.RootElement.GetProperty('response').GetRawText())} }
                         'record' {
                             $defer=($cmd.PSObject.Properties.Name -contains 'defer_response') -and [bool]$cmd.defer_response

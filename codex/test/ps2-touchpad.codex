@@ -1,0 +1,52 @@
+Chapter: Ps2Touchpad
+  cites Kernel chapter Mouse
+  cites Dev chapter TouchpadSettings
+  cites Foreword chapter Console
+
+ ps2-touchpad.vmargs moves the pointer 4 counts right at 2000 ms and 4 more at
+ 4000 ms. The first move arrives under 2:1 scaling, the second under 1:1.
+
+Section: Fixtures
+
+  pt-yn : Boolean -> Text
+  pt-yn (b) = if b then "yes" else "no"
+
+  pt-status : MouseStatus -> Text
+  pt-status (s) = "ok " & pt-yn (s.mst-ok) & ", flags " & show (s.mst-flags) & ", resolution " & show (s.mst-res) & ", rate " & show (s.mst-rate)
+
+  pt-wait : MouseState, Integer, Integer -> [Device.Port] MouseState
+  pt-wait (st) (want) (n) = act
+    next <- mouse-poll st
+    if next.m-packets >= want | n >= 3000000 then next else pt-wait next want (n + 1)
+  end
+
+  pt-fast : TouchpadState
+  pt-fast = tp-set-report-rate (tp-set-acceleration (tp-set-sensitivity touchpad-new 9) 80) 37
+
+  pt-plain : TouchpadState
+  pt-plain = tp-set-acceleration pt-fast 0
+
+Section: Entry
+
+  opening : [Console, Device.Port] Nothing = act
+    m0 <- mouse-init (mouse-new 640 480)
+    print-line-uni ("aux device ready " & pt-yn (m0.m-ready))
+    s0 <- mouse-status m0
+    print-line-uni ("power-on status: " & pt-status s0)
+    m1 <- tp-apply touchpad-new m0
+    s1 <- mouse-status m1
+    print-line-uni ("default settings applied: ready " & pt-yn (m1.m-ready) & ", " & pt-status s1)
+    m2 <- tp-apply pt-fast m1
+    s2 <- mouse-status m2
+    print-line-uni ("sensitivity 9, acceleration 80, rate 37: ready " & pt-yn (m2.m-ready) & ", " & pt-status s2)
+    m3 <- mouse-configure m2 37 2 False
+    s3 <- mouse-status m3
+    print-line-uni ("driver asked for rate 37: " & pt-status s3)
+    a <- pt-wait m3 1 0
+    print-line-uni ("4 counts right under 2:1: delta " & show (a.mdx) & ", packets " & show (a.m-packets))
+    m4 <- tp-apply pt-plain a
+    b <- pt-wait m4 2 0
+    print-line-uni ("4 counts right under 1:1: delta " & show (b.mdx) & ", packets " & show (b.m-packets))
+    m5 <- tp-apply (tp-toggle touchpad-new) b
+    print-line-uni ("touchpad off: ready " & pt-yn (m5.m-ready))
+  end

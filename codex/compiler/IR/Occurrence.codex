@@ -1,65 +1,16 @@
 Chapter: Occurrence
   cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter CdxCodes (cdx-occ-report)
   cites Codex chapter Diagnostics (make-info)
   cites Codex chapter Source Text (synthetic-span)
   cites Codex chapter Diagnostic Bag (empty-bag, bag-add)
   cites Codex chapter IR Chapter (IRExpr, IRFieldVal, IRParam, IRActStmt, IRBranch, IRPat, IRHandleClause, IRDef, IRChapter, IrIntLit, IrNumLit, IrTextLit, IrBoolLit, IrCharLit, IrName, IrNegate)
 
- This unit is an ANALYSIS. It reads IRExpr and returns a result; it
- rewrites nothing and it is not wired into the pipeline that produces
- binaries. It is dead code in the shipping compiler -- parsed and
- type-checked with the rest of the tree, but unreachable from
- `opening`, so codegen tree-shakes it and the self-compile is
- byte-identical to the seed. It links into WS-D3 when the simplifier
- that consumes it lands, exactly as the interval kernel waited for its
- consumer.
-
- The count is computed in ONE pass, not per-name. Counting one name at
- a time over a tree is quadratic in the number of binders; instead each
- subtree returns the MAP from every free name to its OccCount, and a
- parent combines its children's maps. Union SUMS counts: a name free in
- two siblings is used at least twice, so it is Many. This is
- deliberately conservative at joins -- the two arms of an IrIf are
- alternatives, not both taken, yet their maps are summed, so a name
- used once in each arm classifies Many. That is the SAFE direction for
- the inliner it feeds: inlining an occurs-once binding into both arms
- of a case duplicates the bound work down every path, which occurs-once
- inlining must never do. Over-counting to Many forbids exactly that;
- under-counting to Once would license it. So the join sums.
-
- Scope removal is the crux. At every binder -- the name of an IrLet, the
- parameters of an IrLambda, the variables of a match pattern, the
- binder of an IrDoBind -- the name's occurrences in the body are what is
- reported FOR THAT BINDER, and the name is REMOVED from the map that
- propagates upward, because it is not free above its binder. Shadowing
- falls out for free: removing the name at the inner binder consumes the
- inner occurrences; the outer binder of the same name sees only what is
- left, which is why an inner and an outer binding of one name are
- classified independently. The tree is correctly nested (the 2.22 bug
- was the emitter's flat table, never the tree), so lexical scope is
- just structural recursion.
-
- The walk is depth-bounded by the compiler's shared recursion budget,
- so a pathological IR is reported as unwalked rather than hung -- the
- analysis never answers about a subtree it did not read.
-
- Limitations, stated so they are not assumed away: the join is
- conservative (once-per-arm reads as Many), which is sound for the
- inliner but not tight for a size heuristic that later wants the true
- per-arm count; loop-breaker selection for recursive binding groups
- (the other half of GHC's occurrence analyser) is not done here, because
- this IR has no recursive let groups -- recursion is between top-level
- definitions, which this per-definition analysis does not cross; and the
- map is an association list scanned linearly, chosen for the binder
+ The map is an association list scanned linearly: sized for the binder
  counts a single definition carries, not for a definition with thousands
  of distinct free names.
 
 Section: Occurrence Count
-
- Dead is absence: a name with no free occurrence is never stored in a
- map, and a lookup that misses answers Dead. occ-bump records one more
- occurrence -- the only way a count ever rises -- and saturates at Many,
- because the classification cares only about zero, one, and many.
 
   OccCount =
     | OccDead
@@ -222,10 +173,6 @@ Section: Expression Walk
     in let r = occ-bind-one (p.name) free binders
     in occ-bind-params ps (r.free) (r.binders) (i + 1) len
 
- An act statement's binder is in scope for the statements after it. The
- rest of the sequence is analysed first; a bind reads its classification
- from that tail's free map and removes its name before the map rises.
-
   occ-stmts : List IRActStmt, List OccEntry, Integer, Integer, Integer -> OccResult
   occ-stmts (ss) (acc) (depth) (i) (len) =
     if i >= len then OccResult { free = [], binders = acc }
@@ -288,11 +235,6 @@ Section: Expression Walk
 
 Section: Definition Analysis
 
- The per-definition result the WS-D3 simplifier consumes: one entry per
- binder in the definition, parameters first in declaration order, then
- the internal binders in traversal order. A parameter's classification
- is read from the free map of the whole body.
-
   occ-analyse-def : IRDef -> List OccEntry
   occ-analyse-def (d) =
     let r = occ-expr (d.body) [] 0
@@ -322,17 +264,6 @@ Section: Definition Analysis
     if i >= len then acc
     else let e = list-at es i
     in occ-join es (i + 1) len (acc & (if acc == "" then "" else ", ") & (e.name) & "=" & occ-count-name (e.count))
-
- The occurrence report is INFORMATION about well-formed IR, not a
- fault, so it carries an info-severity code of its own. It must not be
- `ir-check`'s CDX9004, which means malformed IR: sharing that code
- would make a real IR corruption and an occurrence line indistinguishable
- to anyone grepping for the former. CDX4030 sits in the info band beside
- CDX4010 (bounds proven) and CDX4020 (proof erased); info diagnostics do
- not set the error flag, so `occ-report` reports and the compile still
- emits its binary.
-
-  cdx-occ-report : Integer = 4030
 
   occ-info-bag : List Text -> DiagnosticBag
   occ-info-bag (lines) = occ-info-bag-loop empty-bag lines 0 (list-length lines)

@@ -1,7 +1,65 @@
 Chapter: FwdPngMetadataTest
   cites AI chapter PngMetadata
 
+Section: Fixtures
+
+  pmt-params : GenParams
+  pmt-params = gen-params "cat" "dog" 42 30 7500 "euler" "sd15" 512 768
+
+  pmt-png : List Integer
+  pmt-png = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]
+
+  pmt-idat-iend : List Integer
+  pmt-idat-iend = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 8, 73, 68, 65, 84, 0, 0, 0, 0, 73, 69, 78, 68, 1, 2, 3, 4, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]
+
+  pmt-long-chunk : List Integer
+  pmt-long-chunk = [137, 80, 78, 71, 13, 10, 26, 10, 127, 255, 255, 255, 73, 68, 65, 84, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]
+
+  pmt-bytes : List Integer, Integer, Integer, Text -> Text
+  pmt-bytes (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else pmt-bytes xs (i + 1) n (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
+  pmt-tail : List Integer, Integer -> Text
+  pmt-tail (xs) (n) = pmt-tail-loop xs (list-length xs - n) (list-length xs) ""
+
+  pmt-tail-loop : List Integer, Integer, Integer, Text -> Text
+  pmt-tail-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else pmt-tail-loop xs (i + 1) n (acc & " " & show (list-at xs i))
+
+ A seeded single-byte mutation sweep over a PNG carrying metadata: every byte
+ is flipped and run through png-read-metadata, which walks the PNG chunks and
+ must return (params or None) and never read a chunk length off the end.
+
+  pm-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pm-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else pm-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  pm-sweep : List Integer, Integer, Integer, Integer -> Integer
+  pm-sweep (base) (pos) (n) (acc) =
+    if pos >= n then acc
+    else pm-sweep base (pos + 1) n (acc + (when png-read-metadata (pm-mutate base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []) is None -> 0 is Just (p) -> 1))
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "AI/PngMetadata OK"
-  end
+
+  opening : [Console] Nothing =
+    let chunk = png-text-chunk "k" "v"
+    in let embedded = png-embed-metadata pmt-png pmt-params
+    in let text = gen-params-to-string pmt-params
+    in let sweepline = "png-meta-sweep completed=" & (if pm-sweep embedded 0 (list-length embedded) 0 >= 0 then "True" else "False")
+    in act
+      print-line-uni ("cfg 7500 " & gen-format-cfg 7500 & ", 7000 " & gen-format-cfg 7000 & ", 12300 " & gen-format-cfg 12300 & "; parameter string length " & show (text-length text))
+      print-line-uni ("chunk k=v: " & show (list-length chunk) & " bytes, " & pmt-bytes chunk 0 11 "" & ", crc" & pmt-tail chunk 4)
+      print-line-uni ("embedded into 20 bytes: " & show (list-length embedded) & ", IEND at " & show (pm-find-iend embedded 0 (list-length embedded)) & ", no IEND appends to " & show (list-length (png-embed-metadata [1, 2, 3] pmt-params)))
+      print-line-uni ("parsed fields equal the written ones: " & (let q = pm-parse-param-string text in if q.gp-prompt == pmt-params.gp-prompt & q.gp-negative == pmt-params.gp-negative & q.gp-cfg-scale == pmt-params.gp-cfg-scale & q.gp-sampler == pmt-params.gp-sampler then "yes" else "no: [" & q.gp-prompt & "] [" & q.gp-negative & "] " & show (q.gp-cfg-scale)) & "; cfg 7 12.25 0.5: " & show (pm-parse-cfg "7") & " " & show (pm-parse-cfg "12.25") & " " & show (pm-parse-cfg "0.5"))
+      print-line-uni ("read back: " & (when png-read-metadata embedded
+        is Just (p) -> format-gen-params p & ", prompt is the whole string " & (if p.gp-prompt == text then "yes" else "no")
+        is None -> "none") & "; from the bare png: " & (when png-read-metadata pmt-png
+        is Just (p) -> "some"
+        is None -> "none"))
+      print-line-uni ("IEND bytes inside IDAT data: IEND at " & show (pm-find-iend pmt-idat-iend 0 (list-length pmt-idat-iend)) & "; a chunk length past the data: " & show (pm-find-iend pmt-long-chunk 0 (list-length pmt-long-chunk)))
+      print-line-uni (format-gen-params pmt-params)
+      print-line-uni sweepline
+    end

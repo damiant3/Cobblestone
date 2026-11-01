@@ -11,8 +11,6 @@ Chapter: WebServer
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
- We say:
-
 Section: Byte Codec (Unicode wire <-> CCE)
 
   local-mac : List Integer = net-driver-mac
@@ -175,7 +173,7 @@ Section: Concurrent Event Loop
     session = ts.session,
     recv-base = ts.recv-base,
     recv-len = ts.recv-len,
-    recv-cap = ts.recv-cap,
+    recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
     messages-sent = ts.messages-sent,
     messages-received = ts.messages-received,
     arena-base = ts.arena-base,
@@ -202,7 +200,7 @@ Section: Concurrent Event Loop
       session = sess2,
       recv-base = (m.listen).recv-base,
       recv-len = 0,
-      recv-cap = (m.listen).recv-cap,
+      recv-cap = (m.listen).recv-cap, recv-limit = (m.listen).recv-limit, recv-floor = (m.listen).recv-floor,
       messages-sent = 0,
       messages-received = 0,
       arena-base = 0,
@@ -268,26 +266,6 @@ Section: Concurrent Event Loop
     else if wb-lower (list-at bs (at + j)) == list-at pat j then wb-match-ci bs at pat (j + 1) plen
     else False
 
-  wb-find-ci : List Integer, Integer, List Integer, Integer, Integer -> Integer
-  wb-find-ci (bs) (len) (pat) (plen) (i) =
-    if i + plen > len then -1
-    else if wb-match-ci bs i pat 0 plen then i
-    else wb-find-ci bs len pat plen (i + 1)
-
-  wb-skip-spaces : List Integer, Integer, Integer -> Integer
-  wb-skip-spaces (bs) (i) (len) =
-    if i >= len then i
-    else if list-at bs i == 32 then wb-skip-spaces bs (i + 1) len
-    else i
-
-  wb-parse-num : List Integer, Integer, Integer, Integer -> Integer
-  wb-parse-num (bs) (i) (len) (acc) =
-    if i >= len then acc
-    else let b = list-at bs i
-    in if b >= 48 then
-      (if b > 57 then acc else if acc > 99999999 then acc else wb-parse-num bs (i + 1) len (acc * 10 + (b - 48)))
-    else acc
-
   wb-headers-end : List Integer, Integer, Integer -> Integer
   wb-headers-end (bs) (i) (len) =
     if i + 4 > len then -1
@@ -300,17 +278,64 @@ Section: Concurrent Event Loop
       else wb-headers-end bs (i + 1) len
     else wb-headers-end bs (i + 1) len
 
+ RFC 9110 section 8.6: Content-Length = 1*DIGIT, with optional SP or HTAB around
+ the field value. RFC 9112 section 6.3: differing Content-Length values, or a
+ Transfer-Encoding (this server implements no chunked framing), leave the
+ message length undetermined, and the request is refused. A field name starts a
+ line. An undetermined length answers -1 here, so the request never completes and
+ the pending budget refuses it.
+
+  te-pattern : List Integer = [116, 114, 97, 110, 115, 102, 101, 114, 45, 101, 110, 99, 111, 100, 105, 110, 103, 58]
+
+  wb-line-start : List Integer, Integer -> Boolean
+  wb-line-start (bs) (i) = if i == 0 then True else list-at bs (i - 1) == 10
+
+  wb-find-header : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  wb-find-header (bs) (len) (pat) (plen) (i) =
+    if i + plen > len then -1
+    else if wb-line-start bs i == False then wb-find-header bs len pat plen (i + 1)
+    else if wb-match-ci bs i pat 0 plen then i
+    else wb-find-header bs len pat plen (i + 1)
+
+  wb-cl-ows : List Integer, Integer, Integer -> Integer
+  wb-cl-ows (bs) (i) (len) =
+    if i >= len then i
+    else if list-at bs i == 32 then wb-cl-ows bs (i + 1) len
+    else if list-at bs i == 9 then wb-cl-ows bs (i + 1) len
+    else i
+
+  wb-cl-field : List Integer, Integer, Integer, Integer, Boolean -> Integer
+  wb-cl-field (bs) (i) (len) (acc) (any) =
+    if i >= len then (if any then acc else -1)
+    else let b = list-at bs i
+    in if b >= 48 & b <= 57 then (if acc > 99999999 then -1 else wb-cl-field bs (i + 1) len (acc * 10 + (b - 48)) True)
+    else if any == False then -1
+    else let j = wb-cl-ows bs i len
+    in if j >= len then acc
+    else if list-at bs j == 13 then acc
+    else -1
+
+  wb-cl-scan : List Integer, Integer, Integer, Integer -> Integer
+  wb-cl-scan (bs) (hdr-end) (from) (found) =
+    let h = wb-find-header bs hdr-end cl-pattern (list-length cl-pattern) from
+    in if h < 0 then (if found < 0 then 0 else found)
+    else let v = wb-cl-field bs (wb-cl-ows bs (h + list-length cl-pattern) hdr-end) hdr-end 0 False
+    in if v < 0 then -1
+    else if found >= 0 & found /= v then -1
+    else wb-cl-scan bs hdr-end (h + 1) v
+
   wb-content-length : List Integer, Integer -> Integer
   wb-content-length (bs) (hdr-end) =
-    let h = wb-find-ci bs hdr-end cl-pattern (list-length cl-pattern) 0
-    in if h < 0 then 0
-    else wb-parse-num bs (wb-skip-spaces bs (h + list-length cl-pattern) hdr-end) hdr-end 0
+    if wb-find-header bs hdr-end te-pattern (list-length te-pattern) 0 >= 0 then -1
+    else wb-cl-scan bs hdr-end 0 (0 - 1)
 
   wb-request-total : List Integer, Integer -> Integer
   wb-request-total (bs) (len) =
     let hdr-end = wb-headers-end bs 0 len
     in if hdr-end < 0 then -1
-    else let total = hdr-end + wb-content-length bs hdr-end
+    else let cl = wb-content-length bs hdr-end
+    in if cl < 0 then -1
+    else let total = hdr-end + cl
     in if len >= total then total else -1
 
   wb-slice : List Integer, Integer, Integer, List Integer -> List Integer
@@ -659,9 +684,6 @@ Section: Legacy Framed Serve (for backward compat)
 
   web-serve-framed : (Text -> Text) -> [Console, Network.Read, Network.Write] Integer
   web-serve-framed (route) = web-serve-framed-with (\ls path -> route path)
-
- The route also receives the live loop: the transport the request arrived on
- and the request count, so a page can report its own connection.
 
   web-serve-framed-with : (WebLoop, Text -> Text) -> [Console, Network.Read, Network.Write] Integer
   web-serve-framed-with (route) =

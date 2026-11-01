@@ -14,8 +14,6 @@ Chapter: WorkflowExporter
    Node 11: Upscale (final quality pass)
    Node 12: Save image
 
- We say:
-
 Section: Node Builder
 
   node-json : Text, Text, Text -> Text
@@ -60,6 +58,23 @@ Section: Workflow Parameters
     upscaler-model : Text
   }
 
+Section: KSampler Node
+
+  ksampler-inputs : WorkflowParams, Integer, Text, Text -> Text
+  ksampler-inputs (p) (seed) (positive) (latent) =
+    join-inputs [
+      input-int "seed" seed,
+      input-int "steps" (p.steps),
+      input-num "cfg" (p.cfg-whole) (p.cfg-frac),
+      input-str "sampler_name" (p.sampler),
+      input-str "scheduler" (p.scheduler),
+      input-num "denoise" 1 0,
+      input-ref "model" "1" 0,
+      input-ref "positive" positive 0,
+      input-ref "negative" "3" 0,
+      input-ref "latent_image" latent 0
+    ] 0 10 ""
+
 Section: Card Workflow
 
   build-card-workflow : WorkflowParams -> Text
@@ -68,11 +83,11 @@ Section: Card Workflow
     in let n2 = node-json "2" "CLIPTextEncode" (join-inputs [input-str "text" (p.positive-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n3 = node-json "3" "CLIPTextEncode" (join-inputs [input-str "text" (p.negative-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n4 = node-json "4" "EmptyLatentImage" (join-inputs [input-int "width" (p.width), input-int "height" (p.height), input-int "batch_size" 1] 0 3 "")
-    in let n5 = node-json "5" "KSampler" (join-inputs [input-int "seed" (p.seed), input-int "steps" (p.steps), input-num "cfg" (p.cfg-whole) (p.cfg-frac), input-str "sampler_name" (p.sampler), input-str "scheduler" (p.scheduler), input-num "denoise" 1 0, input-ref "model" "1" 0, input-ref "positive" "2" 0, input-ref "negative" "3" 0, input-ref "latent_image" "4" 0] 0 10 "")
+    in let n5 = node-json "5" "KSampler" (ksampler-inputs p (p.seed) "2" "4")
     in let n6 = node-json "6" "VAEDecode" (join-inputs [input-ref "samples" "5" 0, input-ref "vae" "1" 2] 0 2 "")
     in let n7 = node-json "7" "CLIPTextEncode" (join-inputs [input-str "text" (p.frame-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n8-latent = node-json "8" "EmptyLatentImage" (join-inputs [input-int "width" (p.width), input-int "height" (p.height), input-int "batch_size" 1] 0 3 "")
-    in let n9 = node-json "9" "KSampler" (join-inputs [input-int "seed" (p.seed + 1), input-int "steps" (p.steps), input-num "cfg" (p.cfg-whole) (p.cfg-frac), input-str "sampler_name" (p.sampler), input-str "scheduler" (p.scheduler), input-num "denoise" 1 0, input-ref "model" "1" 0, input-ref "positive" "7" 0, input-ref "negative" "3" 0, input-ref "latent_image" "8" 0] 0 10 "")
+    in let n9 = node-json "9" "KSampler" (ksampler-inputs p (p.seed + 1) "7" "8")
     in let n10 = node-json "10" "VAEDecode" (join-inputs [input-ref "samples" "9" 0, input-ref "vae" "1" 2] 0 2 "")
     in let n11 = node-json "11" "ImageBlend" (join-inputs [input-ref "image1" "10" 0, input-ref "image2" "6" 0, input-num "blend_factor" 0 6, input-str "blend_mode" "overlay"] 0 4 "")
     in let n12 = node-json "12" "ImageUpscaleWithModel" (join-inputs [input-str "upscale_model" (p.upscaler-model), input-ref "image" "11" 0] 0 2 "")
@@ -89,7 +104,7 @@ Section: Simple Workflow (single KSampler, no layers)
     in let n2 = node-json "2" "CLIPTextEncode" (join-inputs [input-str "text" (p.positive-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n3 = node-json "3" "CLIPTextEncode" (join-inputs [input-str "text" (p.negative-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n4 = node-json "4" "EmptyLatentImage" (join-inputs [input-int "width" (p.width), input-int "height" (p.height), input-int "batch_size" 1] 0 3 "")
-    in let n5 = node-json "5" "KSampler" (join-inputs [input-int "seed" (p.seed), input-int "steps" (p.steps), input-num "cfg" (p.cfg-whole) (p.cfg-frac), input-str "sampler_name" (p.sampler), input-str "scheduler" (p.scheduler), input-num "denoise" 1 0, input-ref "model" "1" 0, input-ref "positive" "2" 0, input-ref "negative" "3" 0, input-ref "latent_image" "4" 0] 0 10 "")
+    in let n5 = node-json "5" "KSampler" (ksampler-inputs p (p.seed) "2" "4")
     in let n6 = node-json "6" "VAEDecode" (join-inputs [input-ref "samples" "5" 0, input-ref "vae" "1" 2] 0 2 "")
     in let n7 = node-json "7" "SaveImage" (join-inputs [input-ref "images" "6" 0, input-str "filename_prefix" "codexmagic"] 0 2 "")
     in "{" & n1 & "," & n2 & "," & n3 & "," & n4 & "," & n5 & "," & n6 & "," & n7 & "}"
@@ -102,7 +117,7 @@ Section: Item Workflow (with rarity glow post-process)
     in let n2 = node-json "2" "CLIPTextEncode" (join-inputs [input-str "text" (p.positive-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n3 = node-json "3" "CLIPTextEncode" (join-inputs [input-str "text" (p.negative-prompt), input-ref "clip" "1" 1] 0 2 "")
     in let n4 = node-json "4" "EmptyLatentImage" (join-inputs [input-int "width" (p.width), input-int "height" (p.height), input-int "batch_size" 1] 0 3 "")
-    in let n5 = node-json "5" "KSampler" (join-inputs [input-int "seed" (p.seed), input-int "steps" (p.steps), input-num "cfg" (p.cfg-whole) (p.cfg-frac), input-str "sampler_name" (p.sampler), input-str "scheduler" (p.scheduler), input-num "denoise" 1 0, input-ref "model" "1" 0, input-ref "positive" "2" 0, input-ref "negative" "3" 0, input-ref "latent_image" "4" 0] 0 10 "")
+    in let n5 = node-json "5" "KSampler" (ksampler-inputs p (p.seed) "2" "4")
     in let n6 = node-json "6" "VAEDecode" (join-inputs [input-ref "samples" "5" 0, input-ref "vae" "1" 2] 0 2 "")
     in let n7 = node-json "7" "ImageUpscaleWithModel" (join-inputs [input-str "upscale_model" (p.upscaler-model), input-ref "image" "6" 0] 0 2 "")
     in let n8 = node-json "8" "SaveImage" (join-inputs [input-ref "images" "7" 0, input-str "filename_prefix" ("codexmagic_item_" & glow-color)] 0 2 "")

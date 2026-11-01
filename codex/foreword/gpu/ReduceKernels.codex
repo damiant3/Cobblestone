@@ -1,0 +1,101 @@
+Chapter: ReduceKernels
+  cites Gpu chapter DeviceEffect
+  cites Gpu chapter Atomic
+
+Section: Bytes
+
+ device-load-u32 reads an aligned 32-bit word, so a byte is its word's
+ quotient by 256 to the byte's place, mod 256.
+
+  rk-byte : Integer, Integer -> [Device] Integer
+  rk-byte (base) (i) = act
+   w <- device-load-u32 (base + i - int-mod (base + i) 4)
+   int-mod (w / rk-place (int-mod (base + i) 4)) 256
+  end
+
+  rk-place : Integer -> Integer
+  rk-place (k) = if k == 0 then 1 else if k == 1 then 256 else if k == 2 then 65536 else 16777216
+
+Section: Histogram
+
+ One thread per item: item i's byte at i * stride + channel counts into its
+ 64-bit bin when keep's byte i is 1.
+
+  kernel-histogram-bytes : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-histogram-bytes (bytes) (keep) (counts) (stride) (channel) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then rk-count-one bytes keep counts stride channel (bx * bd + tx) else 0
+  end
+
+  rk-count-one : Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rk-count-one (bytes) (keep) (counts) (stride) (channel) (i) = act
+   k <- rk-byte keep i
+   if k == 1 then rk-count-byte bytes counts (i * stride + channel) else 0
+  end
+
+  rk-count-byte : Integer, Integer, Integer -> [Device] Integer
+  rk-count-byte (bytes) (counts) (j) = act
+   v <- rk-byte bytes j
+   atom-add counts v 1
+  end
+
+Section: Atomic Forms
+
+ One thread block of n threads over 8 words at cells: word 0 counts by a
+ block-scoped add; every thread offers 7 to word 2 by compare-and-swap from
+ 0, and word 3 counts the one that saw 0; every thread swaps i + 1 into word
+ 4 and adds what it took out into word 5, so word 4 plus word 5 is
+ n (n + 1) / 2 whatever the order.
+
+  kernel-atomic-forms : Integer, Integer -> [Device] Integer
+  kernel-atomic-forms (cells) (n) = act
+   tx <- thread-idx-x
+   if tx < n then rk-forms-one cells tx else 0
+  end
+
+  rk-forms-one : Integer, Integer -> [Device] Integer
+  rk-forms-one (cells) (i) = act
+   a <- atom-block-add cells 0 1
+   old <- atom-cas cells 2 0 7
+   b <- (if old == 0 then atom-add cells 3 1 else 0)
+   took <- atom-exchange cells 4 (i + 1)
+   atom-add cells 5 took
+  end
+Section: Bitonic Sort
+
+ One compare-and-swap step of a bitonic sort over n = 2^p pairs of a key
+ and an index, ascending by key and then by index. j and k are powers of
+ two: i's partner is i + j when bit j of i is clear, and the run holding i
+ sorts down when bit k of i is set.
+
+  kernel-bitonic-step : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  kernel-bitonic-step (keys) (idx) (j) (k) (n) = act
+   bx <- block-idx-x
+   bd <- block-dim-x
+   tx <- thread-idx-x
+   if bx * bd + tx < n then rk-bitonic-one keys idx j k (bx * bd + tx) else 0
+  end
+
+  rk-bitonic-one : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rk-bitonic-one (keys) (idx) (j) (k) (i) =
+    if int-mod (i / j) 2 == 1 then 0
+    else rk-bitonic-pair keys idx i (i + j) (if int-mod (i / k) 2 == 0 then 1 else 0)
+
+  rk-bitonic-pair : Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rk-bitonic-pair (keys) (idx) (a) (b) (up) = act
+   ka <- device-load keys a
+   kb <- device-load keys b
+   ia <- device-load idx a
+   ib <- device-load idx b
+   if (if up == 1 then (ka > kb | (ka == kb & ia > ib)) else (kb > ka | (kb == ka & ib > ia))) then rk-swap keys idx a b ka kb ia ib else 0
+  end
+
+  rk-swap : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> [Device] Integer
+  rk-swap (keys) (idx) (a) (b) (ka) (kb) (ia) (ib) = act
+   s1 <- device-store keys a kb
+   s2 <- device-store keys b ka
+   s3 <- device-store idx a ib
+   device-store idx b ia
+  end

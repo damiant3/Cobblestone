@@ -26,6 +26,7 @@ Chapter: GopDesk
   cites Works chapter GopFish
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
+  cites Works chapter GopUsbPad
   cites Works chapter GopAcpi
   cites Works chapter GopRtc
   cites Works chapter GopCalc
@@ -50,9 +51,8 @@ Chapter: GopDesk
   cites UI chapter BoxModel
   cites UI chapter Event
   cites UI chapter KeyInput
+  cites Dev chapter WindowSnap
   cites Kernel chapter HdaAudio (hda-sample-rate)
-
- We say:
 
 Section: Palette and Layout
 
@@ -129,6 +129,8 @@ Section: Appearance
   dk-mon-cell : Integer = 100
   dk-mon-kbd-cell : Integer = 0
   dk-mon-mouse-cell : Integer = 4
+  dk-mon-pad-cell : Integer = 8
+  dk-mon-pad-btn-cell : Integer = 12
 
   dk-scene-cell : Integer = 104
   dk-fish-cell : Integer = 108
@@ -769,21 +771,23 @@ Section: Clock Gate
     if now < 0 then 0
     else if now == peek-32 ds desk-second-cell then 0
     else act
-      hh <- rtc-read 4
-      mm <- rtc-read 2
-      dd <- rtc-read 7
-      mo <- rtc-read 8
-      yy <- rtc-read 9
-      let st = poke-32 ds desk-second-cell now
-      in let pending = dsp-request (peek-32 ds dk-present-cell)
-      in let cks = peek-32 ds desk-clock-cell
-      in let note = dk-notice-take ds now
-      in let txt = if text-length note > 0 then note
-                   else if cks == 0 then dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 now
-                   else clk-band-text cks (dk-bcd hh) (dk-bcd mm) now (dk-bcd dd) (dk-bcd mo) (dk-bcd yy)
-      in desk-draw-clock base w h stride font tf txt ds root
+      c <- rtc-civil 0
+      if c.rc-ok == False then 0
+      else desk-clock-civil base w h stride font tf ds root c
     end
   end
+
+  desk-clock-civil : Integer, Integer, Integer, Integer, CbfFont, GopFont, Integer, WidgetNode, RtcCivil -> Integer
+  desk-clock-civil (base) (w) (h) (stride) (font) (tf) (ds) (root) (c) =
+    let now = c.rc-second
+    in let st = poke-32 ds desk-second-cell now
+    in let pending = dsp-request (peek-32 ds dk-present-cell)
+    in let cks = peek-32 ds desk-clock-cell
+    in let note = dk-notice-take ds now
+    in let txt = if text-length note > 0 then note
+                 else if cks == 0 then dk-pad2 (c.rc-hour) & ":" & dk-pad2 (c.rc-minute) & ":" & dk-pad2 now
+                 else clk-band-text cks (c.rc-hour) (c.rc-minute) now (c.rc-day) (c.rc-month) (c.rc-year - 2000)
+    in desk-draw-clock base w h stride font tf txt ds root
 
 Section: Notice
 
@@ -876,7 +880,7 @@ Section: Monitor
       widget-label "mon-title" "SYSTEM MONITOR",
       dk-mon-line "display" (show w & " x " & show h & "   stride " & show stride),
       dk-mon-line "framebuffer" ("0x" & hex-i64 base & "   scale " & show (ui-scale w)),
-      dk-mon-line "input" ("keyboard " & (if peek-32 blk dk-mon-kbd-cell == 1 then "USB HID" else "mailbox") & "   mouse " & dk-yn (peek-32 blk dk-mon-mouse-cell == 1)),
+      dk-mon-line "input" ("keyboard " & (if peek-32 blk dk-mon-kbd-cell == 1 then "USB HID" else "mailbox") & "   mouse " & dk-yn (peek-32 blk dk-mon-mouse-cell == 1) & "   pad " & (if peek-32 blk dk-mon-pad-cell == 1 then "buttons 0x" & hex-i32 (peek-32 blk dk-mon-pad-btn-cell) else "no")),
       dk-mon-line "font" (if tf.gf-ok then "TrueType UI face   cell " & show (tf.gf-gh) & "   baseline " & show (tf.gf-asc) & "   cap " & show (tf.gf-cap) else "CBF bitmap"),
       dk-mon-line "acpi" (if ai.ai-ok then "rev " & show (ai.ai-revision) & "   tables " & show (ai.ai-tables) else "no RSDP: stub, EBDA and BIOS area all empty"),
       dk-mon-line "lapic" ("0x" & hex-i32 (ai.ai-lapic) & "   ioapic 0x" & hex-i32 (ai.ai-ioapic)),
@@ -918,11 +922,15 @@ Section: Monitor
     da-scene : Maybe ScenePane,
     da-edit : Maybe EditState,
     da-sheet : Maybe SheetPane,
-    da-review : Maybe GrvData
+    da-review : Maybe GrvData,
+    da-pad : UsbPad
   }
 
+  desk-apps-blank : GopAppFont, UsbPad -> DeskApps
+  desk-apps-blank (fonts) (pad) = DeskApps { da-fonts = fonts, da-files = None, da-browser = None, da-scene = None, da-edit = None, da-sheet = None, da-review = None, da-pad = pad }
+
   desk-apps-empty : GopAppFont -> DeskApps
-  desk-apps-empty (fonts) = DeskApps { da-fonts = fonts, da-files = None, da-browser = None, da-scene = None, da-edit = None, da-sheet = None, da-review = None }
+  desk-apps-empty (fonts) = desk-apps-blank fonts pad-no-pad
 
   desk-marks-cell : Integer = 20
   desk-marks-max : Integer = 8
@@ -957,7 +965,6 @@ Section: Monitor
   desk-marks-kill : Integer, Integer -> Integer
   desk-marks-kill (ms) (fid) = desk-marks-kill-from ms fid (desk-marks-depth ms - 1) 0
 
- A pane can hold two entries (desk-marks-remark, below), so a close kills every entry naming it and answers how many.
   desk-marks-kill-from : Integer, Integer, Integer, Integer -> Integer
   desk-marks-kill-from (ms) (fid) (i) (n) =
     if i < 0 then n
@@ -1182,12 +1189,8 @@ Section: Monitor
   desk-wnd-preview-tree : Integer, Integer, Integer, Integer, Integer, Integer, GopFont -> [Device.Port] WidgetNode
   desk-wnd-preview-tree (fid) (ds) (base) (w) (h) (stride) (tf) =
     if fid == desk-focus-clkp then act
-      idle <- rtc-wait-idle rtc-uip-fuel
-      b <- clk-mode 0
-      hh <- clk-hour-now b
-      mi <- clk-field-value clk-reg-minutes b
-      ss <- clk-field-value clk-reg-seconds b
-      clk-preview-tree hh mi ss dk-prev-h
+      c <- rtc-civil 0
+      clk-preview-tree (c.rc-hour) (c.rc-minute) (c.rc-second) dk-prev-h
     end
     else desk-wnd-tree fid ds base w h stride tf
 
@@ -1262,6 +1265,7 @@ Section: Monitor
     let blk = peek-32 ds dk-mon-cell
     in let kp = poke-32 blk dk-mon-kbd-cell (if kbd.uk-ok then 1 else 0)
     in let mp = poke-32 blk dk-mon-mouse-cell (if mouse.um-ok then 1 else 0)
+    in let pp = poke-32 blk dk-mon-pad-cell (if (apps.da-pad).upad-ok then 1 else 0)
     in let o = desk-wnd-open desk-focus-mon w h ds
     in let due = poke-32 ds 16 255
     in act
@@ -1357,6 +1361,7 @@ Section: Monitor
     in let sfi = apps.da-files
     in let ssh = apps.da-sheet
     in let srv = apps.da-review
+    in let spad = apps.da-pad
     in let kl = desk-marks-kill ms fid
     in let rec = desk-marks-reclaim ms (0 - 1)
     in let dep = desk-marks-depth ms
@@ -1376,7 +1381,7 @@ Section: Monitor
     in let ne = if fid == desk-focus-edit then None else desk-renew se
     in let nsh = if fid == desk-focus-sheet then None else desk-renew ssh
     in let nrv = if fid == desk-focus-rev then None else desk-renew srv
-    in let fresh = if dep <= 0 then desk-apps-empty fonts else DeskApps { da-fonts = fonts, da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv }
+    in let fresh = if dep <= 0 then desk-apps-blank fonts spad else DeskApps { da-fonts = fonts, da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv, da-pad = spad }
     in let rm = __heap-save
     in let an = desk-apps-note ds lo rm
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
@@ -1456,6 +1461,7 @@ Section: Monitor
     in let sfi = apps.da-files
     in let ssh = apps.da-sheet
     in let srv = apps.da-review
+    in let spad = apps.da-pad
     in let kl = desk-marks-kill ms fid
     in let rec = desk-marks-reclaim ms (0 - 1)
     in let dep = desk-marks-depth ms
@@ -1474,7 +1480,7 @@ Section: Monitor
     in let ne = if fid == desk-focus-edit then None else desk-renew se
     in let nsh = if fid == desk-focus-sheet then None else desk-renew ssh
     in let nrv = if fid == desk-focus-rev then None else desk-renew srv
-    in let fresh = if dep <= 0 then desk-apps-empty fonts else DeskApps { da-fonts = fonts, da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv }
+    in let fresh = if dep <= 0 then desk-apps-blank fonts spad else DeskApps { da-fonts = fonts, da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv, da-pad = spad }
     in let rm = __heap-save
     in let an = desk-apps-note ds lo rm
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
@@ -1498,6 +1504,7 @@ Section: Monitor
     in let sfi = apps.da-files
     in let ssh = apps.da-sheet
     in let srv = apps.da-review
+    in let spad = apps.da-pad
     in let kl = desk-marks-kill ms fid
     in let rec = desk-marks-reclaim ms (0 - 1)
     in let dep = desk-marks-depth ms
@@ -1517,7 +1524,7 @@ Section: Monitor
     in let ne = if fid == desk-focus-edit then None else desk-renew se
     in let nsh = if fid == desk-focus-sheet then None else desk-renew ssh
     in let nrv = if fid == desk-focus-rev then None else desk-renew srv
-    in let fresh = if dep <= 0 then desk-apps-empty fonts else DeskApps { da-fonts = fonts, da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv }
+    in let fresh = if dep <= 0 then desk-apps-blank fonts spad else DeskApps { da-fonts = fonts, da-files = nf, da-browser = nb, da-scene = nsc, da-edit = ne, da-sheet = nsh, da-review = nrv, da-pad = spad }
     in let rm = __heap-save
     in let an = desk-apps-note ds lo rm
     in let root = desk-draw base w h stride font (ui-scale w) tf ds
@@ -1991,11 +1998,9 @@ Section: What a windowed pane is
   desk-wnd-tree (fid) (ds) (base) (w) (h) (stride) (tf) =
     if fid == desk-focus-scene | fid == desk-focus-fish | fid == desk-focus-bro | fid == desk-focus-files | fid == desk-focus-edit | fid == desk-focus-sheet then act widget-panel "scene-body" DirColumn 0 [] end
     else if fid == desk-focus-mon then act
-      hh <- rtc-read 4
-      mm <- rtc-read 2
-      ss <- rtc-seconds 0
+      c <- rtc-civil 0
       let ai = acpi-boot 0
-      in let clk = dk-pad2 (dk-bcd hh) & ":" & dk-pad2 (dk-bcd mm) & ":" & dk-pad2 ss
+      in let clk = dk-pad2 (c.rc-hour) & ":" & dk-pad2 (c.rc-minute) & ":" & dk-pad2 (c.rc-second)
       in dk-mon-tree ds base w h stride tf ai clk (peek-32 dk-mon-tick-cell 0)
     end
     else if fid == desk-focus-trk then act
@@ -2012,23 +2017,17 @@ Section: What a windowed pane is
     else if fid == desk-focus-dif then act gdf-tree 0 end
     else if fid == desk-focus-style then act dk-settings-tree ds end
     else if fid == desk-focus-cal then act
-      yy <- rtc-read 9
-      mm <- rtc-read 8
-      dd <- rtc-read 7
-      gcal-tree (2000 + dk-bcd yy) (dk-bcd mm) (dk-bcd dd)
+      c <- rtc-civil 0
+      let ymd = clk-local-ymd (peek-32 ds desk-clock-cell) c
+      in gcal-tree (ymd / 10000) (int-mod (ymd / 100) 100) (int-mod ymd 100)
     end
     else act
-      idle <- rtc-wait-idle rtc-uip-fuel
-      b <- clk-mode 0
-      hh <- clk-hour-now b
-      mi <- clk-field-value clk-reg-minutes b
-      ss <- clk-field-value clk-reg-seconds b
-      dd <- clk-field-value clk-reg-day b
-      mo <- clk-field-value clk-reg-month b
-      yy <- clk-field-value clk-reg-year b
-      let cks = peek-32 ds desk-clock-cell
-      in let note = if cks == 0 then 0 else if clk-editing cks then 0 else clk-note-now cks hh mi ss dd mo yy
-      in clk-tree cks hh mi ss dd mo yy
+      c <- rtc-civil 0
+      wv <- clk-world-ensure (peek-32 ds desk-clock-cell) c
+      let yy = c.rc-year - 2000
+      in let cks = peek-32 ds desk-clock-cell
+      in let note = if cks == 0 then 0 else if clk-editing cks then 0 else clk-note-now cks (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-day) (c.rc-month) yy
+      in clk-tree cks (c.rc-hour) (c.rc-minute) (c.rc-second) (c.rc-day) (c.rc-month) yy
     end
 
   dk-wnd-step-px : Integer -> Integer
@@ -2231,6 +2230,8 @@ Section: What a windowed pane is
     else if desk-widget-hit laid mx my "clk-more" ws then let d = clk-bump ks 1 in 1
     else if desk-widget-hit laid mx my "clk-keep" ws then 4
     else if desk-widget-hit laid mx my "clk-cancel" ws then 5
+    else if desk-widget-hit laid mx my "clk-pick-a" ws then 6
+    else if desk-widget-hit laid mx my "clk-pick-b" ws then 7
     else desk-clock-field-click laid mx my ws ks 0
 
   desk-clock-click : Integer, Integer, GopFont, UsbMouse, Integer, Integer -> Integer
@@ -2768,6 +2769,16 @@ Section: The loop's own rate
 
   dk-drag-edge : Integer = 2
 
+  dk-snap-target : Integer, Integer, Integer, Integer, Integer, Integer -> SnapRect
+  dk-snap-target (cx) (cy) (cw) (ch) (mx) (my) =
+    let zone = snap-detect-zone (mx - cx) (my - cy) cw ch
+    in let r = snap-zone-rect zone cw ch 0
+    in SnapRect { sr-x = cx + r.sr-x, sr-y = cy + r.sr-y, sr-w = r.sr-w, sr-h = r.sr-h }
+
+  dk-snap-at : Integer, Integer, Integer, Integer, Integer -> SnapRect
+  dk-snap-at (w) (h) (ds) (mx) (my) =
+    dk-snap-target (dk-cbox-x w ds) (dk-cbox-y w ds) (dk-cbox-w w ds) (dk-cbox-h w h ds) mx my
+
   desk-wnd-drag-step : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbMouse, Integer, Integer -> [Device.Port] Integer
   desk-wnd-drag-step (base) (w) (h) (stride) (font) (tf) (mouse) (ds) (cs) =
     let fid = dk-drag-fid ds
@@ -2786,11 +2797,15 @@ Section: The loop's own rate
       in let vy = mouse-y mouse - dk-pt-y bp
       in let el = bit-and (now - peek-32 ds dk-flick-t1-cell) dk-rate-mask
       in let d = dk-drag-end ds
-      in let f = if dk-flick-fast vx vy el hpet-ticks-per-second
+      in let fast = dk-flick-fast vx vy el hpet-ticks-per-second
+      in let f = if fast
         then dk-flick-arm ds fid (dk-flick-edge vx vy) (mouse-x mouse) (mouse-y mouse) now
         else 0
+      in let sn = if fast then SnapRect { sr-x = 0, sr-y = 0, sr-w = 0, sr-h = 0 } else dk-snap-at w h ds (mouse-x mouse) (mouse-y mouse)
+      in let p = if sn.sr-w > 0 then dk-wnd-place blk (sn.sr-x) (sn.sr-y) (sn.sr-w) (sn.sr-h) else 0
+      in let u = if sn.sr-w > 0 then dk-drag-start-union ds (sn.sr-x) (sn.sr-y) (sn.sr-w) (sn.sr-h) w h else dk-drag-start-union ds ox oy ww wh w h
       in act
-        r <- desk-wnd-paint-rect base w h stride font tf ds (dk-drag-start-union ds ox oy ww wh w h)
+        r <- desk-wnd-paint-rect base w h stride font tf ds u
         c <- act dk-cursor base w h stride cs mouse end
         desk-wnd-ev-stay
       end
@@ -3031,12 +3046,13 @@ Section: The window chrome's own step
         let a = desk-clock-click w h tf mouse ds ks
         in act
           l <- if a == 3 then clk-load ks else act 0 end
-          c <- if a == 4 then clk-commit ks else act 0 end
-          zs <- if a == 4 then zone-save (clk-zone ks) else act False end
-          let e = if a == 4 | a == 5 then poke-32 ks clk-editing-cell 0 else 0
+          c <- if a == 4 then clk-commit-entry ks else if a == 6 | a == 7 then clk-commit-choice ks (a - 6) else act 0 end
+          zs <- if (a == 4 | a == 6 | a == 7) & c == 1 then zone-save (clk-zone ks) else act False end
+          let e = if ((a == 4 | a == 6 | a == 7) & c == 1) | a == 5 then poke-32 ks clk-editing-cell 0 else 0
           in act
             p <- if a == 0 then act 0 end else desk-clock-repaint base w h stride font tf cs mouse ks ds
             z <- if a == 2 then zone2-save (clk-record ks (2000 + peek-32 ks clk-y-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-d-cell) (peek-32 ks clk-h-cell)) else act False end
+            zp <- if a == 2 then clk-zone-pick ks else act 0 end
             let u = poke-32 ks dk-clkp-last-cell now
             in let d = __heap-restore mark
             in 1
@@ -3065,15 +3081,16 @@ Section: The window chrome's own step
         end
         else if a == 5 then act
           z <- zone2-save (clk-record ks (2000 + peek-32 ks clk-y-cell) (peek-32 ks clk-mo-cell) (peek-32 ks clk-d-cell) (peek-32 ks clk-h-cell))
+          zp <- clk-zone-pick ks
           p <- desk-clock-repaint base w h stride font tf cs mouse ks ds
           let u = poke-32 ks dk-clkp-last-cell now
           in let d = __heap-restore mark
           in 1
         end
         else if a == 4 then act
-          c <- clk-commit ks
-          z <- zone-save (clk-zone ks)
-          let e = poke-32 ks clk-editing-cell 0
+          c <- clk-commit-entry ks
+          z <- if c == 1 then zone-save (clk-zone ks) else act False end
+          let e = if c == 1 then poke-32 ks clk-editing-cell 0 else 0
           in act
             p <- desk-clock-repaint base w h stride font tf cs mouse ks ds
             let u = poke-32 ks dk-clkp-last-cell now
@@ -3189,7 +3206,7 @@ Section: Programs
     in if ev == desk-wnd-ev-close then 0
     else if ev == desk-wnd-ev-min then desk-step-hide
     else if ev == desk-wnd-ev-stay then 1
-    else if hit /= 0 then hit
+    else if hit /= 0 then gpr-launched ps hit
     else if sc == 88 then act
       let mark = __heap-save
       in act
@@ -3365,7 +3382,7 @@ Section: Programs
         in 1
       end
     end
-    else if hit /= 0 then hit
+    else if hit /= 0 then gpr-launched ps hit
     else if clicked & dk-menu-out w h ps (mouse-x mouse) (mouse-y mouse) ds tf then
       let r = mouse-put-click mouse
       in desk-step-dismiss
@@ -3378,7 +3395,7 @@ Section: Programs
       end
     end
     else if sc == 0 then 1
-    else if sc == 28 then gpr-key ps sc
+    else if sc == 28 then (let k = gpr-key ps sc in if k == 0 then 1 else gpr-launched ps k)
     else act
       let mark = __heap-save
       in let b0 = dk-menu-box w h ps ds tf
@@ -3659,7 +3676,7 @@ Section: Calendar
     let ke = desk-browser-evict ds
     in let mp = desk-marks-push (peek-32 ds desk-marks-cell) desk-focus-sheet __heap-save
     in let sp = gsh-pane-new (peek-32 ds dk-sheet-cell)
-    in let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = Just sp, da-review = apps.da-review }
+    in let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = Just sp, da-review = apps.da-review, da-pad = apps.da-pad }
     in let o = desk-wnd-open desk-focus-sheet w h ds
     in act
       p0 <- desk-sheet-paint base w h stride font tf ds
@@ -3831,14 +3848,9 @@ Section: Review
 
   desk-rev-stamp : Integer -> [Device.Port] Integer
   desk-rev-stamp (dummy) = act
-    yy <- rtc-read 9
-    mm <- rtc-read 8
-    dd <- rtc-read 7
-    hh <- rtc-read 4
-    mi <- rtc-read 2
-    ss <- rtc-read 0
-    let day = ((2000 + dk-bcd yy) * 100 + dk-bcd mm) * 100 + dk-bcd dd
-    in (day * 100 + dk-bcd hh) * 10000 + dk-bcd mi * 100 + dk-bcd ss
+    c <- rtc-civil 0
+    let day = ((c.rc-year) * 100 + c.rc-month) * 100 + c.rc-day
+    in (day * 100 + c.rc-hour) * 10000 + c.rc-minute * 100 + c.rc-second
   end
 
   desk-rev-data : DeskApps -> [Device.Port] GrvData
@@ -3914,7 +3926,7 @@ Section: Review
     hd <- cursor-hide cs base stride
     signer <- loaded-fingerprint
     data <- grv-load 0
-    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = Just data }
+    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = apps.da-browser, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = Just data, da-pad = apps.da-pad }
     in let mark = __heap-save
     in let rs = peek-32 ds desk-review-cell
     in act
@@ -4398,7 +4410,7 @@ Section: The Editor
     in let mp = if hole < 0 then desk-marks-push ms desk-focus-edit b0 else 0
     in act
     st <- ged-build start (peek-32 ds desk-edit-cell)
-    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = apps.da-scene, da-edit = Just st, da-sheet = apps.da-sheet, da-review = apps.da-review }
+    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = apps.da-scene, da-edit = Just st, da-sheet = apps.da-sheet, da-review = apps.da-review, da-pad = apps.da-pad }
     in let fill = if hole < 0 then desk-hole-pad b0 desk-edit-want else 0
     in let claimed = desk-hole-exit ms hole desk-focus-edit
     in let o = desk-wnd-open desk-focus-edit w h ds
@@ -4462,7 +4474,7 @@ Section: Files
     in act
     m <- desk-files-mount start
     st <- desk-files-build (apps.da-fonts) m
-    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
+    let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = Just st, da-browser = None, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review, da-pad = apps.da-pad }
     in let claimed = desk-hole-exit ms hole desk-focus-files
     in act
     hd <- cursor-hide cs base stride
@@ -4785,7 +4797,7 @@ Section: The 3D panes
     sp <- gsc-new base stride cs (dk-gpu ds) sky bw bh
     let own = if peek-32 ds dk-render-cell /= 0 then gsc-worker-own sp (peek-32 ds dk-render-cell) (if foc == desk-focus-fish then 2 else 1)
       else if foc == desk-focus-fish then gsc-own sp (gf-scene 0) gf-advance else gsc-own sp (gsc-scene 0) gsc-no-advance
-    in let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
+    in let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = None, da-scene = Just sp, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review, da-pad = apps.da-pad }
     in let claimed = desk-hole-exit ms hole foc
     in let o = desk-wnd-open foc w h ds
     in act
@@ -4873,7 +4885,7 @@ Section: Browser
     in let box0 = dk-wnd-content desk-focus-bro w h ds tf (ui-wscale w)
     in act
       bp <- gbr-new (box0.lr-w) (box0.lr-h)
-      let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = Just bp, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review }
+      let apps2 = DeskApps { da-fonts = apps.da-fonts, da-files = apps.da-files, da-browser = Just bp, da-scene = apps.da-scene, da-edit = apps.da-edit, da-sheet = apps.da-sheet, da-review = apps.da-review, da-pad = apps.da-pad }
       in act
         c0 <- desk-wall-paint base w h stride font tf ds
         p <- gbr-first-paint base (box0.lr-x) (box0.lr-y) (box0.lr-w) (box0.lr-h) stride font tf mouse cs (ui-scale w) bp
@@ -4937,15 +4949,28 @@ Section: Browser
       else 0
     in peek-qword iq di-out-key
 
+  desk-pad-note : UsbPad, Integer -> Integer
+  desk-pad-note (p) (ds) =
+    let blk = peek-32 ds dk-mon-cell
+    in if p.upad-ok == False | blk == 0 then 0
+    else poke-32 blk dk-mon-pad-btn-cell (bit-and (pad-buttons-now p) 4294967295)
+
+  desk-pad-step : UsbPad, Integer -> Integer
+  desk-pad-step (p) (ds) =
+    let pumped = pad-pump p
+    in desk-pad-note p ds
+
   desk-loop : Integer, Integer, Integer, Integer, CbfFont, GopFont, UsbKbd, UsbMouse, Integer, Integer, DeskApps, WidgetNode -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio] Integer
   desk-loop (base) (w) (h) (stride) (font) (tf) (kbd) (mouse) (ds) (cs) (apps) (root) = act
+    ps2 <- di-ps2-pump (peek-32 ds dk-input-cell) mouse w h
     let held = desk-present-hold (peek-32 ds dk-present-cell) apps
     in let shown = dsp-due (peek-32 ds dk-present-cell) hpet-ticks hpet-ticks-per-second
     in let fmark = __heap-save
     in let iq = peek-32 ds dk-input-cell
     in let sc = desk-input-step kbd mouse w h ds
+    in let pdn = desk-pad-step (apps.da-pad) ds
     in act
-      ck <- if dk-drag-fid ds == desk-focus-none & pp-clock-due (peek-32 ds dk-policy-cell) hpet-ticks hpet-ticks-per-second then desk-clock base w h stride font tf ds root else act 0 end
+      ck <-if dk-drag-fid ds == desk-focus-none & pp-clock-due (peek-32 ds dk-policy-cell) hpet-ticks hpet-ticks-per-second then desk-clock base w h stride font tf ds root else act 0 end
       let rr = dk-rate-tick ds
       in let rp = if rr == 1 then desk-rate-paint base w h stride font (ui-scale w) tf cs mouse ds else 0
       in let mv = if iq == 0 then mouse-pump mouse w h else if peek-qword iq di-out-kind == di-motion | peek-qword iq di-out-kind == di-button then 1 else 0
@@ -5291,9 +5316,10 @@ Section: Browser
     end
   end
 
-  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  desk-run : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer -> [Device.Port, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
 
-  desk-run (screen) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
+  desk-run (screen) (w) (h) (stride) (font) (kbd) (mouse0) (pad) (web) = act
+    mouse <- di-pointer mouse0 w h
     tf <- desk-font w
     af <- desk-app-fonts w tf font
     gp <- desk-gpu-present 0
@@ -5314,7 +5340,7 @@ Section: Browser
     in let ep = poke-32 ds desk-edit-cell (alloc-zeroed 192 64)
     in let ci = gcon-init ns
     in let pp = poke-32 ds desk-prog-cell (alloc-zeroed 64 64)
-    in let kp2 = poke-32 ds desk-clock-cell (alloc-zeroed 128 64)
+    in let kp2 = poke-32 ds desk-clock-cell (alloc-zeroed clk-block-bytes 64)
     in let rvp = poke-32 ds desk-review-cell (alloc-zeroed 64 64)
     in let rvi = grv-init (peek-32 ds desk-review-cell)
     in let msp = poke-32 ds desk-marks-cell (alloc-zeroed 128 64)
@@ -5351,7 +5377,7 @@ Section: Browser
         in let policy = poke-32 ds dk-policy-cell (pp-new 0)
         in let ix = poke-qword iq di-col-x (w / 2)
         in let iy = poke-qword iq di-col-y (h / 2)
-        in let apps = desk-apps-empty af
+        in let apps = desk-apps-blank af pad
         in let bm = poke-32 ds desk-mark-cell __heap-save
         in let rm = __heap-save
         in let root = desk-draw base w h stride font s tf ds

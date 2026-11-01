@@ -1,7 +1,43 @@
 Chapter: FwdFunnelHashTest
   cites Foreword chapter FunnelHash
 
+Section: Fixtures
+
+  fht-fill : FunnelTable Integer, Integer, Integer -> FunnelTable Integer
+  fht-fill (t) (i) (n) =
+    if i >= n then t
+    else fht-fill (funnel-put t ("k" & show i) (i * 7)) (i + 1) n
+
+  fht-found : FunnelTable Integer, Integer, Integer, Integer -> Integer
+  fht-found (t) (i) (n) (acc) =
+    if i >= n then acc
+    else let hit = when funnel-get t ("k" & show i)
+        is Just (v) -> if v == i * 7 then 1 else 0
+        is None -> 0
+    in fht-found t (i + 1) n (acc + hit)
+
+  fht-has : FunnelTable Integer, Integer, Integer, Integer -> Integer
+  fht-has (t) (i) (n) (acc) =
+    if i >= n then acc
+    else fht-has t (i + 1) n (acc + (if funnel-has t ("k" & show i) then 1 else 0))
+
+  fht-sizes : List Integer, Integer, Text -> Text
+  fht-sizes (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else fht-sizes xs (i + 1) (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Foreword/FunnelHash OK"
-  end
+
+  opening : [Console] Nothing =
+    let t16 = funnel-new 16
+    in let t100 = funnel-new 100
+    in let filled = fht-fill (funnel-new 200) 0 50
+    in let again = funnel-put (fht-fill (funnel-new 200) 0 3) "k1" 99
+    in act
+      print-line-uni ("new 16: levels " & show (t16.num-levels) & " [" & fht-sizes (t16.level-sizes) 0 "" & "] probes " & show (t16.probes-per) & " capacity " & show (funnel-capacity t16) & "; new 4 capacity " & show (funnel-capacity (funnel-new 4)))
+      print-line-uni ("new 100: levels " & show (t100.num-levels) & " capacity " & show (funnel-capacity t100))
+      print-line-uni ("fifty into 200: size " & show (funnel-size filled) & ", found " & show (fht-found filled 0 50 0) & ", absent k50..k99 present " & show (fht-has filled 50 100 0))
+      print-line-uni ("overwrite k1: size " & show (funnel-size again) & ", k1 " & (when funnel-get again "k1"
+        is Just (v) -> show v
+        is None -> "none"))
+    end

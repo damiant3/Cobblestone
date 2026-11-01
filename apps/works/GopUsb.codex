@@ -4,6 +4,7 @@ Chapter: GopUsb
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
   cites Works chapter GopUsbMsc
+  cites Works chapter GopUsbPad
   cites Works chapter GopAhci
   cites Foreword chapter Maybe
 
@@ -12,20 +13,20 @@ Chapter: GopUsb
  completion, and one interface of a combo device from eating its
  sibling's.
 
- We say:
-
 Section: Attachment
 
   UsbAttach = record {
     ua-kbd : UsbKbd,
     ua-mouse : UsbMouse,
-    ua-disk : MscDisk
+    ua-disk : MscDisk,
+    ua-pad : UsbPad
   }
 
   UsbFound = record {
     uf-kbd : UsbKbd,
     uf-mouse : UsbMouse,
-    uf-disk : MscDisk
+    uf-disk : MscDisk,
+    uf-pad : UsbPad
   }
 
  A machine may carry more than one xHCI, and the boot stick is not
@@ -57,7 +58,7 @@ Section: Attachment
 
   usb-attach-with : PciScanResult, Integer -> [Device.Port] UsbAttach
   usb-attach-with (scan) (shadow) = act
-    f <- usb-hosts scan 0 0 shadow (UsbFound { uf-kbd = kbd-no-kbd, uf-mouse = mouse-no-mouse, uf-disk = msc-no-disk })
+    f <- usb-hosts scan 0 0 shadow (UsbFound { uf-kbd = kbd-no-kbd, uf-mouse = mouse-no-mouse, uf-disk = msc-no-disk, uf-pad = pad-no-pad })
     let r = if xdiag-get 44 == 0 then 0 else xdiag-load shadow
     in usb-done f
   end
@@ -131,7 +132,7 @@ Section: The Walk
   usb-done : UsbFound -> UsbAttach
   usb-done (found) =
     let p = if (found.uf-disk).md-ok then msc-publish (found.uf-disk) else 0
-    in UsbAttach { ua-kbd = found.uf-kbd, ua-mouse = found.uf-mouse, ua-disk = found.uf-disk }
+    in UsbAttach { ua-kbd = found.uf-kbd, ua-mouse = found.uf-mouse, ua-disk = found.uf-disk, ua-pad = found.uf-pad }
 
   usb-walk : XhciHost, Integer, UsbFound -> UsbFound
   usb-walk (xh) (from) (found) =
@@ -163,7 +164,7 @@ Section: The Walk
     else if (found.uf-disk).md-ok then found
     else let mi = msc-find-interface cfg 0 total
     in if mi < 0 then found
-    else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = found.uf-mouse, uf-disk = msc-open-iface xh dev cfg mi total }
+    else UsbFound { uf-kbd = found.uf-kbd, uf-mouse = found.uf-mouse, uf-disk = msc-open-iface xh dev cfg mi total, uf-pad = found.uf-pad }
 
 Section: The HID Interface Walk
 
@@ -171,7 +172,7 @@ Section: The HID Interface Walk
   usb-has-boot-hid (cfg) (off) (total) =
     if off >= total then False
     else let len = peek-byte cfg off
-    in if len == 0 then False
+    in if usb-desc-ok cfg off total == False then False
     else if peek-byte cfg (off + 1) /= 4 then usb-has-boot-hid cfg (off + len) total
     else if peek-byte cfg (off + 3) /= 0 then usb-has-boot-hid cfg (off + len) total
     else if peek-byte cfg (off + 5) /= 3 then usb-has-boot-hid cfg (off + len) total
@@ -184,7 +185,7 @@ Section: The HID Interface Walk
   usb-hid-walk (xh) (dev) (cfg) (off) (total) (cfgd) (found) =
     if off >= total then found
     else let len = peek-byte cfg off
-    in if len == 0 then found
+    in if usb-desc-ok cfg off total == False then found
     else if peek-byte cfg (off + 1) /= 4 then usb-hid-walk xh dev cfg (off + len) total cfgd found
     else if peek-byte cfg (off + 3) /= 0 then usb-hid-walk xh dev cfg (off + len) total cfgd found
     else if peek-byte cfg (off + 5) /= 3 then usb-hid-walk xh dev cfg (off + len) total cfgd found
@@ -194,7 +195,21 @@ Section: The HID Interface Walk
     in let proto = peek-byte cfg (off + 7)
     in if if sub == 1 then proto == 1 else False then usb-hid-bind-kbd xh dev cfg off ep total cfgd found False
     else if if sub == 1 then proto == 2 else False then usb-hid-bind-mouse xh dev cfg off ep total cfgd found
+    else if if sub == 0 then proto == 0 else False then usb-hid-try-pad xh dev cfg off ep total cfgd found
     else usb-hid-bind-kbd xh dev cfg off ep total cfgd found True
+
+ A subclass 0, protocol 0 interface whose report descriptor parses as a
+ gamepad is the pad; any other one stays the raw keyboard it was, and so
+ does a second pad (first pad wins).
+
+  usb-hid-try-pad : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
+  usb-hid-try-pad (xh) (dev) (cfg) (off) (ep) (total) (cfgd) (found) =
+    if (found.uf-pad).upad-ok then usb-hid-bind-kbd xh dev cfg off ep total cfgd found True
+    else let layout = pad-layout-of xh dev cfg off
+    in if layout.pl-ok == False then usb-hid-bind-kbd xh dev cfg off ep total cfgd found True
+    else let p = pad-open-iface xh dev (peek-byte cfg 5) (bit-and (peek-byte cfg (ep + 2)) 15) (kbd-ep-maxpkt cfg ep) (peek-byte cfg (ep + 6)) (cfgd == 0) layout
+    in if p.upad-ok == False then usb-hid-bind-kbd xh dev cfg off ep total cfgd found True
+    else usb-hid-walk xh dev cfg (off + peek-byte cfg off) total 1 (UsbFound { uf-kbd = found.uf-kbd, uf-mouse = found.uf-mouse, uf-disk = found.uf-disk, uf-pad = p })
 
   usb-hid-bind-kbd : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound, Boolean -> UsbFound
   usb-hid-bind-kbd (xh) (dev) (cfg) (off) (ep) (total) (cfgd) (found) (raw) =
@@ -206,7 +221,7 @@ Section: The HID Interface Walk
     in if (found.uf-kbd).uk-ok then
       let a = kbd-adopt (found.uf-kbd) k
       in usb-hid-walk xh dev cfg (off + len) total 1 found
-    else usb-hid-walk xh dev cfg (off + len) total 1 (UsbFound { uf-kbd = k, uf-mouse = found.uf-mouse, uf-disk = found.uf-disk })
+    else usb-hid-walk xh dev cfg (off + len) total 1 (UsbFound { uf-kbd = k, uf-mouse = found.uf-mouse, uf-disk = found.uf-disk, uf-pad = found.uf-pad })
 
   usb-hid-bind-mouse : XhciHost, UsbDev, Integer, Integer, Integer, Integer, Integer, UsbFound -> UsbFound
   usb-hid-bind-mouse (xh) (dev) (cfg) (off) (ep) (total) (cfgd) (found) =
@@ -219,7 +234,7 @@ Section: The HID Interface Walk
     in if havem then
       let a = mouse-adopt (found.uf-mouse) m
       in usb-hid-walk xh dev cfg (off + len) total 1 found
-    else usb-hid-walk xh dev cfg (off + len) total 1 (UsbFound { uf-kbd = found.uf-kbd, uf-mouse = m, uf-disk = found.uf-disk })
+    else usb-hid-walk xh dev cfg (off + len) total 1 (UsbFound { uf-kbd = found.uf-kbd, uf-mouse = m, uf-disk = found.uf-disk, uf-pad = found.uf-pad })
 
  Cell 47 counts every HID interface bound this boot; rows at 80, 84,
  88, 92 carry the first four. Per row: the device descriptor's idVendor
@@ -228,21 +243,6 @@ Section: The HID Interface Walk
  15:12, then the report buffer's address. The row is written at bind
  time so a boot that dies later still photographs with its devices
  named.
-
- These cells were at 80 until 2026-08-13 and that was FOUR CELLS DEEP into
- territory GopUsbMsc and GopFat16 already owned. Four devices at four words
- each is 80..95, against msc-cell-lastcc 81, msc-cell-phase 82,
- gfat-cell-write 83, xhci-cell-fuel-left 84, msc-cell-fuel-lo 85,
- msc-cell-fail-lba 86, msc-cell-retry 87 and gfat-cell-stage 80.
-
- It was invisible because the two writers run in order and neither reads
- the other. usb-attach binds HID first and fills 80..95; the mount and any
- disk I/O then run and overwrite 80..87, so the MSC and FAT diagnostics
- were right and the FIRST TWO ROWS of the boot payload's HID table were showing
- storage state wearing device-descriptor labels. In the other direction, a
- cell the storage path never writes on a given boot keeps its HID value: on
- 2026-08-13 an F12 mount failure reported gfat-cell-write as 1964712320,
- which is not a write stage, it is HID device 0's report buffer address.
 
  The registry that says who owns what is docs/OperatorsManual.md, and
  build/check-xdiag-cells.ps1 fails the build on an overlap.
@@ -283,7 +283,7 @@ Section: Hub Requests
   hub-find-interface (cfg) (off) (total) =
     if off >= total then -1
     else let len = peek-byte cfg off
-    in if len == 0 then -1
+    in if usb-desc-ok cfg off total == False then -1
     else if peek-byte cfg (off + 1) /= 4 then hub-find-interface cfg (off + len) total
     else if peek-byte cfg (off + 5) /= 9 then hub-find-interface cfg (off + len) total
     else off

@@ -1,0 +1,81 @@
+Chapter: AccpPolicyAsk
+  cites Accp chapter AccpJson
+  cites Accp chapter AccpIr
+  cites Accp chapter AccpGrant
+  cites Trust chapter PolicyEngine
+  cites Trust chapter PolicyDecide
+  cites Trust chapter NameBook
+  cites Foreword chapter MathLib (int-widen)
+  cites Foreword chapter Maybe
+
+Section: Answers
+
+  apq-refused : Text, Text, Text -> Text
+  apq-refused (question) (why) (held) =
+    "{\"status\":\"refused\",\"stage\":\"policy\",\"reason\":" & aj-quote why & ",\"question\":" & aj-quote question
+      & (if held == "" then "" else ",\"policy_sha256\":" & aj-quote held) & "}"
+
+  apq-witness : PolicyContext -> Text
+  apq-witness (c) =
+    "{\"capability\":" & aj-quote c.capability & ",\"direction\":" & show (int-widen c.direction) & ",\"trust_score\":" & show (int-widen c.trust-score)
+      & ",\"current_time\":" & show c.current-time & ",\"agent_id\":" & aj-quote c.agent-id & ",\"scope\":" & aj-quote c.scope & "}"
+
+  apq-answer : Text, PolicyAnswer, Text -> Text
+  apq-answer (question) (a) (held) =
+    if a.decided == False then apq-refused question a.why held
+    else "{\"status\":\"ok\",\"question\":" & aj-quote question & ",\"holds\":" & (if a.holds then "true" else "false")
+      & ",\"witness\":" & (if a.holds then apq-witness a.witness else "null") & ",\"min_trust\":" & show a.min-trust
+      & ",\"evaluations\":" & show a.evaluations & ",\"policy_sha256\":" & aj-quote held & "}"
+
+  apq-dead : DeadRules, Text -> Text
+  apq-dead (d) (held) =
+    if d.decided == False then apq-refused "dead-rules" d.why held
+    else "{\"status\":\"ok\",\"question\":\"dead-rules\",\"dead\":" & ai-json-list d.dead & ",\"evaluations\":" & show d.evaluations
+      & ",\"policy_sha256\":" & aj-quote held & "}"
+
+Section: Asking
+
+ The held policy is the grantor's prose lowered through the name book that
+ grantor signed, the same lowering a lease's admission uses (ag-policy-from),
+ so a question is answered about the policy the conduit enforces. A proposed
+ policy for widens lowers through the same book.
+
+  apq-book-grantor : Text -> Text
+  apq-book-grantor (book-hex) =
+    when ag-unhex book-hex
+      is None -> ""
+      is Just (bs) ->
+        when name-book-decode-checked bs
+          is None -> ""
+          is Just (book) -> ag-hex (book.grantor)
+
+  apq-unlowered : Text, Text -> Text
+  apq-unlowered (which) (text) =
+    let u = ag-policy-unread text
+    in if u == "" then which & " does not lower through the held name book" else which & substring u 15 (text-length u - 15)
+
+  apq-ask : Text, AccpBinding, Text, Text -> Text
+  apq-ask (line) (b) (text) (book-hex) =
+    let o = aj-object line
+    in let question = aj-text o "question"
+    in let held = b.policy-sha256
+    in let grantor = apq-book-grantor book-hex
+    in if b.bound == False then apq-refused question "this instance is not bound to a grantor set; launch it with -Grantors, -Identity, -Policy and -NameBook" ""
+    else if held == "" | text == "" then apq-refused question "this instance holds no policy" ""
+    else if grantor == "" then apq-refused question "the held name book does not decode" held
+    else if ag-key-in (b.grantors) grantor == False then apq-refused question "the held name book's grantor is not trusted by this instance" held
+    else when ag-unhex grantor
+      is None -> apq-refused question "the held name book's grantor is not hex" held
+      is Just (gk) ->
+        when ag-policy-from text book-hex gk
+          is None -> apq-refused question (apq-unlowered "the held policy" text) held
+          is Just (pol) ->
+            if question == "can-allow" then
+              let label = aj-text o "label"
+              in apq-answer question (policy-can-allow pol label (int-widen (ag-label-direction label))) held
+            else if question == "dead-rules" then apq-dead (policy-dead-rules pol) held
+            else when ag-policy-from (aj-text o "policy") book-hex gk
+              is None -> apq-refused question (apq-unlowered "the proposed policy" (aj-text o "policy")) held
+              is Just (proposed) -> apq-answer question (policy-widens pol proposed) held
+
+Page 1

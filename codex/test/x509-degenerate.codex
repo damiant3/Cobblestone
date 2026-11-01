@@ -1,0 +1,206 @@
+Chapter: X509DegenerateTest
+  cites Encode chapter X509Write
+  cites Encode chapter X509
+  cites Encode chapter X509Chain
+  cites Foreword chapter Ed25519
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ The CA and leaf keys are RFC 8032 section 7.1, TEST 1 and TEST 2.
+
+Section: Fixtures
+
+  ca-priv : List Integer =
+    [#9D, #61, #B1, #9D, #EF, #FD, #5A, #60, #BA, #84, #4A, #F4, #92, #EC, #2C, #C4,
+     #44, #49, #C5, #69, #7B, #32, #69, #19, #70, #3B, #AC, #03, #1C, #AE, #7F, #60]
+
+  leaf-priv : List Integer =
+    [#4C, #CD, #08, #9B, #28, #FF, #96, #DA, #9D, #B6, #C3, #46, #EC, #11, #4E, #0F,
+     #5B, #8A, #31, #9F, #35, #AB, #A6, #24, #DA, #8C, #F6, #ED, #4F, #B8, #A6, #FB]
+
+  loopback : List Integer = [127, 0, 0, 1]
+
+  t0 : List Integer = ascii "20250101000000"
+  t1 : List Integer = ascii "20350101000000"
+
+Section: Helpers
+
+  ascii : Text -> List Integer
+  ascii (s) = ascii-loop s 0 (text-length s) []
+
+  ascii-loop : Text, Integer, Integer, List Integer -> List Integer
+  ascii-loop (s) (i) (n) (acc) =
+    if i >= n then acc
+    else ascii-loop s (i + 1) n (list-push acc (to-unicode (char-code (char-at s i))))
+
+  yn : Boolean -> Text
+  yn (b) = if b then "True" else "False"
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0)
+
+  or-empty : Maybe (List Integer) -> List Integer
+  or-empty (m) =
+    when m
+      is None -> []
+      is Just (x) -> x
+
+  key-of : X509KeyAlg, List Integer -> X509Key
+  key-of (alg) (bytes) = X509Key { xk-alg = alg, xk-bytes = bytes, xk-mod = [], xk-exp = [] }
+
+ A seeded single-byte mutation sweep over a real certificate. Every byte
+ position in turn is flipped and the mutated DER handed to x509-parse, which
+ drives the whole ASN.1 and X.509 parse path. The sweep requires every parse to
+ RETURN (None or a certificate); a decoder that read past the buffer would trap
+ and the guest would die mid-sweep, and a non-terminating walk would never print.
+ The count is accumulated so no parse is optimised away; the control parse of the
+ unmutated certificate must still succeed.
+
+  mutate-copy : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mutate-copy (xs) (pos) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else mutate-copy xs pos val (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) val else list-at xs i))
+
+  parse-ok : List Integer -> Integer
+  parse-ok (m) = when x509-parse m is None -> 0 is Just (c) -> 1
+
+  sweep-parse : List Integer, Integer, Integer, Integer -> Integer
+  sweep-parse (base) (n) (pos) (seen) =
+    if pos >= n then seen
+    else sweep-parse base n (pos + 1) (seen + parse-ok (mutate-copy base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []))
+
+  fuzz-line : List Integer -> Text
+  fuzz-line (leaf) =
+    let n = list-length leaf
+    in "x509-mutation-sweep completed=" & (if sweep-parse leaf n 0 0 >= 0 then "True" else "False")
+       & " control=" & (when x509-parse leaf is None -> "None" is Just (c) -> "Just")
+
+  with-parts : X509Cert, List Integer, List Integer, X509SigAlg, List (List Integer), List (List Integer) -> X509Cert
+  with-parts (c) (tbs) (sig) (alg) (dns) (ips) =
+    X509Cert { xc-tbs = tbs, xc-sig = sig, xc-sig-alg = alg, xc-version = c.xc-version, xc-serial = c.xc-serial, xc-issuer = c.xc-issuer, xc-subject = c.xc-subject, xc-not-before = c.xc-not-before, xc-not-after = c.xc-not-after, xc-key = c.xc-key, xc-is-ca = c.xc-is-ca, xc-path-len = c.xc-path-len, xc-cert-sign = c.xc-cert-sign, xc-server-auth = c.xc-server-auth, xc-name-constraints = c.xc-name-constraints, xc-dns-names = dns, xc-ip-addrs = ips }
+
+  with-sig : X509Cert, List Integer -> X509Cert
+  with-sig (c) (sig) = with-parts c (c.xc-tbs) sig (c.xc-sig-alg) (c.xc-dns-names) (c.xc-ip-addrs)
+
+  with-names : X509Cert, List (List Integer), List (List Integer) -> X509Cert
+  with-names (c) (dns) (ips) = with-parts c (c.xc-tbs) (c.xc-sig) (c.xc-sig-alg) dns ips
+
+  print-all : List Text, Integer -> [Console] Nothing
+  print-all (ls) (i) =
+    if i >= list-length ls then act
+      print-uni ""
+    end
+    else act
+      print-line-uni (list-at ls i)
+      print-all ls (i + 1)
+    end
+
+Section: Time
+
+  time-lines : List Text
+  time-lines =
+    let a = ascii "20300101000000"
+    in [
+      "time-le equal = " & yn (x509-time-le a a),
+      "time-le one second later = " & yn (x509-time-le (ascii "20300101000001") a),
+      "time-le one second earlier = " & yn (x509-time-le (ascii "20291231235959") a),
+      "time-le empty first = " & yn (x509-time-le [] a),
+      "time-le empty second = " & yn (x509-time-le a []),
+      "time-le both empty = " & yn (x509-time-le [] []),
+      "time-le 13-byte prefix first = " & yn (x509-time-le (ascii "2030010100000") a),
+      "time-le 15-byte first = " & yn (x509-time-le (ascii "20300101000000Z") a)
+    ]
+
+Section: Identity
+
+  id-line : Text, X509Cert, List Integer -> Text
+  id-line (label) (c) (host) = "identity " & label & " = " & yn (x509-identity-matches c host)
+
+  identity-lines : X509Cert -> List Text
+  identity-lines (leaf) =
+    let wild = with-names leaf [ascii "*.example.com"] []
+    in let partial = with-names leaf [ascii "f*.example.com"] []
+    in let ip-as-name = with-names leaf [ascii "127.0.0.1"] []
+    in let bare = with-names leaf [] []
+    in let empty-name = with-names leaf [[]] []
+    in [
+      id-line "localhost control" leaf (ascii "localhost"),
+      id-line "upper-case host control" leaf (ascii "LOCALHOST"),
+      id-line "ip control" leaf (ascii "127.0.0.1"),
+      id-line "empty expected" leaf [],
+      id-line "trailing-dot host" leaf (ascii "localhost."),
+      id-line "no names" bare (ascii "localhost"),
+      id-line "empty dns entry" empty-name (ascii "a"),
+      id-line "wildcard one label control" wild (ascii "a.example.com"),
+      id-line "wildcard bare domain" wild (ascii "example.com"),
+      id-line "wildcard two labels" wild (ascii "a.b.example.com"),
+      id-line "wildcard leading dot" wild (ascii ".example.com"),
+      id-line "partial-label wildcard" partial (ascii "foo.example.com"),
+      id-line "ip literal against a dns name" ip-as-name (ascii "127.0.0.1"),
+      id-line "ip octet 256" leaf (ascii "127.0.0.256"),
+      id-line "ip five octets" leaf (ascii "127.0.0.1.1"),
+      id-line "ip four-digit octet" leaf (ascii "0127.0.0.1")
+    ]
+
+Section: Signatures
+
+  sig-line : Text, Boolean -> Text
+  sig-line (label) (b) = "signed-by " & label & " = " & yn b
+
+  signed-lines : X509Cert, X509Cert -> List Text
+  signed-lines (leaf) (ca) =
+    let k = ca.xc-key
+    in let pub = k.xk-bytes
+    in [
+      sig-line "genuine control" (x509-signed-by leaf k),
+      sig-line "all-zero signature" (x509-signed-by (with-sig leaf (zeros 64 [])) k),
+      sig-line "empty signature" (x509-signed-by (with-sig leaf []) k),
+      sig-line "empty tbs" (x509-signed-by (with-parts leaf [] (leaf.xc-sig) (leaf.xc-sig-alg) [] []) k),
+      sig-line "all-zero key and signature" (x509-signed-by (with-sig leaf (zeros 64 [])) (key-of KeyEd25519 (zeros 32 []))),
+      sig-line "empty key" (x509-signed-by leaf (key-of KeyEd25519 [])),
+      sig-line "x25519 key with the issuer's bytes" (x509-signed-by leaf (key-of KeyX25519 pub)),
+      sig-line "unknown key with the issuer's bytes" (x509-signed-by leaf (key-of KeyUnknown pub)),
+      sig-line "rsa key with no modulus" (x509-signed-by leaf (key-of KeyRsa pub)),
+      sig-line "leaf's own key" (x509-signed-by leaf (leaf.xc-key))
+    ]
+
+  with-line : Text, Boolean -> Text
+  with-line (label) (b) = "verify-with " & label & " = " & yn b
+
+  verify-lines : X509Cert, X509Cert -> List Text
+  verify-lines (leaf) (ca) =
+    let k = ca.xc-key
+    in [
+      with-line "ed25519 genuine control" (x509-verify-with SigEd25519 leaf k),
+      with-line "unknown algorithm" (x509-verify-with SigUnknown leaf k),
+      with-line "rsa-sha1" (x509-verify-with SigRsaSha1 leaf k),
+      with-line "rsa-sha256 on an ed25519 key" (x509-verify-with SigRsaSha256 leaf k),
+      with-line "rsa-sha384 on an ed25519 key" (x509-verify-with SigRsaSha384 leaf k),
+      with-line "ecdsa-sha256 on an ed25519 key" (x509-verify-with SigEcdsaSha256 leaf k),
+      with-line "ecdsa-sha384 on an ed25519 key" (x509-verify-with SigEcdsaSha384 leaf k),
+      with-line "ed25519 on an empty key" (x509-verify-with SigEd25519 leaf (key-of KeyEd25519 []))
+    ]
+
+Section: Entry
+
+  cert-lines : List Integer, List Integer -> List Text
+  cert-lines (leaf) (ca) =
+    when x509-parse leaf
+      is None -> ["leaf unparsed"]
+      is Just (l) -> cert-lines-with l (x509-parse ca)
+
+  cert-lines-with : X509Cert, Maybe X509Cert -> List Text
+  cert-lines-with (l) (m) =
+    when m
+      is None -> ["ca unparsed"]
+      is Just (c) -> identity-lines l & signed-lines l c & verify-lines l c
+
+  opening : [Console] Nothing = act
+    let ca = or-empty (x509-ca-cert-ed25519 ca-priv [1] (ascii "Codex Dev Root") t0 t1)
+    in let leaf = or-empty (x509-issue-ed25519 ca-priv ca (ed25519-public-key leaf-priv) [2] (ascii "codex-dev") t0 t1 [ascii "localhost"] [loopback])
+    in act
+      print-all time-lines 0
+      print-all (cert-lines leaf ca) 0
+      print-line-uni (fuzz-line leaf)
+    end
+  end

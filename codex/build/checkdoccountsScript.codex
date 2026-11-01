@@ -8,8 +8,6 @@ Chapter: CheckDocCountsScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
 Section: Concatenation
@@ -56,7 +54,7 @@ Section: S06 -- Bytes and digests
 
   ccd-digest-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeFileExists (SeVar "p"))) [ScReturn (SeLit "")] [], ScIf (SeStringEq (SeVar "Algorithm") (SeLit "MD5")) [ScHashFile "MD5" "h" (SeVar "p"), ScReturn (SeVar "h")] [], ScHashFile "SHA256" "h" (SeVar "p"), ScReturn (SeVar "h")]
 
-  ccd-cdxprefix-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeFileExists (SeVar "p"))) [ScReturn (SeLit "")] [], ScAssign "b" (SeRaw "[System.IO.File]::ReadAllBytes($p)"), ScIf (SeRaw "$b.Length -lt 40") [ScReturn (SeLit "")] [], ScReturn (SeRaw "(($b[8..15] | ForEach-Object { $_.ToString('X2') }) -join '')")]
+  ccd-cdxprefix-body : List ShellCmd = [ScAssign "p" ccd-rel-path, ScIf (SeNot (SeFileExists (SeVar "p"))) [ScReturn (SeLit "")] [], ScReadBytes "b" (SeVar "p"), ScIf (SeBare (SeIntLt (SeProperty (SeVar "b") "Length") (SeInt 40))) [ScReturn (SeLit "")] [], ScReturn (SeJoin (SePipe (SeSlice (SeVar "b") 8 15) [StMap (SeMethodCall SeItem "ToString" [SeLit "X2"])]) (SeLit ""))]
 
   s06-body : List ShellCmd = [ScBlank,ScSequence [ScComment "The seed digests are the reason this file grew a text mode. README ships", ScComment "them to the public, nothing re-read them, and on 2026-07-31 every one was", ScComment "wrong: the size by 108,817 bytes, the SHA-256 and MD5 entirely, and the", ScComment "same artifact was stated at three different sizes in three places. A digest", ScComment "is exactly as mechanically checkable as a count and rots the same way."], ScFunction "Get-FileBytes" [sh-param "Rel" SptString] ccd-bytes-body, ScBlank, ScFunction "Get-FileDigest" [sh-param "Rel" SptString, sh-param "Algorithm" SptString] ccd-digest-body, ScBlank, ScSequence [ScComment "The CDX content hash at bytes 8..39 deliberately EXCLUDES the signature, so", ScComment "it is a different claim from the SHA-256 over the whole file and no digest", ScComment "of the file can stand in for it. It had NO claim until 2026-08-21 and was", ScComment "stale in README with the other three; nothing would ever have caught it."], ScFunction "Get-CdxContentPrefix" [sh-param "Rel" SptString] ccd-cdxprefix-body, ScBlank, ScSequence [ScComment "Head AND tail. Printing a leading slice alone made a one-digit tail", ScComment "difference render as two identical strings, which reads as the checker", ScComment "malfunctioning rather than as the digest being wrong. Found by sabotage:", ScComment "flipping the last hex digit produced a DRIFT whose two columns matched."], ScFunction "Format-Digest" [sh-param "D" SptString] [ScIf (SeIntLe (SeTextLength (SeVar "D")) (SeInt 20)) [ScReturn (SeVar "D")] [], ScReturn (ccd-cat [SeSubstring (SeVar "D") 0 8, SeLit "..", SeSubstringFrom (SeVar "D") (SeSub (SeTextLength (SeVar "D")) (SeInt 8))])]]
 

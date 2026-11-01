@@ -1,0 +1,77 @@
+Chapter: VpnTunnel
+  cites Dev chapter VpnFirewall
+  cites Foreword chapter DiffieHellman
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+  vt-key : Integer, Integer, List Integer -> List Integer
+  vt-key (seed) (i) (acc) =
+    if i >= 32 then acc
+    else vt-key seed (i + 1) (list-push acc (int-mod (seed * 37 + i * 13 + 5) 256))
+
+  vt-zero32 : List Integer
+  vt-zero32 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  vt-ip : Integer, Integer -> List Integer
+  vt-ip (proto) (port) = [69, 0, 0, 32, 0, 1, 0, 0, 64, proto, 0, 0, 10, 0, 0, 2, 10, 0, 0, 1, 196, 1, port / 256, int-mod port 256, 0, 12, 0, 0, 104, 105, 33, 10]
+
+  vt-flip : List Integer, Integer, Integer, List Integer -> List Integer
+  vt-flip (xs) (at) (i) (acc) =
+    if i >= list-length xs then acc
+    else vt-flip xs at (i + 1) (list-push acc (if i == at then bit-xor (list-at xs i) 1 else list-at xs i))
+
+  vt-yn : Boolean -> Text
+  vt-yn (b) = if b then "yes" else "no"
+
+  vt-act : FwAction -> Text
+  vt-act (a) = when a is FwAllow -> "allow" is FwDeny -> "deny"
+
+  vt-same : List Integer, List Integer, Integer -> Boolean
+  vt-same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else vt-same a b (i + 1)
+
+  vt-public : VpnFirewallState
+  vt-public = vf-add-rule (vf-add-rule (vf-set-conn-profile vpn-firewall-new ConnPublic) "dns" 53 "udp" FwDeny "block dns") "ssh" 22 "tcp" FwAllow "ssh"
+
+  vt-open : VpnFirewallState
+  vt-open = vf-toggle-firewall vpn-firewall-new
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let si = vt-key 1 0 []
+    in let sr = vt-key 2 0 []
+    in let ei = vt-key 3 0 []
+    in let er = vt-key 4 0 []
+    in let sx = vt-key 5 0 []
+    in let pi = x25519-public-key si
+    in let pr = x25519-public-key sr
+    in let init = vpn-initiate si ei pr
+    in let resp = vpn-respond sr er [pi] (init.vh-msg)
+    in let done = vpn-finish init si ei (resp.vh-msg)
+    in let a = vpn-session done True
+    in let b = vpn-session resp False
+    in let p1 = vt-ip 17 443
+    in let w1 = vpn-seal a vt-open p1
+    in let r1 = vpn-open b vt-open (w1.vk-bytes)
+    in let w2 = vpn-seal (w1.vk-session) vt-open (vt-ip 6 22)
+    in let r2 = vpn-open (r1.vk-session) vt-open (w2.vk-bytes)
+    in let replay = vpn-open (r2.vk-session) vt-open (w1.vk-bytes)
+    in let tamper = vpn-open b vt-open (vt-flip (w1.vk-bytes) 20 0 [])
+    in let back = vpn-open (w2.vk-session) vt-open ((vpn-seal (r2.vk-session) vt-open p1).vk-bytes)
+    in let stranger = vpn-respond sr er [x25519-public-key sx] (init.vh-msg)
+    in let small = vpn-initiate si ei vt-zero32
+    in let bad-resp = vpn-finish init si ei ([2] & vt-zero32 & vt-key 6 0 [] )
+    in let dns = vpn-seal a vt-public (vt-ip 17 53)
+    in act
+      print-line-uni ("handshake: initiation " & show (list-length (init.vh-msg)) & " bytes, response " & show (list-length (resp.vh-msg)) & " bytes, both ends agree " & vt-yn (done.vh-ok & vt-same (a.vs-send-key) (b.vs-recv-key) 0 & vt-same (a.vs-recv-key) (b.vs-send-key) 0) & ", directions differ " & vt-yn (vt-same (a.vs-send-key) (a.vs-recv-key) 0 == False) & ", responder saw the initiator " & vt-yn (vt-same (resp.vh-peer) pi 0))
+      print-line-uni ("transport: " & show (list-length (w1.vk-bytes)) & " wire bytes for " & show (list-length p1) & ", opened intact " & vt-yn (r1.vk-ok & vt-same (r1.vk-bytes) p1 0) & ", second packet " & vt-yn (r2.vk-ok) & ", reply direction " & vt-yn (back.vk-ok & vt-same (back.vk-bytes) p1 0))
+      print-line-uni ("refused: replay " & vt-yn (replay.vk-ok == False) & ", one flipped bit " & vt-yn (tamper.vk-ok == False) & ", a peer not on the list " & vt-yn (stranger.vh-ok == False) & ", an all-zero static key " & vt-yn (small.vh-ok == False) & ", an all-zero response key " & vt-yn (bad-resp.vh-ok == False) & ", a dns packet the firewall denies " & vt-yn (dns.vk-ok == False))
+      print-line-uni ("filter, public: udp 53 " & vt-act (vf-filter vt-public (vt-ip 17 53)) & ", tcp 22 " & vt-act (vf-filter vt-public (vt-ip 6 22)) & ", tcp 80 " & vt-act (vf-filter vt-public (vt-ip 6 80)) & ", 10 bytes " & vt-act (vf-filter vt-public [69, 0, 0, 10, 0, 0, 0, 0, 64, 6]) & ", version 6 " & vt-act (vf-filter vt-public ([96] & vt-key 7 0 [])))
+      print-line-uni ("filter, home default: tcp 80 " & vt-act (vf-filter vpn-firewall-new (vt-ip 6 80)) & "; firewall off: udp 53 " & vt-act (vf-filter vt-open (vt-ip 17 53)) & "; the default kept no rules: " & show (vpn-firewall-new.vf-fw-rule-count))
+      print-line-uni (format-vpn-firewall vt-public)
+    end

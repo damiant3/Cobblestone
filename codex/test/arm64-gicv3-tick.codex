@@ -1,0 +1,99 @@
+Chapter: Arm64Gicv3Tick
+  cites Kernel chapter Arm64Boot
+  cites Kernel chapter Arm64Timer
+  cites Foreword chapter Console
+
+ QEMU virt with gic-version=3 puts the GICv3 distributor at #8000000 and the
+ first redistributor at #80A0000: RD_base, then SGI_base #10000 above it.
+ GICD_CTLR #0 takes ARE (bit 4) and EnableGrp1 (bit 1). GICR_WAKER #14 holds
+ ProcessorSleep (bit 1) and ChildrenAsleep (bit 2). From SGI_base,
+ GICR_IGROUPR0 #80, GICR_ISENABLER0 #100 and GICR_IPRIORITYR #400 (one byte
+ per INTID) configure INTID 30, the EL1 physical timer PPI. ICC_SRE_EL1 7 is
+ SRE, DFB and DIB; PMR #FF passes every priority. DAIF bit 7 is the I mask;
+ bits 9, 8 and 6 are D, A and F. VBAR_EL1 needs a 2048-byte-aligned table.
+
+Section: GIC
+
+  gt-gicd : Integer = #8000000
+  gt-gicr : Integer = #80A0000
+  gt-gicr-sgi : Integer = #80B0000
+  gt-timer-bit : Integer = #40000000
+
+  gt-wake-loop : Integer -> [Device.Mmio] Boolean
+  gt-wake-loop (n) =
+    if bit-and (read-mmio-32 gt-gicr #14) 4 == 0 then True
+    else if n <= 0 then False
+    else gt-wake-loop (n - 1)
+
+  gt-gic-init : Integer -> [Device.Mmio] Boolean
+  gt-gic-init (dummy) = act
+    c <- poke-mmio-32 gt-gicd 0 #12
+    w0 <- read-mmio-32 gt-gicr #14
+    w <- poke-mmio-32 gt-gicr #14 (bit-and w0 (0 - 3))
+    a <- gt-wake-loop 100000
+    g <- poke-mmio-32 gt-gicr-sgi #80 gt-timer-bit
+    p <- poke-mmio-32 gt-gicr-sgi #41C #A0A0A0A0
+    e <- poke-mmio-32 gt-gicr-sgi #100 gt-timer-bit
+    gt-wake-loop 100000
+  end
+
+  gt-cpu-init : Integer -> Integer
+  gt-cpu-init (dummy) =
+    let s = write-icc-sre-el1 7
+    in let m = write-icc-pmr-el1 #FF
+    in write-icc-igrpen1-el1 1
+
+Section: Vectors
+
+  gt-copy : Integer, List Integer, Integer, Integer -> Integer
+  gt-copy (base) (bs) (i) (n) =
+    if i >= n then base
+    else let w = poke-byte base i (list-at bs i)
+    in gt-copy base bs (i + 1) n
+
+  gt-install-vectors : Integer -> Integer
+  gt-install-vectors (dummy) =
+    let code = arm64-build-vector-table 2048 & arm64-irq-handler-code
+    in let raw = alloc-bytes (list-length code + 2048)
+    in let base = bit-and (raw + 2047) (0 - 2048)
+    in let t = gt-copy base code 0 (list-length code)
+    in let v = write-vbar-el1 base
+    in base
+
+Section: Waiting
+
+  gt-wait : Integer -> Boolean
+  gt-wait (deadline) =
+    if peek-qword arm64-tick-count-addr 0 >= 2 then True
+    else if read-cntvct-el0 > deadline then False
+    else gt-wait deadline
+
+Section: Entry
+
+  opening : [Console, Device.Mmio] Nothing = act
+    awake <- gt-gic-init 0
+    gt-run awake
+  end
+
+  gt-run : Boolean -> [Console] Nothing
+  gt-run (awake) =
+    let z = poke-qword arm64-tick-count-addr 0 0
+    in let daif0 = read-daif
+    in let ci = gt-cpu-init 0
+    in let vb = gt-install-vectors 0
+    in let t = arm64-timer-init 0
+    in let before = peek-qword arm64-tick-count-addr 0
+    in let deadline = read-cntvct-el0 + 5 * peek-qword timer-freq-addr 0
+    in let u = write-daif (bit-and daif0 #340)
+    in let ticked = gt-wait deadline
+    in let r = write-daif (bit-or daif0 #80)
+    in let after = peek-qword arm64-tick-count-addr 0
+    in act
+      print-line-uni ("irq masked at boot: " & (if bit-and daif0 #80 == #80 then "yes" else "no"))
+      print-line-uni ("redistributor awake: " & (if awake then "yes" else "no"))
+      print-line-uni ("ticks before unmask: " & show before)
+      print-line-uni ("timer irq ticked twice: " & (if ticked then "yes" else "no"))
+      print-line-uni ("tick count at least 2: " & (if after >= 2 then "yes" else "no"))
+    end
+
+Page 1

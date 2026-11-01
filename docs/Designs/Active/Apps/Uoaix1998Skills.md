@@ -36,7 +36,7 @@ No colored ores (UOAIX-240) stands; the 1998 smith menu reads metal of any ingot
   application/vnd.github.raw"`, binaries with `Invoke-WebRequest https://raw.githubusercontent.com/draxinar/rundir/main/<path>`.
   `itemres.mul` is 16384 slots of a uint32 node count, then 33-byte nodes (three int32 values, a type byte, 16 bytes of
   padding, a uint32 resource id), all little-endian (OUO `load.c` LoadItemRes).
-- `apps/uoaix/SmithModel.codex` (main 43575): the blacksmithing modeler built from both. It is the oracle for every
+- `apps/uoaix/SmithModel.codex`: the blacksmithing modeler built from both. It is the oracle for every
   number below and the reference arm for every stage's proof. Pinned case (`codex_run`, 2026-10-12): skill 92.4,
   strength 100, `BASE_DELAY` 1000, executioner's axe (difficulty 918): chance 526, 668 tenths gained per 10,000 swings;
   platemail gorget from 90.0: chance 81%, 495 per 10,000.

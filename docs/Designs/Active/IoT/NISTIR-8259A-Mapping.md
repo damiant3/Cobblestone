@@ -28,16 +28,17 @@ row is a placeholder.
 | 8259A-2 | Device configuration | Mechanism | Satisfied |
 | 8259A-3 | Data protection | Mechanism | Satisfied |
 | 8259A-4 | Logical access to interfaces | ByConstruction | Satisfied |
-| 8259A-5 | Software update | Mechanism | Satisfied |
+| 8259A-5 | Software update | Mechanism | **Partial** |
 | 8259A-6 | Cybersecurity state awareness | Mechanism | **Partial** |
 
 ---
 
-## Why two capabilities are Partial
+## Why three capabilities are Partial
 
 **8259A-1, device identification.** The logical identifier is real:
 `IdentityManager` generates an Ed25519 keypair and stores it encrypted,
-covered by `codex/test/idm-key-tests`. No physical identifier ships. Object
+covered by `codex/test/idm-key-tests`; no device application or
+provisioning path calls it yet. No physical identifier ships. Object
 3 in `codex/foreword/encode/Lwm2m.codex` is a block of resource-ID constants
 and nothing else (`lwm2m-res-serial : Integer = 2` is the OMA registry
 number naming where a serial would go), nothing populates the resource, and
@@ -49,9 +50,18 @@ ceremony."*
 
 **8259A-6, cybersecurity state awareness.** The surfaces are real
 (`CapabilityAudit`, `Forensics`, `NotificationLog`, the content-addressed
-fact store) but nothing establishes the universal: there is no check that a
+fact store), and no device application calls `CapabilityAudit`,
+`Forensics` or `NotificationLog` yet (exercised by
+`codex/test/apps/capability-audit-test`,
+`codex/test/apps/forensics-escalation-test` and
+`codex/test/notification-log-severity`); nothing establishes the universal: there is no check that a
 state change cannot occur without a fact being written, and the surfaces are
 separate mechanisms rather than one enforced chokepoint.
+
+**8259A-5, software update.** Gate B (`fw-execute-update`) and the swap
+(`fw-activate`) in `codex/os/net/Lwm2mFirmware.codex` are exercised by
+`codex/test/apps/ota-lwm2m-loopback`, but no device application calls them
+yet, and no board boot path calls the OtaBoot side.
 
 ---
 

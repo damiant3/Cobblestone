@@ -8,7 +8,7 @@ Section: Keywords and Sanitization
   js-keywords =
     ranked-text-from-list ["abstract", "arguments", "async", "await",
      "break", "case", "catch", "class", "const", "continue",
-     "debugger", "default", "delete", "do", "else",
+     "debugger", "default", "delete", "do", "else", "eval",
      "export", "extends", "false", "finally", "for",
      "function", "if", "import", "in", "instanceof",
      "let", "new", "null", "of", "return",
@@ -21,7 +21,9 @@ Section: Keywords and Sanitization
 
   js-sanitize : Text -> Text
   js-sanitize (name) =
-    let s = text-replace name "-" "_"
+    let s0 = text-replace name "-" "_"
+    in let s1 = text-replace (text-replace s0 "@" "_at_") "[" "_lb_"
+    in let s = text-replace (text-replace (text-replace s1 "]" "_rb_") "," "_cm_") " " "_"
     in if is-js-keyword s then "_" & s
     else s
 
@@ -47,7 +49,8 @@ Section: Arity Map
 
   JsCtx = record {
    arities : List ArityEntry,
-   type-defs : List ATypeDef
+   type-defs : List ATypeDef,
+   ops : List Text
   }
 
   bsearch-arity-pos : List ArityEntry , Text , Integer , Integer -> Integer
@@ -126,17 +129,10 @@ Section: Escape Helpers
     else if len == 1 then "000" & raw
     else "0000"
 
-  js-escape-cce-char : Integer -> Text
-  js-escape-cce-char (c) =
-    let uni = to-unicode c
-    in if uni > 65535 then "\\u{" & js-hex-n uni & "}"
-    else "\\u" & js-hex4-padded uni
-
   js-escape-text-loop : Text , Integer , Integer , List Text -> List Text
   js-escape-text-loop (s) (i) (len) (acc) =
     if i >= len then acc
-    else
-      js-escape-text-loop s (i + cce-decode-length (char-code (char-at s i))) len (list-snoc acc (js-escape-cce-char (cce-decode-at s i)))
+    else js-escape-text-loop s (i + 1) len (list-snoc acc ("\\u" & js-hex4-padded (char-code-at s i)))
 
   js-escape-text : Text -> Text
   js-escape-text (s) =
@@ -228,7 +224,7 @@ Section: Expression Emission
      is IrList (elems) (ty) (sp) -> js-emit-list elems ctx
      is IrMatch (scrut) (branches) (ty) (sp) -> js-emit-match scrut branches ctx
      is IrAct (stmts) (ty) (sp) -> js-emit-act stmts ctx
-     is IrHandle (eff) (body) (clauses) (ty) (sp) -> js-emit-expr-at body ctx (depth + 1)
+     is IrHandle (eff) (body) (clauses) (ty) (sp) -> js-emit-handle body clauses ctx depth
      is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> js-emit-expr-at body ctx (depth + 1)
      is IrRecord (name) (fields) (ty) (sp) -> js-emit-record name fields ty ctx
      is IrFieldAccess (rec) (field) (ty) (sp) -> js-emit-expr-at rec ctx (depth + 1) & "." & js-field field
@@ -240,8 +236,8 @@ Section: Expression Emission
 
   js-emit-name : Text , CodexType , JsCtx -> Text
   js-emit-name (n) (ty) (ctx) =
-    if n == "read-line" then "(require('readline-sync').question(''))"
-    else if n == "show" then "String"
+    if n == "read-line" then "_cce_from_uni(require('readline-sync').question(''))"
+    else if n == "show" then "_cx_show"
     else if n == "negate" then "((x) => -x)"
     else if n == "get-state" then "_js_state_value"
     else if n == "__heap-save" then "0n"
@@ -250,8 +246,12 @@ Section: Expression Emission
     else if n == "__deck-exit" then "0n"
     else if n == "__linked-list-empty" then "[]"
     else if n == "vec-empty" then "[]"
-    else if n == "get-args" then "process.argv"
-    else if n == "current-dir" then "process.cwd()"
+    else if n == "get-args" then "process.argv.map(_cce_from_uni)"
+    else if n == "current-dir" then "_cce_from_uni(process.cwd())"
+    else if js-is-op ctx n then
+      (let ar = js-fun-arity ty
+       in if ar == 0 then js-perform n ""
+       else js-emit-partial-wrappers 0 ar & js-perform n (js-emit-partial-params 0 ar))
     else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then
       js-emit-name-upper n ty ctx
     else let ar = lookup-arity (ctx.arities) n
@@ -304,7 +304,7 @@ Section: Expression Emission
      is IrAddRealApprox | IrSubRealApprox | IrMulRealApprox | IrDivRealApprox -> "Math.fround(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")"
      is IrAddRealTrapping | IrSubRealTrapping | IrMulRealTrapping | IrDivRealTrapping -> "_cxr_real_trap(" & js-real-round ty ("(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")") & ")"
      is IrAddRealSaturating | IrSubRealSaturating | IrMulRealSaturating | IrDivRealSaturating -> "_cxr_real_sat(" & js-real-round ty ("(" & js-emit-expr l ctx & " " & js-emit-bin-op op & " " & js-emit-expr r ctx & ")") & ", " & (if js-real-is-f32 ty then "true" else "false") & ")"
-     is IrPowInt -> "(" & js-emit-expr l ctx & " ** " & js-emit-expr r ctx & ")"
+     is IrPowInt -> "_cxb_ipow(" & js-emit-expr l ctx & ", " & js-emit-expr r ctx & ")"
      is IrAddVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v + " & js-emit-expr r ctx & "[i]))"
      is IrSubVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v - " & js-emit-expr r ctx & "[i]))"
      is IrMulVec -> "(" & js-emit-expr l ctx & ".map((v,i) => v * " & js-emit-expr r ctx & "[i]))"
@@ -415,6 +415,10 @@ Section: Expression Emission
        is IntegerTy (lo) (hi) (mode) ->
         when mode
          is OvClamping -> "((_v) => _v < " & integer-to-text lo & "n ? " & integer-to-text lo & "n : (_v > " & integer-to-text hi & "n ? " & integer-to-text hi & "n : _v))(" & val-text & ")"
+         is OvWrapping ->
+          if lo < 0 - 4611686018427387904 | hi > 4611686018427387904 then val-text
+          else let m = integer-to-text (hi - lo + 1) & "n"
+          in "((_v) => " & integer-to-text lo & "n + (((_v - " & integer-to-text lo & "n) % " & m & ") + " & m & ") % " & m & ")(" & val-text & ")"
          is otherwise -> val-text
        is otherwise -> val-text
      is otherwise -> val-text
@@ -468,10 +472,26 @@ Section: Expression Emission
   js-lit-pat-text (text) (ty) =
     if text == "True" then "true"
     else if text == "False" then "false"
-    else when ty
+    else when js-strip-ty ty
      is IntegerTy (lo) (hi) (mode) -> text & "n"
      is CharTy -> text & "n"
+     is TextTy -> "\"" & js-escape-text text & "\""
      is otherwise -> text
+
+  js-pat-test : IRPat , Text -> Text
+  js-pat-test (pat) (path) =
+    when pat
+     is IrLitPat (text) (ty) (sp) -> "(" & path & " === " & js-lit-pat-text text ty & ")"
+     is IrCtorPat (name) (subs) (ty) (sp) ->
+      if is-mktup-name name then "(true" & js-subs-test subs 0 path "[" "]" & ")"
+      else "(" & path & ".tag === \"" & name & "\"" & js-subs-test subs 0 path ".field" "" & ")"
+     is otherwise -> "true"
+
+  js-subs-test : List IRPat , Integer , Text , Text , Text -> Text
+  js-subs-test (subs) (i) (path) (pre) (post) =
+    if i == list-length subs then ""
+    else let t = js-pat-test (list-at subs i) (path & pre & integer-to-text i & post)
+    in (if t == "true" then "" else " && " & t) & js-subs-test subs (i + 1) path pre post
 
   js-guard-trivial : IRExpr -> Boolean
   js-guard-trivial (g) =
@@ -487,19 +507,22 @@ Section: Expression Emission
       in let g = if js-guard-trivial (b.guard) then
         ""
       else " && (" & js-emit-expr (b.guard) ctx & ")"
-      in sep & "(_s === " & js-lit-pat-text text ty & g & " ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
+      in sep & "(" & js-pat-test (b.pattern) "_s" & g & " ? " & js-emit-expr (b.body) ctx & js-emit-match-branches branches ctx (i + 1) (opens + 1)
      is IrCtorPat (name) (subs) (ty) (sp) ->
       let sep = if i > 0 then " : " else ""
       in if is-mktup-name name then
         let tup-body = "(() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.body) ctx & "; })()"
-        in if js-guard-trivial (b.guard) then
-          sep & "(" & tup-body & ")" & js-emit-match-branches branches ctx (i + 1) opens
+        in let test = js-pat-test (b.pattern) "_s"
+        in if js-guard-trivial (b.guard) & test == "(true)" then
+          sep & "(" & tup-body & ")" & js-close-parens opens
+        else if js-guard-trivial (b.guard) then
+          sep & "(" & test & " ? " & tup-body & js-emit-match-branches branches ctx (i + 1) (opens + 1)
         else
           sep & "((() => { const [" & js-emit-tuple-pat-names subs 0 & "] = _s; return " & js-emit-expr (b.guard) ctx & "; })() ? " & tup-body & js-emit-match-branches branches ctx (i + 1) (opens + 1)
       else let g = if js-guard-trivial (b.guard) then
         ""
       else " && " & js-emit-ctor-pattern-body subs (b.guard) ctx 0
-      in sep & "(_s.tag === \"" & name & "\"" & g & " ? " & js-emit-ctor-pattern-body subs (b.body) ctx 0 & js-emit-match-branches branches ctx (i + 1) (opens + 1)
+      in sep & "(" & js-pat-test (b.pattern) "_s" & g & " ? " & js-emit-ctor-pattern-body subs (b.body) ctx 0 & js-emit-match-branches branches ctx (i + 1) (opens + 1)
      is IrVarPat (name) (ty) (sp) ->
       let sep = if i > 0 then " : " else ""
       in let bound = "((" & js-sanitize name & ") => " & js-emit-expr (b.body) ctx & ")(_s)"
@@ -519,28 +542,33 @@ Section: Expression Emission
 
   js-emit-ctor-pattern-body : List IRPat , IRExpr , JsCtx , Integer -> Text
   js-emit-ctor-pattern-body (subs) (body) (ctx) (i) =
-    let bindings = js-collect-ctor-bindings subs 0
+    let bindings = js-collect-ctor-bindings subs "_s" ".field" "" 0
     in if list-length bindings == 0 then js-emit-expr body ctx
     else
-      "(() => { " & js-emit-ctor-binding-stmts bindings 0 & "return " & js-emit-expr body ctx & "; })()"
+      "(() => { " & js-emit-ctor-binding-stmts bindings 0 "" "; " & "return " & js-emit-expr body ctx & "; })()"
 
   CtorBinding = record {
    var-name : Text,
-   field-index : Integer
+   access : Text
   }
 
-  js-collect-ctor-bindings : List IRPat , Integer -> List CtorBinding
-  js-collect-ctor-bindings (subs) (i) =
+  js-collect-ctor-bindings : List IRPat , Text , Text , Text , Integer -> List CtorBinding
+  js-collect-ctor-bindings (subs) (path) (pre) (post) (i) =
     if i == list-length subs then []
-    else when list-at subs i
-     is IrVarPat (name) (ty) (sp) -> [CtorBinding { var-name = name, field-index = i }] & js-collect-ctor-bindings subs (i + 1)
-     is otherwise -> js-collect-ctor-bindings subs (i + 1)
+    else let here = path & pre & integer-to-text i & post
+    in let rest = js-collect-ctor-bindings subs path pre post (i + 1)
+    in when list-at subs i
+     is IrVarPat (name) (ty) (sp) -> [CtorBinding { var-name = name, access = here }] & rest
+     is IrCtorPat (n) (ss) (ty) (sp) ->
+      (if is-mktup-name n then js-collect-ctor-bindings ss here "[" "]" 0
+       else js-collect-ctor-bindings ss here ".field" "" 0) & rest
+     is otherwise -> rest
 
-  js-emit-ctor-binding-stmts : List CtorBinding , Integer -> Text
-  js-emit-ctor-binding-stmts (bindings) (i) =
+  js-emit-ctor-binding-stmts : List CtorBinding , Integer , Text , Text -> Text
+  js-emit-ctor-binding-stmts (bindings) (i) (indent) (term) =
     if i == list-length bindings then ""
     else let b = list-at bindings i
-    in "const " & js-sanitize (b.var-name) & " = _s.field" & integer-to-text (b.field-index) & "; " & js-emit-ctor-binding-stmts bindings (i + 1)
+    in indent & "const " & js-sanitize (b.var-name) & " = " & b.access & ";" & term & js-emit-ctor-binding-stmts bindings (i + 1) indent term
 
   js-close-parens : Integer -> Text
   js-close-parens (n) =
@@ -565,7 +593,10 @@ Section: Expression Emission
   js-emit-act-stmts (stmts) (i) (len) (ctx) =
     if i == len then ""
     else let s = list-at stmts i
-    in js-emit-act-stmt s ctx & js-emit-act-stmts stmts (i + 1) len ctx
+    in let text = when s
+      is IrDoExec (e) (sp) -> if i == len - 1 then "    return " & js-emit-expr e ctx & ";\n" else js-emit-act-stmt s ctx
+      is otherwise -> js-emit-act-stmt s ctx
+    in text & js-emit-act-stmts stmts (i + 1) len ctx
 
   js-emit-act-stmt : IRActStmt , JsCtx -> Text
   js-emit-act-stmt (s) (ctx) =
@@ -584,8 +615,9 @@ Section: Expression Emission
 
   js-emit-apply-named : Text , CodexType , List IRExpr , JsCtx , IRExpr -> Text
   js-emit-apply-named (n) (ty) (args) (ctx) (original) =
-    let builtin-result = js-try-builtin n args ctx
+    let builtin-result = if lookup-arity (ctx.arities) n < 0 then js-try-builtin n args ctx original else ""
     in if text-length builtin-result > 0 then builtin-result
+    else if js-is-op ctx n then js-perform n (js-emit-apply-args args ctx 0)
     else if is-mktup-name n then "[" & js-emit-apply-args args ctx 0 & "]"
     else if text-length n > 0 & is-upper-letter (char-code (char-at n 0)) then
       js-sanitize n & "(" & js-emit-apply-args args ctx 0 & ")"
@@ -609,14 +641,25 @@ Section: Expression Emission
  bands are 1..2 whitespace, 3..12 digit, and 13..64 or 97..127 letter,
  the hole being CCE's punctuation at 65..96.
 
- Each is an arrow applied immediately so the operand appears once. The
- two-band letter test would otherwise repeat its argument four times, and
- the argument is an arbitrary expression.
-
-  js-try-builtin : Text , List IRExpr , JsCtx -> Text
-  js-try-builtin (n) (args) (ctx) =
+  js-try-builtin : Text , List IRExpr , JsCtx , IRExpr -> Text
+  js-try-builtin (n) (args) (ctx) (e) =
     if n == "__narrow" then js-emit-expr (list-at args 0) ctx
-    else if n == "show" & js-real-is-real (ir-expr-type (list-at args 0)) then "_cxr_real_show(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "alloc-bytes" & list-length args == 1 then "_cxm_alloc(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "poke-byte" & list-length args == 3 then "_cxm_poke(" & js-emit-apply-args args ctx 0 & ", 1)"
+    else if n == "poke-16" & list-length args == 3 then "_cxm_poke(" & js-emit-apply-args args ctx 0 & ", 2)"
+    else if n == "poke-32" & list-length args == 3 then "_cxm_poke(" & js-emit-apply-args args ctx 0 & ", 4)"
+    else if n == "poke-qword" & list-length args == 3 then "_cxm_poke(" & js-emit-apply-args args ctx 0 & ", 8)"
+    else if n == "peek-byte" & list-length args == 2 then "_cxm_peek(" & js-emit-apply-args args ctx 0 & ", 1)"
+    else if n == "peek-16" & list-length args == 2 then "_cxm_peek(" & js-emit-apply-args args ctx 0 & ", 2)"
+    else if n == "peek-32" & list-length args == 2 then "_cxm_peek(" & js-emit-apply-args args ctx 0 & ", 4)"
+    else if n == "peek-qword" & list-length args == 2 then "BigInt.asIntN(64, _cxm_peek(" & js-emit-apply-args args ctx 0 & ", 8))"
+    else if n == "__buf-write-bytes" & list-length args == 3 then "_cxm_write_bytes(" & js-emit-apply-args args ctx 0 & ")"
+    else if n == "__buf-read-bytes" & list-length args == 3 then "_cxm_read_bytes(" & js-emit-apply-args args ctx 0 & ")"
+    else if n == "vec-load-at" & list-length args == 1 then js-vec-load (list-at args 0) (ir-expr-type e) ctx
+    else if n == "vec-extract" & list-length args == 2 then "(" & js-emit-expr (list-at args 0) ctx & ")[Number(" & js-emit-expr (list-at args 1) ctx & ")]"
+    else if n == "vec-reduce-add" & list-length args == 1 then "((_v) => _v[0] + _v[1])(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "bit-shru" & list-length args == 2 then "_cxb_shru(" & js-emit-apply-args args ctx 0 & ")"
+    else if n == "show" & js-real-is-real (ir-expr-type (list-at args 0)) then "_cce_from_uni(_cxr_real_show(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "real-to-bits" then "_cxr_real_to_bits(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "bits-to-real" then "_cxr_bits_to_real(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "to-real-approx" then "Math.fround(" & js-emit-expr (list-at args 0) ctx & ")"
@@ -625,14 +668,16 @@ Section: Expression Emission
     else if n == "real-to-int" | n == "real-approx-to-int" then "_cxr_real_to_int(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "real-from-int" then "Number(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "real-approx-from-int" then "Math.fround(Number(" & js-emit-expr (list-at args 0) ctx & "))"
-    else if n == "from-real-approx" | n == "to-real-trapping" | n == "from-real-trapping" | n == "to-real-saturating" | n == "from-real-saturating" | n == "to-real-approx-trapping" | n == "from-real-approx-trapping" | n == "to-real-approx-saturating" | n == "from-real-approx-saturating" then js-emit-expr (list-at args 0) ctx    else if n == "show" then "String(" & js-emit-expr (list-at args 0) ctx & ")"
+    else if n == "from-real-approx" | n == "to-real-trapping" | n == "from-real-trapping" | n == "to-real-saturating" | n == "from-real-saturating" | n == "to-real-approx-trapping" | n == "from-real-approx-trapping" | n == "to-real-approx-saturating" | n == "from-real-approx-saturating" then js-emit-expr (list-at args 0) ctx
+    else if n == "show" then "_cx_show(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "negate" then "(-" & js-emit-expr (list-at args 0) ctx & ")"
-    else if n == "print-line-uni" then "console.log(" & js-emit-expr (list-at args 0) ctx & ")"
-    else if n == "print-error-uni" then "console.error(" & js-emit-expr (list-at args 0) ctx & ")"
-    else if n == "fail" then "(() => { throw new Error(" & js-emit-expr (list-at args 0) ctx & "); })()"
+    else if n == "print-line-uni" | n == "print-line" then "console.log(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "print-uni" then "process.stdout.write(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "print-error-uni" then "console.error(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "fail" then "(() => { throw new Error(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & ")); })()"
     else if n == "text-length" then "BigInt(" & js-emit-expr (list-at args 0) ctx & ".length)"
-    else if n == "char-to-text" then
-      "String.fromCharCode(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "char-to-text" then "String.fromCharCode(Number(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "raw-bytes-to-text" & list-length args == 1 then "(" & js-emit-expr (list-at args 0) ctx & ").map((_b) => String.fromCharCode(Number(_b))).join(\"\")"
     else if n == "char-encode" then
       "((c)=>{c=Number(c);if(c<128)return String.fromCharCode(c);if(c<2176){const v=c-128;return String.fromCharCode(192|(v>>6),128|(v&63));}if(c<67712){const v=c-2176;return String.fromCharCode(224|(v>>12),128|((v>>6)&63),128|(v&63));}const v=c-67712;return String.fromCharCode(240|(v>>18),128|((v>>12)&63),128|((v>>6)&63),128|(v&63));})(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "is-letter" then
@@ -642,8 +687,8 @@ Section: Expression Emission
     else if n == "is-whitespace" then
       "((c)=>c>=1&&c<=2)(Number(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "text-to-integer" then
-      "_cx_text_to_integer(" & js-emit-expr (list-at args 0) ctx & ")"
-    else if n == "integer-to-text" then "String(" & js-emit-expr (list-at args 0) ctx & ")"
+      "_cx_text_to_integer(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & "))"
+    else if n == "integer-to-text" then "_cce_from_uni(String(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "char-code" then js-emit-expr (list-at args 0) ctx
     else if n == "code-to-char" then js-emit-expr (list-at args 0) ctx
     else if n == "char-code-at" then
@@ -657,27 +702,27 @@ Section: Expression Emission
     else if n == "vec-cons" & list-length args == 2 then
       "[..." & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 0) ctx & "]"
     else if n == "open-file" then
-      "require('fs').readFileSync(" & js-emit-expr (list-at args 0) ctx & ")"
-    else if n == "read-all" then js-emit-expr (list-at args 0) ctx & ".toString()"
+      "require('fs').readFileSync(" & js-u (list-at args 0) ctx & ")"
+    else if n == "read-all" then "_cce_from_uni(" & js-emit-expr (list-at args 0) ctx & ".toString())"
     else if n == "close-file" then "undefined"
     else if n == "read-text" then
-      "require('fs').readFileSync(" & js-emit-expr (list-at args 0) ctx & ", 'utf8')"
+      "_cce_from_uni(require('fs').readFileSync(" & js-u (list-at args 0) ctx & ", 'utf8'))"
     else if n == "write-file" & list-length args == 2 then
-      "require('fs').writeFileSync(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ")"
+      "require('fs').writeFileSync(" & js-u (list-at args 0) ctx & ", " & js-u (list-at args 1) ctx & ")"
     else if n == "file-exists" & list-length args == 1 then
-      "require('fs').existsSync(" & js-emit-expr (list-at args 0) ctx & ")"
+      "require('fs').existsSync(" & js-u (list-at args 0) ctx & ")"
     else if n == "char-at" & list-length args == 2 then
       "BigInt(" & js-emit-expr (list-at args 0) ctx & ".charCodeAt(Number(" & js-emit-expr (list-at args 1) ctx & ")))"
     else if n == "substring" & list-length args == 3 then
-      js-emit-expr (list-at args 0) ctx & ".substring(Number(" & js-emit-expr (list-at args 1) ctx & "), Number(" & js-emit-expr (list-at args 1) ctx & " + " & js-emit-expr (list-at args 2) ctx & "))"
+      "_cx_at_sub(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
     else if n == "list-at" & list-length args == 2 then
-      js-emit-expr (list-at args 0) ctx & "[Number(" & js-emit-expr (list-at args 1) ctx & ")]"
+      "_cx_at(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ")"
     else if (n == "list-snoc" | n == "list-push") & list-length args == 2 then
       "[..." & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & "]"
     else if n == "list-insert-at" & list-length args == 3 then
-      "(() => { const _l = [...(" & js-emit-expr (list-at args 0) ctx & ")]; _l.splice(Number(" & js-emit-expr (list-at args 1) ctx & "), 0, " & js-emit-expr (list-at args 2) ctx & "); return _l; })()"
+      "_cx_at_insert(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
     else if n == "list-set-at" & list-length args == 3 then
-      "(() => { const _l = [...(" & js-emit-expr (list-at args 0) ctx & ")]; _l[Number(" & js-emit-expr (list-at args 1) ctx & ")] = " & js-emit-expr (list-at args 2) ctx & "; return _l; })()"
+      "_cx_at_set(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
     else if n == "text-replace" & list-length args == 3 then
       "_cx_text_replace(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
     else if n == "text-compare" & list-length args == 2 then
@@ -697,9 +742,9 @@ Section: Expression Emission
     else if n == "bit-xor" & list-length args == 2 then
       "(" & js-emit-expr (list-at args 0) ctx & " ^ " & js-emit-expr (list-at args 1) ctx & ")"
     else if n == "bit-shl" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & " << " & js-emit-expr (list-at args 1) ctx & ")"
+      "BigInt.asIntN(64, " & js-emit-expr (list-at args 0) ctx & " << (" & js-emit-expr (list-at args 1) ctx & " & 63n))"
     else if n == "bit-shr" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & " >> " & js-emit-expr (list-at args 1) ctx & ")"
+      "(" & js-emit-expr (list-at args 0) ctx & " >> (" & js-emit-expr (list-at args 1) ctx & " & 63n))"
     else if n == "bit-not" & list-length args == 1 then
       "(~" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "int-mod" & list-length args == 2 then
@@ -720,33 +765,33 @@ Section: Expression Emission
       "((_r_) => _r_.length === 0 ? (() => { throw new Error(\"CODEX_TRAP_race_empty\"); })() : _r_[0](null))(" & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "process-exit" & list-length args == 1 then
       "process.exit(Number(" & js-emit-expr (list-at args 0) ctx & "))"
-    else if n == "get-args" then "process.argv"
-    else if n == "current-dir" then "process.cwd()"
+    else if n == "get-args" then "process.argv.map(_cce_from_uni)"
+    else if n == "current-dir" then "_cce_from_uni(process.cwd())"
     else if n == "get-env" & list-length args == 1 then
-      "(process.env[" & js-emit-expr (list-at args 0) ctx & "] || \"\")"
+      "_cce_from_uni(process.env[" & js-u (list-at args 0) ctx & "] || \"\")"
     else if n == "write-binary" & list-length args == 1 then
       "(() => { const _bl = " & js-emit-expr (list-at args 0) ctx & "; process.stdout.write(Buffer.from(_bl.map(Number))); })()"
     else if n == "__record-set" & list-length args == 3 then js-emit-record-set args ctx
     else if n == "text-ends-with" & list-length args == 2 then
       js-emit-expr (list-at args 0) ctx & ".endsWith(" & js-emit-expr (list-at args 1) ctx & ")"
     else if n == "text-to-double-bits" & list-length args == 1 then
-      "(() => { const _buf = new ArrayBuffer(8); new Float64Array(_buf)[0] = parseFloat(" & js-emit-expr (list-at args 0) ctx & "); return new DataView(_buf).getBigInt64(0, true); })()"
+      "_cxr_text_to_double_bits(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "list-files" & list-length args == 2 then
-      "require('fs').readdirSync(" & js-emit-expr (list-at args 0) ctx & ").filter(_f => _f.match(new RegExp(" & js-emit-expr (list-at args 1) ctx & ".replaceAll('*', '.*').replaceAll('?', '.'))))"
+      "require('fs').readdirSync(" & js-u (list-at args 0) ctx & ").filter(_f => _f.match(new RegExp(" & js-u (list-at args 1) ctx & ".replaceAll('*', '.*').replaceAll('?', '.')))).map(_cce_from_uni)"
     else if n == "list-directories" & list-length args == 1 then
-      "require('fs').readdirSync(" & js-emit-expr (list-at args 0) ctx & ", { withFileTypes: true }).filter(_d => _d.isDirectory()).map(_d => _d.name)"
+      "require('fs').readdirSync(" & js-u (list-at args 0) ctx & ", { withFileTypes: true }).filter(_d => _d.isDirectory()).map(_d => _cce_from_uni(_d.name))"
     else if n == "write-binary-file" & list-length args == 2 then
-      "(() => { const _bl = " & js-emit-expr (list-at args 1) ctx & "; require('fs').writeFileSync(" & js-emit-expr (list-at args 0) ctx & ", Buffer.from(_bl.map(Number))); })()"
+      "(() => { const _bl = " & js-emit-expr (list-at args 1) ctx & "; require('fs').writeFileSync(" & js-u (list-at args 0) ctx & ", Buffer.from(_bl.map(Number))); })()"
     else if n == "create-directory" & list-length args == 1 then
-      "require('fs').mkdirSync(" & js-emit-expr (list-at args 0) ctx & ", { recursive: true })"
+      "require('fs').mkdirSync(" & js-u (list-at args 0) ctx & ", { recursive: true })"
     else if n == "path-combine" & list-length args == 2 then
-      "require('path').join(" & js-emit-expr (list-at args 0) ctx & ", " & js-emit-expr (list-at args 1) ctx & ")"
+      "_cce_from_uni(require('path').join(" & js-u (list-at args 0) ctx & ", " & js-u (list-at args 1) ctx & "))"
     else if n == "path-filename" & list-length args == 1 then
-      "require('path').basename(" & js-emit-expr (list-at args 0) ctx & ")"
+      "_cce_from_uni(require('path').basename(" & js-u (list-at args 0) ctx & "))"
     else if n == "run-process" & list-length args == 2 then
-      "require('child_process').execSync(" & js-emit-expr (list-at args 0) ctx & " + ' ' + " & js-emit-expr (list-at args 1) ctx & ", { encoding: 'utf8' })"
+      "_cce_from_uni(require('child_process').execSync(" & js-u (list-at args 0) ctx & " + ' ' + " & js-u (list-at args 1) ctx & ", { encoding: 'utf8' }))"
     else if n == "run-process-full" & list-length args == 2 then
-      "(() => { try { const _o = require('child_process').execSync(" & js-emit-expr (list-at args 0) ctx & " + ' ' + " & js-emit-expr (list-at args 1) ctx & ", { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); return ProcessResult(_o, '', 0n); } catch(_e) { return ProcessResult(_e.stdout || '', _e.stderr || '', BigInt(_e.status || 1)); } })()"
+      "(() => { try { const _o = require('child_process').execSync(" & js-u (list-at args 0) ctx & " + ' ' + " & js-u (list-at args 1) ctx & ", { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); return ProcessResult(_cce_from_uni(_o), '', 0n); } catch(_e) { return ProcessResult(_cce_from_uni(_e.stdout || ''), _cce_from_uni(_e.stderr || ''), BigInt(_e.status || 1)); } })()"
     else if n == "set-state" & list-length args == 1 then
       "(_js_state_value = " & js-emit-expr (list-at args 0) ctx & ")"
     else if n == "get-state" then "_js_state_value"
@@ -767,44 +812,42 @@ Section: Expression Emission
     else if n == "__deck-exit" then "0n"
     else if n == "__list-with-capacity" & list-length args == 1 then "[]"
     else if n == "__buf-write-byte" & list-length args == 3 then "0n"
-    else if n == "__buf-write-bytes" & list-length args == 3 then "0n"
-    else if n == "__buf-read-bytes" & list-length args == 3 then "[]"
     else if n == "dom-get-by-id" & list-length args == 1 then
-      "document.getElementById(" & js-emit-expr (list-at args 0) ctx & ")"
+      "document.getElementById(" & js-u (list-at args 0) ctx & ")"
     else if n == "dom-query" & list-length args == 1 then
-      "document.querySelector(" & js-emit-expr (list-at args 0) ctx & ")"
+      "document.querySelector(" & js-u (list-at args 0) ctx & ")"
     else if n == "dom-query-all" & list-length args == 1 then
-      "Array.from(document.querySelectorAll(" & js-emit-expr (list-at args 0) ctx & "))"
+      "Array.from(document.querySelectorAll(" & js-u (list-at args 0) ctx & "))"
     else if n == "dom-create" & list-length args == 1 then
-      "document.createElement(" & js-emit-expr (list-at args 0) ctx & ")"
+      "document.createElement(" & js-u (list-at args 0) ctx & ")"
     else if n == "dom-set-text" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".textContent = " & js-emit-expr (list-at args 1) ctx & ")"
+      "(" & js-emit-expr (list-at args 0) ctx & ".textContent = " & js-u (list-at args 1) ctx & ")"
     else if n == "dom-set-html" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".innerHTML = " & js-emit-expr (list-at args 1) ctx & ")"
+      "(" & js-emit-expr (list-at args 0) ctx & ".innerHTML = " & js-u (list-at args 1) ctx & ")"
     else if n == "dom-get-text" & list-length args == 1 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".textContent || \"\")"
+      "_cce_from_uni(" & js-emit-expr (list-at args 0) ctx & ".textContent || \"\")"
     else if n == "dom-append" & list-length args == 2 then
       js-emit-expr (list-at args 0) ctx & ".appendChild(" & js-emit-expr (list-at args 1) ctx & ")"
     else if n == "dom-remove" & list-length args == 1 then
       js-emit-expr (list-at args 0) ctx & ".remove()"
     else if n == "dom-set-attr" & list-length args == 3 then
-      js-emit-expr (list-at args 0) ctx & ".setAttribute(" & js-emit-expr (list-at args 1) ctx & ", " & js-emit-expr (list-at args 2) ctx & ")"
+      js-emit-expr (list-at args 0) ctx & ".setAttribute(" & js-u (list-at args 1) ctx & ", " & js-u (list-at args 2) ctx & ")"
     else if n == "dom-get-attr" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".getAttribute(" & js-emit-expr (list-at args 1) ctx & ") || \"\")"
+      "_cce_from_uni(" & js-emit-expr (list-at args 0) ctx & ".getAttribute(" & js-u (list-at args 1) ctx & ") || \"\")"
     else if n == "dom-set-style" & list-length args == 3 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".style[" & js-emit-expr (list-at args 1) ctx & "] = " & js-emit-expr (list-at args 2) ctx & ")"
+      "(" & js-emit-expr (list-at args 0) ctx & ".style[" & js-u (list-at args 1) ctx & "] = " & js-u (list-at args 2) ctx & ")"
     else if n == "dom-add-class" & list-length args == 2 then
-      js-emit-expr (list-at args 0) ctx & ".classList.add(" & js-emit-expr (list-at args 1) ctx & ")"
+      js-emit-expr (list-at args 0) ctx & ".classList.add(" & js-u (list-at args 1) ctx & ")"
     else if n == "dom-remove-class" & list-length args == 2 then
-      js-emit-expr (list-at args 0) ctx & ".classList.remove(" & js-emit-expr (list-at args 1) ctx & ")"
+      js-emit-expr (list-at args 0) ctx & ".classList.remove(" & js-u (list-at args 1) ctx & ")"
     else if n == "dom-toggle-class" & list-length args == 2 then
-      js-emit-expr (list-at args 0) ctx & ".classList.toggle(" & js-emit-expr (list-at args 1) ctx & ")"
+      js-emit-expr (list-at args 0) ctx & ".classList.toggle(" & js-u (list-at args 1) ctx & ")"
     else if n == "dom-has-class" & list-length args == 2 then
-      js-emit-expr (list-at args 0) ctx & ".classList.contains(" & js-emit-expr (list-at args 1) ctx & ")"
+      js-emit-expr (list-at args 0) ctx & ".classList.contains(" & js-u (list-at args 1) ctx & ")"
     else if n == "dom-closest" & list-length args == 2 then
-      js-emit-expr (list-at args 0) ctx & ".closest(" & js-emit-expr (list-at args 1) ctx & ")"
+      js-emit-expr (list-at args 0) ctx & ".closest(" & js-u (list-at args 1) ctx & ")"
     else if n == "dom-dataset-get" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".dataset[" & js-emit-expr (list-at args 1) ctx & "] || \"\")"
+      "_cce_from_uni(" & js-emit-expr (list-at args 0) ctx & ".dataset[" & js-u (list-at args 1) ctx & "] || \"\")"
     else if n == "dom-on-click" & list-length args == 2 then
       js-emit-expr (list-at args 0) ctx & ".addEventListener(\"click\", " & js-emit-expr (list-at args 1) ctx & ")"
     else if n == "dom-on-change" & list-length args == 2 then
@@ -815,9 +858,9 @@ Section: Expression Emission
       js-emit-expr (list-at args 0) ctx & ".addEventListener(\"keydown\", " & js-emit-expr (list-at args 1) ctx & ")"
     else if n == "dom-body" then "document.body"
     else if n == "dom-get-value" & list-length args == 1 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".value || \"\")"
+      "_cce_from_uni(" & js-emit-expr (list-at args 0) ctx & ".value || \"\")"
     else if n == "dom-set-value" & list-length args == 2 then
-      "(" & js-emit-expr (list-at args 0) ctx & ".value = " & js-emit-expr (list-at args 1) ctx & ")"
+      "(" & js-emit-expr (list-at args 0) ctx & ".value = " & js-u (list-at args 1) ctx & ")"
     else if n == "dom-prevent-default" & list-length args == 1 then
       js-emit-expr (list-at args 0) ctx & ".preventDefault()"
     else if n == "dom-stop-propagation" & list-length args == 1 then
@@ -825,7 +868,7 @@ Section: Expression Emission
     else if n == "dom-event-target" & list-length args == 1 then
       js-emit-expr (list-at args 0) ctx & ".target"
     else if n == "dom-event-key" & list-length args == 1 then
-      js-emit-expr (list-at args 0) ctx & ".key"
+      "_cce_from_uni(" & js-emit-expr (list-at args 0) ctx & ".key)"
     else if n == "set-timeout" & list-length args == 2 then
       "setTimeout(" & js-emit-expr (list-at args 0) ctx & ", Number(" & js-emit-expr (list-at args 1) ctx & "))"
     else if n == "set-interval" & list-length args == 2 then
@@ -833,16 +876,25 @@ Section: Expression Emission
     else if n == "clear-interval" & list-length args == 1 then
       "clearInterval(Number(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "json-parse-rows" & list-length args == 1 then
-      "JSON.parse(" & js-emit-expr (list-at args 0) ctx & ")"
+      "JSON.parse(" & js-u (list-at args 0) ctx & ").map((_r) => _r.map((_c) => _cce_from_uni(String(_c))))"
     else if n == "json-stringify" & list-length args == 1 then
-      "JSON.stringify(" & js-emit-expr (list-at args 0) ctx & ")"
+      "_cce_from_uni(JSON.stringify(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "console-log" & list-length args == 1 then
-      "console.log(" & js-emit-expr (list-at args 0) ctx & ")"
+      "console.log(_cce_to_uni(" & js-emit-expr (list-at args 0) ctx & "))"
     else if n == "dom-not-null" & list-length args == 1 then
       "(" & js-emit-expr (list-at args 0) ctx & " != null)"
     else if n == "dom-document" then "document"
     else if n == "dom-window" then "window"
     else ""
+
+  js-vec-load : IRExpr , CodexType , JsCtx -> Text
+  js-vec-load (a) (ty) (ctx) =
+    when js-strip-ty ty
+     is VectorTy (vn) (ve) -> "_cxm_vec_load(" & js-emit-expr a ctx & ", " & (if js-real-is-real ve then "true" else "false") & ")"
+     is otherwise -> "(() => { throw new Error(\"vec-load-at of a non-vector type\"); })()"
+
+  js-u : IRExpr , JsCtx -> Text
+  js-u (a) (ctx) = "_cce_to_uni(" & js-emit-expr a ctx & ")"
 
   js-emit-record-set : List IRExpr , JsCtx -> Text
   js-emit-record-set (args) (ctx) =
@@ -924,8 +976,42 @@ Section: Definition Emission
   js-emit-normal-def : IRDef , JsCtx -> Text
   js-emit-normal-def (d) (ctx) =
     let effectful = js-is-effectful d
-    in "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n" & (if effectful then "    " & js-emit-expr (d.body) ctx & ";\n" else "    return " & js-emit-expr (d.body) ctx & ";\n") & "}\n"
+    in "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n" & js-param-guards (d.params) 0 & (if effectful then "    return " & js-emit-expr (d.body) ctx & ";\n" else "    return " & js-return-guard d (js-emit-expr (d.body) ctx) & ";\n") & "}\n"
 
+  js-bounded-trap : CodexType -> Boolean
+  js-bounded-trap (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) ->
+      when mode
+       is OvError -> lo > i64-min | hi < i64-max
+       is otherwise -> False
+     is otherwise -> False
+
+  js-bound-args : CodexType -> Text
+  js-bound-args (ty) =
+    when ty
+     is IntegerTy (lo) (hi) (mode) -> ", " & integer-to-text lo & "n, " & integer-to-text hi & "n"
+     is otherwise -> ""
+
+  js-param-guards : List IRParam, Integer -> Text
+  js-param-guards (params) (i) =
+    if i >= list-length params then ""
+    else let p = list-at params i
+    in let g = if js-bounded-trap (p.type-val) then "    _cx_bound(" & js-sanitize (p.name) & js-bound-args (p.type-val) & ");\n" else ""
+    in g & js-param-guards params (i + 1)
+
+  js-return-bound : CodexType, Integer -> CodexType
+  js-return-bound (ty) (n) =
+    if n <= 0 then ty
+    else when ty
+     is FunTy (p) (row) (r) -> js-return-bound r (n - 1)
+     is ForAllTy (id) (b) -> js-return-bound b n
+     is otherwise -> ty
+
+  js-return-guard : IRDef, Text -> Text
+  js-return-guard (d) (body) =
+    let rt = js-return-bound (d.type-val) (list-length (d.params))
+    in if js-bounded-trap rt then "_cx_bound(" & body & js-bound-args rt & ")" else body
   js-emit-def-params : List IRParam , Integer -> Text
   js-emit-def-params (params) (i) =
     if i == list-length params then ""
@@ -934,7 +1020,7 @@ Section: Definition Emission
 
   js-emit-tco-def : IRDef , JsCtx -> Text
   js-emit-tco-def (d) (ctx) =
-    "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n    while (true) {\n" & js-emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "    }\n}\n"
+    "function " & js-sanitize (d.name) & "(" & js-emit-def-params (d.params) 0 & ") {\n" & js-param-guards (d.params) 0 & "    while (true) {\n" & js-emit-tco-body (d.body) (d.name) (d.params) ctx 0 & "    }\n}\n"
 
   js-emit-tco-body : IRExpr , Text , List IRParam , JsCtx , Integer -> Text
   js-emit-tco-body (e) (func-name) (params) (ctx) (depth) =
@@ -1008,26 +1094,18 @@ Section: Definition Emission
       else let keyword = if is-first then "if" else "else if"
       in let g = if js-guard-trivial (b.guard) then ""
       else
-        " && (() => {\n" & js-emit-tco-ctor-bindings subs s-var 0 & "            return " & js-emit-expr (b.guard) ctx & ";\n        })()"
-      in "        " & keyword & " (" & s-var & ".tag === \"" & name & "\"" & g & ") {\n" & js-emit-tco-ctor-bindings subs s-var 0 & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+        " && (() => {\n" & js-emit-tco-ctor-bindings subs s-var & "            return " & js-emit-expr (b.guard) ctx & ";\n        })()"
+      in "        " & keyword & " (" & js-pat-test (b.pattern) s-var & g & ") {\n" & js-emit-tco-ctor-bindings subs s-var & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
      is IrLitPat (text) (ty) (sp) ->
       let keyword = if is-first then "if" else "else if"
       in let g = if js-guard-trivial (b.guard) then
         ""
       else " && (" & js-emit-expr (b.guard) ctx & ")"
-      in "        " & keyword & " (" & s-var & " === " & js-lit-pat-text text ty & g & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
+      in "        " & keyword & " (" & js-pat-test (b.pattern) s-var & g & ") {\n" & js-emit-tco-body (b.body) func-name params ctx (depth + 1) & "        }\n"
 
-  js-emit-tco-ctor-bindings : List IRPat , Text , Integer -> Text
-  js-emit-tco-ctor-bindings (subs) (match-var) (i) =
-    if i == list-length subs then ""
-    else let sub = list-at subs i
-    in js-emit-tco-ctor-binding sub match-var i & js-emit-tco-ctor-bindings subs match-var (i + 1)
-
-  js-emit-tco-ctor-binding : IRPat , Text , Integer -> Text
-  js-emit-tco-ctor-binding (sub) (match-var) (i) =
-    when sub
-     is IrVarPat (name) (ty) (sp) -> "            const " & js-sanitize name & " = " & match-var & ".field" & integer-to-text i & ";\n"
-     is otherwise -> ""
+  js-emit-tco-ctor-bindings : List IRPat , Text -> Text
+  js-emit-tco-ctor-bindings (subs) (match-var) =
+    js-emit-ctor-binding-stmts (js-collect-ctor-bindings subs match-var ".field" "" 0) 0 "            " "\n"
 
   js-emit-tco-jump : IRExpr , List IRParam , JsCtx -> Text
   js-emit-tco-jump (e) (params) (ctx) =
@@ -1136,6 +1214,21 @@ Section: Chapter Emission
  Math.fround. The rules are x86-64's, as the perl plug's `pl-real-helpers`
  state them.
 
+ A javascript array answers undefined past its end and grows on a store
+ there, splice and substring clamp their arguments, and Number() of a huge
+ BigInt rounds; every index is checked here first, as bare metal traps.
+
+  js-index-helpers : Text
+  js-index-helpers =
+    text-concat-list [
+      "function _cx_at_ok(i, n) { const k = Number(i); if (!(k >= 0 && k < n)) throw new RangeError(\"CODEX_TRAP_index\"); return k; }\n",
+      "function _cx_at(l, i) { return l[_cx_at_ok(i, l.length)]; }\n",
+      "function _cx_bound(v, lo, hi) { if (v < lo || v > hi) throw new RangeError(\"CODEX_TRAP_bound\"); return v; }\n",
+      "function _cx_at_set(l, i, v) { const k = _cx_at_ok(i, l.length); const c = [...l]; c[k] = v; return c; }\n",
+      "function _cx_at_insert(l, i, v) { const k = _cx_at_ok(i, l.length + 1); const c = [...l]; c.splice(k, 0, v); return c; }\n",
+      "function _cx_at_sub(s, a, n) { const k = Number(a); const m = Number(n); if (!(k >= 0 && m >= 0 && m <= s.length - k)) throw new RangeError(\"CODEX_TRAP_index\"); return s.substring(k, k + m); }\n"
+    ]
+
   js-real-helpers : Text
   js-real-helpers =
     text-concat-list [
@@ -1149,20 +1242,99 @@ Section: Chapter Emission
       "function _cxr_real_sat(v, w32) { if (v !== v) return 0; if (Number.isFinite(v)) return v; const m = w32 ? 3.4028234663852886e38 : 1.7976931348623157e308; return v > 0 ? m : -m; }\n",
       "function _cxr_ordinal(v, w32) { let x; if (w32) { _cxr_dv.setFloat32(0, v); x = BigInt.asIntN(64, BigInt(_cxr_dv.getUint32(0)) << 32n); } else { _cxr_dv.setFloat64(0, v); x = _cxr_dv.getBigInt64(0); } const t = x < 0n ? -1n : 0n; const o = (x ^ (t ? 9223372036854775807n : 0n)) - t; return w32 ? (o >> 32n) : o; }\n",
       "function _cxr_real_near(a, b, w32, tol) { let d = _cxr_ordinal(a, w32) - _cxr_ordinal(b, w32); if (d < 0n) d = -d; return d <= tol; }\n",
+      "function _cxr_text_to_double_bits(s) { const neg = s.charAt(0) === \"-\"; const r = neg ? s.slice(1) : s; if (!/[1-9]/.test(r)) return neg ? -9223372036854775808n : 0n; let v = Number(r); if (v !== v) v = 0; return _cxr_real_to_bits(neg ? -v : v); }\n",
       "function _cxr_real_show(v) { _cxr_dv.setFloat64(0, v); const neg = (_cxr_dv.getBigUint64(0) >> 63n) ? \"-\" : \"\"; const e = Math.abs(v); const acc = Number.isFinite(e) ? Math.trunc(e) : e; const s = String(_cxr_real_to_int(acc)); let f = e - acc; let d = \"\"; let last = 0; for (let k = 1; k <= 15; k++) { f *= 10; const x = Number.isFinite(f) ? Math.trunc(f) : 0; f -= x; d += String(x); if (x !== 0) last = k; } return neg + s + \".\" + (last ? d.slice(0, last) : \"0\"); }\n"
     ]
 
+ A Text is CCE at run time, as on bare metal: each character of the string is
+ one byte of CCE's UTF-8-shaped framing, so codes and comparisons are CCE's.
+ It converts only at the program's edges, by these tables, which are
+ `emit-cce-runtime`'s in `CSharpEmitter.codex`.
+
+  js-cce-helpers : Text
+  js-cce-helpers =
+    text-concat-list [
+      "const _cce_u = [0,10,32,48,49,50,51,52,53,54,55,56,57,101,116,97,111,105,110,115,104,114,100,108,99,117,109,119,102,103,121,112,98,118,107,106,120,113,122,69,84,65,79,73,78,83,72,82,68,76,67,85,77,87,70,71,89,80,66,86,75,74,88,81,90,46,44,33,63,58,59,39,34,45,40,41,43,61,42,60,62,47,64,35,38,95,92,124,91,93,123,125,126,96,94,36,37,233,232,234,235,225,224,226,228,243,244,246,250,252,241,231,237,1072,1086,1077,1080,1085,1090,1089,1088,1074,1083,1082,1084,1076,1087,1091];\n",
+      "const _cce_f = new Map(); for (let i = 0; i < 128; i++) _cce_f.set(_cce_u[i], i);\n",
+      "const _cce_t1 = [128,256,1024,128,880,128,1536,128,1424,128,2304,128,3584,128,4352,128,19968,512,12352,256,8704,128];\n",
+      "const _cce_t1c = [128,384,512,640,768,896,1024,1152,1280,1792,2048];\n",
+      "const _cce_t2 = [12288,64,12352,96,12448,96,19968,20992,13312,6592,44032,11172,3584,256,8192,512,127744,1024,9728,256,9984,192];\n",
+      "function _cce_cp_uni(cp) { if (cp < 0) return 65533; if (cp < 128) return _cce_u[cp]; if (cp < 2176) { for (let b = 10; b >= 0; b--) if (cp >= _cce_t1c[b]) return _cce_t1[2*b] + (cp - _cce_t1c[b]); return 65533; } if (cp < 67712) { let c = 2176; for (let b = 0; b < 11; b++) { const n = _cce_t2[2*b+1]; if (cp < c + n) return _cce_t2[2*b] + (cp - c); c += n; } } return 65533; }\n",
+      "function _cce_uni_cp(u) { const c0 = _cce_f.get(u); if (c0 !== undefined) return c0; for (let b = 0; b < 11; b++) { const bu = _cce_t1[2*b]; if (u >= bu && u < bu + _cce_t1[2*b+1]) return _cce_t1c[b] + (u - bu); } let c = 2176; for (let b = 0; b < 11; b++) { const bu = _cce_t2[2*b], n = _cce_t2[2*b+1]; if (u >= bu && u < bu + n) return c + (u - bu); c += n; } return -1; }\n",
+      "function _cce_frame(c) { c = Number(c); if (c < 128) return String.fromCharCode(c); if (c < 2176) { const v = c - 128; return String.fromCharCode(192 | (v >> 6), 128 | (v & 63)); } const w = c - 2176; return String.fromCharCode(224 | (w >> 12), 128 | ((w >> 6) & 63), 128 | (w & 63)); }\n",
+      "function _cce_from_uni(s) { s = String(s).replaceAll(\"\\t\", \"  \").replaceAll(\"\\r\", \"\"); let r = \"\"; for (const ch of s) { const c = _cce_uni_cp(ch.codePointAt(0)); r += _cce_frame(c < 0 ? 68 : c); } return r; }\n",
+      "function _cce_to_uni(s) { let r = \"\"; for (let i = 0; i < s.length; i++) { const b = s.charCodeAt(i); const n = b < 128 ? 1 : (b & 0xE0) === 0xC0 ? 2 : (b & 0xF0) === 0xE0 ? 3 : (b & 0xF8) === 0xF0 ? 4 : 0; if (n === 0 || i + n > s.length) { r += \"\\uFFFD\"; continue; } const at = (k) => s.charCodeAt(i + k) & 0x3F; const cp = n === 1 ? b : n === 2 ? 128 + (((b & 0x1F) << 6) | at(1)) : n === 3 ? 2176 + (((b & 0x0F) << 12) | (at(1) << 6) | at(2)) : 67712 + (((b & 0x07) << 18) | (at(1) << 12) | (at(2) << 6) | at(3)); let u = _cce_cp_uni(cp); if (u >= 0xD800 && u <= 0xDFFF) u = 65533; r += String.fromCodePoint(u); i += n - 1; } return r; }\n"
+    ]
+
+  js-mem-helpers : Text
+  js-mem-helpers =
+    text-concat-list [
+      "let _cxm_mem = new Uint8Array(4096);\n",
+      "let _cxm_hp = 4096;\n",
+      "function _cxm_want(e) { if (e > _cxm_mem.length) { const m = new Uint8Array(Math.max(e, 2 * _cxm_mem.length)); m.set(_cxm_mem); _cxm_mem = m; } }\n",
+      "function _cxm_alloc(n) { const a = _cxm_hp; _cxm_hp += (Number(n) + 7) & ~7; _cxm_want(_cxm_hp); return BigInt(a); }\n",
+      "function _cxm_poke(b, o, v, w) { const p = Number(b) + Number(o); _cxm_want(p + w); let x = BigInt.asUintN(8 * w, v); for (let i = 0; i < w; i++) { _cxm_mem[p + i] = Number(x & 255n); x >>= 8n; } return 0n; }\n",
+      "function _cxm_peek(b, o, w) { const p = Number(b) + Number(o); _cxm_want(p + w); let x = 0n; for (let i = w - 1; i >= 0; i--) { x = (x << 8n) | BigInt(_cxm_mem[p + i]); } return x; }\n",
+      "function _cxm_read_bytes(b, o, n) { const p = Number(b) + Number(o); _cxm_want(p + Number(n)); return Array.from(_cxm_mem.subarray(p, p + Number(n)), BigInt); }\n",
+      "function _cxm_write_bytes(b, o, xs) { const p = Number(b) + Number(o); _cxm_want(p + xs.length); xs.forEach((x, i) => { _cxm_mem[p + i] = Number(BigInt.asUintN(8, x)); }); return BigInt(o) + BigInt(xs.length); }\n",
+      "function _cxm_vec_load(b, real) { const p = Number(b); _cxm_want(p + 16); const dv = new DataView(_cxm_mem.buffer); return real ? [dv.getFloat64(p, true), dv.getFloat64(p + 8, true)] : [dv.getBigInt64(p, true), dv.getBigInt64(p + 8, true)]; }\n",
+      "function _cxb_shru(a, b) { return BigInt.asIntN(64, BigInt.asUintN(64, a) >> (b & 63n)); }\n",
+      "function _cxb_ipow(a, b) { if (b < 0n) return 0n; let r = 1n; let x = BigInt.asUintN(64, a); while (b > 0n) { if (b & 1n) r = BigInt.asUintN(64, r * x); x = BigInt.asUintN(64, x * x); b >>= 1n; } return BigInt.asIntN(64, r); }\n"
+    ]
+
   js-emit-header : Text
-  js-emit-header = "\"use strict\";\nlet _js_state_value = 0n;\nfunction _cx_text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction _cx_text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction _cx_text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+  js-emit-header = "\"use strict\";\nlet _js_state_value = 0n;\nfunction _cx_show(v) { return typeof v === \"string\" ? v : _cce_from_uni(typeof v === \"boolean\" ? (v ? \"True\" : \"False\") : String(v)); }\nfunction _cx_text_replace(s, a, b) { return a.length === 0 ? s : s.split(a).join(b); }\nfunction _cx_text_split(s, sep) { return sep.length === 0 ? [s] : s.split(sep); }\nfunction _cx_text_to_integer(s) { let t = String(s); let i = 0; let neg = false; if (t.charAt(0) === '-') { neg = true; i = 1; } let v = 0n; while (i < t.length && t.charAt(i) >= '0' && t.charAt(i) <= '9') { v = v * 10n + BigInt(t.charCodeAt(i) - 48); i = i + 1; } return neg ? -v : v; }\n\n"
+
+  js-emit-prelude : Text
+  js-emit-prelude = js-emit-header & js-cce-helpers & js-real-helpers & js-mem-helpers & js-index-helpers
 
   emit-javascript-chapter : IRChapter , List ATypeDef -> Text
   emit-javascript-chapter (m) (type-defs) =
-    let ctx = JsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs }
-    in let header = js-emit-header & js-real-helpers
+    let ctx = JsCtx { arities = build-arity-map (m.defs) 0 [], type-defs = type-defs, ops = m.effect-op-names }
+    in let header = js-emit-prelude
     in let types = js-emit-type-defs type-defs 0
     in let defs = js-emit-defs-loop (m.defs) 0 (list-length (m.defs)) ctx
     in let entry = js-emit-entry (js-opening-return-type (m.defs))
-    in header & types & defs & entry
+    in header & (if text-contains defs "_cxh_" then js-handler-helpers else "") & types & defs & entry
+
+  js-handler-helpers : Text
+  js-handler-helpers =
+    text-concat-list [
+      "const _cxh_stack = new Map();\n",
+      "function _cxh_with(cs, body) { for (const k in cs) { if (!_cxh_stack.has(k)) _cxh_stack.set(k, []); _cxh_stack.get(k).push(cs[k]); } try { return body(); } finally { for (const k in cs) _cxh_stack.get(k).pop(); } }\n",
+      "function _cxh_perform(k, ...a) { const s = _cxh_stack.get(k); let r = s[s.length - 1]((v) => v); for (const x of a) r = r(x); return r; }\n"
+    ]
+
+  js-is-op : JsCtx, Text -> Boolean
+  js-is-op (ctx) (n) =
+    if lookup-arity (ctx.arities) n >= 0 then False else js-text-in (ctx.ops) n 0
+
+  js-text-in : List Text, Text, Integer -> Boolean
+  js-text-in (xs) (n) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == n then True
+    else js-text-in xs n (i + 1)
+
+  js-fun-arity : CodexType -> Integer
+  js-fun-arity (t) =
+    when js-strip-ty t
+     is FunTy (a) (r) (b) -> 1 + js-fun-arity b
+     is otherwise -> 0
+
+  js-perform : Text, Text -> Text
+  js-perform (n) (args) =
+    "_cxh_perform(\"" & js-sanitize n & "\"" & (if text-length args > 0 then ", " & args else "") & ")"
+
+  js-emit-handle : IRExpr, List IRHandleClause, JsCtx, Integer -> Text
+  js-emit-handle (body) (clauses) (ctx) (depth) =
+    if list-length clauses == 0 then js-emit-expr-at body ctx (depth + 1)
+    else "_cxh_with({" & js-emit-handle-clauses clauses ctx depth 0 & "}, (() => " & js-emit-expr-at body ctx (depth + 1) & "))"
+
+  js-emit-handle-clauses : List IRHandleClause, JsCtx, Integer, Integer -> Text
+  js-emit-handle-clauses (clauses) (ctx) (depth) (i) =
+    if i >= list-length clauses then ""
+    else let c = list-at clauses i
+    in "\"" & js-sanitize (c.op-name) & "\": ((" & js-sanitize (c.resume-name) & ") => " & js-emit-expr-at (c.body) ctx (depth + 1) & "), " & js-emit-handle-clauses clauses ctx depth (i + 1)
 
   is-mktup-name : Text -> Boolean
   is-mktup-name (n) =

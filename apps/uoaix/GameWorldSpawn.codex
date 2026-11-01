@@ -446,12 +446,13 @@ Chapter: GameWorldSpawn
     else if gws-step g shard map slot m (int-mod (direction + 7) 8) True then True
     else if gws-step g shard map slot m (int-mod (direction + 2) 8) True then True
     else gws-step g shard map slot m (int-mod (direction + 6) 8) True
- A tamed slot's order (UOX3 pet commands): follow walks to its owner, guard follows and fights whoever its owner
- fights or whoever fights its owner, stay holds its tile. A pet keeps a combat target it already has, and under any
- order fights back whoever attacks it, its owner excepted (UOAIX-195, as a struck wild creature does, UOAIX-172).
   gws-order-follow : Integer = 0
   gws-order-guard : Integer = 1
   gws-order-stay : Integer = 2
+  gws-aim-calm : Integer = 3
+  gws-calm : GameWorldSpawn, Integer -> Boolean
+  gws-calm (g) (serial) = let i = if serial <= 0 then -1 else gws-slot-of g serial 0
+    in if i < 0 then False else (list-at g.slots i).aim == gws-aim-calm
   gws-alive : GameWorldSpawn, GameShard, Integer, WorldObject -> Integer
   gws-alive (g) (shard) (serial) (master) = if serial <= 0 then 0
     else when world-get shard.world serial
@@ -462,8 +463,8 @@ Chapter: GameWorldSpawn
     else let actor = list-at g.combat.actors (peek-qword (sa-at g.combat.active i) 0)
     in if actor.war & actor.target == master & actor.serial /= self then actor.serial else gws-attacker g master self (i + 1)
   gws-pet-foe : GameWorldSpawn, GameShard, WorldSpawnSlot, CombatActor, WorldObject -> Integer
-  gws-pet-foe (g) (shard) (slot) (a) (master) =
-    let commanded = if slot.foe == 0 then 0 else gws-alive g shard slot.foe master
+  gws-pet-foe (g) (shard) (slot) (a) (master) = if slot.aim == gws-aim-calm then 0
+    else let commanded = if slot.foe == 0 then 0 else gws-alive g shard slot.foe master
     in let lapsed = if slot.foe /= 0 & commanded == 0 then __record-set slot "foe" 0 else slot
     in let kept = if commanded > 0 | not a.war | a.target == 0 | a.target == slot.owner then 0 else gws-alive g shard a.target master
     in let striker = if commanded > 0 | kept > 0 then 0 else gws-attacker g a.serial a.serial 0

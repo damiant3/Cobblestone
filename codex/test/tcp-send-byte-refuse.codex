@@ -1,0 +1,36 @@
+Chapter: TcpSendByteRefuse
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+  tsr-est : TcpConnection = tcp-set-state (set-recv-next (tcp-new-connection 9300 [10, 0, 2, 15] 50000 [10, 0, 2, 2] 1000) 7000) TcpEstablished
+
+  tsr-action : TcpAction -> Text
+  tsr-action (a) = when a
+    is ActSend (seg) -> "send"
+    is ActError (m) -> "error " & m
+    is ActEstablished -> "established"
+    is ActData (pb) (po) (ps) -> "data"
+    is ActDataAck (pb) (po) (ps) (ack) -> "data-ack"
+    is ActClosed -> "closed"
+    is ActNone -> "none"
+
+  tsr-verdict : Text, TcpConnection, List Integer -> Text
+  tsr-verdict (name) (conn) (payload) =
+    let step = tcp-step conn (EvSend payload)
+    in let sess = set-conn (net-session-new [2, 0, 0, 0, 0, 1] [10, 0, 2, 15] [10, 0, 2, 2] 9300 50000 [10, 0, 2, 2] 1000) conn
+    in let r = net-send sess payload
+    in name & " step=" & tsr-action (step.action) & " advance=" & show ((step.conn).send-next - conn.send-next)
+       & " frames=" & show (net-outbox-count (r.session))
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni (tsr-verdict "bytes" tsr-est [0, 169, 255])
+    print-line-uni (tsr-verdict "wide-8364" tsr-est [0, 8364, 0])
+    print-line-uni (tsr-verdict "wide-last" tsr-est [1, 2, 256])
+    print-line-uni (tsr-verdict "negative" tsr-est [0 - 1, 2])
+    print-line-uni (tsr-verdict "close-wait-wide" (tcp-set-state tsr-est TcpCloseWait) [0, 300])
+    print-line-uni (tsr-verdict "close-wait-bytes" (tcp-set-state tsr-est TcpCloseWait) [7, 8])
+  end

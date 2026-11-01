@@ -1,0 +1,77 @@
+Chapter: UsbPadReportTest
+  cites Works chapter GopUsbPad
+  cites Foreword chapter Console
+
+ Descriptor A: Usage Page Generic Desktop, Usage Gamepad, Collection
+ Application; Button page, Usage Minimum 1, Usage Maximum 16, Logical 0..1,
+ Report Size 1, Report Count 16, Input Data Var Abs; Generic Desktop, Usages
+ X, Y, Z, Rz, Logical -127..127, Report Size 8, Report Count 4, Input; Usage
+ Hat Switch, Logical 0..7, Physical 0..315, Unit degrees, Report Size 4,
+ Count 1, Input Null State; Report Size 4, Count 1, Input Constant; End
+ Collection. Descriptor B is A with Report ID 3 after the Collection item,
+ and a Keyboard collection before it that the parser must not take.
+
+Section: Fixtures
+
+  desc-a : List Integer = [5, 1, 9, 5, 161, 1,
+    5, 9, 25, 1, 41, 16, 21, 0, 37, 1, 117, 1, 149, 16, 129, 2,
+    5, 1, 9, 48, 9, 49, 9, 50, 9, 53, 21, 129, 37, 127, 117, 8, 149, 4, 129, 2,
+    9, 57, 21, 0, 37, 7, 53, 0, 70, 59, 1, 101, 20, 117, 4, 149, 1, 129, 66,
+    117, 4, 149, 1, 129, 1,
+    192]
+
+  desc-b : List Integer = [5, 1, 9, 6, 161, 1, 5, 7, 25, 224, 41, 231, 21, 0, 37, 1, 117, 1, 149, 8, 129, 2, 192,
+    5, 1, 9, 5, 161, 1, 133, 3,
+    5, 9, 25, 1, 41, 16, 21, 0, 37, 1, 117, 1, 149, 16, 129, 2,
+    5, 1, 9, 48, 9, 49, 9, 50, 9, 53, 21, 129, 37, 127, 117, 8, 149, 4, 129, 2,
+    9, 57, 21, 0, 37, 7, 53, 0, 70, 59, 1, 101, 20, 117, 4, 149, 1, 129, 66,
+    117, 4, 149, 1, 129, 1,
+    192]
+
+  mouse-desc : List Integer = [5, 1, 9, 2, 161, 1, 9, 1, 161, 0, 5, 9, 25, 1, 41, 3, 21, 0, 37, 1, 149, 3, 117, 1, 129, 2, 149, 1, 117, 5, 129, 1, 5, 1, 9, 48, 9, 49, 21, 129, 37, 127, 117, 8, 149, 2, 129, 6, 192, 192]
+
+  to-buf : List Integer -> Integer
+  to-buf (bs) = to-buf-loop (alloc-bytes (list-length bs + 8)) bs 0
+
+  to-buf-loop : Integer, List Integer, Integer -> Integer
+  to-buf-loop (b) (bs) (i) =
+    if i >= list-length bs then b
+    else let w = poke-byte b i (list-at bs i)
+    in to-buf-loop b bs (i + 1)
+
+Section: Lines
+
+  layout-line : Text, PadLayout -> Text
+  layout-line (name) (l) =
+    name & " ok=" & (if l.pl-ok then "yes" else "no") & " id=" & show (l.pl-report-id) & " bits=" & show (l.pl-bits) & " buttons=" & show (list-length (l.pl-buttons)) & " axes=" & show (list-length (l.pl-axes)) & axis-usages l 0 ""
+
+  axis-usages : PadLayout, Integer, Text -> Text
+  axis-usages (l) (i) (acc) =
+    if i >= list-length (l.pl-axes) then acc
+    else let a = list-at (l.pl-axes) i
+    in axis-usages l (i + 1) (acc & " " & show (a.pa-usage) & "@" & show (a.pa-offset) & "/" & show (a.pa-size))
+
+  report-line : Text, PadLayout, List Integer -> Text
+  report-line (name) (l) (rep) =
+    let b = to-buf rep
+    in if pad-report-ok l b (list-length rep) == False then name & " refused"
+    else name & " buttons=" & show (pad-buttons l b) & " x=" & show (pad-axis-raw l b 0) & " y=" & show (pad-axis-raw l b 1) & " z=" & show (pad-axis-raw l b 2) & " rz=" & show (pad-axis-raw l b 3) & " hat=" & show (pad-axis-raw l b 4) & " xn=" & show (pad-axis-norm l b 0) & " yn=" & show (pad-axis-norm l b 1)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let la = pad-parse (to-buf desc-a) (list-length desc-a)
+    in let lb = pad-parse (to-buf desc-b) (list-length desc-b)
+    in let lm = pad-parse (to-buf mouse-desc) (list-length mouse-desc)
+    in act
+      print-line-uni (layout-line "A" la)
+      print-line-uni (layout-line "B" lb)
+      print-line-uni (layout-line "mouse" lm)
+      print-line-uni (report-line "A rest" la [0, 0, 0, 0, 0, 0, 8])
+      print-line-uni (report-line "A press" la [5, 128, 127, 129, 255, 1, 2])
+      print-line-uni (report-line "B press" lb [3, 5, 128, 127, 129, 255, 1, 2])
+      print-line-uni (report-line "B wrong id" lb [4, 5, 128, 127, 129, 255, 1, 2])
+      print-line-uni (report-line "A short" la [5, 128, 127])
+    end
+
+Page 1

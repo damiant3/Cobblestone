@@ -1,0 +1,61 @@
+Chapter: VmIdeTest
+  cites Foreword chapter CCE
+  cites Kernel chapter VmIde
+
+Section: Entry
+  vit-drain : VmIdeState, Integer -> VmIdeState
+  vit-drain (ide) (n) = if n == 0 then ide else vit-drain (vm-ide-handle-in ide (vm-ide-base + vm-ide-data)).iir-state (n - 1)
+
+  vit-out : VmIdeState, Integer, Integer -> VmIdeState
+  vit-out (ide) (reg) (value) = vm-ide-handle-out ide (vm-ide-base + reg) value
+
+  vit-collect : VmIdeState, Integer, List Integer -> List Integer
+  vit-collect (ide) (n) (acc) =
+    if n == 0 then acc
+    else let r = vm-ide-handle-in ide (vm-ide-base + vm-ide-data)
+    in vit-collect r.iir-state (n - 1) (list-push acc r.iir-value)
+
+  vit-char : Integer -> Text
+  vit-char (b) = let cce = from-unicode b in if cce < 0 then "?" else char-to-text (code-to-char cce)
+
+  vit-text : List Integer, Integer, Integer -> Text
+  vit-text (words) (from) (count) =
+    if count == 0 then ""
+    else let w = list-at words from
+    in vit-char (bit-shru w 8) & vit-char (bit-and w 255) & vit-text words (from + 1) (count - 1)
+
+  vit-fill : VmIdeState, Integer -> VmIdeState
+  vit-fill (ide) (i) = if i == 256 then ide else vit-fill (vit-out ide vm-ide-data (1000 + i)) (i + 1)
+  opening : [Console] Nothing = act
+    disk <- alloc-bytes 1024
+    a <- poke-byte disk 512 52
+    b <- poke-byte disk 513 18
+    ide <- vm-ide-attach disk 2
+    print-line-uni ("owns " & show (vm-ide-owns-port ide 496) & " " & show (vm-ide-owns-port ide 503) & " " & show (vm-ide-owns-port ide 1014) & " " & show (vm-ide-owns-port ide 504))
+    r <- vit-out (vit-out (vit-out ide vm-ide-lba-lo 1) vm-ide-sect-count 1) vm-ide-command vm-ide-cmd-read
+    w <- vm-ide-handle-in r (vm-ide-base + vm-ide-data)
+    print-line-uni ("read status " & show r.ide-status & " first word " & show w.iir-value)
+    done <- vit-drain w.iir-state 255
+    print-line-uni ("after 256 words status " & show done.ide-status & " left " & show done.ide-sectors-left)
+    bad <- vit-out (vit-out (vm-ide-attach disk 2) vm-ide-lba-lo 5) vm-ide-command vm-ide-cmd-read
+    print-line-uni ("past end status " & show bad.ide-status & " error " & show (vm-ide-handle-in bad (vm-ide-base + vm-ide-error)).iir-value)
+    lba <- vit-out (vit-out (vit-out (vit-out (vm-ide-attach disk 2) vm-ide-lba-lo 1) vm-ide-lba-mid 2) vm-ide-lba-hi 3) vm-ide-drive-head 228
+    print-line-uni ("lba " & show (vm-ide-get-lba lba))
+    id <- vit-out (vm-ide-attach disk 2) vm-ide-command vm-ide-cmd-identify
+    words <- vit-collect id 256 []
+    print-line-uni ("identify status " & show id.ide-status & " word0 " & show (list-at words 0) & " lba-flag " & show (list-at words 49) & " sectors " & show (list-at words 60 + list-at words 61 * 65536))
+    print-line-uni ("identify serial [" & vit-text words 10 10 & "] fw [" & vit-text words 23 4 & "] model [" & vit-text words 27 20 & "]")
+    id2 <- vit-out (vm-ide-attach disk 2) vm-ide-command vm-ide-cmd-identify
+    print-line-uni ("identify after 256 words status " & show (vit-drain id2 256).ide-status)
+    nodisk <- vit-out vm-ide-new vm-ide-command vm-ide-cmd-identify
+    print-line-uni ("identify no disk status " & show nodisk.ide-status & " error " & show nodisk.ide-error)
+    wr <- vit-out (vit-out (vit-out (vm-ide-attach disk 2) vm-ide-lba-lo 1) vm-ide-sect-count 1) vm-ide-command vm-ide-cmd-write
+    print-line-uni ("write status " & show wr.ide-status & " read-while-writing " & show (vm-ide-handle-in wr (vm-ide-base + vm-ide-data)).iir-value)
+    wd <- vit-fill wr 0
+    print-line-uni ("write after 256 words status " & show wd.ide-status & " disk " & show (peek-byte disk 512 + peek-byte disk 513 * 256) & " " & show (peek-byte disk 1022 + peek-byte disk 1023 * 256))
+    rb <- vit-out (vit-out (vit-out (vm-ide-attach disk 2) vm-ide-lba-lo 1) vm-ide-sect-count 1) vm-ide-command vm-ide-cmd-read
+    print-line-uni ("readback first word " & show (vm-ide-handle-in rb (vm-ide-base + vm-ide-data)).iir-value)
+    ovr <- vit-out (vit-out (vit-out (vm-ide-attach disk 2) vm-ide-lba-lo 1) vm-ide-sect-count 2) vm-ide-command vm-ide-cmd-read
+    ovw <- vit-out (vit-out (vit-out (vm-ide-attach disk 2) vm-ide-lba-lo 1) vm-ide-sect-count 2) vm-ide-command vm-ide-cmd-write
+    print-line-uni ("overrun read status " & show ovr.ide-status & " error " & show ovr.ide-error & " write status " & show ovw.ide-status & " error " & show ovw.ide-error)  end
+Page 1

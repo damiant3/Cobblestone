@@ -3,9 +3,7 @@ Chapter: Modbus
  Modbus fieldbus protocol per the Modbus Application Protocol v1.1b3
  and Modbus over Serial Line v1.02. The industrial workhorse for
  talking to PLCs, meters, and sensors over RS485/RS232 (Modbus RTU)
- or TCP (Modbus TCP). Each builder returns a List Integer (the raw
- bytes). Transport is handled by the caller: a serial UART for RTU,
- a TCP socket for TCP.
+ or TCP (Modbus TCP).
 
  A Modbus message is a PDU (function code plus data). RTU wraps the
  PDU with a unit address and a trailing CRC-16. TCP wraps the PDU
@@ -212,13 +210,17 @@ Section: TCP Framing
 Section: Response Parsing
 
  A read-registers response is function code, byte count, then the
- register values big-endian. Parse them into a List Integer of
- 16-bit values.
+ register values big-endian.
 
   modbus-parse-registers : List Integer -> List Integer
+ A response that declares more bytes than it holds, or an odd register byte
+ count, answers no registers.
+
   modbus-parse-registers (pdu) =
-    let count = list-at pdu 1
-    in modbus-parse-registers-loop pdu 2 (2 + count) []
+    if list-length pdu < 2 then []
+    else let count = list-at pdu 1
+    in if 2 + count > list-length pdu | bit-and count 1 == 1 then []
+    else modbus-parse-registers-loop pdu 2 (2 + count) []
 
   modbus-parse-registers-loop : List Integer, Integer, Integer, List Integer -> List Integer
   modbus-parse-registers-loop (pdu) (i) (stop) (acc) =
@@ -227,10 +229,12 @@ Section: Response Parsing
       modbus-parse-registers-loop pdu (i + 2) stop (list-push acc (bit-or (bit-shl (list-at pdu i) 8) (list-at pdu (i + 1))))
 
  A read-coils response is function code, byte count, then packed
- coil bits (LSB first). Unpack the requested quantity into booleans.
+ coil bits (LSB first).
 
   modbus-parse-coils : List Integer, Integer -> List Boolean
-  modbus-parse-coils (pdu) (quantity) = modbus-parse-coils-loop pdu quantity 0 []
+  modbus-parse-coils (pdu) (quantity) =
+    if quantity < 0 | 2 + (quantity + 7) / 8 > list-length pdu then []
+    else modbus-parse-coils-loop pdu quantity 0 []
 
   modbus-parse-coils-loop : List Integer, Integer, Integer, List Boolean -> List Boolean
   modbus-parse-coils-loop (pdu) (quantity) (i) (acc) =
@@ -239,10 +243,10 @@ Section: Response Parsing
       modbus-parse-coils-loop pdu quantity (i + 1) (list-push acc (bit-and (bit-shru (list-at pdu (2 + bit-shru i 3)) (bit-and i 7)) 1 == 1))
 
   modbus-is-exception : List Integer -> Boolean
-  modbus-is-exception (pdu) = list-at pdu 0 >= 128
+  modbus-is-exception (pdu) = if list-length pdu < 1 then False else list-at pdu 0 >= 128
 
   modbus-exception-code : List Integer -> Integer
-  modbus-exception-code (pdu) = list-at pdu 1
+  modbus-exception-code (pdu) = if list-length pdu < 2 then 0 - 1 else list-at pdu 1
 
   modbus-exception-pdu : Integer, Integer -> List Integer
   modbus-exception-pdu (fc) (code) = [bit-or fc 128, code]

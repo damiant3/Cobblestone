@@ -5,7 +5,6 @@ Chapter: DtlsMessage
   cites Foreword chapter Sha256
 
  The DTLS 1.3 handshake message layer (RFC 9147 sections 5.2 and 7).
- Phase D2b: the framing the D2a machine sequences but does not encode.
 
  THE TRANSCRIPT RULE. RFC 9147 section 5.2, and it is worth quoting
  because getting it wrong produces a Finished that verifies against
@@ -14,9 +13,7 @@ Chapter: DtlsMessage
  message_seq, fragment_offset, and fragment_length values. So a DTLS
  handshake message goes on the wire with a 12-byte header and into the
  transcript with a 4-byte one. Two shapes of the same message, and an
- implementation that hashes what it sent is wrong. tls13-msg-transcript
- is the only correct way to feed a message to the hash; the wire form
- must never reach it.
+ implementation that hashes what it sent is wrong.
 
  THE FINISHED. RFC 8446 section 4.4.4, inherited whole. The finished key
  is HKDF-Expand-Label(base-secret, "finished", "", 32) -- an EMPTY
@@ -27,8 +24,6 @@ Chapter: DtlsMessage
  THE ACK. RFC 9147 section 7. A list of record numbers, each an epoch
  and a sequence number, saying what actually arrived. It is what lets a
  flight stop being retransmitted.
-
- We say:
 
 Section: Handshake Types
 
@@ -84,10 +79,6 @@ Section: Framing
   dtls-msg-encode-frag (msg-type) (message-seq) (total-len) (frag-offset) (frag-body) =
     [msg-type] & dtls-be24 total-len & dtls-be16 message-seq & dtls-be24 frag-offset & dtls-be24 (list-length frag-body) & frag-body
 
- A body that fits in one fragment produces exactly one fragment, and it is
- byte-identical to dtls-msg-encode's output, so fragmenting is never a
- behaviour change for a message that did not need it.
-
   dtls-msg-fragments : Integer, Integer, List Integer, Integer -> List (List Integer)
   dtls-msg-fragments (msg-type) (message-seq) (body) (max-body) =
     if max-body <= 0 then [dtls-msg-encode msg-type message-seq body]
@@ -103,9 +94,7 @@ Section: Framing
 
  The transcript form. RFC 9147 section 5.2: no message_seq, no
  fragment_offset, no fragment_length. What is left is exactly the TLS 1.3
- shape, so the function that builds it is tls13-msg-transcript in
- Foreword chapter Tls and this chapter's job is only to strip the DTLS
- fields back off before hashing what the peer sent.
+ shape.
 
   dtls-msg-to-transcript : DtlsMsg -> List Integer
   dtls-msg-to-transcript (m) = tls13-msg-transcript (m.dm-type) (m.dm-body)
@@ -184,9 +173,7 @@ Section: Reassembly
 
  A fragment for a different message_seq is not an error and must not be
  dropped: it is the next message of the flight arriving while the previous
- one is still incomplete. The buffer restarts on it rather than refusing it,
- which is the behaviour that lets a flight make progress when its first
- message was lost outright.
+ one is still incomplete.
 
   dtls-reasm-add : DtlsReasm, DtlsMsg -> DtlsReasm
   dtls-reasm-add (r) (m) =
@@ -209,10 +196,6 @@ Section: Reassembly
         })
       }
 
- Coverage is the furthest point reachable from zero by repeatedly taking any
- fragment that starts at or before it. Recomputing from scratch each pass is
- what makes an overlapping or duplicated fragment harmless: the answer
- depends on the union of the fragments and not on the order they arrived.
  At most sixteen passes over sixteen entries.
 
   dtls-reasm-covered : DtlsReasm -> Integer
@@ -275,11 +258,9 @@ Section: Reassembly
 
 Section: Finished
 
- The Finished itself is RFC 8446 section 4.4.4, which DTLS 1.3 inherits
- unchanged, so the key, the verify data and the constant-time check are
- tls13-finished-key, tls13-verify-data and tls13-finished-ok in Foreword
- chapter Tls. What is DTLS here is only the framing: a Finished has to go
- out as a DTLS handshake message, with a message_seq.
+ The Finished is RFC 8446 section 4.4.4, which DTLS 1.3 inherits
+ unchanged; only the framing is DTLS, a handshake message with a
+ message_seq.
 
   dtls-finished-msg : List Integer, List Integer, Integer -> List Integer
   dtls-finished-msg (base-secret) (transcript-hash) (message-seq) =

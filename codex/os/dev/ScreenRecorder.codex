@@ -109,11 +109,34 @@ Section: Actions
   sr-tick (st) = when st.sr-status
     is RecRecording ->
       let elapsed = st.sr-elapsed-seconds + 1
-      in let frames = st.sr-frame-count + st.sr-fps
       in if elapsed >= st.sr-max-duration then sr-stop st
-      else __record-set (__record-set st "sr-elapsed-seconds" elapsed) "sr-frame-count" frames
+      else __record-set st "sr-elapsed-seconds" elapsed
     is RecCountdown (n) -> sr-countdown-tick st
     is otherwise -> st
+
+Section: Capture
+
+ codex-vm's -record DIR claims port 0xE5: a write saves the framebuffer as
+ the next DIR\frame-NNNNN.bmp, within -record-max frames and -record-min-ms
+ of the last; a read answers the frames saved. -record-every-ms makes codex-vm
+ save on its own clock as well, with no write. Without -record the port is
+ unclaimed and reads 255.
+
+  sr-record-port : Integer = 229
+
+  sr-capture : ScreenRecorderState -> [Device.Port] ScreenRecorderState
+  sr-capture (st) = when st.sr-status
+    is RecRecording -> act
+      w <- port-out-32 sr-record-port 1
+      __record-set st "sr-frame-count" (st.sr-frame-count + 1)
+    end
+    is otherwise -> act st end
+
+  sr-frames-saved : [Device.Port] Integer
+  sr-frames-saved = act
+    v <- port-in-32 sr-record-port
+    v
+  end
 
   sr-is-recording : ScreenRecorderState -> Boolean
   sr-is-recording (st) = when st.sr-status

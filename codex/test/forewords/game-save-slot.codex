@@ -1,7 +1,42 @@
 Chapter: FwdSaveSlotTest
   cites Game chapter SaveSlot
 
+Section: Fixtures
+
+  svt-show : SlotLoadResult -> Text
+  svt-show (r) =
+    when r
+      is LoadOk (p) -> "ok " & show (list-length p) & " bytes, first " & show (list-at p 0)
+      is LoadCorrupt -> "corrupt"
+      is LoadEmpty -> "empty"
+      is LoadVersionMismatch (v) -> "version " & show v
+
+  svt-written : SaveManager
+  svt-written = save-slot-write (save-manager-new 3 2) 1 "hero" 100 [1, 2, 3]
+
+  svt-header : SaveManager, Integer -> SaveHeader
+  svt-header (m) (i) =
+    when (list-at (m.sm-slots) i).ss-header
+      is Just (h) -> h
+      is None -> SaveHeader { sh-name = "", sh-version = 0, sh-timestamp = 0, sh-checksum = [], sh-payload-size = 0 }
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Game/SaveSlot OK"
-  end
+
+  opening : [Console] Nothing =
+    let m = svt-written
+    in let read1 = svt-show (save-slot-read m 1)
+    in let read0 = svt-show (save-slot-read m 0)
+    in let count1 = save-slot-count m
+    in let h = svt-header m 1
+    in let older = SaveManager { sm-slots = svt-written.sm-slots, sm-max-slots = 3, sm-current-version = 1 }
+    in let bad = SaveManager { sm-slots = [save-slot-empty, SaveSlot { ss-header = Just (svt-header svt-written 1), ss-payload = [1, 2, 4], ss-occupied = True }, save-slot-empty], sm-max-slots = 3, sm-current-version = 2 }
+    in let ignored = save-slot-count (save-slot-write (save-manager-new 3 2) 5 "far" 1 [9])
+    in let deleted = save-slot-delete svt-written 1
+    in act
+      print-line-uni ("slot 1: " & read1 & "; slot 0: " & read0 & "; slot 7: " & svt-show (save-slot-read m 7) & "; occupied " & show count1)
+      print-line-uni ("header: " & h.sh-name & " v" & show (h.sh-version) & " t" & show (h.sh-timestamp) & " size " & show (h.sh-payload-size) & " checksum bytes " & show (list-length (h.sh-checksum)))
+      print-line-uni ("read by version 1 manager: " & svt-show (save-slot-read older 1))
+      print-line-uni ("altered payload: " & svt-show (save-slot-read bad 1))
+      print-line-uni ("write to slot 5 of 3: occupied " & show ignored)
+      print-line-uni ("deleted slot 1: " & svt-show (save-slot-read deleted 1) & ", occupied " & show (save-slot-count deleted) & ", listed " & show (list-length (save-slot-list deleted)))
+    end

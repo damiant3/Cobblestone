@@ -1,0 +1,35 @@
+Chapter: Arm64BootEncoding
+  cites Kernel chapter Arm64Boot
+  cites Foreword chapter Arm64Encoder
+  cites Foreword chapter Console
+
+ Expected words are the Arm Architecture Reference Manual's encodings, written
+ out by hand: WFI is D503207F; B is 000101 imm26 with imm26 = (target - pc) / 4,
+ so B -4 is 17FFFFFF and a branch from table offset 640 to 2048 is 14000160;
+ SUB (immediate, 64-bit) SP, SP, #256 is D10403FF and ADD SP, SP, #256 is
+ 910403FF; ERET is D69F03E0.
+
+Section: Words
+  abe-word : List Integer, Integer -> Integer
+  abe-word (bs) (i) =
+    list-at bs (4 * i) + bit-shl (list-at bs (4 * i + 1)) 8
+    + bit-shl (list-at bs (4 * i + 2)) 16 + bit-shl (list-at bs (4 * i + 3)) 24
+
+  abe-has : List Integer, List Integer, Integer -> Boolean
+  abe-has (code) (needle) (i) =
+    if 4 * i + 4 > list-length code then False
+    else if abe-word code i == abe-word needle 0 then True
+    else abe-has code needle (i + 1)
+
+Section: Entry
+  opening : [Console] Nothing =
+    let vt = arm64-build-vector-table 2048
+    in let h = arm64-irq-handler-code
+    in let n = list-length h / 4
+    in act
+      print-line-uni ("table bytes=" & show (list-length vt) & " is-2048=" & show (list-length vt == 2048))
+      print-line-uni ("entry0 wfi=" & show (abe-word vt 0 == #D503207F) & " b-self=" & show (abe-word vt 1 == #17FFFFFF))
+      print-line-uni ("entry5 b-to-2048=" & show (abe-word vt 160 == #14000160))
+      print-line-uni ("handler sub-sp=" & show (abe-word h 0 == #D10403FF) & " add-sp=" & show (abe-word h (n - 2) == #910403FF) & " eret=" & show (abe-word h (n - 1) == #D69F03E0))
+      print-line-uni ("handler x19 written=" & show (abe-has h (arm64-mov 19 0) 0) & " x19 read=" & show (abe-has h (arm64-mov 0 19) 0))
+    end

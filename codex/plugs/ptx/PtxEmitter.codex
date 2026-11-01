@@ -10,11 +10,6 @@ Section: Name Sanitization
   ptx-sanitize (name) =
     text-replace name "-" "_"
 
- The IR spells a record field as `name/slot`. In this plug the field name
- reaches only a trailing `//` comment, never emitted code, so the slot is a
- blemish rather than a wrong program -- but it reads as a leak to any grep
- looking for the real defect, which is reason enough to strip it.
-
   ptx-slash-pos : Text, Integer, Integer -> Integer
   ptx-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -402,8 +397,7 @@ Section: Expression Emission
       in PtxResult { code = mv & br.code, result-reg = br.result-reg, ctx = br.ctx }
      is IrApply (f) (a) (ty) (sp) ->
       ptx-emit-apply ctx e ty depth
-     is IrLambda (params) (body) (ty) (sp) ->
-      ptx-emit-expr-at ctx body (depth + 1)
+     is IrLambda (params) (body) (ty) (sp) -> ptx-refuse ctx "lambda_value"
      is IrList (elems) (ty) (sp) -> ptx-refuse ctx "list_literal"
      is IrMatch (scrut) (branches) (ty) (sp) ->
       ptx-emit-match ctx scrut branches depth
@@ -494,8 +488,19 @@ Section: Binary Op Helpers
      is IrRemInt -> "rem"
      is otherwise -> ""
 
-  ptx-emit-div-fast : PtxCtx, Text, PtxResult, PtxResult -> PtxResult
-  ptx-emit-div-fast (ctx) (kind) (lr) (rr) =
+  ptx-div-checks : IRExpr -> Integer
+  ptx-div-checks (e) =
+    when e
+     is IrIntLit (v) (sp) -> (if v == 0 then 1 else 0) + (if v == -1 then 2 else 0)
+     is otherwise -> 3
+
+  ptx-div-traps : PtxCtx, Integer, Text, Text, Text -> Text
+  ptx-div-traps (c) (checks) (pz) (a) (b) =
+    (if bit-and checks 1 == 0 then "" else c.indent & "setp.eq.s64 " & pz & ", " & b & ", 0;\n" & c.indent & "@" & pz & " trap;\n")
+    & (if bit-and checks 2 == 0 then "" else c.indent & "setp.eq.s64 " & pz & ", " & b & ", -1;\n" & c.indent & "setp.eq.and.s64 " & pz & ", " & a & ", 0x8000000000000000, " & pz & ";\n" & c.indent & "@" & pz & " trap;\n")
+
+  ptx-emit-div-fast : PtxCtx, Text, PtxResult, PtxResult, Integer -> PtxResult
+  ptx-emit-div-fast (ctx) (kind) (lr) (rr) (checks) =
     let n = ctx.next-reg
     in let t = "%rd" & integer-to-text n
     in let p = "%p" & integer-to-text (n + 1)
@@ -503,13 +508,15 @@ Section: Binary Op Helpers
     in let ub = "%ru" & integer-to-text (n + 3)
     in let uq = "%ru" & integer-to-text (n + 4)
     in let out = "%rd" & integer-to-text (n + 5)
-    in let c = ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg ctx)))))
+    in let pz = "%p" & integer-to-text (n + 6)
+    in let c = ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg (ptx-bump-reg ctx))))))
     in let slow = "LDQ_slow_" & integer-to-text n
     in let lbl-done = "LDQ_done_" & integer-to-text n
     in let a = lr.result-reg
     in let b = rr.result-reg
     in PtxResult {
      code = lr.code & rr.code
+      & ptx-div-traps c checks pz a b
       & c.indent & "or.b64 " & t & ", " & a & ", " & b & ";\n"
       & c.indent & "shr.u64 " & t & ", " & t & ", 31;\n"
       & c.indent & "setp.eq.s64 " & p & ", " & t & ", 0;\n"
@@ -533,7 +540,7 @@ Section: Binary Op Helpers
     else if ptx-int-div-op op /= "" then
       let lr = ptx-emit-expr-at ctx l (depth + 1)
       in let rr = ptx-emit-expr-at (lr.ctx) r (depth + 1)
-      in ptx-emit-div-fast (rr.ctx) (ptx-int-div-op op) lr rr
+      in ptx-emit-div-fast (rr.ctx) (ptx-int-div-op op) lr rr (ptx-div-checks r)
     else let lr = ptx-emit-expr-at ctx l (depth + 1)
     in let rr = ptx-emit-expr-at (lr.ctx) r (depth + 1)
     in if ptx-is-comparison op then
@@ -940,7 +947,7 @@ Section: Atomic Emission
     in let r = ptx-fresh-reg (a1.ctx)
     in let c = ptx-bump-reg (a1.ctx)
     in PtxResult {
-     code = a0.code & a1.code & c.indent & "atom." & scope & "." & op & ".s64 " & r & ", [" & a0.result-reg & "], " & a1.result-reg & ";\n",
+     code = a0.code & a1.code & c.indent & "atom." & scope & "." & op & (if op == "add" then ".u64 " else ".b64 ") & r & ", [" & a0.result-reg & "], " & a1.result-reg & ";\n",
      result-reg = r,
      ctx = c
     }
@@ -1596,9 +1603,6 @@ Section: Apply Emission
       else ptx-emit-call ctx n (chain.args) ret-ty depth
      is otherwise -> ptx-refuse ctx "indirect_call"
 
- A construct with no device meaning must not become a value: the marker is
- not PTX, so the driver refuses the module and names the construct.
-
   ptx-refuse : PtxCtx, Text -> PtxResult
   ptx-refuse (ctx) (what) =
     let r = ptx-fresh-reg ctx
@@ -2112,9 +2116,6 @@ Section: Inlining
       in PtxInl { ie = ptx-inl-bind (d.params) (args.il) sfx 0 (body.ie), iid = body.iid }
     else PtxInl { ie = ptx-reapply (chain.root) (args.il) e 0, iid = args.iid }
 
- The chain is rebuilt with the inlined arguments, each application keeping
- the type and span of the one it replaces (the outermost is e).
-
   ptx-reapply : IRExpr, List IRExpr, IRExpr, Integer -> IRExpr
   ptx-reapply (root) (args) (e) (i) =
     when e
@@ -2310,9 +2311,6 @@ Section: Chapter Emission
     in let rest = ptx-filter-funcs defs (i + 1)
     in if ptx-is-kernel-entry (d.name) then rest
     else [d] & rest
-
- A function whose last parameter is gid is launched through its entry
- wrapper, so it roots the reachable set beside the kernel entries.
 
   ptx-filter-roots : List IRDef, Integer -> List IRDef
   ptx-filter-roots (defs) (i) =

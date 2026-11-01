@@ -99,6 +99,78 @@ Section: Selection
     in let q = s89-one high g (s89-shf d 1 3 0 t k (t + 1))
     in s89-one q g (s89-shf (d + 1) 1 2 1 255 k (t + 1))
 
+  s89-addimm : Integer, Integer, Integer -> S89Body
+  s89-addimm (d) (a) (v) = S89Iadd3 (S89Add {
+   dst = d, a = a, a-neg = 0, b = S89Imm v, b-neg = 0, c = 255, x = 0,
+   out0 = 7, out1 = 7, in0 = 7, in0-neg = 1, in1 = 7, in1-neg = 1
+  })
+
+  s89-add64 : List S89Insn, Integer, Integer, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-add64 (acc) (g) (d) (a) (b) (neg) (carry) = s89-one (s89-one acc g (s89-iadd3 d a b neg 0 carry 7)) g (s89-iadd3 (d + 1) (a + 1) (b + 1) neg 1 7 carry)
+
+  s89-xor : Integer, Integer, Integer -> S89Body
+  s89-xor (d) (a) (b) = S89Lop3 d a (S89Reg b) 255 #3C
+
+  s89-and : Integer, Integer, Integer -> S89Body
+  s89-and (d) (a) (b) = S89Lop3 d a (S89Reg b) 255 #C0
+
+  s89-sub-word64 : List S89Insn, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-sub-word64 (acc) (d) (x) (s) (carry) = s89-one (s89-one acc 7 (s89-iadd3 d x s 1 0 carry 7)) 7 (s89-iadd3 (d + 1) (x + 1) s 1 1 7 carry)
+
+  s89-sign-fix64 : List S89Insn, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-sign-fix64 (acc) (d) (x) (s) (carry) =
+    let lo = s89-one acc 7 (s89-xor d x s)
+    in let hi = s89-one lo 7 (s89-xor (d + 1) (x + 1) s)
+    in s89-sub-word64 hi d d s carry
+
+  s89-abs64 : List S89Insn, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-abs64 (acc) (d) (x) (s) (carry) = s89-sign-fix64 (s89-one acc 7 (s89-shf s 1 2 1 255 31 (x + 1))) d x s carry
+
+  s89-div-step : List S89Insn, Integer, Integer, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-div-step (acc) (q) (r) (m) (c) (t) (p) =
+    let top = s89-one acc 7 (s89-shf t 1 3 1 255 31 (q + 1))
+    in let dbl = s89-add64 top 7 r r r 0 p
+    in let carry = s89-one dbl 7 (s89-iadd3 r r t 0 0 7 7)
+    in let shq = s89-add64 carry 7 q q q 0 p
+    in let ge0 = s89-one shq 7 (s89-setp p 6 0 0 r m 7)
+    in let ge1 = s89-one ge0 7 (s89-setp p 2 0 0 (r + 1) (m + 1) p)
+    in let ge2 = s89-one ge1 7 (s89-setp p 4 0 1 (r + 1) (m + 1) p)
+    in let mk0 = s89-one ge2 7 (S89Mov (c + 1) (S89Reg 255))
+    in let mk1 = s89-one mk0 p (S89Mov (c + 1) (S89Imm -1))
+    in let bit = s89-one mk1 7 (s89-iadd3 q q (c + 1) 1 0 7 7)
+    in let ml = s89-one bit 7 (s89-and t m (c + 1))
+    in let mh = s89-one ml 7 (s89-and (t + 1) (m + 1) (c + 1))
+    in let sub = s89-add64 mh 7 r r t 1 p
+    in let cnt = s89-one sub 7 (s89-addimm c c -1)
+    in s89-one cnt 7 (s89-setp p 5 0 0 c 255 7)
+
+  s89-setp-imm : Integer, Integer, Integer, Integer -> S89Body
+  s89-setp-imm (q) (a) (v) (accum) = S89Isetp (S89Cmp {
+   pred = q, cmp = 2, signed = 0, bool-op = 0, a = a, b = S89Imm v, accum = accum, accum-neg = 0
+  })
+
+  s89-overflow-trap : List S89Insn, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-overflow-trap (acc) (g) (a) (b) (p) =
+    let b0 = s89-one acc 7 (s89-setp-imm p b #FFFFFFFF g)
+    in let b1 = s89-one b0 7 (s89-setp-imm p (b + 1) #FFFFFFFF p)
+    in let a0 = s89-one b1 7 (s89-setp p 2 0 0 a 255 p)
+    in let a1 = s89-one a0 7 (s89-setp-imm p (a + 1) #80000000 p)
+    in s89-one a1 p (S89Bpt 1)
+
+  s89-div-var : List S89Insn, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List S89Insn
+  s89-div-var (acc) (g) (d) (a) (b) (r) (m) (c) (t) (p) (check) =
+    let z0 = if bit-and check 1 == 0 then acc else s89-one (s89-one (s89-one acc 7 (s89-setp p 2 0 0 b 255 g)) 7 (s89-setp p 2 0 0 (b + 1) 255 p)) p (S89Bpt 1)
+    in let z = if bit-and check 2 == 0 then z0 else s89-overflow-trap z0 g a b p
+    in let mb = s89-abs64 z m b (c + 1) p
+    in let qa = s89-abs64 mb d a (c + 1) p
+    in let init = s89-one (s89-one (s89-one qa 7 (S89Mov r (S89Reg 255))) 7 (S89Mov (r + 1) (S89Reg 255))) 7 (S89Mov c (S89Imm 64))
+    in let head = list-length init
+    in let body = s89-div-step init d r m c t p
+    in let back = s89-one body p (S89Bra (16 * (head - (list-length body + 1))))
+    in let sgn = s89-one back 7 (s89-xor (c + 1) (a + 1) (b + 1))
+    in let sw = s89-one sgn 7 (s89-shf (c + 1) 1 2 1 255 31 (c + 1))
+    in s89-sign-fix64 sw d d (c + 1) p
+
   s89-mem : Integer, Integer -> S89Mem
   s89-mem (data) (addr) = S89Mem { data = data, addr = addr, offset = 0, width = 64, order = 7 }
 
@@ -111,9 +183,11 @@ Section: Selection
      is LoMovCb (r) (off) -> s89-one acc g (S89Mov r (S89Cb 0 off))
      is LoSys (r) (id) -> s89-one acc g (S89S2r r id)
      is LoAdd64 (d) (a) (b) (neg) (carry) -> s89-one (s89-one acc g (s89-iadd3 d a b neg 0 carry 7)) g (s89-iadd3 (d + 1) (a + 1) (b + 1) neg 1 7 carry)
+     is LoAdd64Wide (d) (a) (b) -> s89-one (s89-one acc g (S89Imad (S89Mad { dst = d, a = b, b = S89Imm 1, c = a, wide = 1, signed = 0 }))) g (s89-iadd3 (d + 1) (d + 1) (b + 1) 0 0 7 7)
      is LoShl64 (d) (a) (k) -> s89-shl acc g d a k
      is LoMul64 (d) (a) (b) -> s89-mul acc g d a b
      is LoDivPow2 (d) (t) (a) (k) (carry) -> s89-div acc g d t a k carry
+     is LoDivVar (d) (a) (b) (r) (m) (c) (t) (p) (check) -> s89-div-var acc g d a b r m c t p check
      is LoCmp64 (q) (c) (a) (b) (outer) -> s89-compare acc q c a b outer
      is LoLoad64 (d) (addr) -> s89-one acc g (S89Ldg (s89-mem d addr))
      is LoStore64 (addr) (v) -> s89-one acc g (S89Stg (s89-mem v addr))
@@ -138,6 +212,7 @@ Section: Selection
     when op
      is LoAdd64 (d) (a) (b) (neg) (carry) -> if carry > 6 then "predicates" else ""
      is LoDivPow2 (d) (t) (a) (k) (carry) -> if carry > 6 then "predicates" else ""
+     is LoDivVar (d) (a) (b) (r) (m) (c) (t) (p) (check) -> if p > 6 then "predicates" else ""
      is otherwise -> ""
 
  A label's position is the index of the instruction after it; a BRA is
@@ -162,9 +237,6 @@ Section: Selection
      is LoLabel (l) -> S89Run { insns = r.insns, label-ids = r.label-ids & [l], label-pos = r.label-pos & [list-length r.insns], fixes = r.fixes }
      is LoBra (l) (name) -> s89-step-bra r i (S89Fix { at = list-length r.insns, label = l })
      is otherwise -> S89Run { insns = s89-op r.insns i, label-ids = r.label-ids, label-pos = r.label-pos, fixes = r.fixes }
-
- The fix is taken before the BRA is selected: list-push appends in place, so a
- length read after it would count the BRA itself.
 
   s89-step-bra : S89Run, LInsn, S89Fix -> S89Run
   s89-step-bra (r) (i) (fix) =
@@ -286,6 +358,7 @@ Section: Text
      is S89LdgDepbar -> "LDGDEPBAR;"
      is S89Depbar (n) -> "DEPBAR.LE SB0, " & s89-hex n & ";"
      is S89Warpsync (mask) -> "WARPSYNC " & s89-hex mask & ";"
+     is S89Bpt (code) -> "BPT.TRAP " & s89-hex code & ";"
      is S89Bra (off) -> "BRA " & (if off < 0 then "-" & s89-hex (0 - off) else s89-hex off) & ";"
      is S89Exit -> "EXIT;"
 
@@ -320,6 +393,7 @@ Section: Listing
   s89-tag (b) =
     when b
      is S89Warpsync (mask) -> "N"
+     is S89Bpt (code) -> "N"
      is otherwise -> "I"
 
   s89-line : CtrlCode, S89Insn -> Text

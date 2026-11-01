@@ -1,0 +1,107 @@
+Chapter: CityPatrolRouteProof
+  cites Uoaix chapter MapCache
+  cites Uoaix chapter TownLivePath
+  cites Uoaix chapter Cities
+  cites Uoaix chapter CivicLive
+  cites Uoaix chapter CivicLiveState
+  cites Uoaix chapter WorldRecords
+
+ UOAIX-217: every city patrol's four legs (waypoint i to i + 1, the fourth back to the first) plan under the
+ guard's own budget, cv-plan-budget, from the z cv-floor gives each waypoint, as cg-city-route founds the guard.
+ Run: build/test-run.ps1 -DiskFile <a disk install-map-cache.ps1 wrote>.
+  cpr-mob : Integer, Integer, Integer -> WorldObject
+  cpr-mob (x) (y) (z) = WorldObject { serial = 0, kind = 1, x = x, y = y, z = z, graphic = 400, hue = 0, container = 0, amount = 1, health = 1 }
+  cpr-leg : TlPath, WorldTable, WalkMap, CtPatrol, Integer, Integer -> [Console] Integer
+  cpr-leg (nav) (world) (map) (p) (k) (i) = act
+    j <- int-mod (i + 1) 4
+    x0 <- list-at p.xs i
+    y0 <- list-at p.ys i
+    x1 <- list-at p.xs j
+    y1 <- list-at p.ys j
+    lead <- "LEG patrol " & show k & " city " & show p.city & " " & show x0 & "," & show y0 & " to " & show x1 & "," & show y1
+    bad <- when cv-floor map x0 y0 0
+      is Err (e) -> act
+        said <- print-line-uni (lead & " FAIL start: " & e)
+        1
+      end
+      is Ok (z0) -> when cv-floor map x1 y1 0
+        is Err (e) -> act
+          said <- print-line-uni (lead & " FAIL goal: " & e)
+          1
+        end
+        is Ok (z1) -> act
+          r <- tl-plan-budget nav world map None (cpr-mob x0 y0 z0) x1 y1 z1 (alloc-bytes (tl-route-step-bytes nav)) (tl-route-step-bytes nav) cv-plan-budget
+          cells <- nav.expanded
+          said <- print-line-uni (lead & " route=" & show r & " cells=" & show cells)
+          if r >= 0 then 0 else 1
+        end
+    bad
+  end
+  cpr-legs : TlPath, WorldTable, WalkMap, CtPatrol, Integer, Integer -> [Console] Integer
+  cpr-legs (nav) (world) (map) (p) (k) (i) = if i >= 4 then 0
+    else act
+      mark <- __heap-save
+      a <- cpr-leg nav world map p k i
+      back <- __heap-restore mark
+      rest <- cpr-legs nav world map p k (i + 1)
+      a + rest
+    end
+  cpr-patrol : MapCacheState, MapInstallData, WorldTable, CtPatrol, Integer -> [Console, Device.Block] Integer
+  cpr-patrol (cache) (installed) (world) (p) (k) = act
+    c <- list-at (ct-table 0) p.city
+    counted <- wmc-window-colliders cache (ct-x c) (ct-y c) (ct-width c) (ct-height c) installed
+    bad <- when counted
+      is Err (e) -> act
+        said <- print-line-uni ("FAIL patrol " & show k & " window: " & e)
+        4
+      end
+      is Ok (colliders) -> when walk-map-sized (ct-x c) (ct-y c) (ct-width c) (ct-height c) (max 1 colliders)
+        is Err (e) -> act
+          said <- print-line-uni ("FAIL patrol " & show k & " map: " & e)
+          4
+        end
+        is Ok (map) -> act
+          filled <- wmc-fill cache map 0
+          nav <- tl-path-new map
+          legs <- cpr-legs nav world map p k 0
+          legs
+        end
+    bad
+  end
+  cpr-all : MapCacheState, MapInstallData, WorldTable, List CtPatrol, Integer -> [Console, Device.Block] Integer
+  cpr-all (cache) (installed) (world) (patrols) (k) = if k >= list-length patrols then 0
+    else act
+      mark <- __heap-save
+      a <- cpr-patrol cache installed world (list-at patrols k) k
+      back <- __heap-restore mark
+      rest <- cpr-all cache installed world patrols (k + 1)
+      a + rest
+    end
+  opening : [Console, Device.Block] Integer = act
+    opened <- wmc-open UoIde
+    when opened
+      is Err (e) -> act
+        said <- print-line-uni ("FAIL map cache: " & e)
+        1
+      end
+      is Ok (cache) -> act
+        data <- wmc-decoration cache
+        when data
+          is Err (e) -> act
+            said <- print-line-uni ("FAIL decoration: " & e)
+            1
+          end
+          is Ok (installed) -> when world-new 64
+            is Err (e) -> act
+              said <- print-line-uni ("FAIL world: " & e)
+              1
+            end
+            is Ok (world) -> act
+              patrols <- ct-city-patrols 0
+              bad <- cpr-all cache installed world patrols 0
+              said <- print-line-uni (if bad == 0 then "PASS every leg of the " & show (list-length patrols) & " city patrols plans under cv-plan-budget" else "FAIL " & show bad & " city patrol legs plan no route under cv-plan-budget")
+              bad
+            end
+          end
+      end
+  end

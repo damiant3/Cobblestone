@@ -3,29 +3,23 @@ Chapter: DtlsHello
   cites Foreword chapter Maybe
 
  The ClientHello, ServerHello and HelloRetryRequest bodies for DTLS 1.3
- (RFC 8446 section 4.1, which RFC 9147 inherits whole). These are the
- message bodies the D2b framing carries and the D2a machine sequences.
+ (RFC 8446 section 4.1, which RFC 9147 inherits whole).
 
- THE HELLORETRYREQUEST IS NOT A MESSAGE TYPE. This is the trap in this
- chapter, and it catches everyone once. DTLS 1.2 had a distinct
+ THE HELLORETRYREQUEST IS NOT A MESSAGE TYPE. DTLS 1.2 had a distinct
  HelloVerifyRequest; DTLS 1.3 does not. A HelloRetryRequest is a
  ServerHello -- same message type, same structure -- whose random field
  is a fixed magic value the working group published (RFC 8446 4.1.3). A
  receiver that switches on message type will never see an HRR; it must
  compare the random against the magic. Getting this wrong means the
- cookie exchange silently never happens, which means the DoS defence of
- D2a silently never engages.
+ cookie exchange silently never happens, and with it the cookie's
+ denial-of-service defence.
 
- What is here: the bodies, the cookie extension, and the parsers that
- pull the peer's key share and cookie back out. What is NOT here, and is
- stated rather than implied: no certificate, no CertificateVerify, and
- therefore NO PEER AUTHENTICATION. A handshake built only from these
+ No certificate, no CertificateVerify, and therefore NO PEER
+ AUTHENTICATION. A handshake built only from these
  bodies is an ANONYMOUS key agreement. It resists a passive eavesdropper
  and it does NOT resist an active man in the middle, who can simply run
  two handshakes and sit between them. Do not describe a connection built
  on this as secure.
-
- We say:
 
 Section: Constants
 
@@ -40,6 +34,18 @@ Section: Constants
   dtls-ext-cookie-type : Integer = 44
   dtls-legacy-version : List Integer = [3, 3]
   dtls-supported-version : List Integer = [3, 4]
+
+ RFC 9147 section 5.3: a DTLS 1.3 hello's legacy_version is 0xFEFD (DTLS 1.2), and DTLS 1.3 is 0xFEFC in
+ supported_versions. The dtls- builders without the 13 carry TLS 1.3's 0x0303 and 0x0304 for the TLS endpoint.
+
+  dtls13-legacy-version : List Integer = [254, 253]
+  dtls13-version : List Integer = [254, 252]
+
+  dtls13-ext-versions-client : List Integer =
+    tls-be16 tls-ext-supported-versions & tls-be16 3 & [2] & dtls13-version
+
+  dtls13-ext-versions-server : List Integer =
+    tls-be16 tls-ext-supported-versions & tls-be16 2 & dtls13-version
 
 Section: Cookie Extension
 
@@ -70,23 +76,33 @@ Section: ClientHello
 
   dtls-client-hello-body : List Integer, List Integer, List Integer, List Integer -> List Integer
   dtls-client-hello-body (random) (session-id) (public-key) (cookie) =
-    let suites = tls-be16 2 & tls-be16 tls-cipher-aes-128-gcm-sha256
-    in let exts = dtls-ch-extensions public-key cookie
-    in dtls-legacy-version & random & [list-length session-id] & session-id & suites & [1, 0] & tls-be16 (list-length exts) & exts
+    dtls-client-hello-with dtls-legacy-version [] tls-ext-versions random session-id public-key cookie
 
- SIGNATURE_ALGORITHMS IS MANDATORY AND WAS ABSENT. RFC 8446 section 9.2
- requires it of any client offering certificate authentication, and a
- conforming server MUST abort without it. This body is shared by the TLS
- and DTLS clients, so both were sending a ClientHello no conforming
- server would accept -- and nothing could see it, because our own server
- does not inspect the extension and the only interop harness in the tree
- drives our SERVER with openssl's client. mosquitto's OpenSSL answers
- `missing sigalgs extension` and closes with no alert, which from the
- client's seat looks exactly like a server that never replied.
+ RFC 9147 5.3: a DTLS 1.3 ClientHello carries legacy_cookie after legacy_session_id, and a DTLS 1.3 client sends it
+ empty (one length byte, 0). The cookie a HelloRetryRequest asks for travels in the cookie extension.
+
+  dtls13-client-hello-body : List Integer, List Integer, List Integer, List Integer -> List Integer
+  dtls13-client-hello-body (random) (session-id) (public-key) (cookie) =
+    dtls-client-hello-with dtls13-legacy-version [0] dtls13-ext-versions-client random session-id public-key cookie
+
+  dtls-client-hello-with : List Integer, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
+  dtls-client-hello-with (legacy) (legacy-cookie) (versions) (random) (session-id) (public-key) (cookie) =
+    let suites = tls-be16 2 & tls-be16 tls-cipher-aes-128-gcm-sha256
+    in let exts = dtls-ch-extensions-with versions public-key cookie
+    in legacy & random & [list-length session-id] & session-id & legacy-cookie & suites & [1, 0] & tls-be16 (list-length exts) & exts
+
+ SIGNATURE_ALGORITHMS IS MANDATORY. RFC 8446 section 9.2 requires it of
+ any client offering certificate authentication, and a conforming server
+ MUST abort without it. mosquitto's OpenSSL answers `missing sigalgs
+ extension` and closes with no alert, which from the client's seat looks
+ exactly like a server that never replied.
 
   dtls-ch-extensions : List Integer, List Integer -> List Integer
-  dtls-ch-extensions (public-key) (cookie) =
-    let base = tls-ext-versions & tls-ext-groups & tls-ext-sig-algs & tls-ext-key-share-client public-key
+  dtls-ch-extensions (public-key) (cookie) = dtls-ch-extensions-with tls-ext-versions public-key cookie
+
+  dtls-ch-extensions-with : List Integer, List Integer, List Integer -> List Integer
+  dtls-ch-extensions-with (versions) (public-key) (cookie) =
+    let base = versions & tls-ext-groups & tls-ext-sig-algs & tls-ext-key-share-client public-key
     in if list-length cookie == 0 then base else base & dtls-ext-cookie cookie
 
  THE SESSION ID MUST BE ECHOED. RFC 8446 section 4.1.3:
@@ -96,11 +112,6 @@ Section: ClientHello
  exists only so a TLS 1.2 middlebox sees a shape it recognises (appendix
  D.4), which is exactly why real clients put 32 random bytes in it and
  exactly why a server that ignores it fails against all of them.
-
- Two implementations that both send an empty session id agree with each
- other forever. This parser exists because openssl does not: its
- ClientHello carries 32 bytes, our ServerHello echoed none, and openssl
- answered INVALID_SESSION_ID.
 
  The field sits at a fixed offset in both TLS and DTLS: version(2) and
  random(32) precede it, so the length byte is at 34 whatever comes after.
@@ -116,17 +127,59 @@ Section: ServerHello and HelloRetryRequest
 
   dtls-server-hello-body : List Integer, List Integer, List Integer -> List Integer
   dtls-server-hello-body (random) (session-id) (public-key) =
-    let exts = dtls-ext-versions-server & dtls-ext-key-share-server public-key
-    in dtls-legacy-version & random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
+    dtls-server-hello-with dtls-legacy-version dtls-ext-versions-server random session-id public-key
+
+  dtls13-server-hello-body : List Integer, List Integer, List Integer -> List Integer
+  dtls13-server-hello-body (random) (session-id) (public-key) =
+    dtls-server-hello-with dtls13-legacy-version dtls13-ext-versions-server random session-id public-key
+
+  dtls-server-hello-with : List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
+  dtls-server-hello-with (legacy) (versions) (random) (session-id) (public-key) =
+    let exts = versions & dtls-ext-key-share-server public-key
+    in legacy & random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
 
  The HelloRetryRequest: the same structure, the magic random, and a
  cookie instead of a key share. The server has allocated nothing at this
  point and must not -- the cookie is what lets it stay stateless.
 
   dtls-hrr-body : List Integer, List Integer -> List Integer
-  dtls-hrr-body (session-id) (cookie) =
-    let exts = dtls-ext-versions-server & dtls-ext-cookie cookie
-    in dtls-legacy-version & dtls-hrr-random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
+  dtls-hrr-body (session-id) (cookie) = dtls-hrr-with dtls-legacy-version dtls-ext-versions-server session-id cookie
+
+  dtls13-hrr-body : List Integer, List Integer -> List Integer
+  dtls13-hrr-body (session-id) (cookie) = dtls-hrr-with dtls13-legacy-version dtls13-ext-versions-server session-id cookie
+
+  dtls-hrr-with : List Integer, List Integer, List Integer, List Integer -> List Integer
+  dtls-hrr-with (legacy) (versions) (session-id) (cookie) =
+    let exts = versions & dtls-ext-cookie cookie
+    in legacy & dtls-hrr-random & [list-length session-id] & session-id & tls-be16 tls-cipher-aes-128-gcm-sha256 & [0] & tls-be16 (list-length exts) & exts
+
+ The DTLS 1.3 version fields of a hello, as the endpoint checks them on receive: legacy_version 0xFEFD, and 0xFEFC
+ in supported_versions (a ServerHello carries the one version; a ClientHello a vector with a 1-byte length).
+
+  dtls13-legacy-ok : List Integer -> Boolean
+  dtls13-legacy-ok (body) =
+    if list-length body < 2 then False
+    else if list-at body 0 /= 254 then False
+    else list-at body 1 == 253
+
+  dtls13-sh-version-ok : List Integer -> Boolean
+  dtls13-sh-version-ok (sh-body) =
+    when dtls-sh-find-ext sh-body tls-ext-supported-versions
+      is None -> False
+      is Just (v) -> if list-length v /= 2 then False else (if list-at v 0 /= 254 then False else list-at v 1 == 252)
+
+  dtls13-ch-offers-version : List Integer -> Boolean
+  dtls13-ch-offers-version (ch-body) =
+    when dtls13-ch-find-ext ch-body tls-ext-supported-versions
+      is None -> False
+      is Just (v) -> if list-length v < 3 then False else dtls13-versions-has v 1 (1 + list-at v 0)
+
+  dtls13-versions-has : List Integer, Integer, Integer -> Boolean
+  dtls13-versions-has (v) (i) (stop) =
+    if i + 1 >= stop then False
+    else if i + 1 >= list-length v then False
+    else if list-at v i == 254 & list-at v (i + 1) == 252 then True
+    else dtls13-versions-has v (i + 2) stop
 
  RFC 8446 section 4.2.8: a HelloRetryRequest asking for a key share
  carries key_share as the bare selected_group, two bytes, no key.
@@ -206,21 +259,81 @@ Section: Parsing the Client's Hello
  A ClientHello is NOT a ServerHello with the fields in the same places.
  It carries a cipher_suites vector and a compression_methods vector that
  the server's hello does not, so the extension block sits at a different
- offset and the ServerHello parser above would read the wrong bytes.
- This is its own walk. Getting this wrong is what made the server find
- neither the cookie nor the client's key share on the second flight.
+ offset.
 
  Layout: version(2), random(32), session_id(1+n), cipher_suites(2+n),
  compression(1+n), extensions(2+n).
 
   dtls-ch-ext-offset : List Integer -> Integer
   dtls-ch-ext-offset (b) =
-    let sid = list-at b 34
+    let n = list-length b
+    in if 35 > n then n
+    else let sid = list-at b 34
     in let o1 = 35 + sid
-    in let cs = bit-or (bit-shl (list-at b o1) 8) (list-at b (o1 + 1))
+    in if o1 + 2 > n then n
+    else let cs = bit-or (bit-shl (list-at b o1) 8) (list-at b (o1 + 1))
     in let o2 = o1 + 2 + cs
-    in let comp = list-at b o2
+    in if o2 + 1 > n then n
+    else let comp = list-at b o2
     in o2 + 1 + comp + 2
+
+ The DTLS 1.3 ClientHello's offsets: legacy_cookie (a length byte and its bytes) sits between legacy_session_id and
+ cipher_suites. dtls13-ch-fields-ok holds what RFC 9147 5.3 and RFC 8446 4.1.2 require of the fixed fields here:
+ legacy_cookie empty, legacy_session_id at most 32 bytes, cipher_suites of an even, non-zero length holding
+ TLS_AES_128_GCM_SHA256, and legacy_compression_methods the single byte 0.
+
+  dtls13-ch-ext-offset : List Integer -> Integer
+  dtls13-ch-ext-offset (b) =
+    let n = list-length b
+    in if 36 > n then n
+    else let o0 = 35 + list-at b 34
+    in if o0 + 1 > n then n
+    else let o1 = o0 + 1 + list-at b o0
+    in if o1 + 2 > n then n
+    else let o2 = o1 + 2 + (list-at b o1 * 256 + list-at b (o1 + 1))
+    in if o2 + 1 > n then n
+    else o2 + 1 + list-at b o2 + 2
+
+  dtls13-ch-find-ext : List Integer, Integer -> Maybe (List Integer)
+  dtls13-ch-find-ext (b) (want) =
+    if list-length b < 41 then None
+    else dtls-ext-scan b (dtls13-ch-ext-offset b) want
+
+  dtls13-ch-key-share : List Integer -> Maybe (List Integer)
+  dtls13-ch-key-share (ch-body) =
+    when dtls13-ch-find-ext ch-body tls-ext-key-share
+      is None -> None
+      is Just (e) -> dtls-key-share-x25519 e
+
+  dtls13-ch-cookie : List Integer -> Maybe (List Integer)
+  dtls13-ch-cookie (ch-body) =
+    when dtls13-ch-find-ext ch-body dtls-ext-cookie-type
+      is None -> None
+      is Just (e) -> if list-length e < 2 then None else dtls-cookie-inner e
+
+  dtls13-ch-fields-ok : List Integer -> Boolean
+  dtls13-ch-fields-ok (b) =
+    let n = list-length b
+    in if 36 > n then False
+    else if list-at b 34 > 32 then False
+    else let o0 = 35 + list-at b 34
+    in if o0 + 1 > n then False
+    else if list-at b o0 /= 0 then False
+    else let o1 = o0 + 1
+    in if o1 + 2 > n then False
+    else if list-at b o1 * 256 + list-at b (o1 + 1) == 0 then False
+    else if bit-and (list-at b (o1 + 1)) 1 == 1 then False
+    else let o2 = o1 + 2 + (list-at b o1 * 256 + list-at b (o1 + 1))
+    in if o2 + 2 > n then False
+    else if dtls13-suites-has b (o1 + 2) o2 == False then False
+    else if list-at b o2 /= 1 then False
+    else list-at b (o2 + 1) == 0
+
+  dtls13-suites-has : List Integer, Integer, Integer -> Boolean
+  dtls13-suites-has (b) (i) (stop) =
+    if i + 1 >= stop then False
+    else if list-at b i * 256 + list-at b (i + 1) == tls-cipher-aes-128-gcm-sha256 then True
+    else dtls13-suites-has b (i + 2) stop
 
   dtls-ch-find-ext : List Integer, Integer -> Maybe (List Integer)
   dtls-ch-find-ext (b) (want) =

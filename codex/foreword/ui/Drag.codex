@@ -2,8 +2,6 @@ Chapter: Drag
   cites UI chapter Event
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Types
 
   DragPhase =
@@ -90,7 +88,7 @@ Section: Lifecycle
   drag-move : DragState, Integer, Integer, List DropZone -> DragState
   drag-move (ds) (x) (y) (zones) =
     let phase = drag-check-threshold ds x y
-    in let zone = drag-find-zone zones x y 0 (list-length zones)
+    in let zone = drag-find-zone zones (ds.ds-data) x y 0 (list-length zones)
     in __record-set (__record-set (__record-set (__record-set ds "ds-phase" phase) "ds-current-x" x) "ds-current-y" y) "ds-over-zone" zone
 
   drag-check-threshold : DragState, Integer, Integer -> DragPhase
@@ -115,12 +113,30 @@ Section: Lifecycle
 
 Section: Zone Hit Testing
 
-  drag-find-zone : List DropZone, Integer, Integer, Integer, Integer -> Text
-  drag-find-zone (zones) (x) (y) (i) (len) =
+  drag-find-zone : List DropZone, DragData, Integer, Integer, Integer, Integer -> Text
+  drag-find-zone (zones) (data) (x) (y) (i) (len) =
     if i >= len then ""
     else let z = list-at zones i
-    in if drag-point-in-zone z x y then z.dz-id
-    else drag-find-zone zones x y (i + 1) len
+    in if drag-point-in-zone z x y & drag-zone-accepts z data then z.dz-id
+    else drag-find-zone zones data x y (i + 1) len
+
+  drag-data-kind : DragData -> Text
+  drag-data-kind (data) = when data
+    is DragText (t) -> "text"
+    is DragWidget (w) -> "widget"
+    is DragBytes (b) (kind) -> kind
+    is DragNone -> ""
+
+  drag-zone-accepts : DropZone, DragData -> Boolean
+  drag-zone-accepts (z) (data) =
+    if list-length (z.dz-accept-types) == 0 then True
+    else drag-kind-listed (z.dz-accept-types) (drag-data-kind data) 0
+
+  drag-kind-listed : List Text, Text, Integer -> Boolean
+  drag-kind-listed (types) (kind) (i) =
+    if i >= list-length types then False
+    else if list-at types i == kind then True
+    else drag-kind-listed types kind (i + 1)
 
   drag-point-in-zone : DropZone, Integer, Integer -> Boolean
   drag-point-in-zone (z) (x) (y) =

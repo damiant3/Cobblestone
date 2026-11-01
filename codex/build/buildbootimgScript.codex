@@ -7,8 +7,6 @@ Chapter: BuildBootImgScript
   cites Shell chapter Pipeline
   cites Shell chapter PowerShellEmit
 
- We say:
-
 Section: Parameters
 
   agent-doc : List Text =
@@ -78,6 +76,7 @@ Section: Font Pack
     ScIf (SeOr (SeNot (SeMethodCall (SeVar "PSBoundParameters") "ContainsKey" [SeLit "Font"])) (SeMethodCall (SeVar "PSBoundParameters") "ContainsKey" [SeLit "FontName"])) [
       sh-dot (join-path [SeVar "Repo", SeLit "build/lib/font-pack.ps1"]),
       ScAssign "FontExtras" (SeCallArgs "New-FontImageExtras" [SaNamed "Repo" (SeVar "Repo"), SaNamed "OutDir" (join-path [SeVar "BuildOut", SeLit "font-pack"]), SaNamed "FontName" (SeVar "FontName")]),
+      ScAppend "FontExtras" (SeConcat (SeLit "TZDB.BIN=") (SePathJoin (SeVar "Repo") (SeLit "codex/foreword/core/tzdata/2026f/TZDB.BIN"))),
       ScAssign "FontPackArgs" (SeArrayLiteral [SeLit "-Extra", SeJoin (SeVar "FontExtras") (SeLit ";")]),
       ScAssign "ImageSectors" (SeInt 65536)
     ] []
@@ -86,22 +85,22 @@ Section: Font Pack
 Section: S01 -- Preamble
 
   s01-body : List ShellCmd =
-    let fail-seed = [ScEcho (SeRaw "\"FAIL: $Seed missing\""), ScExit (SeInt 1)]
-    in [ScBlank, ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SeRaw "(Resolve-Path (Join-Path $PSScriptRoot '..')).Path"), ScAssign "Seed" (SeBare (SePathJoinN [SeVar "Repo", SeLit "seed\\Codex.cdx"])), ScAssign "ImgOut" (SeRaw "if ($Out) { $Out } else { Join-Path $Repo 'seed\\Codex.img' }"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeBare (SePathJoinN [SeVar "Repo", SeLit "build-output"])), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
+    let fail-seed = [ScEcho (SeText "FAIL: $Seed missing"), ScExit (SeInt 1)]
+    in [ScBlank, ScSetErrorStop, ScSetStrictMode, ScBlank, ScAssign "Repo" (SePathResolve (SePathJoin SeScriptRoot (SeLit ".."))), ScAssign "Seed" (SeBare (SePathJoinN [SeVar "Repo", SeLit "seed\\Codex.cdx"])), ScAssign "ImgOut" (SeRaw "if ($Out) { $Out } else { Join-Path $Repo 'seed\\Codex.img' }"), ScBlank, ScIf (SeNot (SeFileExists (SeVar "Seed"))) fail-seed [], ScBlank, ScAssign "BuildOut" (SeBare (SePathJoinN [SeVar "Repo", SeLit "build-output"])), ScIf (SeNot (SeDirExists (SeVar "BuildOut"))) [ScMkdir (SeVar "BuildOut")] [], ScBlank, ScEcho (SeLit "=== Build Boot IMG ===")]
 
 Section: S02 -- Bundle
 
   s02-body : List ShellCmd =
-    let fail-source = [ScEcho (SeRaw "\"FAIL: boot source $BootSourcePath missing\""), ScExit (SeInt 1)]
+    let fail-source = [ScEcho (SeText "FAIL: boot source $BootSourcePath missing"), ScExit (SeInt 1)]
     in let fail-bundle = [ScEcho (SeLit "FAIL: bundle failed"), ScExit (SeInt 1)]
-    in [ScBlank, ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "bundle-app.ps1"])), ScAssign "compileScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "compile.ps1"])), ScAssign "BootSourcePath" (SeRaw "if ([System.IO.Path]::IsPathRooted($BootSource)) { $BootSource } else { Join-Path $Repo $BootSource }"), ScIf (SeNot (SeFileExists (SeVar "BootSourcePath"))) fail-source [], ScAssign "BundledSource" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "boot-bundled.codex"])), ScAssign "BootCdx" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "boot.cdx"])), ScAssign "BootLog" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "img-compile.log"])), ScEcho (SeRaw "\"  Bundling $BootSourcePath...\""), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSourcePath -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
+    in [ScBlank, ScComment "Step 1: Bundle boot source with all dependencies", ScAssign "bundleScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "bundle-app.ps1"])), ScAssign "compileScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "compile.ps1"])), ScAssign "BootSourcePath" (SeRaw "if ([System.IO.Path]::IsPathRooted($BootSource)) { $BootSource } else { Join-Path $Repo $BootSource }"), ScIf (SeNot (SeFileExists (SeVar "BootSourcePath"))) fail-source [], ScAssign "BundledSource" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "boot-bundled.codex"])), ScAssign "BootCdx" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "boot.cdx"])), ScAssign "BootLog" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "img-compile.log"])), ScEcho (SeText "  Bundling $BootSourcePath..."), ScRaw "& pwsh -NoProfile -File $bundleScript -Src $BootSourcePath -Out $BundledSource", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BundledSource")))) fail-bundle []]
 
 Section: S03 -- Compile CDX
 
   s03-body : List ShellCmd =
-    let fail-kernel = [ScEcho (SeRaw "\"FAIL: kernel $KernelArg missing\""), ScExit (SeInt 1)]
+    let fail-kernel = [ScEcho (SeText "FAIL: kernel $KernelArg missing"), ScExit (SeInt 1)]
     in let fail-compile = [ScEcho (SeLit "FAIL: CDX compile failed"), ScRaw "Get-Content $BootLog -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host \"  $_\" }", ScExit (SeInt 1)]
-    in [ScBlank, ScComment "Step 2: Compile bundled source to CDX", ScAssign "KernelArg" (SeRaw "if ($Kernel) { $Kernel } else { $Seed }"), ScIf (SeNot (SeFileExists (SeVar "KernelArg"))) fail-kernel [], ScAssign "ModeFlag" (SeRaw "if ($Uefi) { '-Uefi' } else { '-Pet' }"), ScEcho (SeRaw "\"  Compiling bundled source -> CDX ($ModeFlag), kernel $KernelArg...\""), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog $ModeFlag -Kernel $KernelArg", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
+    in [ScBlank, ScComment "Step 2: Compile bundled source to CDX", ScAssign "KernelArg" (SeRaw "if ($Kernel) { $Kernel } else { $Seed }"), ScIf (SeNot (SeFileExists (SeVar "KernelArg"))) fail-kernel [], ScAssign "ModeFlag" (SeRaw "if ($Uefi) { '-Uefi' } else { '-Pet' }"), ScEcho (SeText "  Compiling bundled source -> CDX ($ModeFlag), kernel $KernelArg..."), ScRaw "& pwsh -NoProfile -File $compileScript -Src $BundledSource -Out $BootCdx -Log $BootLog $ModeFlag -Kernel $KernelArg", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "BootCdx")))) fail-compile []]
 
 Section: S04 -- CDX to PE
 
@@ -113,8 +112,8 @@ Section: S05 -- Optional bundled agent
 
   s05-body : List ShellCmd =
     let fail-agent = [ScEcho (SeLit "FAIL: agent bundle failed"), ScExit (SeInt 1)]
-    in let build-agent = [ScAssign "AgentDir" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "agent"])), ScEcho (SeLit "  Building the bundled agent (signs, so this boots VMs)..."), ScRaw "& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'make-agent-bundle.ps1') -OutDir $AgentDir", ScIf (SeNot (SeExitCodeEq 0)) fail-agent [], ScRaw "$AgentArgs = @('-Agent', (Join-Path $AgentDir 'AGENT.GGU'), '-AgentManifest', (Join-Path $AgentDir 'AGENT.MAN'))"]
-    in [ScBlank, ScComment "Step 4 (optional): the bundled agent", ScAssign "AgentArgs" (SeRaw "@()"), ScIf (SeVar "Agent") build-agent []]
+    in let build-agent = [ScAssign "AgentDir" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "agent"])), ScEcho (SeLit "  Building the bundled agent (signs, so this boots VMs)..."), ScRaw "& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'make-agent-bundle.ps1') -OutDir $AgentDir", ScIf (SeNot (SeExitCodeEq 0)) fail-agent [], ScAssign "AgentArgs" (SeArrayLiteral [SeLit "-Agent", SePathJoin (SeVar "AgentDir") (SeLit "AGENT.GGU"), SeLit "-AgentManifest", SePathJoin (SeVar "AgentDir") (SeLit "AGENT.MAN")])]
+    in [ScBlank, ScComment "Step 4 (optional): the bundled agent", ScAssign "AgentArgs" (SeArrayLiteral []), ScIf (SeVar "Agent") build-agent []]
 
 Section: S06 -- Build GPT Image
 
@@ -123,7 +122,7 @@ Section: S06 -- Build GPT Image
 
   s06-body : List ShellCmd =
     let fail-concat = [ScEcho (SeLit "FAIL: could not produce the compiler source concat"), ScExit (SeInt 1)]
-    in let make-concat = [ScEcho (SeRaw "\"  Concatenating compiler source (no $SourceFile present)...\""), ScRaw "& pwsh -NoProfile -File $ConcatScript -CodexDir (Join-Path $Repo 'codex\\compiler') -OutFile $SourceFile", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "SourceFile")))) fail-concat []]
+    in let make-concat = [ScEcho (SeText "  Concatenating compiler source (no $SourceFile present)..."), ScRaw "& pwsh -NoProfile -File $ConcatScript -CodexDir (Join-Path $Repo 'codex\\compiler') -OutFile $SourceFile", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "SourceFile")))) fail-concat []]
     in let fail-img = [ScEcho (SeLit "FAIL: IMG build failed"), ScExit (SeInt 1)]
     in [ScBlank, ScComment "Step 5: Build the GPT disk image.",
         ScComment "",
@@ -142,11 +141,11 @@ Section: S06 -- Build GPT Image
         ScComment "",
         ScComment "A stick that cannot verify or rebuild itself is not what this project",
         ScComment "promises anyone, so both are now required inputs and the concat is generated",
-        ScComment "when it is missing rather than silently skipped.", ScAssign "ImgScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "build-img.ps1"])), ScAssign "ConcatScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "concat-codex-self.ps1"])), ScAssign "SourceFile" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "Codex.codex"])), ScIf (SeNot (SeFileExists (SeVar "SourceFile"))) make-concat [], ScBlank, ScComment "65536 sectors (32 MiB) with the font pack; 32768 for legacy single-font images.", ScAssign "IdentityArgs" (SeRaw "@()"), ScIf (SeVar "Identity") [ScRaw "$IdentityArgs = @('-Identity', $Identity)"] [], ScComment "Resolved against the repo so the default works from any working", ScComment "directory, and checked here rather than left to build-img's hard error,", ScComment "which would name a path the caller never typed.", ScAssign "FontArgs" (SeRaw "@()"), ScIf (SeVar "Font") [ScRaw "$FontPath = if ([System.IO.Path]::IsPathRooted($Font)) { $Font } else { Join-Path $Repo $Font }", ScRaw "if (-not (Test-Path -PathType Leaf $FontPath)) { Write-Host \"FAIL: font $FontPath missing\"; exit 1 }", ScRaw "$FontArgs = @('-Font', $FontPath)"] [], ] & boot-font-pack & [ScEcho (SeLit "  Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\\compiler') -TotalSectors $ImageSectors @AgentArgs @IdentityArgs @FontArgs @FontPackArgs", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
+        ScComment "when it is missing rather than silently skipped.", ScAssign "ImgScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "build-img.ps1"])), ScAssign "ConcatScript" (SeBare (SePathJoinN [SeVar "PSScriptRoot", SeLit "concat-codex-self.ps1"])), ScAssign "SourceFile" (SeBare (SePathJoinN [SeVar "BuildOut", SeLit "Codex.codex"])), ScIf (SeNot (SeFileExists (SeVar "SourceFile"))) make-concat [], ScBlank, ScComment "65536 sectors (32 MiB) with the font pack; 32768 for legacy single-font images.", ScAssign "IdentityArgs" (SeArrayLiteral []), ScIf (SeVar "Identity") [ScAssign "IdentityArgs" (SeArrayLiteral [SeLit "-Identity", SeVar "Identity"])] [], ScComment "Resolved against the repo so the default works from any working", ScComment "directory, and checked here rather than left to build-img's hard error,", ScComment "which would name a path the caller never typed.", ScAssign "FontArgs" (SeArrayLiteral []), ScIf (SeVar "Font") [ScRaw "$FontPath = if ([System.IO.Path]::IsPathRooted($Font)) { $Font } else { Join-Path $Repo $Font }", ScRaw "if (-not (Test-Path -PathType Leaf $FontPath)) { Write-Host \"FAIL: font $FontPath missing\"; exit 1 }", ScAssign "FontArgs" (SeArrayLiteral [SeLit "-Font", SeVar "FontPath"])] [], ] & boot-font-pack & [ScEcho (SeLit "  Building GPT disk image..."), ScRaw "& pwsh -NoProfile -File $ImgScript -PeInput $BootPe -Out $ImgOut -Seed $Seed -Source $SourceFile -SourceDir (Join-Path $Repo 'codex\\compiler') -TotalSectors $ImageSectors @AgentArgs @IdentityArgs @FontArgs @FontPackArgs", ScIf (SeOr (SeNot (SeExitCodeEq 0)) (SeNot (SeFileExists (SeVar "ImgOut")))) fail-img []]
 
 Section: S07 -- Done
 
-  s07-body : List ShellCmd = [ScBlank, ScAssign "totalSize" (SeProperty (SeRaw "(Get-Item $ImgOut)") "Length"), ScEcho (SeRaw "\"Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)\"")]
+  s07-body : List ShellCmd = [ScBlank, ScAssign "totalSize" (SeProperty (SeCall "Get-Item" [SeVar "ImgOut"]) "Length"), ScEcho (SeText "Done: $ImgOut ($([math]::Round($totalSize / 1MB, 1)) MB)")]
 
 Section: Assembly
 

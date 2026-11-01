@@ -1,0 +1,144 @@
+Chapter: AccpRequestAuth
+  cites Accp chapter AccpJson
+  cites Accp chapter AccpGrant
+  cites Foreword chapter CCE
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+Section: Canonical Encoding
+
+  ar-key-less : Text, Text, Integer -> Boolean
+  ar-key-less (a) (b) (i) =
+    if i >= text-length b then False
+    else if i >= text-length a then True
+    else let x = to-unicode (char-code-at a i)
+    in let y = to-unicode (char-code-at b i)
+    in if x /= y then x < y else ar-key-less a b (i + 1)
+
+  ar-append-from : List AccpField, Integer, List AccpField -> List AccpField
+  ar-append-from (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else ar-append-from xs (i + 1) (list-push acc (list-at xs i))
+
+  ar-insert : List AccpField, AccpField, Integer, List AccpField -> List AccpField
+  ar-insert (sorted) (f) (i) (acc) =
+    if i >= list-length sorted then list-push acc f
+    else let g = list-at sorted i
+    in if ar-key-less f.key g.key 0 then ar-append-from sorted i (list-push acc f)
+    else ar-insert sorted f (i + 1) (list-push acc g)
+
+  ar-sort : List AccpField, Integer, List AccpField -> List AccpField
+  ar-sort (fs) (i) (sorted) =
+    if i >= list-length fs then sorted
+    else ar-sort fs (i + 1) (ar-insert sorted (list-at fs i) 0 [])
+
+  ar-canon-value : Text -> Text
+  ar-canon-value (raw) =
+    if aj-is raw 0 "{" then ar-canon-object (aj-object raw) False else raw
+
+  ar-canon-fields : List AccpField, Integer, Boolean, List Text -> Text
+  ar-canon-fields (fs) (i) (top) (parts) =
+    if i >= list-length fs then text-concat-list parts
+    else let f = list-at fs i
+    in if top & f.key == "signature" then ar-canon-fields fs (i + 1) top parts
+    else let sep = if list-length parts == 0 then "" else ","
+    in ar-canon-fields fs (i + 1) top (list-push parts (sep & aj-quote f.key & ":" & ar-canon-value f.raw))
+
+  ar-canon-object : AccpObject, Boolean -> Text
+  ar-canon-object (o) (top) = "{" & ar-canon-fields (ar-sort o.fields 0 []) 0 top [] & "}"
+
+  ar-canonical : Text -> Text
+  ar-canonical (line) = ar-canon-object (aj-object line) True
+
+Section: Signature
+
+ The 17 bytes are the ASCII text codex-request-v1 and a zero byte, so a request
+ signature never verifies as a grant seal (codex-grant-v1) or the reverse.
+
+  ar-request-tag : List Integer = [99, 111, 100, 101, 120, 45, 114, 101, 113, 117, 101, 115, 116, 45, 118, 49, 0]
+
+  ar-ascii : List Integer, Integer -> Boolean
+  ar-ascii (bs) (i) =
+    if i >= list-length bs then True
+    else if list-at bs i > 127 then False
+    else ar-ascii bs (i + 1)
+
+  ar-digest : Text -> List Integer
+  ar-digest (line) = sha256-bytes (ar-request-tag & text-to-unicode-bytes (ar-canonical line))
+
+  ar-sign : Text, List Integer, List Integer -> Text
+  ar-sign (line) (secret) (public) = ag-hex (ed25519-sign secret public (ar-digest line))
+
+  ar-signature-refusal : Text, Text, Text -> Text
+  ar-signature-refusal (line) (requester) (signature) =
+    let bytes = text-to-unicode-bytes (ar-canonical line)
+    in if ar-ascii bytes 0 == False then "request is not ASCII"
+    else when ag-unhex requester
+      is None -> "requester is not hex"
+      is Just (key) ->
+        when ag-unhex signature
+          is None -> "signature is not hex"
+          is Just (sig) ->
+            if ed25519-verify key (sha256-bytes (ar-request-tag & bytes)) sig then "" else "request signature does not verify"
+
+Section: Authentication
+
+ A request issued more than 60 seconds either side of the conduit's clock is
+ refused, and the host keeps every nonce it has seen for 121 seconds, which
+ covers the whole of any accepted request's window (AccpRequesterAuth.md
+ section 2).
+
+  ar-skew-seconds : Integer = 60
+
+  ArAuth = record { why : Text, requester : Text, nonce : Text, issued-at : Integer }
+
+  ar-hex-field : AccpObject, Text, Integer -> Text
+  ar-hex-field (o) (key) (digits) =
+    let raw = aj-get o key
+    in let t = aj-text o key
+    in if aj-is raw 0 "\"" == False | text-length t /= digits then ""
+    else when ag-unhex t
+      is None -> ""
+      is Just (bs) -> t
+
+  ar-carries : AccpObject -> Boolean
+  ar-carries (o) = aj-get o "requester" /= "" | aj-get o "signature" /= "" | aj-get o "nonce" /= "" | aj-get o "issued_at" /= ""
+
+  ar-request-bound : Text -> Boolean
+  ar-request-bound (meta) =
+    let m = aj-object meta
+    in let raw = aj-get m "binding"
+    in if m.ok == False | raw == "" | raw == "null" then False
+    else aj-text (aj-object raw) "transport" == "request"
+
+  ar-authenticate : Text, AccpBinding, Integer -> ArAuth
+  ar-authenticate (line) (b) (now) =
+    let o = aj-object line
+    in let requester = ar-hex-field o "requester" 64
+    in let signature = ar-hex-field o "signature" 128
+    in let nonce = ar-hex-field o "nonce" 64
+    in let issued = ag-seconds (aj-get o "issued_at")
+    in let why = if o.ok == False then "invalid JSON object"
+      else if requester == "" then "requester must be an Ed25519 public key as 64 lowercase hex digits"
+      else if signature == "" then "signature must be 128 lowercase hex digits"
+      else if nonce == "" then "nonce must be 64 lowercase hex digits"
+      else if issued < 0 then "issued_at must be Unix seconds"
+      else if now < 0 then "host clock unavailable"
+      else if issued > now + ar-skew-seconds | issued < now - ar-skew-seconds then "issued_at is more than 60 seconds from this conduit's clock"
+      else if ag-key-in (b.grantors) requester then "requester is a grantor of this instance"
+      else if requester == b.identity then "requester is this instance's identity"
+      else ar-signature-refusal line requester signature
+    in ArAuth { why = why, requester = requester, nonce = nonce, issued-at = issued }
+
+  ar-as-requester : AccpBinding, Text -> AccpBinding
+  ar-as-requester (b) (key) = AccpBinding {
+    bound = b.bound,
+    requester = key,
+    identity = b.identity,
+    grantors = b.grantors,
+    max-seconds = b.max-seconds,
+    policy-sha256 = b.policy-sha256
+  }
+
+Page 1

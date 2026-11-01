@@ -48,6 +48,12 @@ Section: State
    span : SourceSpan
   }
 
+  FieldSite = record {
+   obj : CodexType,
+   field : Text,
+   span : SourceSpan
+  }
+
   mutable UnificationState = record {
    substitutions : List CodexType,
    row-substitutions : List EffectRow,
@@ -61,6 +67,7 @@ Section: State
    dirty-slots : List Integer,
    empty-lists : List EmptyListSite,
    eq-sites : List EmptyListSite,
+   field-sites : List FieldSite,
    fidelity : Boolean,
    fid-types : List ExprTypeEntry
   }
@@ -81,6 +88,7 @@ Section: Construction
      dirty-slots = [],
      empty-lists = [],
      eq-sites = [],
+     field-sites = [],
      fidelity = False,
      fid-types = []
     }
@@ -101,12 +109,6 @@ Section: Fresh Variables
   fresh-and-advance : UnificationState -> (CodexType, UnificationState)
   fresh-and-advance (st) =
     (TypeVar (st.next-id), advance-id st)
-
- next-row-id is declared 0..4294967295 and a type argument is invariant, so
- the pair below would otherwise be a Tup2 carrying those bounds. Widening
- HERE rather than declaring the narrow type in the signature keeps all
- eleven call sites seeing a plain Integer; declaring it narrow pushes the
- bounds out to every caller and moves the mismatch rather than fixing it.
 
   fresh-row-id : UnificationState -> (Integer, UnificationState)
   fresh-row-id (st) =
@@ -154,11 +156,7 @@ Section: Expr Types
  Records per-expression resolved types keyed by span, for lowering to
  consult after type-checking finishes. Spans are keyed as a composite
  integer packed as file-id (16 bits) | start offset (32 bits) | span
- length capped at 65535 (16 bits) - an exact 64-bit fit. The previous
- decimal packing multiplied by 1e6 with the raw end offset in the low
- field; any source past one megabyte overflowed the field and bled
- into the start digits, silently aliasing distinct spans and
- shadowing entries behind the binary search. Entries are appended
+ length capped at 65535 (16 bits) - an exact 64-bit fit. Entries are appended
  unsorted during type-checking via list-push (O(1) per call), then
  merge-sorted once at the check-lower boundary via sort-expr-types
  (O(N log N)). Lookup after sort is O(log N) via binary search.
@@ -247,6 +245,15 @@ Section: Expr Types
   record-eq-site (st) (sp) (ty) =
     let __seq = st.eq-sites = list-push (st.eq-sites) (deck-record (EmptyListSite {
       ty = ty,
+      span = sp
+    }))
+    in st
+
+  record-field-site : UnificationState, SourceSpan, CodexType, Text -> UnificationState
+  record-field-site (st) (sp) (obj) (field) =
+    let __seq = st.field-sites = list-push (st.field-sites) (deck-record (FieldSite {
+      obj = obj,
+      field = field,
       span = sp
     }))
     in st
@@ -431,16 +438,6 @@ Section: Effect Row Substitution
 
 Section: Row Unification
 
- unify-row implements the ACI1 set-row algorithm: resolve both
- rows, cancel shared labels with one sorted
- merge, then case on the tails. Label equality is EXACT -- the dotted
- sub-effect lattice lives only in the directed row-le check (stage
- 3), never in symmetric unification. Under payload-free labels and
- at most one tail per row this produces a unifier that is most
- general up to ACI1 equivalence: the only candidate divergence --
- re-adding a shared label into both tails -- is collapsed by
- idempotence.
-
   rows-identical : EffectRow, EffectRow -> Boolean
   rows-identical (a) (b) =
     a.tail-id == b.tail-id & labels-equal (a.labels) (b.labels)
@@ -475,16 +472,6 @@ Section: Row Unification
       (False, add-unify-error st cdx-row-mismatch (row-mismatch-msg open-r closed-r) span)
     else (True, add-row-subst st (open-r.tail-id) (make-row closed-only "" (-1)))
 
- row-union joins two ambient rows (the effects a compound expression
- performs = the union of what its parts perform). A representable
- row has at most one tail, so joining two open rows with distinct
- tails EQUATES them (bind t1 := {| t2}) -- the Koka shared-ambient
- move: every performing site inside one body ends up sharing one
- effect variable. That over-approximates (sound direction, section
- 2) and never fails: both tails are unbound after resolution and
- distinct, so no occurs violation is possible. An empty operand
- returns the other unchanged -- the all-pure case allocates nothing.
-
   row-union : UnificationState, EffectRow, EffectRow -> (EffectRow, UnificationState)
   row-union (st) (r1) (r2) =
     let a = resolve-row st r1
@@ -510,13 +497,6 @@ Section: Row Unification
     else (True, add-row-subst (add-row-subst st2 (a.tail-id) bind-a) (b.tail-id) bind-b)
 
 Section: Unify
- The `inv` flag threaded from here down means "this pair sits in a type
- ARGUMENT position", where `docs/DevelopersGuide.md` "Variance of Type
- Arguments" requires the two types to be the same rather than merely
- compatible. It is set at the argument positions below and never cleared,
- so nesting inside an argument stays invariant. Everything reached with it
- False keeps the assignability the language has always had.
-
   unify : UnificationState, CodexType, CodexType, SourceSpan -> (Boolean, UnificationState)
   unify (st) (a) (b) (span) =
     unify-at st a b span 0 False
@@ -649,13 +629,6 @@ Section: Unify
         (False, add-unify-error st cdx-infinite-type "Infinite type" span)
       else (True, add-subst st id-b a)
      is otherwise -> unify-structural st a b span depth inv
-
- The integer arm is where every widening in the language is actually
- admitted, and at a non-argument position it stays exactly as it was:
- either range inside the other, or merely OVERLAPPING, is accepted. In an
- argument position the bounds must match. Overflow mode is not compared in
- either branch, which is pre-existing and is a separate question from
- variance.
 
   unify-structural : UnificationState, CodexType, CodexType, SourceSpan, Integer, Boolean -> (Boolean, UnificationState)
   unify-structural (st) (a) (b) (span) (depth) (inv) =
@@ -844,10 +817,6 @@ Section: Unify
       is ErrorTy -> (True, st)
       is otherwise -> unify-mismatch st a b span
 
- unify-constructed-args and unify-cargs-loop take no inv parameter because
- every pair they compare is a type argument by construction, so they pass
- True unconditionally.
-
   unify-constructed-args : UnificationState, List CodexType, List CodexType, Integer, Integer, SourceSpan, Integer ->
     (Boolean, UnificationState)
   unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) (depth) =
@@ -946,13 +915,6 @@ Section: Unify
     if n == "None" then True
     else if n == "Just" then True
     else False
-
- The bounds are printed only when they are narrower than the default,
- because "Integer vs Integer" is what this message said for every bounded
- mismatch and it names neither side. Invariance of type arguments makes
- that pair common, and locating one such error in the compiler's own
- 57,000 lines cost a full diagnostic cycle against a message that could
- have answered it.
 
   int-bounds-desc : Integer, Integer -> Text
   int-bounds-desc (lo) (hi) =
@@ -1607,13 +1569,6 @@ Section: Deep Type Copy
     in let mk-name = cons-mix acc (address-of (mcopy-name (c.name) mc))
     in let mk-fields = cons-mix mk-name (address-of (mcopy-types (c.fields) depth mc))
     in mkey-ctors-loop cs (i + 1) len depth mc (cons-mix mk-fields (address-of (mcopy-types (c.return-type) depth mc)))
-
- THE BOX CHECK READS A TAG, so it asks for one. `peek-qword a 0` is that tag
- only where a variant's first word IS its tag, which is bare metal; it is a
- payload word on any target whose unions lay themselves out differently, and
- the read comes back a pointer there. `variant-tag` is the builtin for this
- question and costs the same load on bare metal. `Emit/X86_64Compound.codex`
- moved off the same idiom for the same reason.
 
   mcopy-type : CodexType, Integer, MemoCtx -> CodexType
   mcopy-type (ty) (depth) (mc) =

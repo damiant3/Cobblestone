@@ -1,7 +1,57 @@
 Chapter: FwdHairSimTest
   cites Engine chapter HairSim
+  cites Foreword chapter MathLib
+
+Section: Fixtures
+
+  hst-ys : HairSystem -> Text
+  hst-ys (sys) =
+    let s = list-at (sys.hair-strands) 0
+    in hst-ys-loop (s.hs-particles) 0 (s.hs-count) ""
+
+  hst-ys-loop : List SoftParticle, Integer, Integer, Text -> Text
+  hst-ys-loop (ps) (i) (n) (acc) =
+    if i >= n then acc
+    else hst-ys-loop ps (i + 1) n (acc & (if i == 0 then "" else " ") & show ((list-at ps i).sft-y))
+
+  hst-tip : HairSystem -> SoftParticle
+  hst-tip (sys) =
+    let s = list-at (sys.hair-strands) 0
+    in list-at (s.hs-particles) (s.hs-count - 1)
+
+  hst-segs : HairSystem -> Text
+  hst-segs (sys) =
+    let s = list-at (sys.hair-strands) 0
+    in hst-segs-loop (s.hs-particles) 1 (s.hs-count) ""
+
+  hst-segs-loop : List SoftParticle, Integer, Integer, Text -> Text
+  hst-segs-loop (ps) (i) (n) (acc) =
+    if i >= n then acc
+    else let a = list-at ps (i - 1)
+    in let b = list-at ps i
+    in hst-segs-loop ps (i + 1) n (acc & (if i == 1 then "" else " ") & show (math-isqrt ((b.sft-x - a.sft-x) * (b.sft-x - a.sft-x) + (b.sft-y - a.sft-y) * (b.sft-y - a.sft-y) + (b.sft-z - a.sft-z) * (b.sft-z - a.sft-z))))
+
+  hst-steps : HairSystem, Integer -> HairSystem
+  hst-steps (sys) (n) =
+    if n <= 0 then sys
+    else hst-steps (hair-step sys 16) (n - 1)
 
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Engine/HairSim OK"
-  end
+
+  opening : [Console] Nothing =
+    let still = hair-add-strand (hair-new 0 0) 0 1000 0 300 3 500 1
+    in let still-ys = hst-ys still
+    in let still-count = (list-at (still.hair-strands) 0).hs-count
+    in let stepped = hst-ys (hair-step (hair-add-strand (hair-new 0 0) 0 1000 0 300 3 500 1) 16)
+    in let heavy = hst-steps (hair-add-strand (hair-new 9800 0) 0 1000 0 300 3 500 1) 10
+    in let inside = hst-ys (hair-step (hair-add-strand (hair-new 0 500) 0 400 0 300 3 500 1) 16)
+    in let inside-segs = hst-segs (hair-step (hair-add-strand (hair-new 0 500) 0 400 0 300 3 500 1) 16)
+    in let windy = hair-step (hair-set-wind (hair-add-strand (hair-new 0 0) 0 1000 0 300 3 500 1) 10000 0 0) 16
+    in act
+      print-line-uni (format-hair still & ": particles " & show still-count & ", ys " & still-ys)
+      print-line-uni ("no gravity, one step: " & stepped)
+      print-line-uni ("gravity 9800, 10 steps: root y " & show ((list-at ((list-at (heavy.hair-strands) 0).hs-particles) 0).sft-y) & ", tip within 5 of 700: " & (if (hst-tip heavy).sft-y >= 695 & (hst-tip heavy).sft-y <= 705 then "yes" else "no"))
+      print-line-uni ("rooted at 400 inside head radius 500, one step: " & inside)
+      print-line-uni ("inside head, segment lengths after one step: " & inside-segs)
+      print-line-uni ("wind 10000, one 16 ms step: tip x " & show ((hst-tip windy).sft-x))
+    end

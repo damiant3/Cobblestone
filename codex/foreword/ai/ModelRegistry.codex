@@ -11,8 +11,6 @@ Chapter: ModelRegistry
    - LoRA: ".lora_down.weight" / ".lora_up.weight" suffixes
    - 3D recon: "triplane_proj." or "encoder.layers." + "decoder." combo
 
- We say:
-
 Section: Types
   ModelType =
     | ModelSD15
@@ -54,6 +52,7 @@ Section: Model Type Detection
     else if detect-is-vae file then ModelVAE
     else if detect-is-text-encoder file then ModelTextEncoder
     else if detect-is-3d-recon file then ModelImageTo3d
+    else if detect-has-pattern file "double_blocks." 0 then ModelFlux
     else if detect-is-sdxl file then ModelSDXL
     else if detect-is-sd15 file then ModelSD15
     else ModelUnknown
@@ -142,15 +141,16 @@ Section: Catalog Queries
 
   catalog-find-by-name : ModelCatalog, Text -> Maybe ModelEntry
   catalog-find-by-name (cat) (name) =
-    catalog-name-search (cat.mc-entries) name 0 (cat.mc-count)
+    when catalog-name-search (cat.mc-entries) name True 0 (cat.mc-count)
+      is Just (e) -> Just e
+      is None -> catalog-name-search (cat.mc-entries) name False 0 (cat.mc-count)
 
-  catalog-name-search : List ModelEntry, Text, Integer, Integer -> Maybe ModelEntry
-  catalog-name-search (entries) (name) (i) (n) =
+  catalog-name-search : List ModelEntry, Text, Boolean, Integer, Integer -> Maybe ModelEntry
+  catalog-name-search (entries) (name) (exact) (i) (n) =
     if i >= n then None
     else let entry = list-at entries i
-    in if entry.me-name == name then Just entry
-    else if text-contains (entry.me-name) name then Just entry
-    else catalog-name-search entries name (i + 1) n
+    in if (if exact then entry.me-name == name else text-contains (entry.me-name) name) then Just entry
+    else catalog-name-search entries name exact (i + 1) n
 
 Section: Queries
   model-type-name : ModelType -> Text

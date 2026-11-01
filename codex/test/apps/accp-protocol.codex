@@ -1,0 +1,58 @@
+Chapter: AccpProtocolTest
+  cites Accp chapter AccpMcpProtocol
+  cites Foreword chapter StringUtils
+  cites Foreword chapter Console
+
+Section: Requests
+
+  req : Text, Text -> [Console] Nothing
+  req (label) (line) =
+    let r = ap-request line
+    in print-line-uni (label & " why=" & r.why & " op=" & r.op & " ms=" & show (r.ms) & " out=" & show (r.stdout-limit) & " lib=" & r.library & " output=" & r.output)
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  known : Text, Text -> Boolean
+  known (args) (op) = mc-args-known ((aj-object args).fields) op 0
+
+  chosen : Text -> Text
+  chosen (requested) =
+    let r = mc-initialize (aj-object ("{\"protocolVersion\":\"" & requested & "\"}")) "1"
+    in if text-contains r "\"protocolVersion\":\"2024-11-05\"" then "2024-11-05"
+    else if text-contains r "\"protocolVersion\":\"2025-06-18\"" then "2025-06-18"
+    else if text-contains r "\"protocolVersion\":\"2025-11-25\"" then "2025-11-25" else "none"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    req "run" "{\"op\":\"run\",\"source\":\"x\",\"id\":\"a\",\"limits\":{\"ms\":500,\"stdout_bytes\":100},\"library\":\"math\",\"output\":\"json\"}"
+    req "describe" "{\"op\":\"describe\"}"
+    req "lens" "{\"op\":\"lens\",\"source\":\"x\",\"plug\":\"wasm\"}"
+    req "not json" "{\"op\":"
+    req "duplicate key" "{\"op\":\"run\",\"op\":\"check\",\"source\":\"x\"}"
+    req "unknown field" "{\"op\":\"run\",\"source\":\"x\",\"shell\":true}"
+    req "lease" "{\"op\":\"run\",\"source\":\"x\",\"lease\":\"forged\"}"
+    req "lease on check" "{\"op\":\"check\",\"source\":\"x\",\"lease\":\"0a\"}"
+    req "lease not a string" "{\"op\":\"run\",\"source\":\"x\",\"lease\":7}"
+    req "ms 0" "{\"op\":\"run\",\"source\":\"x\",\"limits\":{\"ms\":0}}"
+    req "ms 10001" "{\"op\":\"run\",\"source\":\"x\",\"limits\":{\"ms\":10001}}"
+    req "extra limit" "{\"op\":\"run\",\"source\":\"x\",\"limits\":{\"cpu\":1}}"
+    req "unknown op" "{\"op\":\"exec\",\"source\":\"x\"}"
+    req "unknown library" "{\"op\":\"run\",\"source\":\"x\",\"library\":\"bigint\"}"
+    req "output on check" "{\"op\":\"check\",\"source\":\"x\",\"output\":\"json\"}"
+    req "describe with source" "{\"op\":\"describe\",\"source\":\"x\"}"
+    req "NUL in source" "{\"op\":\"run\",\"source\":\"a\\u0000b\"}"
+    req "input on check" "{\"op\":\"check\",\"source\":\"x\",\"input\":\"y\"}"
+    req "lens without wasm" "{\"op\":\"lens\",\"source\":\"x\",\"plug\":\"c\"}"
+    req "plug on run" "{\"op\":\"run\",\"source\":\"x\",\"plug\":\"wasm\"}"
+    req "check prose" "{\"op\":\"check\",\"source\":\"x\",\"prose\":true}"
+    req "run prose" "{\"op\":\"run\",\"source\":\"x\",\"prose\":true}"
+    req "prose 1" "{\"op\":\"check\",\"source\":\"x\",\"prose\":1}"
+    print-line-uni ("id 7 " & yn (mc-id-valid "7") & ", id -3 " & yn (mc-id-valid "-3") & ", id string " & yn (mc-id-valid "\"a\"") & ", id 1.5 " & yn (mc-id-valid "1.5") & ", id - " & yn (mc-id-valid "-") & ", id empty " & yn (mc-id-valid ""))
+    print-line-uni ("tools " & mc-tool-op "codex_run" & " " & mc-tool-op "codex_check" & " " & mc-tool-op "codex_lens" & " " & mc-tool-op "codex_describe" & " " & mc-tool-op "codex_clarify" & " [" & mc-tool-op "shell" & "]")
+    print-line-uni ("args run+input " & yn (known "{\"source\":\"x\",\"input\":\"y\"}" "run") & ", check+input " & yn (known "{\"source\":\"x\",\"input\":\"y\"}" "check") & ", describe+source " & yn (known "{\"source\":\"x\"}" "describe") & ", clarify+text " & yn (known "{\"text\":\"x\",\"register\":\"child\"}" "clarify") & ", clarify+source " & yn (known "{\"source\":\"x\"}" "clarify") & ", check+prose " & yn (known "{\"source\":\"x\",\"prose\":true}" "check") & ", run+prose " & yn (known "{\"source\":\"x\",\"prose\":true}" "run"))
+    print-line-uni ("versions " & chosen "2024-11-05" & " " & chosen "2025-06-18" & " " & chosen "2025-11-25" & " " & chosen "1999-01-01")
+    print-line-uni (mc-clarify "9" (aj-object "{\"text\":\"It works.\"}"))
+    print-line-uni (mc-clarify "10" (aj-object "{\"text\":7}"))
+  end

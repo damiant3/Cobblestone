@@ -1,0 +1,114 @@
+Chapter: VirtioNetGuardsTest
+  cites Kernel chapter VirtioNetX86
+  cites Kernel chapter VirtioPciX86
+  cites Kernel chapter Pci
+
+Section: Entry
+  vng-pci : Integer, Integer -> PciDevice
+  vng-pci (vendor) (device) = PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0,
+    pci-vendor = __narrow vendor, pci-device-id = __narrow device, pci-class = 2, pci-subclass = 0, pci-header-type = 0 }
+
+  vng-bool : Boolean -> Text
+  vng-bool (b) = if b then "T" else "F"
+
+  vng-queue : Integer -> VpxQueue
+  vng-queue (index) =
+    let memory = alloc-bytes 4096
+    in let zero = vpx-zero memory 4096 0
+    in VpxQueue { desc = memory, avail = memory + 1024, used = memory + 2048,
+      size = 32, notify = memory + 3072, index = index, avail-index = if index == 0 then 32 else 0,
+      last-used = 0, fault = 0 }
+
+  vng-state : Integer -> Integer
+  vng-state (unused) =
+    let base = alloc-bytes 256
+    in let zero = vpx-zero base 256 0
+    in let r = vnx-save-queue base vnx-rx-q (vng-queue 0)
+    in let t = vnx-save-queue base vnx-tx-q (vng-queue 1)
+    in let buffers = alloc-bytes (vnx-rx-count * vnx-buffer-size)
+    in let cleared = vpx-zero buffers (vnx-rx-count * vnx-buffer-size) 0
+    in let tx-buffer = alloc-bytes vnx-buffer-size
+    in let clear-tx = vpx-zero tx-buffer vnx-buffer-size 0
+    in let a = poke-qword base 0 vnx-magic
+    in let b = poke-qword base 160 buffers
+    in let c = poke-qword base 168 tx-buffer
+    in let d = poke-qword base 176 (alloc-bytes 8)
+    in let m = poke-byte base 200 2
+    in let m5 = poke-byte base 205 9
+    in base
+
+  vng-mac : List Integer -> Integer
+  vng-mac (bytes) =
+    let at = alloc-bytes 8
+    in let a = poke-byte at 0 (list-at bytes 0)
+    in let b = poke-byte at 1 (list-at bytes 1)
+    in let c = poke-byte at 2 (list-at bytes 2)
+    in let d = poke-byte at 3 (list-at bytes 3)
+    in let e = poke-byte at 4 (list-at bytes 4)
+    in let f = poke-byte at 5 (list-at bytes 5)
+    in at
+
+  vng-roundtrip : Integer -> Text
+  vng-roundtrip (unused) =
+    let base = alloc-bytes 256
+    in let q = VpxQueue { desc = 11, avail = 22, used = 33, size = 44, notify = 55, index = 66, avail-index = 77, last-used = 88, fault = 99 }
+    in let saved = vnx-save-queue base vnx-tx-q q
+    in let back = vnx-load-queue base vnx-tx-q
+    in show back.desc & " " & show back.avail & " " & show back.used & " " & show back.size & " " & show back.notify
+      & " " & show back.index & " " & show back.avail-index & " " & show back.last-used & " " & show back.fault
+
+  vng-post : Integer, Integer, Integer, Integer, Integer -> Integer
+  vng-post (base) (id) (length) (flags) (buffers) =
+    let q = vnx-load-queue base vnx-rx-q
+    in let a = poke-32 q.used 4 id
+    in let b = poke-32 q.used 8 length
+    in let c = poke-16 q.used 2 1
+    in let buffer = peek-qword base 160 + (if id < vnx-rx-count then id else 0) * vnx-buffer-size
+    in let d = poke-byte buffer 0 flags
+    in let e = poke-16 buffer 10 buffers
+    in let f = poke-byte buffer 12 65
+    in let g = poke-byte buffer 13 66
+    in 0
+
+  vng-recv : Integer, Integer, Integer, Integer -> Text
+  vng-recv (id) (length) (flags) (buffers) =
+    let base = vng-state 0
+    in let posted = vng-post base id length flags buffers
+    in let pending = vnx-pending base
+    in let frame = vnx-recv-frame base
+    in vng-bool pending & " n=" & show (list-length frame)
+      & (if list-length frame > 1 then " " & show (list-at frame 0) & "," & show (list-at frame 1) else "")
+      & " ok=" & show (peek-qword base 216) & " drop=" & show (peek-qword base 232) & " valid=" & vng-bool (vnx-valid base)
+
+  vng-send : List Integer -> Text
+  vng-send (frame) =
+    let base = vng-state 0
+    in let q = vnx-load-queue base vnx-tx-q
+    in let id = poke-32 q.used 4 0
+    in let length = poke-32 q.used 8 0
+    in let used = poke-16 q.used 2 1
+    in let sent = vnx-send base frame
+    in let tx = peek-qword base 168
+    in show sent & " published=" & show (peek-qword base (vnx-tx-q + 48)) & " head=" & show (peek-byte tx 12) & " sent=" & show (peek-qword base 224)
+
+  opening : [Console] Nothing = act
+    print-line-uni ("device " & vng-bool (vnx-device-id (vng-pci #1AF4 #1041)) & vng-bool (vnx-device-id (vng-pci #1AF4 #1000))
+      & vng-bool (vnx-device-id (vng-pci #1AF4 #1042)) & vng-bool (vnx-device-id (vng-pci #8086 #1041)))
+    print-line-uni ("mac " & vng-bool (vnx-mac-valid (vng-mac [82, 84, 0, 18, 52, 86])) & vng-bool (vnx-mac-valid (vng-mac [1, 0, 94, 0, 0, 1]))
+      & vng-bool (vnx-mac-valid (vng-mac [0, 0, 0, 0, 0, 0])) & vng-bool (vnx-mac-valid (vng-mac [0, 0, 0, 0, 0, 1])))
+    print-line-uni ("roundtrip " & vng-roundtrip 0)
+    let base = vng-state 0
+    in print-line-uni ("state valid=" & vng-bool (vnx-valid base) & " mac=" & show (list-at (vnx-mac base) 0) & ":" & show (list-at (vnx-mac base) 5)
+      & " pending=" & vng-bool (vnx-pending base) & " fault=" & show (vnx-fault base) & " valid=" & vng-bool (vnx-valid base) & " mac-len=" & show (list-length (vnx-mac base)))
+    print-line-uni ("recv " & vng-recv 0 26 0 1)
+    print-line-uni ("recv-zero-count " & vng-recv 0 26 0 0)
+    print-line-uni ("recv-runt " & vng-recv 0 25 0 1)
+    print-line-uni ("recv-offload " & vng-recv 0 26 1 1)
+    print-line-uni ("recv-merged " & vng-recv 0 26 0 2)
+    print-line-uni ("recv-bad-id " & vng-recv 32 26 0 1)
+    print-line-uni ("recv-oversized " & vng-recv 0 2049 0 1)
+    print-line-uni ("send " & vng-send [7, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+    print-line-uni ("send-short " & vng-send [7, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+    print-line-uni ("send-octet " & vng-send [7, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 256])
+  end
+Page 1

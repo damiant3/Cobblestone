@@ -1,0 +1,157 @@
+Chapter: NameBook
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter Ed25519
+
+ The signed bytes are the ASCII tag "codex-namebook-v1", a zero byte, the
+ grantor key, then for each entry its name as UTF-8 and its key, every field
+ preceded by its length in 4 bytes big-endian. The tag keeps a book signature
+ from verifying as any other signed object; the length prefixes keep two books
+ whose names split differently from sharing bytes.
+
+Section: Records
+
+  NameEntry = record {
+    name : Text,
+    key : List Integer
+  }
+
+  NameBook = record {
+    grantor : List Integer,
+    entries : List NameEntry,
+    signature : List Integer
+  }
+
+Section: Signed Bytes
+
+  nb-tag : List Integer = [99, 111, 100, 101, 120, 45, 110, 97, 109, 101, 98, 111, 111, 107, 45, 118, 49]
+
+  nb-len4 : Integer -> List Integer
+  nb-len4 (n) = [bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+
+  nb-field : List Integer -> List Integer
+  nb-field (bs) = nb-len4 (list-length bs) & bs
+
+  nb-entries-bytes : List NameEntry, Integer, List Integer -> List Integer
+  nb-entries-bytes (es) (i) (acc) =
+    if i >= list-length es then acc
+    else let e = list-at es i
+    in nb-entries-bytes es (i + 1) (acc & nb-field (text-to-utf8-bytes (e.name)) & nb-field (e.key))
+
+  name-book-bytes : List Integer, List NameEntry -> List Integer
+  name-book-bytes (grantor) (entries) =
+    nb-entries-bytes entries 0 (nb-tag & [0] & nb-field grantor)
+
+Section: Signing and Checking
+
+  name-book-sign : List Integer, List Integer, List NameEntry -> NameBook
+  name-book-sign (grantor-secret) (grantor) (entries) = NameBook {
+    grantor = grantor,
+    entries = entries,
+    signature = ed25519-sign grantor-secret grantor (name-book-bytes grantor entries)
+  }
+
+ A book is valid when its grantor is the expected one and the signature
+ verifies, and no name appears twice: a repeated name would let the reader
+ pick which key it binds.
+
+  name-book-valid : NameBook, List Integer -> Boolean
+  name-book-valid (book) (grantor) =
+    if nb-bytes-equal (book.grantor) grantor 0 == False then False
+    else if nb-repeated (book.entries) 0 1 then False
+    else ed25519-verify grantor (name-book-bytes grantor (book.entries)) (book.signature)
+
+  nb-bytes-equal : List Integer, List Integer, Integer -> Boolean
+  nb-bytes-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else nb-bytes-equal a b (i + 1)
+
+  nb-repeated : List NameEntry, Integer, Integer -> Boolean
+  nb-repeated (es) (i) (j) =
+    if i >= list-length es then False
+    else if j >= list-length es then nb-repeated es (i + 1) (i + 2)
+    else if (list-at es i).name == (list-at es j).name then True
+    else nb-repeated es i (j + 1)
+
+Section: Wire Form
+
+ On the wire a book is its signature as one length-prefixed field, then
+ exactly the signed bytes. The entries run to the end, so the decoder answers
+ a book only when every byte is consumed by whole name and key pairs and the
+ book re-encodes to the same bytes; it does not check the signature, which is
+ name-book-valid's job against the grantor the reader expects.
+
+  name-book-encode : NameBook -> List Integer
+  name-book-encode (book) = nb-field (book.signature) & name-book-bytes (book.grantor) (book.entries)
+
+  NbField = record { ok : Boolean, value : List Integer, next : Integer }
+
+  NbEntries = record { ok : Boolean, entries : List NameEntry }
+
+  nb-byte : List Integer, Integer -> Integer
+  nb-byte (bs) (i) = if i < 0 | i >= list-length bs then 0 else list-at bs i
+
+  nb-read-field : List Integer, Integer -> NbField
+  nb-read-field (bs) (i) =
+    let n = bit-or (bit-or (bit-shl (nb-byte bs i) 24) (bit-shl (nb-byte bs (i + 1)) 16)) (bit-or (bit-shl (nb-byte bs (i + 2)) 8) (nb-byte bs (i + 3)))
+    in if i < 0 | i + 4 > list-length bs | n > list-length bs - i - 4 then NbField { ok = False, value = [], next = i }
+    else NbField { ok = True, value = nb-slice bs (i + 4) (i + 4 + n) [], next = i + 4 + n }
+
+  nb-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  nb-slice (bs) (i) (stop) (acc) = if i >= stop then acc else nb-slice bs (i + 1) stop (list-push acc (list-at bs i))
+
+  nb-tag-at : List Integer, Integer, Integer -> Boolean
+  nb-tag-at (bs) (at) (i) =
+    if i >= list-length nb-tag then nb-byte bs (at + i) == 0 & at + i < list-length bs
+    else if nb-byte bs (at + i) /= list-at nb-tag i | at + i >= list-length bs then False
+    else nb-tag-at bs at (i + 1)
+
+  nb-read-entries : List Integer, Integer, List NameEntry -> NbEntries
+  nb-read-entries (bs) (i) (acc) =
+    if i == list-length bs then NbEntries { ok = True, entries = acc }
+    else let n = nb-read-field bs i
+    in let k = nb-read-field bs n.next
+    in if n.ok == False | k.ok == False then NbEntries { ok = False, entries = acc }
+    else nb-read-entries bs k.next (list-push acc (NameEntry { name = utf8-bytes-to-text (n.value), key = k.value }))
+
+  name-book-decode-checked : List Integer -> Maybe NameBook
+  name-book-decode-checked (bs) =
+    let s = nb-read-field bs 0
+    in let at = s.next
+    in if s.ok == False | nb-tag-at bs at 0 == False then None
+    else let g = nb-read-field bs (at + list-length nb-tag + 1)
+    in if g.ok == False then None
+    else let es = nb-read-entries bs g.next []
+    in if es.ok == False then None
+    else let book = NameBook { grantor = g.value, entries = es.entries, signature = s.value }
+    in if nb-bytes-equal (name-book-encode book) bs 0 then Just book else None
+
+Section: Lookup
+
+  name-book-key : NameBook, Text -> Maybe (List Integer)
+  name-book-key (book) (name) = nb-find (book.entries) name 0
+
+  nb-find : List NameEntry, Text, Integer -> Maybe (List Integer)
+  nb-find (es) (name) (i) =
+    if i >= list-length es then None
+    else if (list-at es i).name == name then Just ((list-at es i).key)
+    else nb-find es name (i + 1)
+
+  name-book-key-hex : List Integer -> Text
+  name-book-key-hex (key) = nb-hex key 0 ""
+
+  nb-hex : List Integer, Integer, Text -> Text
+  nb-hex (bs) (i) (acc) =
+    if i >= list-length bs then acc
+    else let b = list-at bs i
+    in nb-hex bs (i + 1) (acc & nb-nibble (bit-shru b 4) & nb-nibble (bit-and b 15))
+
+  nb-nibble : Integer -> Text
+  nb-nibble (n) =
+    if n < 10 then show n
+    else if n == 10 then "a" else if n == 11 then "b" else if n == 12 then "c"
+    else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+Page 1

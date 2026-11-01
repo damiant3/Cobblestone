@@ -39,7 +39,11 @@ param(
     [string]$Subject = '',
     [string]$Kernel = '',
     [switch]$KeepArtifacts,
-    [int]$TimeoutSec = 240
+    [int]$TimeoutSec = 240,
+    # The subject is a trap arm (`.fatal`): x86-64 must fault, and each plug's
+    # program passes only when it exits non-zero without a refusal marker, so a
+    # missing emitter cannot pass for a trap (plugs-backlog 2.119).
+    [switch]$ExpectTrap
 )
 
 Set-StrictMode -Version Latest
@@ -185,6 +189,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: subject did not compile to CDX; see
 
 & (Join-Path $Repo 'tools\codex-vm.exe') -kernel $truthCdx -headless -output $truthOut 2>&1 | Out-Null
 $truth = @(Get-Content $truthOut -ErrorAction SilentlyContinue | Where-Object { $_.Trim().Length -gt 0 })
+if ($ExpectTrap -and -not ($truth -match '!EXC=')) { Write-Host "FAIL: -ExpectTrap, but the subject did not fault on x86-64"; exit 3 }
 if ($truth.Count -eq 0) { Write-Host "FAIL: the subject produced no output on x86-64"; exit 3 }
 Write-Host "[oracle] truth: $($truth.Count) values from x86-64"
 
@@ -306,7 +311,16 @@ foreach ($p in $Plugs) {
         Write-Host "  $($p.Name): FAIL -- the emitted program could not be run: $_"
         $fail++; continue
     }
+    $runCode = $LASTEXITCODE
     $got = @($runOut | ForEach-Object { "$_" } | Where-Object { $_.Trim().Length -gt 0 })
+
+    if ($ExpectTrap) {
+        $refusedHere = @($got | Where-Object { $_ -match 'CODEX_REFUSED_|no emitter for|has no form|codex-refused-' })
+        if ($runCode -eq 0) { Write-Host "  $($p.Name): FAIL -- exit 0, the trap arm ran to completion"; $fail++ }
+        elseif ($refusedHere.Count -gt 0) { Write-Host "  $($p.Name): FAIL -- exit $runCode is a refusal, not a trap: $($refusedHere[0].Trim())"; $fail++ }
+        else { Write-Host "  $($p.Name): PASS -- trapped (exit $runCode)"; $pass++ }
+        continue
+    }
 
     if ($got.Count -eq 0) {
         Write-Host "  $($p.Name): FAIL -- the emitted program produced no output"

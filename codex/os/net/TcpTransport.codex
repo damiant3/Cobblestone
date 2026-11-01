@@ -3,14 +3,14 @@ Chapter: TcpTransport
   cites Net chapter MessageFraming
   cites Foreword chapter Sha256
 
- We say:
-
 Section: Transport State
   TcpTransportState = record {
     session : NetSession,
     recv-base : Integer,
     recv-len : Integer,
     recv-cap : Integer,
+    recv-limit : Integer,
+    recv-floor : Integer,
     messages-sent : Integer between 0 and 4294967295,
     messages-received : Integer between 0 and 4294967295,
     arena-base : Integer,
@@ -21,10 +21,15 @@ Section: Transport State
   transport-recv-buf-cap : Integer = 33554432
 
   transport-new : NetSession -> TcpTransportState
-  transport-new (sess) = transport-new-with-cap sess transport-recv-buf-cap
+  transport-new (sess) = transport-new-growing sess transport-recv-initial transport-recv-buf-cap
+
+  transport-recv-initial : Integer = 4096
 
   transport-new-with-cap : NetSession, Integer -> TcpTransportState
-  transport-new-with-cap (sess) (cap) =
+  transport-new-with-cap (sess) (cap) = transport-new-growing sess cap cap
+
+  transport-new-growing : NetSession, Integer, Integer -> TcpTransportState
+  transport-new-growing (sess) (cap) (limit) =
     let base = __heap-save
     in let adv = __heap-advance cap
     in TcpTransportState {
@@ -32,11 +37,45 @@ Section: Transport State
       recv-base = base,
       recv-len = 0,
       recv-cap = cap,
+      recv-limit = limit,
+      recv-floor = 0,
       messages-sent = 0,
       messages-received = 0,
       arena-base = 0,
       deferred-base = 0,
       gen = 0
+    }
+
+  transport-pow-at-least : Integer, Integer -> Integer
+  transport-pow-at-least (c) (need) = if c >= need then c else transport-pow-at-least (c * 2) need
+
+  transport-copy-bytes : Integer, Integer, Integer, Integer -> Integer
+  transport-copy-bytes (src) (dst) (i) (n) =
+    if i >= n then i
+    else let w = __buf-write-byte dst i (peek-byte src i)
+    in transport-copy-bytes src dst (i + 1) n
+
+  transport-room : TcpTransportState, Integer -> TcpTransportState
+  transport-room (ts) (need) =
+    if need <= ts.recv-cap | need > ts.recv-limit then ts
+    else let grown = transport-pow-at-least (if ts.recv-cap < 4096 then 4096 else ts.recv-cap * 2) need
+    in let cap = if grown > ts.recv-limit then ts.recv-limit else grown
+    in let base = __heap-save
+    in let adv = __heap-advance cap
+    in let top = __heap-save
+    in let moved = transport-copy-bytes (ts.recv-base) base 0 (ts.recv-len)
+    in TcpTransportState {
+      session = ts.session,
+      recv-base = base,
+      recv-len = ts.recv-len,
+      recv-cap = cap,
+      recv-limit = ts.recv-limit,
+      recv-floor = top,
+      messages-sent = ts.messages-sent,
+      messages-received = ts.messages-received,
+      arena-base = ts.arena-base,
+      deferred-base = ts.deferred-base,
+      gen = ts.gen
     }
 
 Section: Send Message
@@ -55,7 +94,7 @@ Section: Send Message
         session = r.session,
         recv-base = ts.recv-base,
         recv-len = ts.recv-len,
-        recv-cap = ts.recv-cap,
+        recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
         messages-sent = ts.messages-sent + 1,
         messages-received = ts.messages-received,
         arena-base = ts.arena-base,
@@ -80,7 +119,7 @@ Section: Receive Processing
       session = ts.session,
       recv-base = ts.recv-base,
       recv-len = 0,
-      recv-cap = ts.recv-cap,
+      recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
       messages-sent = ts.messages-sent,
       messages-received = ts.messages-received,
       arena-base = ts.arena-base,
@@ -89,7 +128,10 @@ Section: Receive Processing
     }
 
   transport-feed-raw : TcpTransportState, List Integer -> TcpTransportState
-  transport-feed-raw (ts) (data) =
+  transport-feed-raw (ts) (data) = transport-feed-raw-fit (transport-room ts (ts.recv-len + list-length data)) data
+
+  transport-feed-raw-fit : TcpTransportState, List Integer -> TcpTransportState
+  transport-feed-raw-fit (ts) (data) =
     let n = list-length data
     in if (ts.recv-len + n) > (ts.recv-cap) then ts
     else let w = __buf-write-bytes (ts.recv-base) (ts.recv-len) data
@@ -97,7 +139,7 @@ Section: Receive Processing
       session = ts.session,
       recv-base = ts.recv-base,
       recv-len = ts.recv-len + n,
-      recv-cap = ts.recv-cap,
+      recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
       messages-sent = ts.messages-sent,
       messages-received = ts.messages-received,
       arena-base = ts.arena-base,
@@ -127,7 +169,7 @@ Section: Receive Processing
         body = [],
         has-message = False
       }
-    else if msg-len > (ts.recv-cap - 4) then
+    else if msg-len > (ts.recv-limit - 4) then
       TransportRecvResult {
         transport = transport-drop-recv ts,
         tag = 0,
@@ -148,7 +190,7 @@ Section: Receive Processing
       session = ts.session,
       recv-base = ts.recv-base,
       recv-len = remaining-len,
-      recv-cap = ts.recv-cap,
+      recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
       messages-sent = ts.messages-sent,
       messages-received = ts.messages-received + 1,
       arena-base = ts.arena-base,
@@ -175,7 +217,10 @@ Section: Feed Inbound Frame
  `codex/test/net-recv-heap`: 64 of the 208 bytes a frame retained.
 
   transport-feed-from : TcpTransportState, NetSession, List Integer -> TcpTransportState
-  transport-feed-from (ts) (sess) (data) =
+  transport-feed-from (ts) (sess) (data) = transport-feed-from-fit (transport-room ts (ts.recv-len + list-length data)) sess data
+
+  transport-feed-from-fit : TcpTransportState, NetSession, List Integer -> TcpTransportState
+  transport-feed-from-fit (ts) (sess) (data) =
     let n = list-length data
     in if (ts.recv-len + n) > (ts.recv-cap)
     then transport-set-session ts sess
@@ -184,7 +229,7 @@ Section: Feed Inbound Frame
       session = sess,
       recv-base = ts.recv-base,
       recv-len = ts.recv-len + n,
-      recv-cap = ts.recv-cap,
+      recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
       messages-sent = ts.messages-sent,
       messages-received = ts.messages-received,
       arena-base = ts.arena-base,
@@ -208,7 +253,10 @@ Section: Feed Inbound Frame
     else transport-write-range base (__buf-write-byte base dst (list-at buf i)) buf (i + 1) stop
 
   transport-feed-range : TcpTransportState, NetSession, List Integer, Integer, Integer -> TcpTransportState
-  transport-feed-range (ts) (sess) (buf) (off) (stop) =
+  transport-feed-range (ts) (sess) (buf) (off) (stop) = transport-feed-range-fit (if stop > off then transport-room ts (ts.recv-len + stop - off) else ts) sess buf off stop
+
+  transport-feed-range-fit : TcpTransportState, NetSession, List Integer, Integer, Integer -> TcpTransportState
+  transport-feed-range-fit (ts) (sess) (buf) (off) (stop) =
     let n = stop - off
     in if n <= 0 then transport-set-session ts sess
     else if (ts.recv-len + n) > (ts.recv-cap) then transport-set-session ts sess
@@ -217,7 +265,7 @@ Section: Feed Inbound Frame
       session = sess,
       recv-base = ts.recv-base,
       recv-len = ts.recv-len + n,
-      recv-cap = ts.recv-cap,
+      recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
       messages-sent = ts.messages-sent,
       messages-received = ts.messages-received,
       arena-base = ts.arena-base,
@@ -250,7 +298,7 @@ Section: Connection Lifecycle
       session = sess,
       recv-base = ts.recv-base,
       recv-len = ts.recv-len,
-      recv-cap = ts.recv-cap,
+      recv-cap = ts.recv-cap, recv-limit = ts.recv-limit, recv-floor = ts.recv-floor,
       messages-sent = ts.messages-sent,
       messages-received = ts.messages-received,
       arena-base = ts.arena-base,

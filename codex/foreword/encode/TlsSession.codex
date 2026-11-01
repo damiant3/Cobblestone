@@ -1,0 +1,104 @@
+Chapter: TlsSession
+  cites Foreword chapter SessionTypes
+  cites Encode chapter TlsEndpoint
+
+ RFC 8446 section 2: the client sends ClientHello; the server answers
+ with a HelloRetryRequest (after which the client sends ClientHello
+ again) or with ServerHello and, encrypted, EncryptedExtensions,
+ Certificate, CertificateVerify and Finished; the client sends Finished.
+ Application data flows only after the Finished messages, and
+ close_notify (section 6.1) ends the connection. Section 4.1.4: a second
+ HelloRetryRequest in the same connection is refused.
+
+Section: Messages
+
+  TsClientHello = | MkTsClientHello
+  TsHelloRetry = | MkTsHelloRetry
+  TsServerHello = | MkTsServerHello
+  TsServerFlight = | MkTsServerFlight
+  TsClientFinished = | MkTsClientFinished
+  TsCloseNotify = | MkTsCloseNotify
+
+Section: Common
+
+  tls-session-feed : TlsEp, List (List Integer), Integer, List (List Integer) -> TlsEpStep
+  tls-session-feed (ep) (recs) (i) (outs) =
+    if i >= list-length recs then TlsEpStep { tes-ep = ep, tes-out = outs }
+    else let s = tls-ep-recv ep (list-at recs i)
+    in tls-session-feed (s.tes-ep) recs (i + 1) (outs & s.tes-out)
+
+  tls-session-send-app : linear Session (SSend TsCloseNotify p) TlsEpStep, List Integer -> linear Session (SSend TsCloseNotify p) TlsEpStep
+  tls-session-send-app (x) (data) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-stay s (tls-ep-send-app (v.tes-ep) data)
+
+  tls-session-recv-app : linear Session (SSend TsCloseNotify p) TlsEpStep, List Integer -> linear Session (SSend TsCloseNotify p) TlsEpStep
+  tls-session-recv-app (x) (rec) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-stay s (tls-ep-recv (v.tes-ep) rec)
+
+  tls-session-close-notify : linear Session (SSend TsCloseNotify p) TlsEpStep -> linear Session p TlsEpStep
+  tls-session-close-notify (x) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-send s (tls-ep-close-notify (v.tes-ep))
+
+  tls-session-done : linear Session SEnd TlsEpStep -> TlsEpStep
+  tls-session-done (x) = session-close x
+
+Section: Client
+
+  tls-session-client-open : TlsEp -> linear Session (SSend TsClientHello (SRecv TsServerHello (SRecv TsServerFlight (SSend TsClientFinished (SSend TsCloseNotify SEnd))))) TlsEpStep
+  tls-session-client-open (ep) = session-open (TlsEpStep { tes-ep = ep, tes-out = [] })
+
+  tls-session-hello : linear Session (SSend TsClientHello p) TlsEpStep -> linear Session p TlsEpStep
+  tls-session-hello (x) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-send s (tls-ep-hello (v.tes-ep))
+
+  tls-session-server-hello : linear Session (SRecv TsServerHello p) TlsEpStep, List Integer -> linear Session p TlsEpStep
+  tls-session-server-hello (x) (rec) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-recv s (tls-ep-recv (v.tes-ep) rec)
+
+  tls-session-server-flight : linear Session (SRecv TsServerFlight (SSend TsClientFinished p)) TlsEpStep, List (List Integer) -> linear Session p TlsEpStep
+  tls-session-server-flight (x) (recs) =
+    when session-peek x
+      is MkPeeked (v) (s) -> tls-session-both s (tls-session-feed (v.tes-ep) recs 0 [])
+
+  tls-session-both : linear Session (SRecv m (SSend n p)) TlsEpStep, TlsEpStep -> linear Session p TlsEpStep
+  tls-session-both (s) (r) = session-send (session-recv s r) r
+
+Section: Server
+
+  tls-session-server-open : TlsEp -> linear Session (SRecv TsClientHello (SOffer (SSend TsHelloRetry (SRecv TsClientHello (SSend TsServerFlight (SRecv TsClientFinished (SSend TsCloseNotify SEnd))))) (SSend TsServerFlight (SRecv TsClientFinished (SSend TsCloseNotify SEnd))))) TlsEpStep
+  tls-session-server-open (ep) = session-open (TlsEpStep { tes-ep = ep, tes-out = [] })
+
+  tls-session-accept : linear Session (SRecv TsClientHello (SOffer (SSend TsHelloRetry l) (SSend TsServerFlight r))) TlsEpStep, List Integer -> Offered l r TlsEpStep
+  tls-session-accept (x) (rec) =
+    when session-peek x
+      is MkPeeked (v) (s) -> tls-session-offer (session-recv s (tls-ep-recv (v.tes-ep) rec))
+
+  tls-session-offer : linear Session (SOffer (SSend TsHelloRetry l) (SSend TsServerFlight r)) TlsEpStep -> Offered l r TlsEpStep
+  tls-session-offer (o) =
+    when session-peek o
+      is MkPeeked (v) (s) ->
+        (if (v.tes-ep).tep-phase == 1 then TookLeft (session-send (session-left s) v)
+         else if (v.tes-ep).tep-phase == 2 then TookRight (session-send (session-right s) v)
+         else Refused (session-abandon s))
+
+  tls-session-accept-retry : linear Session (SRecv TsClientHello (SSend TsServerFlight p)) TlsEpStep, List Integer -> Answered p TlsEpStep
+  tls-session-accept-retry (x) (rec) =
+    when session-peek x
+      is MkPeeked (v) (s) -> tls-session-answer s (tls-ep-recv (v.tes-ep) rec)
+
+  tls-session-answer : linear Session (SRecv TsClientHello (SSend TsServerFlight p)) TlsEpStep, TlsEpStep -> Answered p TlsEpStep
+  tls-session-answer (s) (r) =
+    if (r.tes-ep).tep-phase == 2 then Accepted (tls-session-both s r)
+    else let gone = session-abandon s
+    in Rejected r
+
+  tls-session-client-finished : linear Session (SRecv TsClientFinished p) TlsEpStep, List Integer -> linear Session p TlsEpStep
+  tls-session-client-finished (x) (rec) =
+    when session-peek x
+      is MkPeeked (v) (s) -> session-recv s (tls-ep-recv (v.tes-ep) rec)
+Page 1

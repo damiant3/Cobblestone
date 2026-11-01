@@ -1,0 +1,192 @@
+Chapter: PolicyProseApprovalTest
+  cites Trust chapter PolicyProse
+  cites Trust chapter PolicyEngine
+  cites Trust chapter NameBook
+  cites Trust chapter Approval
+  cites Trust chapter LeaseManager
+  cites Trust chapter AgentProtocol
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+Section: Keys
+
+ The three secrets are RFC 8032 section 7.1 TEST 1 (the grantor), TEST 2
+ (Jake) and TEST 3 (Damian).
+
+  grantor-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+  jake-sk : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+  damian-sk : List Integer = [197, 170, 141, 244, 63, 159, 131, 123, 237, 183, 68, 47, 49, 220, 183, 177, 102, 211, 133, 53, 7, 111, 9, 75, 133, 206, 58, 46, 11, 68, 88, 247]
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  checked : Text -> PolicyRead
+  checked (src) = compile-policy-checked ("We say:\n" & src)
+
+  unread : PolicyRead -> Text
+  unread (r) = "refused at [" & r.word & "], " & r.reason
+
+  first-grant : Text -> Maybe ProseGrant
+  first-grant (src) =
+    let pp = (checked src).policy
+    in if list-length pp.grants == 0 then None else Just (list-at pp.grants 0)
+
+  read-clause : Text, Text -> [Console] Nothing
+  read-clause (label) (src) = when first-grant src
+    is None -> print-line-uni (label & ": " & unread (checked src))
+    is Just (g) -> print-line-uni (label & ": " & show (list-length g.approvers) & " approver(s), when " & approval-condition-text g.approval-when & ", zone [" & g.approval-zone & "]")
+
+  same-condition : Text, ApprovalCondition -> Boolean
+  same-condition (src) (want) = when first-grant src
+    is None -> False
+    is Just (g) -> apv-bytes-equal (approval-condition-bytes g.approval-when) (approval-condition-bytes want)
+
+  lowered : Text, NameBook, List Integer -> Text
+  lowered (src) (book) (grantor) =
+    let r = checked src
+    in if r.ok == False then unread r
+    else lowered-policy r.policy book grantor
+
+  lowered-policy : ProsePolicy, NameBook, List Integer -> Text
+  lowered-policy (pp) (book) (grantor) = when lower-policy pp "p" book grantor
+    is None -> "refused"
+    is Just (p) -> if list-length p.rules == 0 then "no rules" else outcome-text (list-at p.rules 0).outcome
+
+  outcome-text : PolicyEffect -> Text
+  outcome-text (e) = when e
+    is AllowWithApproval (keys) (condition) (zone) -> "approval by " & show (list-length keys) & " key(s), zone " & zone & ", condition " & decoded-text condition
+    is AllowWithQuota (m) (period) (inner) -> "quota " & show m & " minutes per " & period & " over " & outcome-text inner
+    is Allow -> "allow"
+    is otherwise -> "other"
+
+  decided : Text, NameBook, List Integer, List Integer -> Text
+  decided (src) (book) (grantor) (who) = when lower-policy (checked src).policy "p" book grantor
+    is None -> "refused"
+    is Just (p) ->
+      let d = eval-policy p (PolicyContext { capability = "Email.Send", direction = 1, trust-score = 0, current-time = 600, agent-id = name-book-key-hex who, scope = "" })
+      in yn d.allowed & ", " & d.reason & ", quota " & show d.quota-minutes & " per [" & d.quota-period & "], needs approval " & yn d.needs-approval
+
+  decoded-text : List Integer -> Text
+  decoded-text (bs) = when approval-condition-decode bs
+    is None -> "undecodable"
+    is Just (c) -> approval-condition-text c
+
+  decodes : List Integer -> Text
+  decodes (bs) = when approval-condition-decode bs
+    is None -> "none"
+    is Just (c) -> "just"
+
+  nest : Integer, ApprovalCondition -> ApprovalCondition
+  nest (n) (c) = if n <= 0 then c else nest (n - 1) (CondNot c)
+
+  drop-last : List Integer -> List Integer
+  drop-last (bs) = drop-last-loop bs 0 (list-length bs - 1) []
+
+  drop-last-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  drop-last-loop (bs) (i) (n) (acc) = if i >= n then acc else drop-last-loop bs (i + 1) n (acc & [list-at bs i])
+
+  grant-msg : List Integer -> GrantMsg
+  grant-msg (holder) = GrantMsg {
+    id = [9],
+    proposal = [],
+    from = AgentIdentity { public-key = holder },
+    grantor = AgentIdentity { public-key = holder },
+    audience = AgentIdentity { public-key = holder },
+    capability = Capability { name = "Email.Send", direction = 1, scope = "smtp.example.org" },
+    scope = Scope { direction = 1, path = "smtp.example.org", duration = 0 },
+    not-before = 0,
+    expires = 900,
+    policy-sha256 = [],
+    flow-rules = [],
+    gates = [],
+    conditions = [],
+    signature = []
+  }
+
+  drawn : LeaseDraw -> Text
+  drawn (d) = when d
+    is LeaseDrawRefused (why) -> "refused: " & why
+    is LeaseDrawn (s) -> if s.count == 0 then "empty" else lease-text (list-at s.leases 0)
+
+  expiry : LeaseDraw -> Text
+  expiry (d) = when d
+    is LeaseDrawRefused (why) -> "refused: " & why
+    is LeaseDrawn (s) -> "expires " & show (list-at s.leases 0).expires
+
+  lease-text : Lease -> Text
+  lease-text (l) = "lease approvers " & show (list-length l.approval) & ", when " & approval-condition-text l.approval-when & ", zone [" & l.approval-zone & "]"
+
+  example : Text
+  example = "Jake is permitted to use Email.Send with approval from Damian when outside 09:00 to 17:00 on weekdays in Europe/London"
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let gp = ed25519-public-key grantor-sk
+    in let jp = ed25519-public-key jake-sk
+    in let dp = ed25519-public-key damian-sk
+    in let book = name-book-sign grantor-sk gp [NameEntry { name = "Jake", key = jp }, NameEntry { name = "Damian", key = dp }, NameEntry { name = "Alice", key = gp }]
+    in let gated = rule-allow-approved "r" AlwaysTrue [dp] (approval-condition-bytes (FlagSet "urgent")) "Europe/London"
+    in let store = lease-store-empty
+    in act
+      print-line-uni (clarifier-reflect (checked example).policy)
+      print-line-uni ("example is section 4's condition: " & yn (same-condition example (CondNot (WeekWindow [0, 1, 2, 3, 4] 540 1020))))
+      print-line-uni ("example lowered: " & lowered example book gp)
+      print-line-uni ("no clause lowered: " & lowered "Jake is permitted to use Email.Send" book gp)
+      read-clause "no clause" "Jake is permitted to use Email.Send on weekdays"
+      read-clause "marked" "Jake is permitted to use Email.Send with approval from Damian when marked urgent"
+      read-clause "answering" "Jake is permitted to use Email.Send with approval from Damian when answering Gary"
+      read-clause "to" "Jake is permitted to use Email.Send with approval from Damian when to gary@example.org"
+      read-clause "between" "Jake is permitted to use Email.Send with approval from Damian when between 18:00 and 23:59 in Europe/London"
+      read-clause "between on weekends" "Jake is permitted to use Email.Send with approval from Damian when between 18:00 and 23:00 on weekends in UTC"
+      read-clause "on weekends" "Jake is permitted to use Email.Send with approval from Damian when on weekends in UTC"
+      read-clause "outside" "Jake is permitted to use Email.Send with approval from Damian when outside 09:00 to 17:00 in UTC."
+      read-clause "and before or" "Jake is permitted to use Email.Send with approval from Damian when marked urgent and answering Gary or on weekends in UTC"
+      read-clause "window then and" "Jake is permitted to use Email.Send with approval from Damian when between 09:00 and 17:00 and marked urgent in UTC"
+      read-clause "two names comma" "Jake is permitted to use Email.Send with approval from Damian, Alice"
+      read-clause "two names and" "Jake is permitted to use Email.Send with approval from Damian and Alice when marked urgent"
+      read-clause "grant window kept" "Jake is permitted to use Email.Send on weekdays between 08:00 and 20:00 with approval from Damian when marked urgent"
+      print-line-uni (clarifier-reflect (checked "Jake is permitted to use Email.Send on weekdays between 08:00 and 20:00 with approval from Damian when marked urgent").policy)
+      read-clause "unknown word" "Jake is permitted to use Email.Send with approval from Damian when sometimes"
+      read-clause "dangling and" "Jake is permitted to use Email.Send with approval from Damian when marked urgent and"
+      read-clause "reversed window" "Jake is permitted to use Email.Send with approval from Damian when between 17:00 and 09:00"
+      read-clause "hour 25" "Jake is permitted to use Email.Send with approval from Damian when between 25:00 and 26:00"
+      read-clause "no names" "Jake is permitted to use Email.Send with approval from when marked urgent"
+      read-clause "empty zone" "Jake is permitted to use Email.Send with approval from Damian when marked urgent in "
+      read-clause "two-word zone" "Jake is permitted to use Email.Send with approval from Damian in Europe London"
+      print-line-uni ("quota lowered: " & lowered "Jake is permitted to use Email.Send for no more than 1 hour per day" book gp)
+      print-line-uni ("quota and approval lowered: " & lowered "Jake is permitted to use Email.Send for no more than 30 minutes per session with approval from Damian when between 18:00 and 23:00 in UTC" book gp)
+      print-line-uni ("quota decision: " & decided "Jake is permitted to use Email.Send for no more than 1 hour per day" book gp jp)
+      print-line-uni ("approval and quota decision: " & decided "Jake is permitted to use Email.Send for no more than 30 minutes per session with approval from Damian when between 18:00 and 23:00 in UTC" book gp jp)
+      print-line-uni ("no quota decision: " & decided "Jake is permitted to use Email.Send" book gp jp)
+      print-line-uni ("clock without a zone: " & lowered "Jake is permitted to use Email.Send with approval from Damian when between 18:00 and 23:00" book gp)
+      print-line-uni ("clock with a zone: " & lowered "Jake is permitted to use Email.Send with approval from Damian when between 18:00 and 23:00 in UTC" book gp)
+      print-line-uni ("days without a zone: " & lowered "Jake is permitted to use Email.Send with approval from Damian when on weekends" book gp)
+      print-line-uni ("reads a field: " & lowered "Jake is permitted to use Email.Send with approval from Damian when answering Gary" book gp)
+      print-line-uni ("family covers the guarded label: " & lowered "Jake is permitted to use Email.Send with approval from Damian\nJake is permitted to use Email" book gp)
+      print-line-uni ("same label unguarded: " & lowered "Jake is permitted to use Email.Send with approval from Damian\nJake is permitted to use Email.Send" book gp)
+      print-line-uni ("other family unguarded: " & lowered "Jake is permitted to use Email.Send with approval from Damian\nJake is permitted to use Network" book gp)
+      print-line-uni ("same label, other subject: " & lowered "Jake is permitted to use Email.Send with approval from Damian\nDamian is permitted to use Email.Send" book gp)
+      print-line-uni ("approver not in book: " & lowered "Jake is permitted to use Email.Send with approval from Zed" book gp)
+      print-line-uni ("approver is the subject: " & lowered "Jake is permitted to use Email.Send with approval from Jake" book gp)
+      print-line-uni ("two approvers: " & lowered "Jake is permitted to use Email.Send with approval from Damian, Alice when between 18:00 and 23:00 in UTC" book gp)
+      print-line-uni ("draw under approval rule: " & drawn (lease-draw store (grant-msg jp) gated 100))
+      print-line-uni ("draw under allow rule: " & drawn (lease-draw store (grant-msg jp) (rule-allow "a" AlwaysTrue) 100))
+      print-line-uni ("draw under deny rule: " & drawn (lease-draw store (grant-msg jp) (rule-deny "d" AlwaysTrue "no") 100))
+      print-line-uni ("draw with bad condition: " & drawn (lease-draw store (grant-msg jp) (rule-allow-approved "r" AlwaysTrue [dp] [99] "UTC") 100))
+      print-line-uni ("draw for 50 ticks at 100: " & expiry (lease-draw store (grant-msg jp) (PolicyRule { name = "u", condition = AlwaysTrue, outcome = AllowWithDuration 50 }) 100))
+      print-line-uni ("draw for 5000 ticks at 100: " & expiry (lease-draw store (grant-msg jp) (PolicyRule { name = "u", condition = AlwaysTrue, outcome = AllowWithDuration 5000 }) 100))
+      print-line-uni ("draw for 0 ticks: " & expiry (lease-draw store (grant-msg jp) (PolicyRule { name = "u", condition = AlwaysTrue, outcome = AllowWithDuration 0 }) 100))
+      print-line-uni ("draw with no approver: " & drawn (lease-draw store (grant-msg jp) (rule-allow-approved "r" AlwaysTrue [] (approval-condition-bytes CondAlways) "UTC") 100))
+      let nested = CondAny [CondAll [FlagSet "urgent", FieldIs "answering" "Gary"], CondNot (WeekWindow [5, 6] 0 1440), TimeBetween 5 9, FieldAbove "amount" (0 - 3), CallIs "Email" "smtp.example.org", FieldHas "subject" "roof"]
+      in let bs = approval-condition-bytes nested
+      in act
+        print-line-uni ("decode round trip: " & yn (decoded-text bs == approval-condition-text nested))
+        print-line-uni ("decode short " & decodes (drop-last bs) & ", trailing " & decodes (bs & [0]) & ", bad tag " & decodes [13] & ", empty " & decodes [])
+        print-line-uni ("decode depth 64 " & decodes (approval-condition-bytes (nest 64 CondAlways)) & ", depth 65 " & decodes (approval-condition-bytes (nest 65 CondAlways)))
+      end
+  end
+
+Page 1

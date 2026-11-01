@@ -1,0 +1,176 @@
+Chapter: AccpFlow
+  cites Accp chapter AccpJson
+  cites Accp chapter AccpLease
+
+Section: Rules
+
+  FlowEnd = record { ok : Boolean, name : Text, scope : Text, next : Integer }
+  FlowRule = record { ok : Boolean, source : FlowEnd, sink : FlowEnd }
+  FlowVerdict = record { ok : Boolean, reason : Text, pairs : List Text }
+
+  afl-end-fail : Integer -> FlowEnd
+  afl-end-fail (at) = FlowEnd { ok = False, name = "", scope = "", next = at }
+
+  afl-name-end : Text, Integer -> Integer
+  afl-name-end (s) (i) =
+    if i >= text-length s then i
+    else if aj-space (aj-at s i) | aj-is s i "\"" then i
+    else afl-name-end s (i + 1)
+
+  afl-end : Text, Integer -> FlowEnd
+  afl-end (s) (at) =
+    let i = aj-ws s at
+    in let n = afl-name-end s i
+    in if n == i then afl-end-fail i
+    else let name = substring s i (n - i)
+    in if name == "->" then afl-end-fail i
+    else let j = aj-ws s n
+    in if aj-is s j "\"" == False then FlowEnd { ok = True, name = name, scope = "", next = j }
+    else let q = aj-string s j
+    in if q.ok == False then afl-end-fail j
+    else FlowEnd { ok = True, name = name, scope = aj-decode (substring s j (q.next - j)), next = aj-ws s q.next }
+
+  afl-rule-fail : FlowRule
+  afl-rule-fail = FlowRule { ok = False, source = afl-end-fail 0, sink = afl-end-fail 0 }
+
+  afl-parse : Text -> FlowRule
+  afl-parse (s) =
+    let a = afl-end s 0
+    in if a.ok == False then afl-rule-fail
+    else if aj-is s a.next "-" == False | aj-is s (a.next + 1) ">" == False then afl-rule-fail
+    else let b = afl-end s (a.next + 2)
+    in if b.ok == False | b.next /= text-length s then afl-rule-fail
+    else FlowRule { ok = True, source = a, sink = b }
+
+  afl-console : Text -> Boolean
+  afl-console (name) = al-label-covered "Console" name
+
+  afl-rule-refusal : Text, Integer -> Text
+  afl-rule-refusal (s) (i) =
+    let r = afl-parse s
+    in if r.ok == False then "flow rule " & show i & " is malformed"
+    else if afl-console (r.source.name) & afl-console (r.sink.name) then "flow rule " & show i & " forbids a flow between the requester's own channels"
+    else ""
+
+  afl-rules-refusal : List Text, Integer -> Text
+  afl-rules-refusal (rules) (i) =
+    if i >= list-length rules then ""
+    else let why = afl-rule-refusal (list-at rules i) i
+    in if why /= "" then why
+    else afl-rules-refusal rules (i + 1)
+
+Section: Matching
+
+  afl-names-overlap : Text, Text -> Boolean
+  afl-names-overlap (a) (b) = al-label-covered a b | al-label-covered b a
+
+  afl-scopes-overlap : Text, Text, Text -> Boolean
+  afl-scopes-overlap (label) (a) (b) =
+    if a == "" | b == "" then True
+    else al-scope-within label a b | al-scope-within label b a
+
+  afl-can-read : Text -> Boolean
+  afl-can-read (label) = al-ends label ".Write" == False
+
+  afl-can-write : Text -> Boolean
+  afl-can-write (label) = al-ends label ".Read" == False
+
+  afl-matches : FlowEnd, Text, Text -> Boolean
+  afl-matches (p) (label) (scope) =
+    afl-names-overlap (p.name) label & afl-scopes-overlap label (p.scope) scope
+
+  afl-label-text : Text, Text -> Text
+  afl-label-text (label) (scope) = if scope == "" then label else label & " " & aj-quote scope
+
+  afl-pair-json : Text, Text, Text, Text -> Text
+  afl-pair-json (sl) (ss) (kl) (ks) =
+    "{\"source\":" & aj-quote (afl-label-text sl ss) & ",\"sink\":" & aj-quote (afl-label-text kl ks) & "}"
+
+Section: The Check
+
+  afl-sinks : FlowRule, List Text, List Text, Integer, Integer, List Text -> List Text
+  afl-sinks (r) (row) (scopes) (i) (j) (acc) =
+    if j >= list-length row then acc
+    else let kl = list-at row j
+    in let ks = list-at scopes j
+    in let hit = afl-can-write kl & afl-matches (r.sink) kl ks
+    in let next = if hit then list-push acc (afl-pair-json (list-at row i) (list-at scopes i) kl ks) else acc
+    in afl-sinks r row scopes i (j + 1) next
+
+  afl-sources : FlowRule, List Text, List Text, Integer, List Text -> List Text
+  afl-sources (r) (row) (scopes) (i) (acc) =
+    if i >= list-length row then acc
+    else let sl = list-at row i
+    in let next = if afl-can-read sl & afl-matches (r.source) sl (list-at scopes i) then afl-sinks r row scopes i 0 acc else acc
+    in afl-sources r row scopes (i + 1) next
+
+  afl-rules : List Text, List Text, List Text, Integer, List Text -> List Text
+  afl-rules (rules) (row) (scopes) (k) (acc) =
+    if k >= list-length rules then acc
+    else afl-rules rules row scopes (k + 1) (afl-sources (afl-parse (list-at rules k)) row scopes 0 acc)
+
+  afl-check : List Text, List Text, List Text -> FlowVerdict
+  afl-check (rules) (row) (scopes) =
+    let why = afl-rules-refusal rules 0
+    in if why /= "" then FlowVerdict { ok = False, reason = why, pairs = [] }
+    else if list-length row /= list-length scopes then FlowVerdict { ok = False, reason = "effects and scopes disagree", pairs = [] }
+    else let pairs = afl-rules rules row scopes 0 []
+    in FlowVerdict { ok = list-length pairs == 0, reason = if list-length pairs == 0 then "" else "row holds both ends of a forbidden flow", pairs = pairs }
+
+Section: Raw Memory
+
+  afl-raw-memory : List Text
+  afl-raw-memory = [
+    "peek-byte", "peek-16", "peek-32", "peek-qword",
+    "poke-byte", "poke-16", "poke-32", "poke-qword",
+    "__buf-read-bytes", "__buf-write-byte", "__buf-write-bytes", "__memset", "write-binary-buf", "__cover-arm",
+    "vec-load-at", "vec-store-at",
+    "atomic-load", "atomic-store", "atomic-cas", "atomic-add", "atomic-exchange",
+    "__heap-restore", "__heap-advance", "__deck-set", "__deck-alloc", "__deck-enter", "__deck-exit",
+    "read-mmio", "read-mmio-32", "poke-mmio", "poke-mmio-32", "gpu-mem-read", "gpu-mem-write",
+    "port-in-16-block", "port-out-16-block", "block-read", "block-write", "block-read-sector", "block-write-sector",
+    "net-send-raw", "net-recv-raw", "host-socket",
+    "vmxon", "vmclear", "vmptrld", "vmread", "vmwrite", "wrmsr",
+    "cpu-write-dr0", "cpu-write-dr1", "cpu-write-dr2", "cpu-write-dr3", "write-vbar-el1"
+  ]
+
+  afl-listed : List Text, Text, Integer -> Boolean
+  afl-listed (xs) (name) (i) =
+    if i >= list-length xs then False
+    else if list-at xs i == name then True
+    else afl-listed xs name (i + 1)
+
+  afl-name-head : Text, Integer -> Boolean
+  afl-name-head (s) (i) =
+    if aj-is s (i + 1) "n" == False then False
+    else if aj-is s (i + 2) "a" == False then False
+    else if aj-is s (i + 3) "m" == False then False
+    else if aj-is s (i + 4) "e" == False then False
+    else aj-is s (i + 5) " "
+
+  afl-raw-scan : List Text, Text, Integer, List Text -> List Text
+  afl-raw-scan (raw) (s) (i) (acc) =
+    if i >= text-length s then acc
+    else if aj-is s i "\"" then
+      let q = aj-string s i
+      in if q.ok then afl-raw-scan raw s q.next acc else list-push acc "unscannable IR"
+    else if aj-is s i "(" == False then afl-raw-scan raw s (i + 1) acc
+    else if afl-name-head s i == False then afl-raw-scan raw s (i + 1) acc
+    else let j = aj-ws s (i + 6)
+    in let q = aj-string s j
+    in if q.ok == False then afl-raw-scan raw s (i + 1) acc
+    else let name = aj-decode (substring s j (q.next - j))
+    in let hit = afl-listed raw name 0 & afl-listed acc name 0 == False
+    in afl-raw-scan raw s q.next (if hit then list-push acc name else acc)
+
+  afl-raw-check : List Text, Text -> List Text
+  afl-raw-check (rules) (ir) =
+    if list-length rules == 0 then [] else afl-raw-scan afl-raw-memory ir 0 []
+
+  afl-pairs-json : List Text -> Text
+  afl-pairs-json (pairs) = "[" & text-concat-list (afl-pairs-parts pairs 0 []) & "]"
+
+  afl-pairs-parts : List Text, Integer, List Text -> List Text
+  afl-pairs-parts (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else afl-pairs-parts xs (i + 1) (list-push acc ((if i == 0 then "" else ",") & list-at xs i))

@@ -13,6 +13,39 @@ Section: Bare-Metal Start
     if i >= list-length chars then st
     else emit-oom-string (emit-serial-wait-and-send st (list-at chars i)) chars (i + 1)
 
+ The RAM size at ram-size-addr becomes RSP here and in every panic path, and
+ only our hosts write it: codex-vm, QEMU's `-device loader,addr=0xfe8` and the
+ PE stub. A multiboot loader writes nothing there (the header asks it for no
+ information), so the cell holds 0 or whatever the firmware left. Below 80 MB,
+ the 16 MB heap base plus the 32-page boot-stack reserve, or above 2^40, the
+ boot halts and says so on COM1 rather than pushing onto that address.
+
+  ram-size-floor : Integer = 83886080
+
+  ram-size-ceiling : Integer = 1099511627776
+
+  emit-ram-size-check : CodegenState -> CodegenState
+  emit-ram-size-check (st) =
+    let st1 = st-append-code st (li reg-rdi ram-size-addr)
+    in let st2 = st-append-code st1 (mov-load reg-rax reg-rdi 0)
+    in let st3 = st-append-code st2 (cmp-ri reg-rax ram-size-floor)
+    in let j-low = st3.code-len
+    in let st4 = st-append-code st3 (jcc cc-b 0)
+    in let st5 = st-append-code st4 (li reg-rcx ram-size-ceiling)
+    in let st6 = st-append-code st5 (cmp-rr reg-rax reg-rcx)
+    in let j-ok = st6.code-len
+    in let st7 = st-append-code st6 (jcc cc-be 0)
+    in let bad = st7.code-len
+    in let st8 = patch-jcc-at st7 j-low bad
+    in let st9 = st-append-code st8 (mov-rr reg-rdi reg-rax)
+    in let st10 = emit-oom-string st9 [66, 79, 79, 84, 58, 32, 82, 65, 77, 32, 115, 105, 122, 101, 32, 97, 116, 32, 48, 120, 70, 69, 56, 32, 114, 101, 102, 117, 115, 101, 100, 58, 32] 0
+    in let st11 = emit-print-hex-qword-rdi st10
+    in let st12 = emit-serial-wait-and-send st11 10
+    in let st13 = st-append-code st12 cli
+    in let st14 = st-append-code st13 hlt
+    in let st15 = st-append-code st14 (jmp (-6))
+    in patch-jcc-at st15 j-ok (st15.code-len)
+
   emit-out-of-memory-handler : CodegenState -> CodegenState
   emit-out-of-memory-handler (st) =
     let st1 = record-func-offset st "__out_of_memory"
@@ -405,11 +438,6 @@ Section: Bare-Metal Start
     in let st6 = emit-print-text-no-newline (false-lit.state) (false-lit.reg)
     in patch-jmp-at st6 jmp-end-pos (st6.code-len)
 
- emit-text-lit puts the string in the data buffer and leaves its
- address in a register through the ordinary rodata fixup, so the cell
- holds an honest Text -- the same representation every other Text in the
- program has, and the one process-get-scope hands back.
-
   emit-set-boot-scope : CodegenState, Integer, Integer, Text -> CodegenState
   emit-set-boot-scope (st) (proc-index) (offset) (scope) =
     let lit = emit-text-lit st scope
@@ -417,18 +445,6 @@ Section: Bare-Metal Start
     in let st1 = st-append-code (lit.state) (mov-rr reg-rax (lit.reg))
     in let st2 = st-append-code st1 (li reg-rdi scope-addr)
     in st-append-code st2 (mov-store reg-rdi reg-rax 0)
-
- The default FileSystem handler install. For an op that
- resolved to a handler-table slot -- which is exactly when the program
- cites FileSystem -- allocate an 8-byte closure at the heap frontier whose
- only word is the servicer stub's address, and store the closure pointer
- into the slot. A performed read-text/write-file then reaches the stub the
- way emit-effect-op-call reaches any handler: slot -> closure -> code. A
- user `with FileSystem` still pushes over the slot and pops back to this
- default. R10 is a valid heap pointer here (set in __start, not yet handed
- to the arena) so the closure lives below arena-base and survives the REPL
- loop's R10 reset. find-effect-op-addr returns the slot ADDRESS, not an
- index, so it loads straight into r11.
 
   emit-seed-fs-handler : CodegenState, Text, Text -> CodegenState
   emit-seed-fs-handler (st) (op-name) (stub-name) =
@@ -441,13 +457,6 @@ Section: Bare-Metal Start
     in let st5 = st-append-code st4 (li reg-r11 eoa)
     in st-append-code st5 (mov-store reg-r11 reg-rax 0)
 
- The hosted entry. Everything the bare-metal __start does before calling opening
- is either a hardware structure or a device: page tables, GDT, IDT, LAPIC, the
- AP trampoline, ATA, the NIC, the factstore probe. A hosted process is handed
- all of that by the kernel, so this sets the allocator cells the emitted code
- actually reads and nothing else. The stack is the one the kernel gave us; bare
- metal has to build its own out of ram-size-addr.
-
  A Windows build has to ask for its own scratch. The cells sit below every
  ImageBase the loader accepts, so no section can cover them; the arena is a
  separate request for the same reason it is a separate segment on Linux. Both
@@ -455,13 +464,9 @@ Section: Bare-Metal Start
  forced to 16 before the first call because the entry point is entered by the
  loader rather than by a CALL, and nothing here ever returns.
 
- A FIXED VirtualAlloc IS A REQUEST, NOT A GUARANTEE, AND IGNORING ITS ANSWER IS
- HOW THIS PRESENTED AS A CODEGEN BUG. Measured 2026-08-29: 3 GB at the arena
- base is refused with ERROR_INVALID_ADDRESS because the span runs into
- something already mapped, while 1 GB is granted. The first version ignored the
- null and the next instruction stored through it, so a handled refusal arrived
- as an access violation with no output and nothing naming the cause (L-REFUSED).
- Each request is tested now and a refusal exits with its own code.
+ A FIXED VirtualAlloc IS A REQUEST, NOT A GUARANTEE. Measured 2026-08-29: 3 GB
+ at the arena base is refused with ERROR_INVALID_ADDRESS because the span runs
+ into something already mapped, while 1 GB is granted.
 
   emit-hosted-win-alloc : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-hosted-win-alloc (st) (base) (span) (fail-code) =
@@ -630,7 +635,8 @@ Section: Bare-Metal Start
       in let st1-lead = push-r reg-rbp & mov-rr reg-rbp reg-rsp & push-r reg-rbx & push-r reg-r12 & push-r reg-r13
       in let st1 = st-append-code st0 (st1-lead & push-r reg-r14 & emit-sub-rsp-imm32 0)
       in let pool0 = st-append-code st1 cli
-      in let st2 = emit-spawn-pool-default pool0
+      in let st2r = emit-spawn-pool-default pool0
+      in let st2 = emit-ram-size-check st2r
       in let st2a = st-append-code st2 (li reg-rdi ram-size-addr)
       in let st3 = st-append-code st2a (mov-load reg-rsp reg-rdi 0)
       in let st4 = st-append-code st3 (mov-rr reg-rbp reg-rsp)
@@ -1089,10 +1095,7 @@ Section: Capability Manifest
     else manifest-name-in xs n (i + 1) len
 
  manifest-base-loop derives the dot's code from a literal because
- internal text is CCE: a bare 46 is ASCII thinking, and in CCE code
- 46 is the letter H -- the comparison never matched, so a dotted
- effect (Device.Block) never resolved to its covering capability and
- the boot grant silently dropped it.
+ internal text is CCE: in CCE code 46 is the letter H.
 
   manifest-effect-base : Text -> Text
   manifest-effect-base (n) = manifest-base-loop n 0 (text-length n)
@@ -1143,13 +1146,7 @@ Section: Capability Manifest
  and cdx-cap-to-kern-bits is the verified-load path's reading of the
  same one. The two must not disagree -- a binary gets its authority from
  one of them and must not get a different answer depending on which door
- it came in through -- and they no longer can, because
- there is one expansion and both call it. They were two hand-written
- expansions until 2026-07-18, agreeing by inspection and by a build
- script, which is how this one came to ignore DIRECTION entirely for a
- while: it granted FileSystem read AND write to a program that declared
- only [FileSystem.Read], while the loader honoured the read-only grant.
- One expansion cannot drift from itself.
+ it came in through -- so there is one expansion and both call it.
 
   boot-cap-mask-for : Text, Integer -> Integer
   boot-cap-mask-for (n) (dir) = cap-bits-for-name n dir
@@ -1168,11 +1165,6 @@ Section: Capability Manifest
     in if manifest-cap-id cover >= 0 then
       manifest-cap-names effs (i + 1) len (manifest-add-name acc cover)
     else manifest-cap-names effs (i + 1) len acc
-
- The bytes are CCE (`char-code`), which is what `CdxBinary`'s
- `text-to-cap-bytes` writes and `CdxVerifier`'s `bytes-to-text` reads.
- Do not "fix" this into ASCII: both ends of this format agree on CCE,
- and only the two of them ever read it.
 
   manifest-cap-bytes : List Text, List Text, Text, Text, Integer, Integer, List Integer -> List Integer
   manifest-cap-bytes (caps) (effs) (fs-scope) (net-scope) (i) (len) (acc) =
@@ -1274,13 +1266,15 @@ Section: Capability Manifest
     in let wcap = __buf-write-bytes (st2d.workspace.code-buffer) content-len cap-bytes
     in let weff = __buf-write-bytes (st2d.workspace.code-buffer) (content-len + list-length cap-bytes) eff-bytes
     in let wdbg = __buf-write-bytes (st2d.workspace.code-buffer) full-len debug-map
-    in let content-hash = sha256-buf (st2d.workspace.code-buffer) 0 full-len
+    in let body-hash = sha256-buf (st2d.workspace.code-buffer) 0 full-len
     in let cdx-header-size = 224
     in let text-offset = cdx-header-size
     in let rodata-offset = text-offset + text-aligned
     in let cap-off-v = cdx-header-size + content-len
     in let eff-off-v = cap-off-v + list-length cap-bytes
     in let debug-off = if func-count > 0 then cdx-header-size + full-len else 0
+    in let unbound = cdx-build-header body-hash text-offset code-len rodata-offset data-len start-offset debug-off cap-off-v (list-length cap-bytes) eff-off-v (list-length eff-bytes)
+    in let content-hash = sha256 (x86-cdx-cover unbound 0 [] & cdx-hash-to-bytes body-hash 0 [])
     in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off cap-off-v (list-length cap-bytes) eff-off-v (list-length eff-bytes)
     in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) load-base code-len 0 func-count []
     in EmitChapterResult {
@@ -1307,7 +1301,7 @@ Section: Capability Manifest
     List Integer
   cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) (debug-off) (cap-off-v) (cap-sz-v) (eff-off-v) (eff-sz-v) =
     let magic = [67, 68, 88, 49]
-    in let version = cdx-le16 1
+    in let version = cdx-le16 2
     in let flag-val = if debug-off > 0 then 19 else 3
     in let flags = cdx-le16 flag-val
     in let hash-bytes = cdx-hash-to-bytes hash 0 []
@@ -1326,6 +1320,12 @@ Section: Capability Manifest
     in let tail = cdx-le32 debug-off
     in let head-front = magic & version & flags & hash-bytes & author-hash & reserved & cap-off & cap-sz & proof-off & proof-sz
     in head-front & text & rodata & entry & stack & heap & trust & tail
+
+  x86-cdx-cover : List Integer, Integer, List Integer -> List Integer
+  x86-cdx-cover (hdr) (i) (acc) =
+    if i >= 224 then acc
+    else if i == 8 then x86-cdx-cover hdr 136 acc
+    else x86-cdx-cover hdr (i + 1) (list-push acc (list-at hdr i))
 
   cdx-hash-to-bytes : List Integer, Integer, List Integer -> List Integer
   cdx-hash-to-bytes (ws) (i) (acc) =
@@ -1486,7 +1486,7 @@ Section: Binary Debug Map (MAP1)
     in let st-wd1 = __record-set st-wd0 "avx-local" avx-local
     in let st-wd = __record-set st-wd1 "call-census" census
     in let eo-names = m.effect-op-names
-    in let eo-addrs = assign-effect-op-addrs eo-names 0 (list-length eo-names) (st-cell st-wd handler-table-base-addr) []
+    in let eo-addrs = assign-effect-op-addrs tdefs eo-names 0 (list-length eo-names) (st-cell st-wd handler-table-base-addr) []
     in let st-eo2 = __record-set st-wd "effect-op-addrs" eo-addrs
     in let defs-lifted = (m.defs) & eq-helper-defs st-eo2 (m.defs)
     in let ret-ty = opening-bare-print-type defs-lifted
@@ -1508,14 +1508,6 @@ Section: Binary Debug Map (MAP1)
     in let open-fs = manifest-opening-fs-scope tdefs
     in let open-net = manifest-opening-net-scope tdefs
     in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos) open-effs open-fs open-net
-
- `deck-record` is a name, not a keyword, and PlugTypes ships its own
- `deck-record : a -> a` so plug bundles type-check outside the kernel. The
- intercept in emit-apply used to fire on the name alone, so a plug kernel
- emitted __deck-enter / __deck-exit against a phase allocator it never
- initialized. The discriminator is the DEFINING chapter: the intrinsic is
- the one that lives beside init-phase-allocator, and a bundle that does not
- carry the Phase Allocator chapter gets the plain identity call it declared.
 
   emit-shared-consts : CodegenState, List IRDef -> CodegenState
   emit-shared-consts (st) (defs) =
@@ -1563,13 +1555,21 @@ Section: Binary Debug Map (MAP1)
     else if ((list-at ds i).name) == name then (list-at ds i).chapter-slug
     else def-chapter-slug ds name (i + 1) n
 
-  assign-effect-op-addrs : List Text, Integer between 0 and 65535, Integer, Integer, List EffectOpAddr -> List EffectOpAddr
-  assign-effect-op-addrs (names) (i) (len) (base) (acc) =
+  assign-effect-op-addrs : List TypeBinding, List Text, Integer between 0 and 65535, Integer, Integer, List EffectOpAddr -> List EffectOpAddr
+  assign-effect-op-addrs (tdefs) (names) (i) (len) (base) (acc) =
     if i >= len then acc
     else
-      assign-effect-op-addrs names (i + 1) len base (list-push acc (EffectOpAddr {
+      assign-effect-op-addrs tdefs names (i + 1) len base (list-push acc (EffectOpAddr {
         name = list-at names i,
-        addr = base + i * 8
+        addr = base + i * 8,
+        nullary = op-type-nullary (env-lookup-in tdefs (list-at names i))
       }))
+
+  op-type-nullary : CodexType -> Boolean
+  op-type-nullary (t) =
+    when t
+     is ForAllTy (v) (inner) -> op-type-nullary inner
+     is EffectfulTy (effs) (scopes) (inner) -> True
+     is otherwise -> False
 
 Page 3 of 14

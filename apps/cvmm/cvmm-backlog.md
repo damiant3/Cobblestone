@@ -1,7 +1,7 @@
 # CVMM -- open capabilities
 
-App-domain backlog. There is no platform-wide register any more:
-`docs/PM/BACKLOG.md` was deleted 2026-07-23 and must not be recreated.
+App-domain backlog. There is no platform-wide register:
+`docs/PM/BACKLOG.md` must not be recreated.
 `docs/PM/CurrentPlan.md` carries the shape and the priority order for
 the platform. Anything that is this application's own behaviour lives
 here.
@@ -41,3 +41,7 @@ quote stripping is not a repair. Runtime reproductions remain for this fix.
 | `UsbManager.codex:229` | USB identity and labels |
 
 **Selection arms fail in `apps/cvmm/tests/TestFileExplorer.codex`.** `select-one`, `select-two` and `deselect-one` print `expected 1 got -1`, `expected 2 got -2` and `expected 1 got -1` (2026-10-03, seed 506B403C), on the depot source before and after the path fix in main 34573. The test has no `.expected` and is in no battery.
+
+## Test coverage
+
+15 of 52 library chapters are reached by no computing test. `pwsh build/coverage-census.ps1 -Tree apps/cvmm -List` names them (2026-10-26). Open: a computing test for each, or a deletion.

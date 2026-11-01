@@ -16,8 +16,6 @@ Chapter: OtaLwm2mLoopback
   cites Foreword chapter Hamt
   cites Foreword chapter FactStore
 
- We say:
-
 Section: Fixtures
 
   test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
@@ -25,11 +23,6 @@ Section: Fixtures
   bank-base : Integer = 536875008
 
   stage-addr : Integer = 536879104
-
- The staging bank's capacity. Generous against this fixture on purpose: the
- clean and tampered runs must not brush it, so a refusal in either of them
- would be a real failure and not the bound firing. The bound's own arms pick
- their capacity to make it fire.
 
   stage-capacity : Integer = 65536
 
@@ -112,16 +105,9 @@ Section: The Download Loop
 
 Section: Gate B -- the real verifier
 
- The lattice holds the device's pinned key and nothing else: the key the
- staged image names is never trusted for being named.
+  trust-lattice : TrustLattice = lattice-add-direct lattice-empty trusted-key 8000
 
-  gate-b-verdict : Lwm2mFw -> GateBResult
-  gate-b-verdict (c) =
-   let lat = lattice-add-direct lattice-empty trusted-key 8000
-   in let policy = policy-add-rule (policy-empty "ota") (rule-allow "allow-all" AlwaysTrue)
-   in let decision = evaluate-load-at stage-addr (c.fw-written) lat policy 0 fact-store-empty 100
-   in if load-approved decision then GateBPass
-      else GateBFailAuthor (load-reason decision)
+  allow-policy : Policy = policy-add-rule (policy-empty "ota") (rule-allow "allow-all" AlwaysTrue)
 
 Section: The Runs
 
@@ -132,13 +118,10 @@ Section: The Runs
    when r
     is (brd1, c1) -> act
       bc <- board-close brd1
-      let c2 = fw-execute-update c1 (gate-b-verdict c1)
+      let c2 = fw-execute-update c1 trust-lattice allow-policy 0 fact-store-empty 100
       in fw-activate c2
     end
   end
-
- A validly signed image under a key the device does not hold: Gate A
- passes (its manifest digest is honest), so only Gate B can refuse it.
 
   foreign-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
   foreign-run (x) = act
@@ -147,8 +130,22 @@ Section: The Runs
    when r
     is (brd1, c1) -> act
       bc <- board-close brd1
-      let c2 = fw-execute-update c1 (gate-b-verdict c1)
+      let c2 = fw-execute-update c1 trust-lattice allow-policy 0 fact-store-empty 100
       in fw-activate c2
+    end
+  end
+
+  moved-slot-run : Integer -> [Flash, Device.Mmio] Lwm2mFw
+  moved-slot-run (x) = act
+   brd0 <- board-open 0 0
+   r <- run-download brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr stage-capacity) manifest) firmware-image 0
+   when r
+    is (brd1, c1) -> act
+      bc <- board-close brd1
+      let bc1 = (c1.fw-ctx).boot-config
+      in let ctx1 = c1.fw-ctx
+      in let moved = c1 revised { fw-ctx = ctx1 revised { boot-config = bc1 revised { active-slot = SlotB } } }
+      in fw-activate (fw-execute-update moved trust-lattice allow-policy 0 fact-store-empty 100)
     end
   end
 
@@ -170,13 +167,6 @@ Section: The Runs
 
 Section: The bank bound and the Size2 hint
 
- Four arms over the two roles red ruled on 2026-08-20. The BANK SIZE
- enforces and refuses always; Size2 is an EARLY refusal only and can never
- permit more. The arms are chosen so each one fails alone if its own half is
- removed, and the pair that matters most is the last two: a server that
- omits Size2 and a server that declares a small total both have to be
- refused by the bank bound, or the hint has become the bound.
-
  `declared` of 0 means the server sends no Size2 option at all.
 
   small-capacity : Integer = 128
@@ -193,11 +183,6 @@ Section: The bank bound and the Size2 hint
       else [blk, CoapOption { number = coap-opt-size2, value = coap-uint-bytes declared }]
    in coap-build-response CoapAcknowledgement coap-205-content (100 + num) [] opts body
 
- The loop stops on the first failure. A real client abandons a download it
- has refused, and without that this arm would read the SECOND failure: the
- block-order check fires on the next block and would overwrite the result
- code with conn-lost, hiding the cause under a symptom.
-
   run-s2 : linear Board, Lwm2mFw, List Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
   run-s2 (brd) (c) (image) (num) (declared) =
    if num >= block-count then board-pair brd c
@@ -212,6 +197,61 @@ Section: The bank bound and the Size2 hint
   bound-arm (capacity) (declared) = act
    brd0 <- board-open 0 0
    r <- run-s2 brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr capacity) manifest) firmware-image 0 declared
+   when r
+    is (brd1, c1) -> act
+      bc <- board-close brd1
+      c1
+    end
+   end
+  end
+
+Section: A server that reads the request
+
+ RFC 7959 section 2.4: the server answers the byte offset the request names
+ (num times the requested block size) at its own block size when that is
+ smaller, and the client continues at the server's size. `mode` 1 skips one
+ block after the first, `mode` 2 labels its answer with the reserved SZX 7.
+
+  req-serve : List Integer, List Integer, Integer, Integer -> List Integer
+  req-serve (image) (req) (server-szx) (mode) =
+   when coap-parse req
+    is None -> []
+    is Just (m) ->
+      when coap-find-option (m.cm-options) coap-opt-block2
+       is None -> []
+       is Just (v) ->
+         let bv = coap-uint-value v
+         in let rszx = coap-block-szx bv
+         in let szx = if rszx < server-szx then rszx else server-szx
+         in let num = (coap-block-num bv * coap-block-size rszx) / coap-block-size szx
+         in let num2 = if mode == 1 & num >= 1 then num + 1 else num
+         in serve-at image num2 szx (if mode == 2 then 7 else szx)
+
+  serve-at : List Integer, Integer, Integer, Integer -> List Integer
+  serve-at (image) (num) (szx) (label) =
+   let size = coap-block-size szx
+   in let off = num * size
+   in let remaining = list-length image - off
+   in let len = if remaining > size then size else if remaining < 0 then 0 else remaining
+   in let more = if off + len < list-length image then 1 else 0
+   in let opts = [coap-block-option coap-opt-block2 num more label]
+   in coap-build-response CoapAcknowledgement coap-205-content (200 + num) [] opts (slice-of image off len)
+
+  run-req : linear Board, Lwm2mFw, List Integer, Integer, Integer, Integer -> [Flash, Device.Mmio] (linear Board, Lwm2mFw)
+  run-req (brd) (c) (image) (server-szx) (mode) (fuel) =
+   if fuel <= 0 then board-pair brd c
+   else if (c.fw-result) /= 0 then board-pair brd c
+   else if (c.fw-written) >= list-length image then board-pair brd c
+   else act
+    r <- fw-feed-response brd c (req-serve image (fw-next-request c (300 + fuel) [7]) server-szx mode)
+    when r
+     is (brd1, c2) -> run-req brd1 c2 image server-szx mode (fuel - 1)
+    end
+
+  req-arm : Integer, Integer -> [Flash, Device.Mmio] Lwm2mFw
+  req-arm (server-szx) (mode) = act
+   brd0 <- board-open 0 0
+   r <- run-req brd0 (fw-write-package-uri (fw-new boot0 (ota-version-new 1 500) bank-base stage-addr stage-capacity) manifest) firmware-image server-szx mode 64
    when r
     is (brd1, c1) -> act
       bc <- board-close brd1
@@ -240,6 +280,8 @@ Section: Body
    print-line-uni ("foreign staged: " & show (alien.fw-written))
    print-line-uni ("foreign result: " & show (fw-result-resource alien))
    print-line-uni ("foreign boots: " & show-slot ((fw-boot-config alien).active-slot))
+   moved <- moved-slot-run 0
+   print-line-uni ("moved slot result: " & show (fw-result-resource moved) & " target: " & show-slot (fw-target-slot moved))
    fits <- bound-arm stage-capacity 254
    print-line-uni ("size2 honest wrote: " & show (fits.fw-written) & " result: " & show (fits.fw-result))
    over <- bound-arm small-capacity 0
@@ -248,4 +290,12 @@ Section: Body
    print-line-uni ("size2 over wrote: " & show (early.fw-written) & " result: " & show (early.fw-result))
    lie <- bound-arm small-capacity 64
    print-line-uni ("size2 lying low wrote: " & show (lie.fw-written) & " result: " & show (lie.fw-result))
+   small <- req-arm 2 0
+   print-line-uni ("64-byte server wrote: " & show (small.fw-written) & " result: " & show (small.fw-result))
+   large <- req-arm 6 0
+   print-line-uni ("1024-byte server wrote: " & show (large.fw-written) & " result: " & show (large.fw-result))
+   skip <- req-arm 2 1
+   print-line-uni ("server skipping a block wrote: " & show (skip.fw-written) & " result: " & show (skip.fw-result))
+   reserved <- req-arm 2 2
+   print-line-uni ("server answering szx 7 wrote: " & show (reserved.fw-written) & " result: " & show (reserved.fw-result))
   end

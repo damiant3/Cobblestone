@@ -1,7 +1,42 @@
 Chapter: FwdConstraintTest
   cites Sim chapter Constraint
 
+Section: Fixtures
+
+  cst-pair : Integer, Integer, Integer, Integer -> List ConVec2
+  cst-pair (ax) (ay) (bx) (by) = [con-vec2 ax ay, con-vec2 bx by]
+
+  cst-show : List ConVec2 -> Text
+  cst-show (ps) = cst-show-loop ps 0 ""
+
+  cst-show-loop : List ConVec2, Integer, Text -> Text
+  cst-show-loop (ps) (i) (acc) =
+    if i >= list-length ps then acc
+    else let p = list-at ps i
+    in cst-show-loop ps (i + 1) (acc & (if i == 0 then "" else " ") & "(" & show (p.vx) & "," & show (p.vy) & ")")
+
+  cst-chain : List ConVec2
+  cst-chain = [con-vec2 0 0, con-vec2 1000 0, con-vec2 5000 0]
+
+  cst-chain-cs : List Constraint
+  cst-chain-cs = [constraint-distance 0 1 1000, constraint-distance 1 2 1000]
+
+  cst-near : Integer, Integer -> Boolean
+  cst-near (v) (target) = v - target <= 10 & target - v <= 10
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Sim/Constraint OK"
-  end
+
+  opening : [Console] Nothing =
+    let settled = constraint-solve-n cst-chain cst-chain-cs 50
+    in let d01 = con-vec2-length (con-vec2-sub (list-at settled 1) (list-at settled 0))
+    in let d12 = con-vec2-length (con-vec2-sub (list-at settled 2) (list-at settled 1))
+    in act
+      print-line-uni ("length 3000,4000: " & show (con-vec2-length (con-vec2 3000 4000)) & ", scale (2000,-500) by 1500: " & cst-show [con-vec2-scale (con-vec2 2000 (0 - 500)) 1500])
+      print-line-uni ("distance rest 2000 from 4000 apart: " & cst-show (constraint-solve (cst-pair 0 0 4000 0) [constraint-distance 0 1 2000]))
+      print-line-uni ("distance already met 3-4-5: " & cst-show (constraint-solve (cst-pair 0 0 3000 4000) [constraint-distance 0 1 5000]))
+      print-line-uni ("spring rest 2000 k 500: " & cst-show (constraint-solve (cst-pair 0 0 4000 0) [constraint-spring 0 1 2000 500]))
+      print-line-uni ("pin 1 to 7000,8000: " & cst-show (constraint-solve (cst-pair 0 0 5 5) [constraint-pin 1 (con-vec2 7000 8000)]))
+      print-line-uni ("coincident: " & cst-show (constraint-solve (cst-pair 10 10 10 10) [constraint-distance 0 1 2000]))
+      print-line-uni ("chain one pass: " & cst-show (constraint-solve cst-chain cst-chain-cs))
+      print-line-uni ("chain 50 passes within 10 of 1000: " & (if cst-near d01 1000 & cst-near d12 1000 then "yes" else "no"))
+    end

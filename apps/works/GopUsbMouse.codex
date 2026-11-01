@@ -26,8 +26,6 @@ Chapter: GopUsbMouse
  convergence walk), and the click is edge-detected at consume time so
  a press-and-release between two polls still registers once.
 
- We say:
-
 Section: Mouse State
 
   um-ph-idle : Integer = 0
@@ -71,25 +69,6 @@ Section: Mouse State
   mouse-buttons : UsbMouse -> Integer
   mouse-buttons (m) = peek-32 (m.um-pos) 12
 
- CELL 16 IS A LATCH, NOT A SAMPLE, AND `mouse-take-click` IS HOW IT IS READ.
- It used to be recomputed on every consumed report, so a press that no
- iteration happened to consume was DISCARDED rather than left pending.
-
- THE COST OF THAT IS PAID BY WHATEVER RUNS THE LOOP SLOWEST. `mouse-pump-one`
- alternates arming the endpoint and checking it, so a report costs two
- iterations of the caller's loop; a desk pane that renders a frame per
- iteration drops the loop to about 60 a second against 20,000 idle, which
- samples roughly 30 of a 125 Hz mouse's reports. A press that arrives while
- the endpoint is unarmed, with its release before the next consume, leaves
- `prev` and `buttons` both zero and the edge is never seen. Damian, 2026-08-26:
- minimising the Aquarium sometimes does not take, and only there.
-
- `mouse-clicked` PEEKS AND IS NOT THE READER. Anything that peeks a sticky
- latch without clearing turns one press into a click on every iteration, which
- is worse than the lost click. It stays because `mouse-take-click` is written
- in terms of it and because a caller may want to ask without consuming; every
- real consumer takes.
-
   mouse-clicked : UsbMouse -> Boolean
   mouse-clicked (m) = peek-32 (m.um-pos) 16 /= 0
 
@@ -99,17 +78,6 @@ Section: Mouse State
     else let hit = mouse-clicked m
     in let clr = poke-32 (m.um-pos) 16 0
     in hit
-
- PUTTING A CLICK BACK IS WHAT LETS ONE PRESS DISMISS A THING AND THEN ACT.
- The latch is taken once per loop iteration, so a step that consumes a click
- and then hands control somewhere else has spent it: the overlay closes and
- the button under the pointer never hears anything. Re-latching leaves the
- press pending for the next iteration, which reads it at the same pointer
- position because nothing moved in between.
-
- It sets the latch rather than restoring what was there, which is the same
- thing: the cell holds a flag and the only caller is one that has just taken
- it and found it set.
 
   mouse-put-click : UsbMouse -> Integer
   mouse-put-click (m) =
@@ -148,6 +116,26 @@ Section: Pointer Mailbox
   um-publish-magic (dummy) =
     let z = um-publish 0 0 0
     in poke-32 um-cells 0 um-cells-magic
+
+Section: PS/2 Source
+
+  mouse-ps2-source : Boolean, Integer, Integer -> UsbMouse
+  mouse-ps2-source (ready) (w) (h) =
+    let cells = alloc-zeroed 64 64
+    in let px = poke-32 cells 4 (w / 2)
+    in let py = poke-32 cells 8 (h / 2)
+    in let magic = if ready then um-publish-magic 0 else 0
+    in let pub = if ready then um-publish (w / 2) (h / 2) 0 else 0
+    in UsbMouse { um-ok = ready, um-host = xhci-no-host, um-dev = xhci-no-dev, um-dci = 0, um-ring = 0, um-report = 0, um-state = cells, um-pos = cells, um-peers = [] }
+
+  mouse-is-ps2 : UsbMouse -> Boolean
+  mouse-is-ps2 (m) = m.um-ok & m.um-dci == 0
+
+  mouse-ps2-moved : UsbMouse -> Integer
+  mouse-ps2-moved (m) =
+    let v = peek-32 (m.um-state) 44
+    in let c = poke-32 (m.um-state) 44 0
+    in v
 
 Section: Interface
 
@@ -256,6 +244,7 @@ Section: The Pump
   mouse-pump : UsbMouse, Integer, Integer -> Integer
   mouse-pump (m) (w) (h) =
     if m.um-ok == False then 0
+    else if m.um-dci == 0 then mouse-ps2-moved m
     else let pm = mouse-pump-peers (m.um-peers) 0 w h 0
     in let r = mouse-pump-one m w h
     in if r /= 0 then 1 else pm

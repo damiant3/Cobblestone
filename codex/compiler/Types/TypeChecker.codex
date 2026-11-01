@@ -981,9 +981,33 @@ Section: Check Definition
   check-def : UnificationState, TypeEnv, List ADef, List TypeBinding, ADef, List RenameEntry -> CheckResult
   check-def (st) (env) (defs) (tdm) (def) (renames) =
     let site0 = list-length (st.empty-lists)
+    in let field0 = list-length (st.field-sites)
     in let r = if def-is-induction def then check-induction-def st env defs tdm def
     else check-def-normal st env def renames
-    in __record-set r "state" (settle-empty-lists (r.state) site0)
+    in __record-set r "state" (check-field-sites (settle-empty-lists (r.state) site0) env field0)
+
+  check-field-sites : UnificationState, TypeEnv, Integer -> UnificationState
+  check-field-sites (st) (env) (i) =
+    if i >= list-length (st.field-sites) then st
+    else let site = list-at (st.field-sites) i
+    in let st2 = if field-site-missing st env site
+      then add-unify-error st cdx-unknown-record-field ("Record type has no field '" & site.field & "'") (site.span)
+      else st
+    in check-field-sites st2 env (i + 1)
+
+  field-site-missing : UnificationState, TypeEnv, FieldSite -> Boolean
+  field-site-missing (st) (env) (site) =
+    when deep-resolve st (site.obj)
+     is RecordTy (rname) (rargs) (rfields) -> field-type-missing (lookup-record-field rfields (site.field))
+     is ConstructedTy (cname) (cargs) -> when resolve-constructed-to-record env (cname.value)
+       is RecordTy (rname) (rargs) (rfields) -> field-type-missing (lookup-record-field rfields (site.field))
+       is otherwise -> False
+     is otherwise -> False
+
+  field-type-missing : CodexType -> Boolean
+  field-type-missing (t) = when t
+    is ErrorTy -> True
+    is otherwise -> False
 
   settle-empty-lists : UnificationState, Integer -> UnificationState
   settle-empty-lists (st) (i) =
@@ -1061,11 +1085,6 @@ Section: Check Definition
       in let fix3 = fix2 & ", declare that."
       in add-unify-error st cdx-body-fixes-declared-var fix3 span
     in check-declared-rigidity st2 ids (i + 1) len name span
-
- An `Eq a =>` definition receives its dictionary as a first parameter named
- `__d-Eq-<a>`, typed `a -> a -> Boolean`; that `a` is the one variable its body
- may compare. A site with an empty span is a call's dictionary (the desugarer's
- `dict-ref-span`), checked here for the type the call binds.
 
   eq-dict-var-of : UnificationState, ADef, CodexType -> Integer
   eq-dict-var-of (st) (def) (ty) =
@@ -1212,8 +1231,7 @@ Section: Check Definition
     else False
 
  find-dot derives the dot's code from a literal because internal text
- is CCE: a bare 46 is ASCII thinking, and in CCE code 46 is the letter
- H, which made the dotted sub-effect relation dead code until CL 6509.
+ is CCE: in CCE code 46 is the letter H.
 
   find-dot : Text, Integer, Integer -> Integer
   find-dot (s) (i) (len) =
@@ -1924,76 +1942,22 @@ Section: Check Chapter
 
 Section: Cost Model 3.3 -- the growing rung
 
- Cost Model 3.3, scored against `codex/test/cost/accumulator-corpus`. Damian
- ruled the shape on 2026-08-16: the declaration is `bounded <class>`, a
- CEILING in the lattice `none < fixed < linear < growing`, inferred bottom-up
- from the body and refused transitively as CDX6001 is. This is the inference
- for the top rung only -- it answers whether a definition is `growing` -- and
- the declaration, the other three rungs and the refusal codes are not here.
-
- It is reached only through the `cost-report` mode flag, which is off for
- every ordinary compile, because nothing declares anything yet. Section 7 of
- `docs/Designs/Active/Features/CostModel.md` carries the corpus score.
-
- It raises an error rather than an info because nothing prints a bag's
- non-error diagnostics on a compile that succeeds: `bag-diagnostics` is
- defined in `DiagnosticBag.codex` and called from nowhere. An info here would
- be a measurement that cannot be read.
-
- The walk runs from the last definition backwards because the bag truncates
- around twenty entries and a compilation unit puts the chapter under test
- AFTER the foreword chapters it cites. Forward, the report is all
- `ListUtils` and the subject never appears, which reads exactly like a check
- that found nothing.
-
   cost-apply-head : AExpr -> Text
   cost-apply-head (e) = when e
     is AApplyExpr (f) (a) (s) -> cost-apply-head f
     is ANameExpr (n) (s) -> n.value
     is otherwise -> ""
 
- The spine is collected outermost-first, so the argument in source position
- `i` of `n` sits at `n - 1 - i`.
-
   cost-apply-args : AExpr, List AExpr -> List AExpr
   cost-apply-args (e) (acc) = when e
     is AApplyExpr (f) (a) (s) -> cost-apply-args f (list-push acc a)
     is otherwise -> acc
-
- RULE 2. An append whose right operand is an empty literal aliases rather
- than copies, so it does not grow. `n-append-empty` is the corpus entry that
- exists for this line, and without it a rule that reads the operator alone
- flags a function that is linear.
 
   cost-operand-grows : AExpr -> Boolean
   cost-operand-grows (e) = when e
     is AListExpr (elems) (s) -> list-length elems > 0
     is ALitExpr (t) (k) (s) -> text-length t > 0
     is otherwise -> True
-
- RULE 1. The argument in position `i` is this function's own parameter `i`
- appended to. That is the shape all three of the 2026-08-14 defects took.
-
- The operator is `OpAnd` and NOT `OpAppend`, which cost a rebuild to find.
- `desugar-bin-op` maps the `&` token to `OpAnd` (`Desugarer.codex:249`) and
- nothing maps it to `OpAppend`; `infer-and` then dispatches on the LEFT
- operand's resolved type, sending `BooleanTy` to logical-and and everything
- else to concatenation. So `&` is one token doing two jobs and only the type
- separates them. `OpAppend` reaches the AST only from the `show`-of-a-record
- desugaring, which builds it synthetically.
-
- RULE 3. The append is only a copy when the accumulator is not the topmost
- allocation at the moment it runs. COMPILER-8 (main 16039) extends a Text
- accumulator in place while it stays topmost, so a Text append with a
- non-allocating right operand is linear; anything allocating BETWEEN the
- appends pushes the accumulator off the frontier and the copy comes back. A
- List append has no such path and copies unconditionally. The type comes from
- `infer-and`, which records its append route at the binary span.
-
- The right operand is read as allocating unless it is demonstrably not one,
- which is question 1's abstain-toward-refusal in the only direction that is
- safe here: a missed `growing` is the defect this check exists for, and a
- false one is paid in a declaration an author can decline to write.
 
   cost-arg-is-self-append : UnificationState, AExpr, Text -> Boolean
   cost-arg-is-self-append (st) (arg) (pname) = when arg
@@ -2019,14 +1983,6 @@ Section: Cost Model 3.3 -- the growing rung
   cost-arg-is-name (e) (pname) = when e
     is ANameExpr (n) (s) -> n.value == pname
     is otherwise -> False
-
- RULE 4. A branch reached only while a counter parameter `p` is below an
- integer literal K runs its self calls at most K minus `p`'s entry value
- times, because every self call advances `p` by a positive literal. That is
- `n-fixed-appends`. With `cw-probe` set to `p` the same walk answers whether
- any self call fails to advance `p`: a partial or bare self reference and a
- self call under a lambda count as failing, since either can re-enter below
- K an input-dependent number of times.
 
   CostWalk = record { cw-fn : Text, cw-params : List AParam, cw-body : AExpr, cw-probe : Text }
 
@@ -2061,8 +2017,6 @@ Section: Cost Model 3.3 -- the growing rung
     if i >= len then False
     else if (list-at params i).name.value == p then True
     else cost-is-param params p (i + 1) len
-
- 1 when the bounded branch is `then`, 2 when it is `else`, 0 when neither.
 
   cost-guard-side : BinaryOp -> Integer
   cost-guard-side (op) = when op
@@ -2201,19 +2155,6 @@ Section: Cost Model 3.3 -- the growing rung
 
 Section: Cost Model 3.3 -- the bounded declaration
 
- `bounded <class> <name>` sits in `punctual`'s slot and declares a CEILING in
- the lattice `none < fixed < linear < growing`. The parser records it as an
- `AnnotationNode` with kind "bounded" and the class in the body, the same way
- `punctual` records "hard-realtime", so nothing new is threaded through the
- chapter record.
-
- Every rung is decidable here. The inference answers whether a definition is
- `growing` and whether it allocates at all; `fixed` and `budgeted` are decided
- against the registry's per-builtin allocation class, one step apart in how
- they read `budgeted` itself. A callee that allocates a bound nobody states
- keeps a `budgeted` promise and breaks a `fixed` one, which is the whole of
- the difference and is the `strict` flag on the walk below.
-
   cost-class-rank : Text -> Integer
   cost-class-rank (c) =
     if c == "none" then 0
@@ -2320,28 +2261,6 @@ Section: Cost Model 3.3 -- the bounded declaration
 
 Section: Cost Model -- the none rung
 
- A name in call position that is neither a definition in this unit nor a
- builtin measured at zero bytes is read as allocating. That is question 1's
- abstain-toward-refusal: a false refusal is paid in a declaration the author
- can decline to write, and a false acceptance is an unchecked promise.
-
- The zero-byte set now comes from the REGISTRY rather than from a list kept
- here. `bs-alloc` on `BuiltinSpec` carries each builtin's measured allocation
- class, so a measurement widens what `bounded none` accepts by changing the
- row that names the builtin, next to its type, instead of by editing a
- literal in the type checker that nothing connects to the table.
-
- The union with `is-rt-safe-builtin` is deliberate and is not the old list
- wearing a new coat. That set is `punctual`'s, and it earns its place a
- different way: those names are no-heap BY CONSTRUCTION, which is why
- `punctual` may call them at all. The registry's `none` is no-heap BY
- MEASUREMENT. Two independent grounds for the same claim, and dropping either
- one would narrow the check for no reason -- the arithmetic and bit builtins
- are in the first and have never been through the second.
-
- Everything else, including every builtin whose row still reads `unknown`,
- sits on the refusing side.
-
   cost-builtin-nonalloc : Text -> Boolean
   cost-builtin-nonalloc (n) =
     is-rt-safe-builtin n | builtin-alloc-by-name builtins n 0 (list-length builtins) == "none"
@@ -2358,15 +2277,6 @@ Section: Cost Model -- the none rung
     else if is-rt-name allocating h 0 (list-length allocating) then True
     else if cost-def-known defs h 0 (list-length defs) then False
     else cost-builtin-nonalloc h == False
-
- `&` is one token doing two jobs and only the recorded type separates them,
- exactly as RULE 1 of the growth check found: the boolean route allocates
- nothing and the concatenation route allocates a new value.
-
- `OpBoolAnd` NEEDS NO LOOKUP, which is the point of it. `OpAnd` has to ask the
- recorded type because the token is overloaded; the keyword form cannot be
- anything but boolean, so it answers here without consulting a table that may
- or may not have been written.
 
   cost-binop-allocates : UnificationState, BinaryOp, SourceSpan -> Boolean
   cost-binop-allocates (st) (op) (s) = when op
@@ -2440,33 +2350,10 @@ Section: Cost Model -- the none rung
     in if list-length grown == list-length acc then acc
     else cost-alloc-close defs grown (round + 1) rounds
 
- THE BUDGETED RUNG (ruled 2026-08-19, CurrentPlan 17 and 18). Between "the
- same bytes every call" and "proportional to the input" sits the shape most of
- the parsing here actually has: an allocation bounded by something the CALLER
- can name. `integer-to-text` is bounded by a constant nobody has to state, an
- `Integer` having at most twenty digits. `substring` is bounded by its LENGTH
- ARGUMENT, so a four-character field out of a line of any length costs the
- same 16 bytes, while a slice that grows with the line does not. Measured both
- ways in `codex/test/cost/builtin-alloc`.
-
- So the registry word can NAME AN ARGUMENT: `budgeted` alone is bounded by a
- constant, `budgeted:N` is bounded by the Nth argument counting from the left.
- A `budgeted:N` call is within budget when argument N is a LITERAL, and over
- it otherwise. That rule is deliberately blunt: `substring s 0 4` passes and
- `substring s 0 (text-length s)` does not, which is the distinction the
- measurement found, but so does any computed length that happens to be small.
- Abstain toward refusal, as everywhere else here.
-
   cost-budget-arg : Text -> Integer
   cost-budget-arg (c) =
     if text-starts-with c "budgeted:" then text-to-integer (substring c 9 (text-length c - 9))
     else 0
-
- `cost-apply-args` above already collects them, and its own note records the
- convention: arguments come off a curried application OUTERMOST FIRST, so the
- list is the reverse of source order. That note counts from zero; the registry
- word counts from one, the way somebody reading `substring s i n` counts, so
- argument N sits at `count - N`.
 
   cost-arg-literal : List AExpr, Integer -> Boolean
   cost-arg-literal (args) (n) =
@@ -2486,13 +2373,6 @@ Section: Cost Model -- the none rung
     else if c == "budgeted" then strict
     else if cost-budget-arg c > 0 then cost-arg-literal args (cost-budget-arg c) == False
     else is-rt-safe-builtin h == False
-
- THE ARGUMENTS ARE COLLECTED ONCE AT THE OUTERMOST NODE and the walk recurses
- over THEM rather than down the function side. Recursing into `f` would meet
- the same head again with one fewer argument each time, and the innermost
- meeting has none at all, so every `budgeted:N` call would be judged on an
- empty argument list and refused. Anything nested inside an argument is still
- reached, because it is in the list.
 
   cost-expr-overbudget : UnificationState, AExpr, List ADef, List Text, Boolean -> Boolean
   cost-expr-overbudget (st) (e) (defs) (over) (strict) = when e
@@ -2948,6 +2828,7 @@ Section: Proof Acyclicity
      dirty-slots = [],
      empty-lists = [],
      eq-sites = [],
+     field-sites = [],
      fidelity = fid,
      fid-types = if fid then __list-with-capacity (def-count * 56) else []
     })
@@ -3144,25 +3025,6 @@ Section: Proof Acyclicity
   empty-type-bindings : List TypeBinding
   empty-type-bindings = []
 
- This one reads the deck-pos cell (deck-short-of) and that is correct,
- which makes CHECK the exception worth naming: check-chapter issues a
- __deck-exit immediately before this walk and a __deck-enter after it,
- so the walk runs OUTSIDE the phase-wide extent. The cell is therefore
- live -- each per-definition `deck-record` inside the loop enters and
- exits on its own and writes the frontier back -- where in LOWER and
- the PARSE-KEEP copy, which stay inside their extents, the same
- predicate is frozen at the deck's base and never fires. Swapping this
- one to deck-bound-short-of reads the BIVY pointer, which is above
- every deck ceiling, and truncates the walk on its first definition:
- measured 2026-07-21, that compiles `codex/test/db-test.codex` to no
- binary at all, with 40-odd CDX2000 emit errors naming types the
- truncated walk never inferred. Stopping
- short is treated exactly like finishing: the accumulated result is
- assembled and returned, and compile-type-check tests the deck position
- afterwards to raise CDX9002. Reaching the ceiling with
- definitions left over means the types are incomplete, so the caller
- halts on the diagnostic rather than trusting them.
-
   check-all-defs-done : UnificationState, TypeEnv, List TypeBinding, CheckBatch -> ChapterResult
   check-all-defs-done (st) (env) (acc) (cb) =
     let final-st = deck-record (UnificationState {
@@ -3178,6 +3040,7 @@ Section: Proof Acyclicity
      dirty-slots = [],
      empty-lists = [],
      eq-sites = [],
+     field-sites = [],
      fidelity = st.fidelity,
      fid-types = if st.fidelity then copy-list-with-headroom (st.fid-types) 0 else []
     })
@@ -3191,23 +3054,6 @@ Section: Proof Acyclicity
     })
 
 Section: Check Batches
-
- A batch is the unit of reclamation inside the walk. Every definition's
- inference scratch is bivy and every deck-record it makes lands on the check
- deck; both are dead once the definition's survivors have been copied out,
- and the survivors are exactly what the phase-end keep copy already
- enumerates: the substitution slots written since the batch opened (tracked
- by add-subst in dirty-slots) plus the slots minted since, every row slot,
- the expr-type entries and bindings appended since, and the bag. The copy
- runs inside a keep-deck extent through the memoized copier, whose floor is
- the check deck's base, so a box already in the keep is shared and a box on
- the check deck or in the bivy is materialized once; the address memo is
- zeroed per batch because the rewound region is reused and a stale hit would
- answer a copy of a box that no longer exists. The cons layer persists across
- batches, which is what keeps a type mentioned by a thousand definitions at
- one keep box. A list that outgrew its headroom during the batch has moved
- into the bivy; it is relocated into the keep with fresh headroom before its
- entries are rewritten.
 
   mutable CheckBatch = record {
    cb-mc : MemoCtx,
@@ -3319,35 +3165,12 @@ Section: Check Batches
     in let __seq = st.dirty-slots = __list-with-capacity 4096
     in let __seq = st.empty-lists = __list-with-capacity 64
     in let __seq = st.eq-sites = __list-with-capacity 64
+    in let __seq = st.field-sites = __list-with-capacity 64
     in 0
 
   check-batch-due : CheckBatch -> Boolean
   check-batch-due (cb) =
     (__heap-save - cb.cb-bivy-mark) + (__deck-pos - cb.cb-deck-mark) >= cb.cb-budget
-
- THE CLOSE IS BARE-METAL MEMORY MANAGEMENT IN ITS ENTIRETY -- it moves the deck
- cursor twice, poisons the two spans it is about to give back, and rewinds the
- bivy -- and its copier reaches further still: `mcopy-type` validates a box by
- reading raw memory at the address it was handed. A HOSTED target has no such
- memory. Its objects live wherever its host allocator put them, `address-of`,
- `peek-*` and `__heap-save` answer for a different region entirely, and the
- read returns whatever that region happens to hold. `mcopy-type` then takes its
- unsafe escape and answers `ErrorTy` for every type in the chapter, which is
- the safe direction on bare metal only because the caller catches it by
- comparing the keep frontier against `mc-ceiling` -- a second measurement in
- the same fictional space, so on a hosted target it fails OPEN.
-
- Guarding the copier alone is not enough: real types behind it reach the next
- assumption and the walk dies on a corrupt switch. The guard goes at the whole
- operation, as `Core/PhaseAllocator.codex:38` and `:86` already guard raw-memory
- work for the same reason.
-
- Nothing is lost by skipping it. The close exists to materialise the batch into
- the keep BEFORE the scratch is reclaimed, and a hosted target reclaims
- nothing. `cb-keep`, `cb-batches` and `cb-overflow` stay at their initial
- values in consequence, so `check-batch-note` reads zeros and CDX9002 cannot
- fire on a hosted arm -- both correct, since a hosted arm has no keep to fill
- and no reservation to overflow.
 
   check-batch-close : CheckBatch, UnificationState, List TypeBinding -> Integer
   check-batch-close (cb) (st) (acc) =
@@ -4341,7 +4164,8 @@ Section: Linearity Checking
   check-linearity-def (def) (env) (st) =
     if list-length (def.declared-type) == 0 then st
     else let st2 = check-linear-params def env (def.params) (list-at (def.declared-type) 0) 0 st
-    in check-mints def env True (def.body) st2
+    in let st3 = check-mints def env True (def.body) st2
+    in task-walk def env (linear-return-sanctioned def) (def.body) st3
 
 
   check-bounded-bases-def : ADef, List TypeBinding, UnificationState -> UnificationState
@@ -4595,6 +4419,43 @@ Section: Linear Tuple Components
        in check-mints def env tail (arm.body) (add-unify-error st cdx-linear-unused wild-msg s)
      is otherwise -> check-mints def env tail (arm.body) st
 
+  fun-linear-positions : CodexType, Integer, List Integer -> List Integer
+  fun-linear-positions (ty) (i) (acc) =
+    when ty
+     is ForAllTy (id) (body) -> fun-linear-positions body i acc
+     is ForAllEff (id) (body) -> fun-linear-positions body i acc
+     is FunTy (p) (row) (r) -> fun-linear-positions r (i + 1) (if param-is-linear p then list-push acc i else acc)
+     is otherwise -> acc
+
+  ctor-linear-positions : TypeEnv, Text -> List Integer
+  ctor-linear-positions (env) (n) =
+    let resolved = rename-lookup (env.chapter-renames) n
+    in if env-has env resolved then fun-linear-positions (env-lookup env resolved) 0 []
+    else []
+
+  check-ctor-arm : ADef, TypeEnv, Boolean, AMatchArm, UnificationState -> UnificationState
+  check-ctor-arm (def) (env) (tail) (arm) (st) =
+    when (arm.pattern)
+     is ACtorPat (n) (subs) (s) ->
+       let positions = if text-starts-with (def.name.value) "__eq_" then [] else ctor-linear-positions env (n.value)
+       in let checked = check-ctor-components def env tail positions subs (arm.body) 0 st
+       in check-mints def env tail (arm.body) checked
+     is otherwise -> check-mints def env tail (arm.body) st
+
+  check-ctor-components : ADef, TypeEnv, Boolean, List Integer, List APat, AExpr, Integer, UnificationState -> UnificationState
+  check-ctor-components (def) (env) (tail) (positions) (subs) (body) (j) (st) =
+    if j >= list-length positions then st
+    else let pos = list-at positions j
+    in let st2 = if pos >= list-length subs then st
+    else check-ctor-component def env tail (list-at subs pos) body st
+    in check-ctor-components def env tail positions subs body (j + 1) st2
+
+  check-ctor-component : ADef, TypeEnv, Boolean, APat, AExpr, UnificationState -> UnificationState
+  check-ctor-component (def) (env) (tail) (sub) (body) (st) =
+    when sub
+     is AVarPat (n) (s) -> report-minted-owner def (n.value) s (lin-of env (n.value) tail body) st
+     is AWildPat (s) -> add-unify-error st cdx-linear-unused "A linear constructor field is discarded by a wildcard pattern; bind it and use it exactly once" s
+     is otherwise -> st
   mutable-name-of : TypeEnv, Name -> Text
   mutable-name-of (env) (n) =
     if env-has env ("__mutable-" & (n.value)) then n.value
@@ -4739,7 +4600,7 @@ Section: Linear Tuple Components
     in let st1 = check-mints def env False (arm.guard) st
     in let st2 = if is-tuple-mint-type tt then
       check-tuple-arm def env tail tt arm st1
-    else check-mints def env tail (arm.body) st1
+    else check-ctor-arm def env tail arm st1
     in check-mints-arms def env tail tt arms (i + 1) len st2
 
   check-mints-clauses : ADef, TypeEnv, List AHandleClause, Integer, Integer, UnificationState -> UnificationState
@@ -4758,6 +4619,110 @@ Section: Linear Tuple Components
     if i >= len then st
     else
       check-mints-fields def env fields (i + 1) len (check-mints def env False (list-at fields i).value st)
+
+Section: Unnamed Task Handles
+
+  is-task-ty : CodexType -> Boolean
+  is-task-ty (t) =
+    when t
+     is ConstructedTy (n) (args) -> n.value == "Task"
+     is RecordTy (n) (args) (fields) -> n.value == "Task"
+     is SumTy (n) (args) (ctors) -> n.value == "Task"
+     is otherwise -> False
+
+  is-linear-task-ty : CodexType -> Boolean
+  is-linear-task-ty (t) =
+    when t
+     is LinearTy (inner) -> (when inner is ListTy (el) -> is-task-ty el is otherwise -> is-task-ty inner)
+     is otherwise -> False
+
+  expr-mints-task : TypeEnv, AExpr -> Boolean
+  expr-mints-task (env) (e) =
+    let head = apply-head-name e
+    in if head == "" then False
+    else let resolved = rename-lookup (env.chapter-renames) head
+    in if env-has env resolved then is-linear-task-ty (return-type-after (env-lookup env resolved) (apply-arg-count e))
+    else False
+
+  task-escape : ADef, Text, SourceSpan, UnificationState -> UnificationState
+  task-escape (def) (head) (sp) (st) =
+    let m0 = "In '" & (def.name.value) & "', a task handle minted by '" & head
+    in let m1 = "' is not bound to a name and lands where nothing tracks it (a plain parameter, an operand, a closure result, a record field or a discarded statement)"
+    in let m2 = "; bind it with let and await it once, or hand it to a linear parameter (tasks-push, await, await-any, freeze)"
+    in add-unify-error st cdx-linear-escape (m0 & m1 & m2) sp
+
+  task-walk : ADef, TypeEnv, Boolean, AExpr, UnificationState -> UnificationState
+  task-walk (def) (env) (lin) (e) (st) =
+    when e
+     is AApplyExpr (f) (a) (s) ->
+      let st1 = if lin == False & expr-mints-task env e then task-escape def (apply-head-name e) s st else st
+      in task-walk-spine def env (apply-head-name e) e st1
+     is ALetExpr (binds) (body) (s) -> task-walk def env lin body (task-walk-binds def env binds 0 (list-length binds) st)
+     is AIfExpr (c) (t) (el) (s) -> task-walk def env lin el (task-walk def env lin t (task-walk def env False c st))
+     is ABinaryExpr (l) (op) (r) (s) -> task-walk def env False r (task-walk def env False l st)
+     is AUnaryExpr (x) (s) -> task-walk def env False x st
+     is ALambdaExpr (params) (body) (s) -> task-walk def env False body st
+     is AHandleExpr (eff) (body) (clauses) (s) -> task-walk-clauses def env clauses 0 (list-length clauses) (task-walk def env lin body st)
+     is AWithTimeoutExpr (t) (effs) (scopes) (body) (s) -> task-walk def env lin body st
+     is AMatchExpr (scrut) (arms) (s) -> task-walk-arms def env lin arms 0 (list-length arms) (task-walk def env False scrut st)
+     is AListExpr (elems) (s) -> task-walk-list def env lin elems 0 (list-length elems) st
+     is ARecordExpr (n) (fields) (s) -> task-walk-fields def env fields 0 (list-length fields) st
+     is AFieldAccess (obj) (f) (s) -> task-walk def env False obj st
+     is AActExpr (stmts) (s) -> task-walk-stmts def env stmts 0 (list-length stmts) st
+     is ATryExpr (max) (body) (fb) (fail) (s) ->
+       let st-body = task-walk-stmts def env body 0 (list-length body) st
+       in let st-fb = task-walk-stmts def env fb 0 (list-length fb) st-body
+       in task-walk-stmts def env fail 0 (list-length fail) st-fb
+     is AFieldAssignExpr (rec) (f) (val) (s) -> task-walk def env False val (task-walk def env False rec st)
+     is ALazyExpr (inner) (s) -> task-walk def env False inner st
+     is otherwise -> st
+
+  task-walk-spine : ADef, TypeEnv, Text, AExpr, UnificationState -> UnificationState
+  task-walk-spine (def) (env) (head) (e) (st) =
+    when e
+     is AApplyExpr (f) (a) (s) ->
+      task-walk def env (callee-param-linear env head (apply-arg-count f)) a (task-walk-spine def env head f st)
+     is otherwise -> task-walk def env False e st
+
+  task-walk-binds : ADef, TypeEnv, List ALetBind, Integer, Integer, UnificationState -> UnificationState
+  task-walk-binds (def) (env) (binds) (i) (len) (st) =
+    if i >= len then st
+    else let v = (list-at binds i).value
+    in task-walk-binds def env binds (i + 1) len (task-walk def env (task-bind-tracks v) v st)
+
+  task-bind-tracks : AExpr -> Boolean
+  task-bind-tracks (v) =
+    when v
+     is AListExpr (elems) (s) -> False
+     is otherwise -> True
+
+  task-walk-stmts : ADef, TypeEnv, List AActStmt, Integer, Integer, UnificationState -> UnificationState
+  task-walk-stmts (def) (env) (stmts) (i) (len) (st) =
+    if i >= len then st
+    else when (list-at stmts i)
+     is AActExprStmt (e) (s) -> task-walk-stmts def env stmts (i + 1) len (task-walk def env False e st)
+     is AActBindStmt (n) (e) (s) -> task-walk-stmts def env stmts (i + 1) len (task-walk def env (task-bind-tracks e) e st)
+
+  task-walk-arms : ADef, TypeEnv, Boolean, List AMatchArm, Integer, Integer, UnificationState -> UnificationState
+  task-walk-arms (def) (env) (lin) (arms) (i) (len) (st) =
+    if i >= len then st
+    else let arm = list-at arms i
+    in task-walk-arms def env lin arms (i + 1) len (task-walk def env lin (arm.body) (task-walk def env False (arm.guard) st))
+
+  task-walk-clauses : ADef, TypeEnv, List AHandleClause, Integer, Integer, UnificationState -> UnificationState
+  task-walk-clauses (def) (env) (clauses) (i) (len) (st) =
+    if i >= len then st
+    else task-walk-clauses def env clauses (i + 1) len (task-walk def env False (list-at clauses i).body st)
+
+  task-walk-list : ADef, TypeEnv, Boolean, List AExpr, Integer, Integer, UnificationState -> UnificationState
+  task-walk-list (def) (env) (lin) (elems) (i) (len) (st) =
+    if i >= len then st
+    else task-walk-list def env lin elems (i + 1) len (task-walk def env lin (list-at elems i) st)
+
+  task-walk-fields : ADef, TypeEnv, List AFieldExpr, Integer, Integer, UnificationState -> UnificationState
+  task-walk-fields (def) (env) (fields) (i) (len) (st) =
+    if i >= len then st
+    else task-walk-fields def env fields (i + 1) len (task-walk def env False (list-at fields i).value st)
 
 Section: Stale Read After In-Place Update
 
@@ -5052,7 +5017,12 @@ Section: Stale Read After In-Place Update
   check-stale-defs (summary) (defs) (i) (len) (st) =
     if i >= len then st
     else let d = list-at defs i
-    in check-stale-defs summary defs (i + 1) len (scan-stale summary [] (d.body) st)
+    in let bag-before = address-of (st.bag)
+    in let mark = __heap-save
+    in let scanned = scan-stale summary [] (d.body) st
+    in let unchanged = address-of (scanned.bag) == bag-before & address-of scanned < mark
+    in let reclaimed = if unchanged then __heap-restore mark else __heap-advance 0
+    in check-stale-defs summary defs (i + 1) len scanned
 
   check-stale-reads : List ADef, UnificationState -> UnificationState
   check-stale-reads (defs) (st) =
@@ -5244,7 +5214,6 @@ Section: Type Arity Check
     | name == "Char" | name == "Nothing" | name == "Proof"
     | name == "List" | name == "LinkedList" | name == "Vector"
     | name == "SizedVec" | name == "Task"
-    | name == "SChan" | name == "SSend" | name == "SRecv" | name == "SEnd"
 
   type-name-known : List TypeBinding, Text -> Boolean
   type-name-known (tdm) (name) =
@@ -5334,8 +5303,7 @@ Section: Capability Checker
  an effect no policy could ever inspect and no boot grant could ever
  satisfy. The authority itself comes from the binary's own manifest
  at boot (emit-grant-cap-mask) and from the trust policy at load
- (VerifiedLoader). The old name `granted-capabilities` read like a
- grant-all list; it never granted anything.
+ (VerifiedLoader).
 
   capability-vocabulary : List Text
   capability-vocabulary = capability-names

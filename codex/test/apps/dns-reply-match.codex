@@ -1,0 +1,150 @@
+Chapter: DnsReplyMatch
+  cites Net chapter HttpFetch
+  cites Net chapter DnsResolver
+  cites Net chapter Ethernet
+  cites Net chapter Udp
+  cites Foreword chapter Console
+
+Section: Fixtures
+  server-mac : List Integer = [82, 85, 10, 0, 2, 3]
+  stranger-ip : List Integer = [10, 0, 2, 77]
+
+  reply : Integer, Integer -> List Integer
+  reply (id) (flags) =
+    write-be16 id & write-be16 flags & write-be16 1 & write-be16 1 & write-be16 0 & write-be16 0
+    & dns-encode-name "example.com" & write-be16 1 & write-be16 1
+    & [192, 12] & write-be16 1 & write-be16 1 & [0, 0, 1, 44] & write-be16 4 & [93, 184, 216, 34]
+
+  reply-for : Integer, Text, Integer -> List Integer
+  reply-for (id) (name) (qd) =
+    write-be16 id & write-be16 33152 & write-be16 qd & write-be16 1 & write-be16 0 & write-be16 0
+    & dns-encode-name name & write-be16 1 & write-be16 1
+    & [192, 12] & write-be16 1 & write-be16 1 & [0, 0, 1, 44] & write-be16 4 & [93, 184, 216, 34]
+
+  short-reply : Integer -> List Integer
+  short-reply (id) =
+    write-be16 id & write-be16 33152 & write-be16 1 & write-be16 1 & write-be16 0 & write-be16 0
+    & dns-encode-name "example.com" & write-be16 1 & write-be16 1
+    & [192, 12] & write-be16 1 & write-be16 1 & [0, 0, 1, 44] & write-be16 8 & [93, 184, 216, 34]
+
+  addr : List Integer = [93, 184, 216, 34]
+
+  rr-in : List Integer, Integer, Integer, List Integer -> List Integer
+  rr-in (owner) (rtype) (rclass) (rdata) =
+    owner & write-be16 rtype & write-be16 rclass & [0, 0, 1, 44] & write-be16 (list-length rdata) & rdata
+
+  rr : List Integer, Integer, List Integer -> List Integer
+  rr (owner) (rtype) (rdata) = rr-in owner rtype 1 rdata
+
+  answering : Integer, Integer, List Integer -> List Integer
+  answering (id) (an) (body) =
+    write-be16 id & write-be16 33152 & write-be16 1 & write-be16 an & write-be16 0 & write-be16 0
+    & dns-encode-name "example.com" & write-be16 1 & write-be16 1 & body
+
+  hop : Integer -> List Integer
+  hop (i) = dns-encode-name ("c" & show i & ".example.net")
+
+  link-owner : Integer -> List Integer
+  link-owner (i) = if i == 0 then [192, 12] else hop i
+
+  chain-body : Integer, Integer -> List Integer
+  chain-body (i) (n) =
+    if i >= n then rr (hop n) 1 addr
+    else rr (link-owner i) 5 (hop (i + 1)) & chain-body (i + 1) n
+
+  chain : Integer, Integer -> List Integer
+  chain (id) (n) = answering id (n + 1) (chain-body 0 n)
+
+ Byte 29 is the first answer's owner: a 12-byte header, 13 bytes of
+ example.com and 4 of QTYPE and QCLASS.
+
+  self-owner : List Integer = [192, 29]
+
+  frame : List Integer, Integer, Integer, List Integer -> List Integer
+  frame (src-ip) (src-port) (dst-port) (payload) =
+    udp-build-frame http-local-mac server-mac src-ip http-local-ip src-port dst-port payload
+
+  patch16 : List Integer, Integer, Integer -> List Integer
+  patch16 (f) (off) (v) = list-set-at (list-set-at f off (bit-shru v 8)) (off + 1) (bit-and v 255)
+
+  udp-len-at : Integer = 38
+  udp-sum-at : Integer = 40
+
+  bad-sum : List Integer -> List Integer
+  bad-sum (f) = patch16 f udp-sum-at (bit-xor (read-be16 f udp-sum-at) 256)
+
+  no-sum : List Integer -> List Integer
+  no-sum (f) = patch16 f udp-sum-at 0
+
+  long-len : List Integer -> List Integer
+  long-len (f) =
+    let n = read-be16 f udp-len-at
+    in patch16 (no-sum f) udp-len-at (n + 4)
+
+  show-addr : List Integer, Integer, Text -> Text
+  show-addr (a) (i) (acc) =
+    if i >= list-length a then acc
+    else show-addr a (i + 1) (if i == 0 then show (list-at a i) else acc & "." & show (list-at a i))
+
+  report : Text, List Integer, HttpDnsQuery -> [Console] Nothing
+  report (name) (f) (q) =
+    let a = http-dns-extract f q "example.com"
+    in print-line-uni (name & " -> " & (if list-length a == 0 then "refused" else show-addr a 0 ""))
+
+  q-or : Maybe HttpDnsQuery, HttpDnsQuery -> HttpDnsQuery
+  q-or (m) (d) = when m is None -> d is Just (x) -> x
+
+  drawn : Maybe HttpDnsQuery -> Text
+  drawn (m) = when m is None -> "refused" is Just (x) -> "drawn"
+
+  isn-drawn : Maybe Integer -> Text
+  isn-drawn (m) = when m is None -> "refused" is Just (x) -> "drawn"
+
+  in-range : HttpDnsQuery -> Boolean
+  in-range (q) = q.hq-id >= 0 & q.hq-id <= 65535 & q.hq-port >= 49152 & q.hq-port <= 65535
+
+Section: Entry
+  opening : [Console] Nothing =
+    let q0 = http-dns-draw 12345
+    in let q = http-dns-asking q0 "example.com"
+    in let id = q.hq-id
+    in let port = q.hq-port
+    in let other = http-dns-asking (http-dns-draw 12346) "example.com"
+    in let live-a = q-or (http-dns-fresh 1) q
+    in let live-b = q-or (http-dns-fresh 1) q
+    in act
+      print-line-uni ("draw 12345        : id=" & show id & " port=" & show port & " in range " & show (in-range q))
+      print-line-uni ("draw 12346        : id=" & show (other.hq-id) & " port=" & show (other.hq-port) & " in range " & show (in-range other))
+      print-line-uni ("two live draws    : id differs " & show (live-a.hq-id /= live-b.hq-id) & ", port differs " & show (live-a.hq-port /= live-b.hq-port) & ", in range " & show (in-range live-a & in-range live-b))
+      report "our reply         " (frame http-dns-ip 53 port (reply id 33152)) q
+      report "other id          " (frame http-dns-ip 53 port (reply (bit-xor id 1) 33152)) q
+      report "from port 5353    " (frame http-dns-ip 5353 port (reply id 33152)) q
+      report "to another port   " (frame http-dns-ip 53 (port + 1) (reply id 33152)) q
+      report "a query, QR clear " (frame http-dns-ip 53 port (reply id 256)) q
+      report "rcode 3 NXDOMAIN  " (frame http-dns-ip 53 port (reply id 33155)) q
+      report "from another host " (frame stranger-ip 53 port (reply id 33152)) q
+      report "to another query  " (frame http-dns-ip 53 port (reply id 33152)) other
+      report "rdata past the end" (frame http-dns-ip 53 port (short-reply id)) q
+      report "udp checksum wrong" (bad-sum (frame http-dns-ip 53 port (reply id 33152))) q
+      report "udp checksum zero " (no-sum (frame http-dns-ip 53 port (reply id 33152))) q
+      report "udp length long   " (long-len (frame http-dns-ip 53 port (reply id 33152))) q
+      report "other question    " (frame http-dns-ip 53 port (reply-for id "example.org" 1)) q
+      report "two questions     " (frame http-dns-ip 53 port (reply-for id "example.com" 2)) q
+      report "no question asked " (frame http-dns-ip 53 port (reply id 33152)) q0
+      report "foreign A first   " (frame http-dns-ip 53 port (answering id 2 (rr (dns-encode-name "evil.example") 1 [6, 6, 6, 6] & rr [192, 12] 1 addr))) q
+      report "foreign A only    " (frame http-dns-ip 53 port (answering id 1 (rr (dns-encode-name "evil.example") 1 addr))) q
+      report "class CH          " (frame http-dns-ip 53 port (answering id 1 (rr-in [192, 12] 1 3 addr))) q
+      report "owner upper case  " (frame http-dns-ip 53 port (answering id 1 (rr (dns-encode-name "EXAMPLE.Com") 1 addr))) q
+      report "owner points self " (frame http-dns-ip 53 port (answering id 1 (rr self-owner 1 addr))) q
+      report "cname, then its A " (frame http-dns-ip 53 port (chain id 1)) q
+      report "cname, no A       " (frame http-dns-ip 53 port (answering id 1 (rr [192, 12] 5 (hop 1)))) q
+      report "cname to itself   " (frame http-dns-ip 53 port (answering id 1 (rr [192, 12] 5 [192, 12]))) q
+      report "cname 16 links    " (frame http-dns-ip 53 port (chain id 16)) q
+      report "cname 17 links    " (frame http-dns-ip 53 port (chain id 17)) q
+      print-line-uni ("no hardware word  : dns word 0 " & drawn (http-dns-fresh-from 0 1) & ", word -1 " & drawn (http-dns-fresh-from (0 - 1) 1) & ", word 12345 " & drawn (http-dns-fresh-from 12345 1))
+      print-line-uni ("no hardware word  : tcp isn word 0 " & isn-drawn (net-isn-from 0 http-local-ip 4000 http-dns-ip 80) & ", word -1 " & isn-drawn (net-isn-from (0 - 1) http-local-ip 4000 http-dns-ip 80) & ", word 12345 " & isn-drawn (net-isn-from 12345 http-local-ip 4000 http-dns-ip 80))
+      print-line-uni ("no hardware word  : refusal text " & http-resolve-error "example.com")
+      print-line-uni "done"
+    end
+
+Page 1

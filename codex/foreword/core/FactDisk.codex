@@ -6,46 +6,6 @@ Chapter: FactDisk
   cites Foreword chapter SourceDefWire
   cites Foreword chapter FactLog
 
- A reader that turns the on-disk fact log into a FactBundle the import gate
- can read. DiskFacts writes the log and RepoProtocolPersist writes the
- source-definition records inside it; both live above the compiler, in
- codex.os and in apps/works, and the compiler cannot cite them. So the
- quotation gate could never reach the store: a quoted work had to travel
- beside the source in a text blob, because the one place that resolves
- quotations could not read the disk that holds the works.
-
- Reading a sector is a Device.Block effect. DiskFacts calls
- block-read-sector under a bare let because kernel quires are exempt from
- effect checking; foreword is not, so every function here that touches the
- disk declares the effect and binds the read with an act-bind. The effect
- stops at store-read-bundle, whose caller in the compiler already reads its
- input under an effect.
-
- What this does NOT re-verify is the log entry's own content hash;
- DiskFacts checks that on write. What it reads out is offered to the gate,
- and the gate re-hashes the work against the digest the quotation asked for
- before admitting a byte of it. A corrupt record therefore fails the gate's
- own integrity guard, not this reader's trust.
-
- THIS READER ADDRESSES ABSOLUTE SECTORS AND DELIBERATELY STILL DOES.
- DiskFacts now places its store inside a partition of its own type and
- addresses relative to that partition's base; this reader assumes the store
- begins at LBA 0, which is true of every disk it is pointed at -- the store
- images `build/store-source.ps1` and `tools/cdx-store` produce are raw, with
- no partition table on them at all.
-
- The bounded consequence, stated so it is not rediscovered as a bug: on a
- PARTITIONED medium, such as a boot stick, this reader will not find the
- store that DiskFacts wrote. Nothing regresses, because before the store was
- given a partition it refused to write to such a medium at all, so there has
- never been a store on one to read. Closing it means teaching this chapter
- to resolve a base, which means citing Foreword chapter Gpt from a chapter
- the compiler cites -- a new seed and a larger compiler unit for a path that
- no caller reaches yet. It is worth doing when a caller reaches it, and not
- before.
-
- We say:
-
 Section: The Superblock
 
   fd-gen : Integer -> [Device.Block] Integer
@@ -142,11 +102,6 @@ Section: Decoding A Source Definition
       })
 
 Section: Walking The Log
-
- The walk yields a sector stride whether or not it yields a work, so one
- unreadable or over-long entry resynchronises on the next sector instead
- of ending the walk -- the truncation bug DiskFacts learned the hard way.
- Only kind-30 entries are decoded; every other kind strides past.
 
   fd-fold : Integer, Integer, FactBundle -> [Device.Block] FactBundle
   fd-fold (sector) (end-sec) (acc) =

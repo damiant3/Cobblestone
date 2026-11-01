@@ -473,6 +473,18 @@ FreeU, SAG, PAG and dynamic thresholding run on SDXL and SD1.5 through `codex_im
 
 Forge's SAG key `("middle", 0, 0)` is looked up before PAG's `("middle", 0)` (`backend/nn/unet.py:218-225`), so with both on, the middle block's first self-attention is SAG's (normal on a cond call) rather than PAG's.
 
+## ControlNet
+
+**Not built, and nothing can grade it yet: no ControlNet model is installed**
+(the folder below is empty, 2026-10-31). The port is four parts: the UNet's
+encoder half and middle block run a second time from the ControlNet file
+(`UNetGraph`'s down and mid code over its own layout), with the hint encoder
+(eight convolutions on the control image) and one zero convolution per skip
+plus the middle; the residuals added into the denoiser's skips and middle
+through `UNetOps` hooks, as FreeU and SAG enter; Forge's preprocessors, canny
+first; and a grade against `extensions-builtin/sd_forge_controlnet` through
+Forge's API, as the extras were graded. AssetForge needs none of it.
+
 ## What is installed
 
 `webui/models`, 2026-09-29. What the replacement must load first:

@@ -26,10 +26,6 @@ Section: Keywords and Sanitization
     in if fort-is-keyword s 0 then s & "_v"
     else s
 
- The IR spells a record field as `name/slot`, so a field name reaches the
- emitter as `a/0` and reads as a division. riscv resolves the slot and
- needs it; every source plug wants the name.
-
   fort-slash-pos : Text, Integer, Integer -> Integer
   fort-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -122,21 +118,8 @@ Section: Apply Chain
 
 Section: Type Emission
 
- A derived type carries a `cx_` prefix because a variant constructor keeps the
- ctor's own name, and `Wrap = | Wrap (Integer)` is the commonest variant shape
- there is. Fortran forbids one name being both a derived type and a function in
- the same scoping unit, so one of the two has to move; the ctor cannot, since
- the call site emits a plain name and nothing there knows a ctor from a def.
- Codex type names are capitalised, so a lowercase prefix cannot collide.
-
   fort-type-name : Text -> Text
   fort-type-name (n) = "cx_" & fort-sanitize n
-
- ErrorTy names a type the checker did not resolve, so any concrete answer
- here is a guess that compiles. A derived-type reference to a type nothing
- declares is the loudest refusal Fortran offers in a type position, and it
- stays syntactically valid, so the compiler names the undefined type rather
- than reporting a parse error somewhere else. Do not map it to a real type.
 
   fort-type : CodexType -> Text
   fort-type (ty) =
@@ -233,11 +216,6 @@ Section: Type Definition Emission
          else "    " & fort-atype (f.type-expr) & " :: " & fn & "\n")
        & emit-fort-record-fields fields (i + 1)
 
- A field's Fortran type comes from the field's own declaration. `fort-type`
- cannot serve here: it maps a `CodexType`, and a record field carries an
- `ATypeExpr`, which is the syntax the chapter wrote rather than the resolved
- type. The two spellings are kept in step deliberately.
-
   fort-atype : ATypeExpr -> Text
   fort-atype (te) =
     when te
@@ -278,13 +256,6 @@ Section: Type Definition Emission
      is AConstrainedType (ctcls) (ctparam) (b) (s) -> fort-atype-is-list b
      is otherwise -> False
 
- A clamping bounded field saturates at its declared band. The band lives only
- in the type definition, and a Fortran structure constructor cannot run code,
- so each record gets a `mk_` function that applies the band on the way in.
- Calling it with component keywords also makes the call order-independent: the
- IR carries a construction's values in the order the SOURCE wrote them, which
- a positional constructor would silently mis-assign.
-
   emit-fort-record-ctors : List ATypeDef, Integer -> Text
   emit-fort-record-ctors (tds) (i) =
     if i == list-length tds then ""
@@ -301,10 +272,6 @@ Section: Type Definition Emission
          & fort-ctor-assigns fields 0
          & "  end function mk_" & n & "\n\n"
      is otherwise -> ""
-
- A variant constructor keeps the ctor's own name rather than a `mk_` prefix,
- because that is what the call site already emits: a construction arrives as an
- apply of a plain name and nothing here knows a ctor from a def.
 
  Constructors go into the arity map so `fort-emit-name` knows a nullary one is a
  CALL. Fortran reads a bare `Empty` as a procedure reference and would pass the
@@ -490,22 +457,6 @@ Section: Lambda Lifting
  taking its own parameters followed by every variable it captures, and the call
  site passes the captures.
 
- A lambda used as a VALUE is refused instead, and the refusal is the honest
- answer rather than a missing feature. `fort-type` maps `FunTy` to `integer(8)`,
- so there is nowhere to put a procedure: a let-bound lambda emits
- `f = <procedure>` into an integer and then calls the integer, and one passed to
- a higher-order definition arrives at an `integer(8), intent(in) :: f` dummy.
- Lifting alone cannot close either; that wants `procedure(iface)` dummies plus,
- for a CAPTURING lambda, a closure record of the kind `zig` carries as
- `CxFn1`..`CxFn4`. Emitting the lifted name into those positions would compile
- to nothing legal while looking correct, which is the failure this plug already
- records for the lambda hole.
-
- A free name is one the lambda's own parameters do not bind, that no enclosing
- `let`, `act` bind or pattern inside the lambda binds, and that is neither a
- chapter definition nor a builtin. The arity map holds the definitions and the
- variant constructors, which is why both are excluded by one lookup.
-
   FortCap = record {
    fc-name : Text,
    fc-ty : CodexType
@@ -519,22 +470,9 @@ Section: Lambda Lifting
    fl-ty : CodexType
   }
 
- The procedure NAME and the capture list are both derivable from the lambda
- node alone, which is what keeps this out of every emitter's parameter list.
- The name is the span offset. The captures are the free names of the body
- against the lambda's OWN parameters: a name bound by an enclosing `let` is
- exactly what a capture is, so the enclosing scope does not enter the question.
-
   fort-lam-caps-of : List IRParam, IRExpr, List ArityEntry -> List FortCap
   fort-lam-caps-of (ps) (body) (arities) =
     fort-free body (fort-param-names ps 0 []) arities []
-
- The key is a hash of the lambda's own emitted text, NOT its span. Measured
- 2026-08-18: every `IrLambda` reaching this plug carries `sp.start.offset` of
- zero, so a span key gave all five lambdas in the probe the same name and
- emitted five procedures called `cx_lam_0`. Two structurally identical lambdas
- now share one procedure, which is correct rather than a collision, and the
- definition emitter dedupes on the same key.
 
   fort-hash-text : Text, Integer, Integer -> Integer
   fort-hash-text (s) (i) (h) =
@@ -552,26 +490,6 @@ Section: Lambda Lifting
 
   fort-lam-name : Integer -> Text
   fort-lam-name (i) = "cx_lam_" & integer-to-text i
-
- A function VALUE is a `cx_fun`: an id, how many arguments it still NEEDS,
- how many slots are already filled, four slots, and the result once it is
- fully applied. One record carries all three shapes Fortran cannot express
- on its own -- a lambda that escaped its call site, a definition passed as
- an argument, and a definition applied to fewer arguments than it takes --
- because at the point of application they differ only in what is already in
- the slots.
-
- `cx_apply` answers a `cx_fun` rather than a value, which is what lets a
- chain be partial in the middle: it fills the next slot and hands the
- record back while `need` is above one, and dispatches on the last
- argument. `cx_val` reads the result out, and it exists because Fortran has
- no component reference on a function result, so `cx_apply(...)%val` is not
- something that can be written.
-
- A lambda's captures fill the slots at CONSTRUCTION and a partial
- application's arguments fill them as they arrive, so one dispatch arm per
- id serves both: it reads slots 1 to n-1 and takes the final argument
- directly.
 
   fort-def-fun-id : Text -> Integer
   fort-def-fun-id (n) = fort-hash-text ("def|" & n) 0 7
@@ -760,9 +678,6 @@ Section: Lambda Lifting
     else when list-at stmts i
      is IrDoBind (n) (ty) (v) (sp) -> fort-free-act stmts (i + 1) (bound & [n]) arities (fort-free v bound arities acc)
      is IrDoExec (x) (sp) -> fort-free-act stmts (i + 1) bound arities (fort-free x bound arities acc)
-
- Collection registers a lambda before descending into its body, so a lambda
- nested in a lambda takes the higher index.
 
   fort-collect-lams : IRExpr, List Text, List ArityEntry, List FortLam -> List FortLam
   fort-collect-lams (e) (bound) (arities) (acc) =
@@ -1027,11 +942,6 @@ Section: Expression Emission
     else let b = list-at branches i
     in "merge(" & fort-emit-expr-at (fort-subst-pat (b.pattern) scrut (b.body)) arities (depth + 1) & ", " & fort-emit-match-merge branches scrut arities depth (i + 1) & ", " & fort-emit-match-cond (b.pattern) scrut arities (depth + 1) & ")"
 
- A branch's sub-patterns are read out of the scrutinee's per-constructor
- components before the branch body runs. Nothing did this, so every name a
- `when` bound was undeclared and unassigned, and the module carries
- `implicit none`, so the emitted Fortran did not compile at all.
-
   fort-emit-pat-binds : IRPat, IRExpr, List ArityEntry, Integer -> Text
   fort-emit-pat-binds (pat) (scrut) (arities) (indent) =
     when pat
@@ -1073,13 +983,6 @@ Section: Expression Emission
     when g
      is IrBoolLit (v) (sp) -> v
      is otherwise -> False
-
- A guard rides in the arm's own condition rather than inside the arm, so a
- failed guard falls to the else that is already there. The binders it names
- are not assigned until the arm body runs, so in the condition they are
- replaced by the component they stand for. Every constructor's components
- are declared in the one derived type, so reading one under another tag is
- defined and the `.and.` needs no short-circuit guarantee.
 
   fort-emit-branch-cond : IRBranch, IRExpr, List ArityEntry, Integer -> Text
   fort-emit-branch-cond (b) (scrut) (arities) (depth) =
@@ -1183,18 +1086,6 @@ Section: Expression Emission
     else if ar < 0 then (if list-length args == 0 then fort-sanitize n
                          else fort-wrap-value (fort-emit-apply-extra (fort-sanitize n) args 0 arities) wants-value)
     else fort-sanitize n & "(" & fort-emit-apply-args args arities 0 & ")"
-
- Three shapes, decided by the arity map. Exactly its arity is an ordinary
- call. FEWER is a partial application, which becomes a `cx_fun` carrying
- the arguments given so far. MORE is a curried application through a
- function value: the definition consumes its own arity and each remaining
- argument goes through `cx_apply`. A head with no arity at all is a
- parameter holding a `cx_fun`, so every argument goes that way.
-
- `cx_apply` answers a `cx_fun`, so a chain whose own result type is a
- value is read out with `cx_val`, and one that is still a function is left
- as the record it is. The IR node's type is what decides, which is the
- only place that knows.
 
   fort-apply-wants-value : IRExpr -> Boolean
   fort-apply-wants-value (e) =
@@ -1590,9 +1481,6 @@ Section: Definition Emission
     else let b = list-at branches i
     in fort-collect-lets-branches branches (fort-collect-lets (b.body) (fort-collect-pat-decls (b.pattern) acc)) (i + 1)
 
- A pattern-bound name needs a declaration like any other local, and `IrVarPat`
- carries its own `CodexType`, so the ctor's field types are not consulted here.
-
   fort-collect-pat-decls : IRPat, List LetDecl -> List LetDecl
   fort-collect-pat-decls (pat) (acc) =
     when pat
@@ -1648,11 +1536,6 @@ Section: Definition Emission
     else fort-emit-act-stmt (list-at stmts i) arities indent
      & fort-emit-assign-act stmts target arities indent (i + 1)
 
- A `let` whose value is a field store is the compiler's sequencing form: the
- source wrote a store where a value was expected, and the binding it invents
- is named `__seq` and never read. Fortran has no expression that stores, so
- the store becomes a statement and the invented binding is dropped.
-
   fort-emit-let-stmt : Text, IRExpr, List ArityEntry, Integer -> Text
   fort-emit-let-stmt (name) (val) (arities) (indent) =
     when val
@@ -1662,7 +1545,15 @@ Section: Definition Emission
           else fort-indent indent & fort-sanitize name & " = " & fort-emit-expr rec arities & "\n")
      is otherwise ->
       if name == "__seq" then fort-emit-statement val arities indent
+      else if fort-is-branching val then fort-emit-assign val (fort-sanitize name) arities indent
       else fort-indent indent & fort-sanitize name & " = " & fort-emit-expr val arities & "\n"
+
+  fort-is-branching : IRExpr -> Boolean
+  fort-is-branching (e) =
+    when e
+     is IrIf (c) (t) (el) (ty) (sp) -> True
+     is IrMatch (scrut) (branches) (ty) (sp) -> True
+     is otherwise -> False
 
   fort-emit-assign-match : IRExpr, List IRBranch, Text, List ArityEntry, Integer, Integer -> Text
   fort-emit-assign-match (scrut) (branches) (target) (arities) (indent) (i) =
@@ -1804,8 +1695,8 @@ Section: Runtime Prelude
 
   fort-prelude : Text =
     "module codex_fort_prelude\n  implicit none\n  integer, parameter :: FORT_TEXT_LEN = 256\n  interface fort_list_concat\n    module procedure fort_list_concat_i, fort_list_concat_t\n  end interface\n  interface fort_list_cons\n    module procedure fort_list_cons_i, fort_list_cons_t\n  end interface\n  interface fort_list_snoc\n    module procedure fort_list_snoc_i, fort_list_snoc_t\n  end interface\n  interface fort_list_set_at\n    module procedure fort_list_set_at_i, fort_list_set_at_t\n  end interface\n  interface fort_list_insert_at\n    module procedure fort_list_insert_at_i, fort_list_insert_at_t\n  end interface\n  interface fort_list_at\n    module procedure fort_list_at_i, fort_list_at_t\n  end interface\n  type :: cx_fun\n    integer(8) :: id = 0\n    integer(8) :: need = 0\n    integer(8) :: n = 0\n    integer(8) :: cap(4) = 0\n    integer(8) :: val = 0\n  end type cx_fun\ncontains\n"
-    & "  function fort_list_at_i(xs, i) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_i\n"
-    & "  function fort_list_at_t(xs, i) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=FORT_TEXT_LEN) :: r\n    r = xs(int(i) + 1)\n  end function fort_list_at_t\n"
+    & "  function fort_list_at_i(xs, i) result(r)\n    integer(8), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    if (i < 0_8 .or. i >= size(xs, kind=8)) error stop 'CODEX_TRAP_index'\n    r = xs(i + 1_8)\n  end function fort_list_at_i\n"
+    & "  function fort_list_at_t(xs, i) result(r)\n    character(len=FORT_TEXT_LEN), dimension(:), intent(in) :: xs\n    integer(8), intent(in) :: i\n    character(len=FORT_TEXT_LEN) :: r\n    if (i < 0_8 .or. i >= size(xs, kind=8)) error stop 'CODEX_TRAP_index'\n    r = xs(i + 1_8)\n  end function fort_list_at_t\n"
     & "  function fort_char_code_at(s, i) result(r)\n    character(len=*), intent(in) :: s\n    integer(8), intent(in) :: i\n    integer(8) :: r\n    r = int(ichar(s(int(i)+1:int(i)+1)), 8)\n  end function fort_char_code_at\n"
     & "  function fort_add_trap(a, b) result(r)\n    integer(8), intent(in) :: a, b\n    integer(8) :: r\n    r = a + b\n    if (((a >= 0) .eqv. (b >= 0)) .and. ((r >= 0) .neqv. (a >= 0))) then\n      error stop \"CODEX_TRAP_integer_overflow\"\n    end if\n  end function fort_add_trap\n"
     & "  function fort_sub_trap(a, b) result(r)\n    integer(8), intent(in) :: a, b\n    integer(8) :: r\n    r = a - b\n    if (((a >= 0) .neqv. (b >= 0)) .and. ((r >= 0) .neqv. (a >= 0))) then\n      error stop \"CODEX_TRAP_integer_overflow\"\n    end if\n  end function fort_sub_trap\n"

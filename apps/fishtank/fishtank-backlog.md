@@ -61,16 +61,6 @@ dead ends. Worth writing down because each costs half an hour to rediscover.
   transpiled to JavaScript: opening it runs `print_line(...)` and prints the
   aquarium's SOURCE into the document, which is why a browser shows a wall of
   text. It is not corrupt and it is not mis-typed.
-- **`web/fishtank-wasm.html` used to hang at "Initializing WebGPU + WASM"
-  and that is FIXED (main 21967).** The attribution here was wrong: the
-  opening was never a stub, and the module runs. Three faults, each hiding
-  the next. The emitted JS was a SYNTAX ERROR, because 22 of the bridge's JS
-  numeric literals were written with Codex's `#` hex prefix. `print-line-raw`
-  terminates with the raw serial byte 10, which decodes to the character `7`
-  inside a CCE payload and glued `7function` onto the next token. And the
-  page's import object supplied `fd_write` but not the `fd_read` the module
-  also requires, which is a LinkError at load. Measured after: 52 fish after
-  `init_aquarium`, all 8 sampled fish moving over 60 ticks.
 - **Headless Chrome cannot render it at all.** WebGPU never initialises and
   the canvas stays black, with `--enable-unsafe-webgpu`,
   `--use-webgpu-adapter=swiftshader` and `--use-angle=vulkan` all tried.
@@ -104,3 +94,7 @@ whether the module ticks, and NOTHING here diagnoses it: no cause has been
 measured and none should be guessed. What is known is only that the
 simulation runs. Whoever takes this looks at the page first and writes down
 what is actually wrong before changing anything.
+
+## Test coverage
+
+8 of 8 library chapters are reached by no computing test. `pwsh build/coverage-census.ps1 -Tree apps/fishtank -List` names them (2026-10-26). Open: a computing test for each, or a deletion.

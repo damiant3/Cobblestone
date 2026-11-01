@@ -22,6 +22,13 @@ Section: Kernel State Addresses
   arm64-current-proc-addr : Integer = #80010
   arm64-irq-stack-top : Integer = #90000
 
+ RAM begins at #40000000 on QEMU virt, and the arm64 plug maps every address
+ under 16 MiB onto that base, therefore the handler stores the tick at the
+ base plus `arm64-tick-count-addr`, the cell a `peek-qword` of that address
+ reads. The sum still loads in one `movz`, which the fixed skip below needs.
+
+  arm64-ram-base : Integer = #40000000
+
 Section: Build Vector Table
 
   arm64-build-vector-table : Integer -> List Integer
@@ -31,7 +38,7 @@ Section: Build Vector Table
   arm64-vt-build-entries : Integer, Integer, List Integer -> List Integer
   arm64-vt-build-entries (idx) (irq-offset) (acc) =
     if idx >= arm64-vt-num-entries then acc
-    else let entry = if idx == 5 then arm64-vt-irq-entry irq-offset
+    else let entry = if idx == 5 then arm64-vt-irq-entry (irq-offset - idx * arm64-vt-entry-size)
     else arm64-vt-hang-entry
     in arm64-vt-build-entries (idx + 1) irq-offset (acc & entry)
 
@@ -63,6 +70,34 @@ Section: IRQ Handler
 
   arm64-irq-handler-code : List Integer
   arm64-irq-handler-code =
+    arm64-irq-save
+    & arm64-mrs 0 sysreg-icc-iar1-el1
+    & arm64-mov 17 0
+    & arm64-cmp-imm 0 30
+    & arm64-irq-handler-timer-branch
+    & arm64-mov 0 17
+    & arm64-msr sysreg-icc-eoir1-el1 0
+    & arm64-irq-restore
+
+ A GICv2 CPU interface (GIC-400 on a Raspberry Pi 4, QEMU virt without
+ gic-version=3) acknowledges by a 32-bit read of GICC_IAR at #0C and ends
+ the interrupt by a 32-bit write of GICC_EOIR at #10. A 64-bit access is
+ split into two, and a second IAR read acknowledges a second interrupt.
+
+  arm64-irq-handler-code-gicv2 : Integer -> List Integer
+  arm64-irq-handler-code-gicv2 (gicc-base) =
+    arm64-irq-save
+    & arm64-li 16 gicc-base
+    & arm64-ldr-w 0 16 #0C
+    & arm64-mov 17 0
+    & arm64-cmp-imm 0 30
+    & arm64-irq-handler-timer-branch
+    & arm64-mov 0 17
+    & arm64-str-w 0 16 #10
+    & arm64-irq-restore
+
+  arm64-irq-save : List Integer
+  arm64-irq-save =
     arm64-sub-imm 31 31 256
     & arm64-stp 0 1 31 0
     & arm64-stp 2 3 31 16
@@ -74,13 +109,10 @@ Section: IRQ Handler
     & arm64-stp 14 15 31 112
     & arm64-stp 16 17 31 128
     & arm64-stp 29 30 31 144
-    & arm64-mrs 0 sysreg-icc-iar1-el1
-    & arm64-mov 19 0
-    & arm64-cmp-imm 0 30
-    & arm64-irq-handler-timer-branch
-    & arm64-mov 0 19
-    & arm64-msr sysreg-icc-eoir1-el1 0
-    & arm64-ldp 29 30 31 144
+
+  arm64-irq-restore : List Integer
+  arm64-irq-restore =
+    arm64-ldp 29 30 31 144
     & arm64-ldp 16 17 31 128
     & arm64-ldp 14 15 31 112
     & arm64-ldp 12 13 31 96
@@ -97,7 +129,7 @@ Section: IRQ Handler
   arm64-irq-handler-timer-branch =
     let skip = 7 * 4
     in arm64-b-cond arm64-cond-ne skip
-    & arm64-li 9 arm64-tick-count-addr
+    & arm64-li 9 (arm64-ram-base + arm64-tick-count-addr)
     & arm64-ldr 10 9 0
     & arm64-add-imm 10 10 1
     & arm64-str 10 9 0

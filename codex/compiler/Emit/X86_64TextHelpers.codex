@@ -506,8 +506,6 @@ Section: __text_to_double
  a fraction wider than 108 digits, and 5^108 < 2^256). The magic constants are
  2^54, 2^53, 2^52, and the IEEE bias 1075 = 52 + 1023.
 
- __ttd_shl1 (rdi = 4-word buffer): shift left by one bit across the words.
-
   emit-ttd-shl1 : CodegenState -> CodegenState
   emit-ttd-shl1 (st) =
     let st0 = record-func-offset st "__ttd_shl1"
@@ -535,9 +533,6 @@ Section: __text_to_double
     in let d2 = st-append-code d1 (or-rr reg-rax reg-rcx)
     in let d3 = st-append-code d2 (mov-store reg-rdi reg-rax 24)
     in st-append-code d3 x86-ret
-
- __ttd_cmp_ge (rdi = a, rsi = b): rax = 1 if a >= b else 0, unsigned, 4 words
- from the most significant down.
 
   emit-ttd-cmpge-word : CodegenState, Integer -> CmpWordResult
   emit-ttd-cmpge-word (st) (off) =
@@ -575,7 +570,6 @@ Section: __text_to_double
     in let p6 = patch-jcc-at p5 (w1.lt) lt-pos
     in patch-jcc-at p6 lt0-pos lt-pos
 
- __ttd_sub (rdi = a, rsi = b): a -= b, assuming a >= b. Borrow in rcx.
  MOV zero preserves CF until SETB; li zero emits XOR and clears CF.
 
   emit-ttd-sub-word : CodegenState, Integer, Boolean -> CodegenState
@@ -605,8 +599,6 @@ Section: __text_to_double
     in let s4 = emit-ttd-sub-word s3 24 True
     in st-append-code s4 x86-ret
 
- __ttd_mul5 (rdi = buffer): buffer *= 5. carry in r8; per word s = (x<<2)+x+carry,
- high part accumulated from the top two bits of x plus the two add-carries.
  MOV zero preserves CF until SETB; li zero emits XOR and clears CF.
 
   emit-ttd-mul5-word : CodegenState, Integer -> CodegenState
@@ -637,14 +629,8 @@ Section: __text_to_double
     in let m4 = emit-ttd-mul5-word m3 24
     in st-append-code m4 x86-ret
 
- The main entry. rdi = text object (length at [rdi], bytes at [rdi+8]); returns
- the f64 bits in rax. rbx is the frame base (rbp is reserved by the runtime and
- must not be touched, so this helper uses rbx like the other text helpers). R10
- carries the heap frontier across the call and no caller saves it, so the
- prologue pushes r10 and the epilogue restores it; the frame is 120 rather than
- 112 to keep rsp 16-aligned across that sixth push. From
- rbx: den at 0, R at 32, tmp at 64, neg at 96, the bit counter at 104. r12 = exp,
- r13 = f, r14 = acc.
+ The frame is 120 rather than 112 to keep rsp 16-aligned across the sixth push
+ (r10). From rbx: den at 0, R at 32, tmp at 64, neg at 96, the bit counter at 104.
 
   emit-ttd-prologue : CodegenState -> CodegenState
   emit-ttd-prologue (st) =
@@ -668,8 +654,6 @@ Section: __text_to_double
     in let a4 = st-append-code a3 (pop-r reg-r12)
     in let a5 = st-append-code a4 (pop-r reg-rbx)
     in st-append-code a5 x86-ret
-
- Parse: rax = N (unsigned), r13 = fraction count, r10 = negative flag.
 
   emit-ttd-parse2 : CodegenState -> ParseResult2
   emit-ttd-parse2 (st) =
@@ -713,9 +697,6 @@ Section: __text_to_double
     in let d6 = patch-jcc-at d5 pdone-pos (d5.code-len)
     in ParseResult2 { cg = d6, empty = empty-pos }
 
- Zero result: rax = 0, or the sign bit if negative (r10). Shared by the empty
- string and the N == 0 case.
-
   emit-ttd-zero-ret : CodegenState -> CodegenState
   emit-ttd-zero-ret (st) =
     let a0 = st-append-code st (li reg-rax 0)
@@ -727,8 +708,6 @@ Section: __text_to_double
     in let a5 = st-append-code a4 (or-rr reg-rax reg-r9)
     in let a6 = patch-jcc-at a5 pos-pos (a5.code-len)
     in emit-ttd-epilogue a6
-
- Initialise den = {1,0,0,0} at rbx, R = {N,0,0,0} at rbx+32; neg at rbx+96.
 
   emit-ttd-init-bufs : CodegenState -> CodegenState
   emit-ttd-init-bufs (st) =
@@ -744,8 +723,6 @@ Section: __text_to_double
     in let b1 = st-append-code b0 (mov-store reg-rbx reg-rcx 48)
     in st-append-code b1 (mov-store reg-rbx reg-rcx 56)
 
- den = 5^f, then exp = 0.
-
   emit-ttd-pow5 : CodegenState -> CodegenState
   emit-ttd-pow5 (st) =
     let a0 = st-append-code st (mov-rr reg-r15 reg-r13)
@@ -759,8 +736,6 @@ Section: __text_to_double
     in let a6 = st-append-code a5 (jmp (ploop - (a5.code-len + 5)))
     in let a7 = patch-jcc-at a6 done-pos (a6.code-len)
     in st-append-code a7 (li reg-r12 0)
-
- Copy den into tmp (rbp-32), for the 2*den test in the big-normalise loop.
 
   emit-ttd-copy-den-tmp : CodegenState -> CodegenState
   emit-ttd-copy-den-tmp (st) =
@@ -783,8 +758,6 @@ Section: __text_to_double
     in let a5 = st-append-code a4 (mov-store reg-rbx reg-rax 16)
     in let a6 = st-append-code a5 (mov-load reg-rax reg-rbx 88)
     in st-append-code a6 (mov-store reg-rbx reg-rax 24)
-
- Normalise so that den <= R < 2*den, tracking exp (r12).
 
   emit-ttd-normalise2 : CodegenState -> CodegenState
   emit-ttd-normalise2 (st) =
@@ -823,8 +796,6 @@ Section: __text_to_double
     in let p2 = patch-jcc-at p1 normdone-pos normdone
     in patch-jcc-at p2 smalldone-pos normdone
 
- The bit loop: acc = 1 (r14); R -= den; then pull 53 bits. Counter at rbx+104.
-
   emit-ttd-bitloop : CodegenState -> CodegenState
   emit-ttd-bitloop (st) =
     let a0 = st-append-code st (li reg-r14 1)
@@ -860,8 +831,6 @@ Section: __text_to_double
     in let c9 = st-append-code c8 (jcc cc-ne (bitloop - (c8.code-len + 6)))
     in let d0 = patch-jmp-at c9 bitnext-pos bitnext
     in d0
-
- Sticky (r8 nonzero if R != 0), round half-even, assemble the normal bits.
 
   emit-ttd-finish : CodegenState -> CodegenState
   emit-ttd-finish (st) =
@@ -1228,15 +1197,7 @@ Section: __real_to_text
  from `rsp` and the fraction digits from `rsp + 24`, so the split is the
  integer region's size and it must exceed the widest integer part
  `cvttsd2si` can deliver: that is an i64, whose maximum is 19 digits. The
- split was 16, so an integer part of 17 or more digits ran into the
- fraction region and was overwritten -- silently, and as a DIGIT
- SUBSTITUTION rather than a truncation, because the digits are stored
- least-significant-first and the overrun lands on the most significant end.
- With no fraction to write, the zero-fraction path below stored CCE 3 at
- the split and turned that digit into '0': `12345678901234567.0` printed as
- `02345678901234566.0` and `123456789012345678.0` as
- `103456789012345680.0`, while `real-to-int` on the same values was right.
- The fraction loop is capped at 15 digits, so 24 leaves both regions inside
+ fraction loop is capped at 15 digits, so 24 leaves both regions inside
  the frame with room to spare.
 
   emit-number-to-text-frac-digits : CodegenState -> CodegenState
@@ -1838,18 +1799,6 @@ Section: __str_replace
     in emit-str-replace-done st3 (head.p1)
 
 Section: __text_split
-
- The list carries a capacity header at [-8], like every list this
- runtime builds: __list-with-capacity, __linked_list_to_list and
- __list_concat_many all store it, and the inlined list-at reads its
- SIGN to pick the inline or the indirect element path. This helper
- alone used to skip the header, so [-8] was whatever the heap held:
- zeros on a fresh VM (positive, inline, correct by luck) and 0xCD
- poison in a REPL session after a failed compile (negative, so every
- element read went through the "indirect" pointer that inline lists
- do not have). That is the defect that killed ten batch-session
- tests -- every quotes-* and prose-* test, all clean standalone --
- at text-starts-with on CCE text bytes used as a pointer.
 
   emit-text-split-prologue : CodegenState -> CodegenState
   emit-text-split-prologue (st) =

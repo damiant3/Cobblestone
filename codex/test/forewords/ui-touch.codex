@@ -1,7 +1,44 @@
 Chapter: FwdTouchTest
   cites UI chapter Touch
 
+Section: Fixtures
+
+  tct-ev : TouchPhase, Integer, Integer, Integer -> TouchEvent
+  tct-ev (ph) (x) (y) (t) = TouchEvent { te-id = 0, te-phase = ph, te-x = x, te-y = y, te-timestamp = t }
+
+  tct-g : TouchState -> Text
+  tct-g (st) =
+    let gs = touch-recognized st
+    in if list-length gs == 0 then "none"
+    else when list-at gs 0
+      is GestureTap (x) (y) -> "tap " & show x & "," & show y
+      is GestureDoubleTap (x) (y) -> "double tap " & show x & "," & show y
+      is GestureLongPress (x) (y) -> "long press " & show x & "," & show y
+      is GestureSwipeLeft (d) -> "swipe left " & show d
+      is GestureSwipeRight (d) -> "swipe right " & show d
+      is GestureSwipeUp (d) -> "swipe up " & show d
+      is GestureSwipeDown (d) -> "swipe down " & show d
+      is otherwise -> "other"
+
+  tct-press : Integer, Integer, Integer, Integer, Integer, Integer -> TouchState
+  tct-press (x0) (y0) (t0) (x1) (y1) (t1) =
+    touch-handle-event (touch-handle-event touch-state-new (tct-ev TouchDown x0 y0 t0)) (tct-ev TouchUp x1 y1 t1)
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "UI/Touch OK"
-  end
+
+  opening : [Console] Nothing =
+    let down = touch-handle-event touch-state-new (tct-ev TouchDown 100 100 1000)
+    in let down-count = touch-active-count down
+    in let tap = touch-handle-event down (tct-ev TouchUp 102 101 1100)
+    in let tap-text = tct-g tap
+    in let tap-count = touch-active-count tap
+    in let second = touch-handle-event (touch-handle-event tap (tct-ev TouchDown 102 101 1200)) (tct-ev TouchUp 102 101 1250)
+    in let moved = touch-handle-event (touch-handle-event (touch-handle-event touch-state-new (tct-ev TouchDown 0 0 1000)) (tct-ev TouchMoved 200 0 1050)) (tct-ev TouchUp 205 0 1100)
+    in act
+      print-line-uni ("tap: active after down " & show down-count & ", gesture " & tap-text & ", active after up " & show tap-count)
+      print-line-uni ("second tap 150 ms later: " & tct-g second)
+      print-line-uni ("held 700 ms: " & tct-g (tct-press 50 50 1000 51 50 1700))
+      print-line-uni ("0,0 to 200,10: " & tct-g (tct-press 0 0 1000 200 10 1100) & "; 0,0 to 5,-100: " & tct-g (tct-press 0 0 1000 5 (0 - 100) 1100))
+      print-line-uni ("down 0,0, move 200,0, up 205,0: " & tct-g moved)
+      print-line-uni ("first tap ever at t 100: " & tct-g (tct-press 10 10 50 10 10 100))
+    end

@@ -102,7 +102,7 @@ ctx.load_verify_locations(cafile)
 res = {"openssl": ssl.OPENSSL_VERSION}
 try:
     with socket.create_connection(("127.0.0.1", port), timeout=90) as s:
-        with ctx.wrap_socket(s) as ss:
+        with ctx.wrap_socket(s, suppress_ragged_eofs=False) as ss:
             res["version"] = ss.version()
             res["cipher"] = ss.cipher()[0]
             peer = ss.getpeercert(binary_form=True)
@@ -110,6 +110,12 @@ try:
             ss.sendall(b"GET")
             data = ss.recv(64)
             res["echo"] = data.decode("latin1")
+            try:
+                res["close"] = "notify" if ss.recv(64) == b"" else "more-data"
+            except ssl.SSLEOFError:
+                res["close"] = "eof"
+            except Exception as e:
+                res["close"] = type(e).__name__
             res["ok"] = True
 except Exception as e:
     res["ok"] = False
@@ -150,9 +156,15 @@ ctx.verify_mode = ssl.CERT_REQUIRED
 ctx.load_verify_locations(cafile)
 try:
     with socket.create_connection(("127.0.0.1", port), timeout=60) as c:
-        with ctx.wrap_socket(c) as sc:
+        with ctx.wrap_socket(c, suppress_ragged_eofs=False) as sc:
             sc.sendall(b"GET")
             res["echo"] = sc.recv(64).decode("latin1")
+            try:
+                res["close"] = "notify" if sc.recv(64) == b"" else "more-data"
+            except ssl.SSLEOFError:
+                res["close"] = "eof"
+            except Exception as e:
+                res["close"] = type(e).__name__
             res["ok"] = True
 except Exception as e:
     res["ok"] = False
@@ -226,7 +238,7 @@ function Invoke-Abandon {
 # must answer with a HelloRetryRequest (RFC 8446 4.1.4). -msg prints every
 # handshake message, and two ClientHellos is the proof the retry happened.
 function Invoke-SClient {
-    param([string]$Label, [string]$Groups, [int]$Seconds = 60, [string]$Sigalgs = '')
+    param([string]$Label, [string]$Groups, [int]$Seconds = 60, [string]$Sigalgs = '', [string]$Send = 'GET', [switch]$Commands)
 
     $vmOut = Join-Path $Out "$Label.out"
     if (Test-Path $vmOut) { Remove-Item $vmOut -Force }
@@ -239,7 +251,7 @@ function Invoke-SClient {
 
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $OpenSsl
-        $psi.Arguments = "s_client -connect 127.0.0.1:$Port -tls1_3 -groups $Groups -CAfile `"$caPem`" -verify_return_error -ign_eof -msg" + $(if ($Sigalgs) { " -sigalgs $Sigalgs" } else { '' })
+        $psi.Arguments = "s_client -connect 127.0.0.1:$Port -tls1_3 -groups $Groups -CAfile `"$caPem`" -verify_return_error $(if ($Commands) { '-no_ign_eof' } else { '-ign_eof' }) -msg" + $(if ($Sigalgs) { " -sigalgs $Sigalgs" } else { '' })
         $psi.UseShellExecute = $false
         $psi.RedirectStandardInput = $true
         $psi.RedirectStandardOutput = $true
@@ -247,19 +259,29 @@ function Invoke-SClient {
         $sc = [System.Diagnostics.Process]::Start($psi)
         $stdout = $sc.StandardOutput.ReadToEndAsync()
         $stderr = $sc.StandardError.ReadToEndAsync()
-        $sc.StandardInput.Write("GET")
+        # s_client acts on a command letter (K: KeyUpdate asking for one back) only with -no_ign_eof, and then
+        # stdin's end ends the session, so each line goes on its own and stdin stays open for the answer.
+        if ($Commands) {
+            foreach ($line in ($Send -split "`n")) { $sc.StandardInput.Write("$line`n"); $sc.StandardInput.Flush(); Start-Sleep -Seconds 2 }
+            Start-Sleep -Seconds 3
+        } else { $sc.StandardInput.Write($Send) }
         $sc.StandardInput.Close()
         $timedOut = -not $sc.WaitForExit($Seconds * 1000)
         if ($timedOut) { $sc.Kill() }
         $text = $stdout.Result + $stderr.Result
         Set-Content -Path (Join-Path $Out "$Label.sclient.txt") -Value $text -Encoding utf8
         $hellos = ([regex]::Matches($text, '>>> TLS 1\.3, Handshake \[length [0-9a-f]+\], ClientHello')).Count
+        $kuOut = ([regex]::Matches($text, '>>> TLS 1\.3, Handshake \[length [0-9a-f]+\], KeyUpdate')).Count
+        $kuIn = ([regex]::Matches($text, '<<< TLS 1\.3, Handshake \[length [0-9a-f]+\], KeyUpdate')).Count
         return @{
             ok = (-not $timedOut) -and ($text -match 'Verify return code: 0 \(ok\)') -and ($text -match 'New, TLSv1\.3, Cipher is')
             timedOut = $timedOut
             hellos = $hellos
+            kuOut = $kuOut
+            kuIn = $kuIn
             echo = ($text -match '(?m)^GET')
             peerAlert = [regex]::Match($text, '<<< TLS 1\.\d, Alert \[length [0-9a-f]+\], fatal (\w+)').Groups[1].Value
+            clientAlert = [regex]::Match($text, '>>> TLS 1\.\d, Alert \[length [0-9a-f]+\], fatal (\w+)').Groups[1].Value
             peerSig = [regex]::Match($text, 'Peer signature type: (\S+)').Groups[1].Value
             error = if ($timedOut) { "s_client timed out after $Seconds s" } else { ($text -split "`n" | Select-String -Pattern 'error|alert' | Select-Object -First 1) -as [string] }
         }
@@ -298,6 +320,13 @@ $abFin | ConvertTo-Json -Compress | Write-Host
 $abRst = Invoke-Abandon -Mode 'rst'
 $abRst | ConvertTo-Json -Compress | Write-Host
 
+# s_client reads a line "K" as: send a KeyUpdate asking for one back. The echo of the GET after it is sealed under
+# the server's NEXT secret, which OpenSSL derives itself, so the case grades our key schedule rather than our
+# client's agreement with our server.
+Write-Host "tls-interop: case 7 -- openssl s_client sends a KeyUpdate requesting one, then GET (must be answered and echoed)"
+$ku = Invoke-SClient -Label 'keyupdate' -Groups 'X25519' -Send "K`nGET" -Commands
+$ku | ConvertTo-Json -Compress | Write-Host
+
 # ---------------------------------------------------------------------------
 # Verdict.
 # ---------------------------------------------------------------------------
@@ -305,6 +334,7 @@ $problems = @()
 if (-not $good.ok)                      { $problems += "handshake failed against the fixture CA: $($good.error)" }
 elseif ($good.version -ne 'TLSv1.3')    { $problems += "negotiated $($good.version), expected TLSv1.3" }
 elseif ($good.echo -ne 'GET')           { $problems += "echo was '$($good.echo)', expected 'GET'" }
+elseif ($good.close -ne 'notify')       { $problems += "the connection ended by '$($good.close)', not close_notify (RFC 8446 section 6.1)" }
 
 # The negative must fail, and it must fail for the RIGHT reason. A control
 # that fails because the guest never booted proves nothing.
@@ -316,14 +346,22 @@ elseif ($bad.error -notmatch 'certificate|CERTIFICATE|verify') {
 if (-not $hrr.ok)            { $problems += "P-256:X25519 client did not complete: $($hrr.error)" }
 elseif ($hrr.hellos -ne 2)   { $problems += "P-256:X25519 client sent $($hrr.hellos) ClientHello(s), expected 2: no HelloRetryRequest happened" }
 elseif (-not $hrr.echo)      { $problems += "P-256:X25519 client got no 'GET' echo" }
+elseif ($hrr.clientAlert)    { $problems += "P-256:X25519 client sent a fatal $($hrr.clientAlert) alert" }
 if ($p256.ok)                { $problems += "a P-256-only client COMPLETED a handshake with an X25519-only server" }
 elseif ($p256.peerAlert -ne 'handshake_failure') { $problems += "P-256-only control failed for the wrong reason: alert '$($p256.peerAlert)', $($p256.error)" }
 if (-not $ecdsa.ok)             { $problems += "ecdsa-only client did not complete: $($ecdsa.error)" }
 elseif ($ecdsa.peerSig -ne 'ECDSA') { $problems += "ecdsa-only client saw peer signature type '$($ecdsa.peerSig)', expected ECDSA" }
 elseif (-not $ecdsa.echo)       { $problems += "ecdsa-only client got no 'GET' echo" }
+elseif ($ecdsa.clientAlert)     { $problems += "ecdsa-only client sent a fatal $($ecdsa.clientAlert) alert" }
+if (-not $ku.ok)               { $problems += "KeyUpdate client did not complete: $($ku.error)" }
+elseif ($ku.kuOut -lt 1)       { $problems += "s_client sent no KeyUpdate, so case 7 measured nothing" }
+elseif ($ku.kuIn -lt 1)        { $problems += "the server never answered the requested KeyUpdate" }
+elseif (-not $ku.echo)         { $problems += "no 'GET' echo after the KeyUpdate" }
+elseif ($ku.clientAlert)       { $problems += "KeyUpdate client sent a fatal $($ku.clientAlert) alert" }
 foreach ($ab in @($abFin, $abRst)) {
     if (-not $ab.ok)            { $problems += "after a client abandoned by $($ab.mode), the next client was not served: $($ab.error)" }
     elseif ($ab.echo -ne 'GET') { $problems += "after a client abandoned by $($ab.mode), the next client's echo was '$($ab.echo)'" }
+    elseif ($ab.close -ne 'notify') { $problems += "after a client abandoned by $($ab.mode), the next connection ended by '$($ab.close)', not close_notify" }
 }
 
 if (-not $KeepArtifacts) { Remove-Item $caDer, $badKey -Force -ErrorAction SilentlyContinue }
@@ -344,4 +382,5 @@ Write-Host "  P-256:X25519 client retried ($($hrr.hellos) ClientHellos) and got 
 Write-Host "  P-256-only control refused with alert $($p256.peerAlert)"
 Write-Host "  ecdsa-only client verified a $($ecdsa.peerSig) CertificateVerify and the chain, and got its echo"
 Write-Host "  after an abandon by FIN the next client was served in $($abFin.seconds) s, after one by RST in $($abRst.seconds) s"
+Write-Host "  a requested KeyUpdate was answered ($($ku.kuOut) sent, $($ku.kuIn) received) and the GET echoed under the next keys"
 exit 0

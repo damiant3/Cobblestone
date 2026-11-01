@@ -144,15 +144,15 @@ CRA Annex I items, 8259A capabilities, 62443-4-2 CRs).
 
 | Provision | Class | Mechanism |
 |---|---|---|
-| 5.1 No universal default passwords | MECHANISM + DEPLOYMENT | Identity is a per-device Ed25519 keypair generated at first boot (Identity design); there is no password scheme to default. Residual: manufacturer provisioning flow must not inject shared keys |
+| 5.1 No universal default passwords | MECHANISM + DEPLOYMENT | Identity is a per-device Ed25519 keypair that `IdentityManager` (`idm-first-boot`) generates, but no device application or first-boot path calls it yet; there is no password scheme to default. Residual: manufacturer provisioning flow must not inject shared keys |
 | 5.2 Vulnerability disclosure | ORGANIZATIONAL | Out of toolchain scope. FactStore gives the tracking substrate; policy is the manufacturer's |
 | 5.3 Keep software updated | MECHANISM | OTA design: signed CDX, verifier-gated activation, LwM2M Object 5. Residual: support-period commitment |
-| 5.4 Securely store security parameters | MECHANISM | Key storage per Identity design (encrypted at rest, kernel-pinned, zeroed). Hardware-anchored storage where the SoC provides it (ESP32-C6) is DEPLOYMENT |
+| 5.4 Securely store security parameters | MECHANISM | Key storage in `IdentityManager` (encrypted at rest, `idm-load-key-to-pinned`, `idm-zero-list`), which no device application calls yet; `codex/test/idm-key-tests` exercises the zeroing, and no test calls the pinning. Hardware-anchored storage where the SoC provides it (ESP32-C6) is DEPLOYMENT |
 | 5.5 Communicate securely | MECHANISM | TLS/DTLS with constant-time primitives (ProtocolStack); effect typing proves no bypass path exists in firmware code -- that sub-claim is BY-CONSTRUCTION |
 | 5.6 Minimize attack surfaces | BY-CONSTRUCTION | No OS, no libc, no dynamic linking; binary contains exactly compiler-emitted code; capability manifest enumerates every reachable effect; unused services are unrepresentable rather than disabled |
 | 5.7 Software integrity | BY-CONSTRUCTION + MECHANISM | SHA-256 content hash + Ed25519 signature verified before any code runs (verifier phases 1-2) |
 | 5.8 Personal data protection | MECHANISM + DEPLOYMENT | AEAD primitives + effect-typed data paths; what counts as personal data is the product's call |
-| 5.9 Resilient to outages | MECHANISM | Capability leases expire to safe-mode; OTA A/B rollback. Partial -- watchdog/persistence patterns are per-product |
+| 5.9 Resilient to outages | MECHANISM | Lease expiry does not enter a safe mode (`lease-sweep` only drops the lease); safe mode exists only as the `Forensics` verdict on a chain anomaly; OTA A/B rollback is built but no board boot path calls it yet. Partial -- watchdog/persistence patterns are per-product |
 | 5.10 Examine telemetry | DEPLOYMENT | Observability modules (codex.os.observe) exist; using them is product scope |
 | 5.11 Easy personal-data deletion | DEPLOYMENT | Product scope |
 | 5.12 Easy installation/maintenance | DEPLOYMENT | Product scope |
@@ -164,15 +164,15 @@ CRA Annex I items, 8259A capabilities, 62443-4-2 CRs).
 |---|---|---|
 | (1) Designed/produced to ensure appropriate cybersecurity | BY-CONSTRUCTION umbrella | The language guarantees: memory safety via linearity, effect discipline, bounded integers -- cited per sub-claim |
 | (2)(a) No known exploitable vulnerabilities at delivery | MECHANISM + ORGANIZATIONAL | Toolchain eliminates the memory-safety CVE class (~70% of critical CVEs per the market research); residual known-vuln review of design-level logic is process |
-| (2)(b) Secure-by-default configuration | MECHANISM | Capability manifests default-deny: an effect without a granted capability fails verification (phase 4) |
-| (2)(c) Security updates, automatic where appropriate | MECHANISM | OTA design end to end |
-| (2)(d) Access control / unauthorized-access protection | MECHANISM | Trust lattice + capability leases; load-time verifier |
+| (2)(b) Secure-by-default configuration | MECHANISM | Capability manifests default-deny: an effect without a granted capability fails verification (phase 4); no device application or boot path calls the verifier yet, exercised by `codex/test/apps/verifier-phase4-test` |
+| (2)(c) Security updates, automatic where appropriate | MECHANISM | OTA design end to end; PARTIAL: the boot-side selector (OtaBoot `boot-run`) has no production caller yet |
+| (2)(d) Access control / unauthorized-access protection | MECHANISM | Trust lattice + capability leases (`LeaseManager`) + load-time verifier (`VerifiedLoader`); no device application calls the leases or the verifier yet, exercised by `codex/test/apps/lease-manager-test` and `codex/test/apps/verified-loader-test` |
 | (2)(e) Confidentiality of stored/transmitted data | MECHANISM | AES-GCM/ChaCha20 + TLS/DTLS; effect typing scopes data paths |
 | (2)(f) Integrity of data, commands, configuration | BY-CONSTRUCTION + MECHANISM | Signed binaries; content-addressed facts; signed agent-protocol messages |
 | (2)(g) Data minimization | DEPLOYMENT | Product scope |
-| (2)(h) Availability of essential functions / resilience | MECHANISM (partial) | Lease expiry to safe mode; bounded memory by construction (no GC, survey allocations); DoS-resilience of network endpoints is per-product analysis |
+| (2)(h) Availability of essential functions / resilience | MECHANISM (partial) | Bounded memory by construction (no GC, survey allocations); DoS-resilience of network endpoints is per-product analysis |
 | (2)(i) Minimize own attack surface | BY-CONSTRUCTION | As ETSI 5.6 |
-| (2)(j) Reduce incident impact | MECHANISM | Capability scoping bounds blast radius; forensics chain records decisions |
+| (2)(j) Reduce incident impact | MECHANISM | Capability scoping bounds blast radius; the `Forensics` chain records decisions, but no device application calls it yet, exercised by `codex/test/apps/forensics-escalation-test` |
 | (2)(k) Security-relevant logging | MECHANISM | FactStore/forensics layer (note gap: durable persistence of the forensic chain is open work) |
 | (2)(l) Secure data deletion | DEPLOYMENT | Product scope |
 | Part II vulnerability handling (SBOM, disclosure, 24h/72h reporting, 5y support) | ORGANIZATIONAL + toolchain SBOM | SBOM generated (below); reporting clocks and support commitments are the manufacturer's. The evidence package prints the Part II checklist explicitly |
@@ -181,7 +181,7 @@ CRA Annex I items, 8259A capabilities, 62443-4-2 CRs).
 
 | Capability | Class | Mechanism |
 |---|---|---|
-| Device identification | MECHANISM | Ed25519 public key is the device identity |
+| Device identification | MECHANISM | Ed25519 public key is the device identity, generated by `IdentityManager`, which no device application or provisioning path calls yet |
 | Device configuration | MECHANISM | Capability leases; signed config facts; policy engine |
 | Data protection | MECHANISM | Crypto floor + effect-typed I/O |
 | Logical access to interfaces | BY-CONSTRUCTION + MECHANISM | Effects gate every interface; capabilities gate every effect |
@@ -195,8 +195,8 @@ system integrity → signed CDX + verifier; FR4 confidentiality →
 AEAD/TLS; FR5 restricted data flow → effect rows + capability
 scoping (zones/conduits map onto trust-lattice domains); FR6
 timely response → forensics/anomaly facts (partial); FR7 resource
-availability → bounded memory by construction, lease expiry,
-collision-checked stack. Target capability level: **SL-C 2 claims
+availability → bounded memory by construction, collision-checked
+stack. Target capability level: **SL-C 2 claims
 plausible from the mechanisms above; SL 3-4 claims require the
 62443-4-1 process evidence (secure development lifecycle), which
 is organizational and partially satisfied by this very

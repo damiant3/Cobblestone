@@ -2,9 +2,6 @@ Chapter: RecheckWellFormed
   cites Recheck chapter RecheckCore
   cites Recheck chapter RecheckBuiltins
 
- This is the stage that would have caught the shape of Lean kernel bug
- 14576: a declaration accepted carrying an argument nothing ever checked.
-
 Section: Environment
 
   RcEnv = record {
@@ -70,20 +67,6 @@ Section: Node Types
   RcTyOf =
     | RcTyKnown (CodexType)
     | RcTyNone
-
- The five literal forms carry no CodexType on the wire, so a literal's type
- cannot be read off the IR. `docs/DevelopersGuide.md` "Integer literals"
- gives an integer literal the plain `Integer` type, NOT the range `[n, n]`,
- and settles the bound question separately and by VALUE: a literal handed to
- a bounded parameter is admitted when the value is in range and is CDX2050
- when it is not. `IrNumLit` has no published rule fixing its width or mode.
-
- The two are different questions and they are answered in different stages.
- `[n, n]` is the literal's VALUE and it belongs to `RecheckBounds`, where
- `rc-derive` uses exactly that. Reading it as the literal's TYPE here is
- what produced this checker's first three disagreements, all of them false:
- it made `(0, x)` declared `(Integer, Integer)` fix the tuple's element type
- to `[0, 0]`, which invariance then refused.
 
   rc-expr-ty : IRExpr -> RcTyOf
   rc-expr-ty (x) =
@@ -287,16 +270,6 @@ Section: Pattern Walk
     else
       RcTyKnown (ConstructedTy (Name { value = nm }) (rc-subst-fields as tps args 0 (list-length as) []))
 
- A Real's width and mode arrive as APPLICATION ARGUMENTS, not as a distinct
- node: `Real approximate` is spelled the way `List a` is, and the words are
- recognised only by `resolve-real-quals` in the compiler's type checker. Read
- without this, `Real approximate` resolves to a ConstructedTy over a made-up
- `approximate` type and compares unequal against the structural `RealTy RwF32`,
- which is a DISAGREE that says the program is wrong when only the reader was.
- A word that is not a recognised qualifier answers RcTyNone rather than a
- guess, so an unfamiliar spelling is reported as unsupported instead of as a
- disagreement.
-
   rc-real-quals : List ATypeExpr, Integer, RealWidth, RealMode, Boolean -> RcTyOf
   rc-real-quals (as) (i) (w) (m) (all-quals) =
     if list-length as == 0 then RcTyKnown real-f64
@@ -405,13 +378,6 @@ Section: Expression Walk
     else
       rc-add w (rc-finding (e.re-def-name) RcDisagree "unbound-name" ("no definition, parameter, binding, constructor or builtin binds " & n))
 
- A constructor reference carries a function type of its own, and the sum
- type that function returns declares the same constructor's field types.
- Those are two statements of one fact, made in two places on the wire, so
- they can be held against each other without consulting anything else.
- A constructor typed to accept a payload its own sum does not declare is
- the shape of Lean kernel bug 14576.
-
   rc-curried-params : CodexType, List CodexType, Integer -> List CodexType
   rc-curried-params (t) (acc) (fuel) =
     if fuel <= 0 then acc
@@ -480,15 +446,6 @@ Section: Expression Walk
     in let w3 = rc-check-ctor-inst w2 e f a t
     in let w4 = rc-check-poly-inst w3 e f a t
     in rc-check-apply-types w4 e (rc-expr-ty f) a t
-
- The same derivation for a call of a polymorphic definition: at the node
- that supplies its last parameter, each declared parameter is matched
- against its argument (and a lambda argument's body), and the declared
- type so substituted must equal the type published on the head. A head
- published at a type variable is a call inside a polymorphic body: the
- caller's variables are rigid there, so each is rewritten as a named type
- of its own (`%tv` and its id) on the argument and published sides, and
- the callee's declared variables bind to those as to any concrete type.
 
   RcPolyDef = record {
     pd-name : Text,
@@ -628,13 +585,6 @@ Section: Expression Walk
      is TyNeq -> rc-add w (rc-finding (e.re-def-name) RcDisagree "poly-instantiation" (n & " is published at an instantiation its own arguments do not give"))
      is TyUnknown -> rc-add w (rc-finding (e.re-def-name) RcUnsupported "poly-instantiation-undecided" (n & " has an instantiation this checker cannot hold against its arguments"))
 
- The compiler publishes a constructor application's type arguments in the
- site's result; this derives them again from the arguments. A field
- declared as a bare type parameter binds that parameter to its argument's
- recorded type, and the published type argument must equal it (type
- arguments are invariant). Integer literals and `__narrow` results are
- admitted by value, which `RecheckBounds` decides, so they bind nothing.
-
   RcCtorSpine = record {
     cs-head : Text,
     cs-args : List IRExpr
@@ -728,13 +678,6 @@ Section: Expression Walk
 
 Section: Spine Scoped Substitution
 
- The compiler publishes every call site's instantiation (2026-10-20), so
- this substitution decides only a site that arrives uninstantiated, and
- no arm in `kill-rate.ps1` reaches it. Type-variable ids belong to the
- callee's signature and repeat at every call site, so a map keyed by tvar
- id may not outlive one spine; no binding is taken from the parameter the
- spine's result flows into.
-
  Fuel of 24: a spine longer than that answers unknown rather than recursing.
 
   rc-spine-fuel : Integer = 24
@@ -745,11 +688,6 @@ Section: Spine Scoped Substitution
      is RcSubOk (bs2) -> RcSubOk bs2
      is RcSubConflict -> RcSubConflict
      is RcSubUnknown -> RcSubOk bs
-
- A curried call is nested applies, so the callee's recorded type at each node
- supplies that node's parameter and no head-type peeling is needed. Walking
- inward first accumulates across the spine, which is what would let one
- variable acquire two witnesses.
 
   rc-spine-bind : IRExpr, List RcTvBind, Integer -> RcSubst
   rc-spine-bind (x) (bs) (fuel) =
@@ -807,15 +745,6 @@ Section: Spine Scoped Substitution
     when rc-body-ty b rc-spine-fuel
      is RcTyNone -> RcSubOk bs
      is RcTyKnown (bt) -> rc-spine-soft (rc-match pr bt bs rc-subst-fuel) bs
-
- Another wire fact: a lambda body that is an `if` or a `when` is recorded as
- the bare `(tvar 73)` while every arm beneath carries a concrete type. That
- is the four sites in `IR/Lowering.codex` the spine walk alone cannot decide.
-
- The arms must AGREE for the descent to answer. Taking one arm where another
- contradicts it would assert a return the lambda does not have, and a wrong
- binding manufactures a false disagreement. `tvar-spine-branch-arms` is the
- arm that fails if this stops deciding.
 
   rc-body-ty : IRExpr, Integer -> RcTyOf
   rc-body-ty (b) (fuel) =
@@ -890,21 +819,9 @@ Section: Spine Scoped Substitution
      is RcTyNone -> 0
      is RcTyKnown (at) -> rc-min-witness at bs 0 rc-subst-fuel
 
- The callee's declared parameter and return may carry type variables. The
- guide's "Type Variables" rule fixes them by matching the parameter against
- the argument, so that match runs first and both verdicts are taken against
- the SUBSTITUTED types. When the match cannot answer, p and r are used
- unchanged and the verdicts abstain exactly as before -- a partial answer
- must never read as a total one.
-
   rc-check-apply-parts : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType -> RcWalk
   rc-check-apply-parts (w) (e) (p) (r) (a) (t) =
     rc-check-apply-spine w e p r a t (rc-arg-spine a)
-
- A conflict inside the ARGUMENT's own spine is one type variable of that
- application required to be two types at once. It surfaces here rather than
- at the spine's own nodes because a per-node match starts from an empty map
- and can never hold two witnesses at the same time.
 
   rc-check-apply-spine : RcWalk, RcEnv, CodexType, CodexType, IRExpr, CodexType, RcSubst -> RcWalk
   rc-check-apply-spine (w) (e) (p) (r) (a) (t) (sp) =
@@ -960,12 +877,6 @@ Section: Spine Scoped Substitution
   rc-wf-narrow-into-int : CodexType, IRExpr -> Boolean
   rc-wf-narrow-into-int (p) (a) = rc-wf-is-int-ty p & rc-wf-is-narrow-call a
 
- An integer literal reaching an integer parameter is admitted by its VALUE
- against the parameter's bound, which is CDX2050 and is decided in
- `RecheckBounds`. Its plain `Integer` type does not fit a bounded parameter
- and never will, so judging it here would report an abstention on every
- `narrow 5` in the tree for a question another stage answers.
-
   rc-wf-lit-into-int : CodexType, IRExpr -> Boolean
   rc-wf-lit-into-int (p) (a) = rc-wf-is-int-ty p & rc-wf-is-int-lit a
 
@@ -975,36 +886,8 @@ Section: Spine Scoped Substitution
      is IrIntLit (v) (sp) -> True
      is otherwise -> False
 
- These two take the argument's type rather than the argument, because the
- type they must judge is the IMPROVED one: reading it back off the expression
- would consult the uninstantiated recorded type and route a decided pair to
- the wrong stage.
-
   rc-wf-int-into-int : CodexType, RcTyOf -> Boolean
   rc-wf-int-into-int (p) (at) = rc-wf-is-int-ty p & rc-wf-tyof-is-int at
-
- An integer argument reaching an integer parameter is admitted by its PROVEN
- RANGE against the parameter's declared range, never by the two types being
- equal, and that is decided in `RecheckBounds`. Published as
- `docs/DevelopersGuide.md` "What a bounded parameter admits", measured: the
- same field declared 0..1000 is refused at a 0..255 parameter directly and
- admitted through `int-mod ... 100`, so the declared type cannot be what
- decides it. The refusal is CDX2051 from the bounds prover and never CDX2001
- from the type checker.
-
- This is the same division `rc-wf-lit-into-int` already makes one case up,
- generalised from a literal to any integer argument, and for the same reason:
- judging it here reports an abstention on a site the type comparison was
- never the right instrument for.
-
- The OVERFLOW MODE does not qualify this, and it did for a day. It was
- excluded on the ground that the compiler compares mode nowhere, so a
- difference was an unruled gap worth keeping a record of. Measured since:
- mode is not part of type identity at all, published as
- `docs/DevelopersGuide.md` "Overflow mode is not part of type identity".
- Qualifying the deferral on it sends a mode-differing pair down the type
- comparison instead of to the bounds stage, which is the wrong stage for it
- and resurrects this whole class for exactly those pairs.
 
   rc-wf-int-bounds-deferred : CodexType, RcTyOf -> Boolean
   rc-wf-int-bounds-deferred (p) (at) = rc-wf-int-into-int p at

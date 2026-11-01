@@ -6,6 +6,7 @@ Chapter: DtlsEndpoint
   cites Encode chapter X509
   cites Encode chapter X509Chain
   cites Encode chapter TlsCert
+  cites Encode chapter TlsEndpoint
   cites Foreword chapter DiffieHellman
   cites Foreword chapter Ed25519
   cites Foreword chapter Hmac
@@ -17,8 +18,6 @@ Chapter: DtlsEndpoint
  is the credential model, and its one real limit is that a chain signed by a
  commercial CA (RSA or ECDSA) cannot be validated -- this authenticates a
  fleet whose CA you run.
-
- We say:
 
 Section: Types
 
@@ -54,7 +53,16 @@ Section: Types
     ep-app-in : List Integer,
     ep-app-window : DtlsWindow,
     ep-hs-window : DtlsWindow,
-    ep-reasm : DtlsReasm
+    ep-reasm : DtlsReasm,
+    ep-flight-next : Integer,
+    ep-recv-next : Integer,
+    ep-peer-closed : Boolean,
+    ep-read-epoch : Integer,
+    ep-write-epoch : Integer,
+    ep-ku-pending : Integer,
+    ep-app-room : Integer,
+    ep-prev-secret : List Integer,
+    ep-prev-window : DtlsWindow
   }
 
   DtlsEpStep = record {
@@ -73,7 +81,8 @@ Section: Construction
              ep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, ep-auth-done = False,
              ep-expected-peer = [], ep-hs-secret = [], ep-c-ap = [], ep-s-ap = [],
              ep-app-read-seq = 0, ep-app-write-seq = 0, ep-app-in = [], ep-app-window = dtls-window-new,
-             ep-hs-window = dtls-window-new, ep-reasm = dtls-reasm-new }
+             ep-hs-window = dtls-window-new, ep-reasm = dtls-reasm-new, ep-flight-next = 0, ep-recv-next = 0, ep-peer-closed = False, ep-read-epoch = 3, ep-write-epoch = 3, ep-ku-pending = 0 - 1,
+             ep-app-room = 0, ep-prev-secret = [], ep-prev-window = dtls-window-new }
 
   dtls-ep-with-cert : DtlsEp, List (List Integer), List Integer, List Integer -> DtlsEp
   dtls-ep-with-cert (ep) (chain) (sign-priv) (sign-pub) =
@@ -89,9 +98,9 @@ Section: Client
   dtls-ep-client (ep) (now) =
     if dtls-ep-failed ep then dtls-ep-idle ep
     else let r = dtls-hs-step (ep.ep-hs) (EvStart now)
-    in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) []
+    in let body = dtls13-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) []
     in let tr = tls13-msg-transcript dtls-hs-client-hello body
-    in let ep2 = __record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-ch1" tr
+    in let ep2 = __record-set (__record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-ch1" tr) "ep-msg-seq" 1
     in DtlsEpStep { es-ep = ep2, es-out = dtls-ep-wrap-into ep2 [] dtls-hs-client-hello 0 body }
 
   dtls-ep-random : DtlsEp -> List Integer
@@ -103,7 +112,41 @@ Section: Receive
  datagram is whatever an attacker chose to send.
 
   dtls-ep-recv : DtlsEp, List Integer, Integer -> DtlsEpStep
-  dtls-ep-recv (ep) (dgram) (now) =
+  dtls-ep-recv (ep) (dgram) (now) = dtls-ep-recv-at ep dgram 0 now []
+
+ RFC 9147 section 4.3: a datagram can carry several records, each taken in order until one fails the association.
+ A plaintext record ends 13 bytes past its header plus its length; a protected one in the form this endpoint opens
+ (16-bit sequence, length present) 5 bytes plus its length; one without a length runs to the datagram's end.
+
+  dtls-ep-recv-at : DtlsEp, List Integer, Integer, Integer, List (List Integer) -> DtlsEpStep
+  dtls-ep-recv-at (ep) (dgram) (off) (now) (outs) =
+    if off >= list-length dgram then DtlsEpStep { es-ep = ep, es-out = outs }
+    else dtls-ep-recv-next (dtls-ep-recv-one ep (dtls-ep-record-at dgram off (dtls-ep-rec-len dgram off)) now) dgram (off + dtls-ep-rec-len dgram off) now outs
+
+  dtls-ep-record-at : List Integer, Integer, Integer -> List Integer
+  dtls-ep-record-at (dgram) (off) (n) =
+    if off == 0 & n == list-length dgram then dgram
+    else dtls-slice-at dgram off n
+
+  dtls-ep-recv-next : DtlsEpStep, List Integer, Integer, Integer, List (List Integer) -> DtlsEpStep
+  dtls-ep-recv-next (st) (dgram) (off) (now) (outs) =
+    if dtls-ep-failed (st.es-ep) then DtlsEpStep { es-ep = st.es-ep, es-out = outs & st.es-out }
+    else dtls-ep-recv-at (st.es-ep) dgram off now (outs & st.es-out)
+
+  dtls-ep-rec-len : List Integer, Integer -> Integer
+  dtls-ep-rec-len (bs) (off) =
+    let rest = list-length bs - off
+    in let b0 = list-at bs off
+    in if dtls-is-record b0 then
+      (if dtls-has-len b0 & dtls-has-seq16 b0 & rest >= 5 then dtls-ep-min rest (5 + list-at bs (off + 3) * 256 + list-at bs (off + 4)) else rest)
+    else if rest >= 13 then dtls-ep-min rest (13 + list-at bs (off + 11) * 256 + list-at bs (off + 12))
+    else rest
+
+  dtls-ep-min : Integer, Integer -> Integer
+  dtls-ep-min (a) (b) = if a < b then a else b
+
+  dtls-ep-recv-one : DtlsEp, List Integer, Integer -> DtlsEpStep
+  dtls-ep-recv-one (ep) (dgram) (now) =
     if dtls-ep-failed ep then dtls-ep-idle ep
     else if list-length dgram < 1 then dtls-ep-idle ep
     else if ep.ep-done then dtls-ep-recv-done ep dgram
@@ -148,7 +191,8 @@ Section: Receive
   dtls-ep-recv-hs-enc : DtlsEp, List Integer, Integer -> DtlsEpStep
   dtls-ep-recv-hs-enc (ep) (dgram) (now) =
     let secret = if ep.ep-server then ep.ep-c-hs else ep.ep-s-hs
-    in when dtls-open (dtls-ep-keys secret) 0 dgram
+    in if list-length secret == 0 then dtls-ep-idle ep
+    else when dtls-open-near (dtls-ep-keys secret) ((ep.ep-hs-window).dw-right + 1) dgram
       is None -> dtls-ep-idle ep
       is Just (p) ->
         if dtls-replay-ok (ep.ep-hs-window) (p.dp-seq) == False then dtls-ep-idle ep
@@ -157,10 +201,59 @@ Section: Receive
 
   dtls-ep-on-enc-hs : DtlsEp, DtlsPlain, Integer -> DtlsEpStep
   dtls-ep-on-enc-hs (ep) (p) (now) =
-    if p.dp-type /= dtls-content-handshake then dtls-ep-idle ep
-    else when dtls-msg-parse (p.dp-content)
-      is None -> dtls-ep-idle ep
-      is Just (m) -> dtls-ep-on-frag ep m now
+    if p.dp-type == dtls-ep-content-alert then dtls-ep-on-alert ep (p.dp-content)
+    else if p.dp-type == dtls-content-ack then dtls-ep-idle ep
+    else if p.dp-type /= dtls-content-handshake then dtls-ep-abort ep 10
+    else dtls-ep-hs-walk ep (p.dp-content) 0 now []
+
+ A protected record can carry several handshake messages (RFC 8446 section 5.1, which DTLS 1.3 keeps), taken in
+ order until one fails the association or the bytes left do not parse. A Finished is the last message before a key
+ change, so one with bytes after it in its record is unexpected_message (the same section).
+
+  dtls-ep-hs-walk : DtlsEp, List Integer, Integer, Integer, List (List Integer) -> DtlsEpStep
+  dtls-ep-hs-walk (ep) (bs) (off) (now) (outs) =
+    if off >= list-length bs then DtlsEpStep { es-ep = ep, es-out = outs }
+    else when dtls-ep-msg-at bs off
+      is None -> DtlsEpStep { es-ep = ep, es-out = outs }
+      is Just (m) -> dtls-ep-hs-walk-next (dtls-ep-hs-one ep m (off + 12 + m.dm-frag-length < list-length bs) now) bs (off + 12 + m.dm-frag-length) now outs
+
+  dtls-ep-msg-at : List Integer, Integer -> Maybe DtlsMsg
+  dtls-ep-msg-at (bs) (off) =
+    if off + 12 > list-length bs then None
+    else let flen = dtls-rd24 bs (off + 9)
+    in if off + 12 + flen > list-length bs then None
+    else
+      Just (DtlsMsg {
+        dm-type = list-at bs off,
+        dm-length = dtls-rd24 bs (off + 1),
+        dm-seq = dtls-rd16 bs (off + 4),
+        dm-frag-offset = dtls-rd24 bs (off + 6),
+        dm-frag-length = flen,
+        dm-body = dtls-slice-at bs (off + 12) flen
+      })
+
+  dtls-ep-hs-walk-next : DtlsEpStep, List Integer, Integer, Integer, List (List Integer) -> DtlsEpStep
+  dtls-ep-hs-walk-next (st) (bs) (off) (now) (outs) =
+    if dtls-ep-failed (st.es-ep) then DtlsEpStep { es-ep = st.es-ep, es-out = outs & st.es-out }
+    else dtls-ep-hs-walk (st.es-ep) bs off now (outs & st.es-out)
+
+  dtls-ep-hs-one : DtlsEp, DtlsMsg, Boolean, Integer -> DtlsEpStep
+  dtls-ep-hs-one (ep) (m) (more) (now) =
+    if dtls-ep-enc-hs-type-ok ep (m.dm-type) == False then dtls-ep-abort ep 10
+    else if more & m.dm-type == dtls-hs-finished then dtls-ep-abort ep 10
+    else dtls-ep-on-frag ep m now
+
+ RFC 8446 sections 4.3 and 4.4, as TlsEndpoint: in the handshake epoch the server takes only the client's Finished
+ (no CertificateRequest is sent), and the client only EncryptedExtensions, Certificate, CertificateVerify and
+ Finished. Any other is unexpected_message (10).
+
+  dtls-ep-enc-hs-type-ok : DtlsEp, Integer -> Boolean
+  dtls-ep-enc-hs-type-ok (ep) (t) =
+    if ep.ep-server then t == dtls-hs-finished
+    else if t == dtls-hs-encrypted-ext then True
+    else if t == dtls-hs-certificate then True
+    else if t == dtls-hs-cert-verify then True
+    else t == dtls-hs-finished
 
   dtls-ep-recv-plain : DtlsEp, List Integer, Integer -> DtlsEpStep
   dtls-ep-recv-plain (ep) (dgram) (now) =
@@ -170,9 +263,26 @@ Section: Receive
 
   dtls-ep-on-plain : DtlsEp, DtlsPlainRec, Integer -> DtlsEpStep
   dtls-ep-on-plain (ep) (p) (now) =
-    when dtls-msg-parse (p.dpr-fragment)
+    if p.dpr-epoch /= 0 then dtls-ep-idle ep
+    else if p.dpr-ctype == dtls-ep-content-alert then
+      (if list-length (ep.ep-c-hs) == 0 then dtls-ep-on-alert ep (p.dpr-fragment) else dtls-ep-idle ep)
+    else if p.dpr-ctype /= dtls-content-handshake then dtls-ep-idle ep
+    else when dtls-msg-parse (p.dpr-fragment)
       is None -> dtls-ep-idle ep
-      is Just (m) -> dtls-ep-on-frag ep m now
+      is Just (m) -> if dtls-ep-plain-allowed ep m then dtls-ep-on-frag ep m now else dtls-ep-idle ep
+
+ RFC 9147 section 4: an unprotected DTLSPlaintext record is epoch 0; one naming another epoch is discarded.
+
+ RFC 9147 section 4.5.2 discards an invalid record silently, and RFC 8446 section 4 orders the handshake: the one
+ plaintext message a server takes is a ClientHello, and the one a client takes is the ServerHello (or
+ HelloRetryRequest) before its handshake keys exist. Everything after is protected, so a plaintext ServerHello once
+ the keys exist is a retransmission or a forgery.
+
+  dtls-ep-plain-allowed : DtlsEp, DtlsMsg -> Boolean
+  dtls-ep-plain-allowed (ep) (m) =
+    if ep.ep-server then m.dm-type == dtls-hs-client-hello
+    else if m.dm-type /= dtls-hs-server-hello then False
+    else list-length (ep.ep-c-hs) == 0
 
  RFC 9147 section 5.2. A message that arrives whole takes the same path it
  always did, without touching the buffer: that is what keeps an
@@ -212,7 +322,13 @@ Section: Server
 
   dtls-ep-server-ch : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
   dtls-ep-server-ch (ep) (m) (now) =
-    when dtls-ch-cookie (m.dm-body)
+    if dtls13-legacy-ok (m.dm-body) == False then dtls-ep-idle ep
+    else if dtls13-ch-offers-version (m.dm-body) == False then dtls-ep-idle ep
+    else if dtls13-ch-fields-ok (m.dm-body) == False then dtls-ep-idle ep
+    else if tep-exts-block-alert (m.dm-body) (dtls13-ch-ext-offset (m.dm-body) - 2) /= 0 then dtls-ep-idle ep
+    else if tep-ch-ks-alert (dtls13-ch-find-ext (m.dm-body) tls-ext-key-share) /= 0 then dtls-ep-idle ep
+    else if tep-ch-vecs-alert (dtls13-ch-find-ext (m.dm-body) tls-ext-supported-versions) (dtls13-ch-find-ext (m.dm-body) tls-ext-supported-groups) (dtls13-ch-find-ext (m.dm-body) tls-ext-signature-algorithms) /= 0 then dtls-ep-idle ep
+    else when dtls13-ch-cookie (m.dm-body)
       is None -> dtls-ep-send-hrr ep m
       is Just (c) -> dtls-ep-server-check ep m c
 
@@ -245,7 +361,7 @@ Section: Server
     in let cookie = dtls-ep-cookie (ep.ep-cookie-secret) (ep.ep-addr) ch1-hash
     in DtlsEpStep {
       es-ep = ep,
-      es-out = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 (dtls-hrr-body [] cookie)
+      es-out = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 (dtls13-hrr-body [] cookie)
     }
 
  A cookie that does not verify MUST abort. It is not the same as no
@@ -260,7 +376,7 @@ Section: Server
 
   dtls-ep-server-accept : DtlsEp, DtlsMsg, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-accept (ep) (m) (cookie) (ch1-hash) =
-    when dtls-ch-key-share (m.dm-body)
+    when dtls13-ch-key-share (m.dm-body)
       is None -> dtls-ep-idle ep
       is Just (peer) -> dtls-ep-server-flight ep m peer cookie ch1-hash
 
@@ -268,15 +384,21 @@ Section: Server
   dtls-ep-server-flight (ep) (m) (peer) (cookie) (ch1-hash) =
     let shared = x25519-shared-secret (ep.ep-priv) peer
     in if list-length shared /= 32 then dtls-ep-abort-key-share ep
-    else let sh-body = dtls-server-hello-body (dtls-ep-random ep) [] (ep.ep-pub)
+    else let sh-body = dtls13-server-hello-body (dtls-ep-random ep) [] (ep.ep-pub)
     in let tr = dtls-ep-server-transcript ep m sh-body cookie ch1-hash
     in let hs = tls13-handshake-secret shared
     in let th = tls13-transcript-hash tr
     in let c-hs = tls13-client-hs-traffic hs th
     in let s-hs = tls13-server-hs-traffic hs th
+    in let tr-ee = tr & tls13-msg-transcript dtls-hs-encrypted-ext dtls-ep-ee-body
     in if list-length (ep.ep-cert-chain) == 0
-    then dtls-ep-server-emit (dtls-ep-with-keys ep peer hs tr c-hs s-hs) sh-body th
-    else dtls-ep-server-emit-auth ep peer hs tr c-hs s-hs sh-body
+    then dtls-ep-server-emit (dtls-ep-with-keys ep peer hs tr-ee c-hs s-hs) sh-body (tls13-transcript-hash tr-ee)
+    else dtls-ep-server-emit-auth ep peer hs tr-ee c-hs s-hs sh-body
+
+ RFC 8446 section 4.3.1: EncryptedExtensions is the first message after the ServerHello in every flight, even
+ empty. Ours carries no extension: of what the ClientHello offers, nothing needs an answer.
+
+  dtls-ep-ee-body : List Integer = [0, 0]
 
   dtls-ep-server-emit-auth : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEpStep
   dtls-ep-server-emit-auth (ep) (peer) (hs) (tr) (c-hs) (s-hs) (sh-body) =
@@ -304,18 +426,19 @@ Section: Server
   dtls-ep-server-emit-msgs (ep) (sh-body) (cert-body) (cv-body) (th) =
     let sfin = tls13-verify-data (ep.ep-s-hs) th
     in let hk = dtls-ep-keys (ep.ep-s-hs)
-    in let n-cert = list-length (dtls-msg-fragments dtls-hs-certificate 1 cert-body dtls-ep-frag-body)
-    in let n-cv = list-length (dtls-msg-fragments dtls-hs-cert-verify 2 cv-body dtls-ep-frag-body)
+    in let n-cert = list-length (dtls-msg-fragments dtls-hs-certificate 2 cert-body dtls-ep-frag-body)
+    in let n-cv = list-length (dtls-msg-fragments dtls-hs-cert-verify 3 cv-body dtls-ep-frag-body)
     in let o0 = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 sh-body
-    in let o1 = dtls-ep-seal-into hk o0 0 dtls-hs-certificate 1 cert-body
-    in let o2 = dtls-ep-seal-into hk o1 n-cert dtls-hs-cert-verify 2 cv-body
-    in let o3 = dtls-ep-seal-into hk o2 (n-cert + n-cv) dtls-hs-finished 3 sfin
+    in let oe = dtls-ep-seal-into hk o0 0 dtls-hs-encrypted-ext 1 dtls-ep-ee-body
+    in let o1 = dtls-ep-seal-into hk oe 1 dtls-hs-certificate 2 cert-body
+    in let o2 = dtls-ep-seal-into hk o1 (1 + n-cert) dtls-hs-cert-verify 3 cv-body
+    in let o3 = dtls-ep-seal-into hk o2 (1 + n-cert + n-cv) dtls-hs-finished 4 sfin
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
-    in DtlsEpStep { es-ep = ep2, es-out = o3 }
+    in DtlsEpStep { es-ep = __record-set ep2 "ep-msg-seq" 5, es-out = o3 }
 
   dtls-ep-server-transcript : DtlsEp, DtlsMsg, List Integer, List Integer, List Integer -> List Integer
   dtls-ep-server-transcript (ep) (m) (sh-body) (cookie) (ch1-hash) =
-    let hrr = tls13-msg-transcript dtls-hs-server-hello (dtls-hrr-body [] cookie)
+    let hrr = tls13-msg-transcript dtls-hs-server-hello (dtls13-hrr-body [] cookie)
     in let ch2 = tls13-msg-transcript dtls-hs-client-hello (m.dm-body)
     in let sh = tls13-msg-transcript dtls-hs-server-hello sh-body
     in tls13-transcript-after-hrr-hash ch1-hash & hrr & ch2 & sh
@@ -324,44 +447,142 @@ Section: Server
   dtls-ep-server-emit (ep) (sh-body) (th) =
     let sfin = tls13-verify-data (ep.ep-s-hs) th
     in let o0 = dtls-ep-wrap-into ep [] dtls-hs-server-hello 0 sh-body
-    in let o1 = dtls-ep-seal-into (dtls-ep-keys (ep.ep-s-hs)) o0 0 dtls-hs-finished 1 sfin
+    in let oe = dtls-ep-seal-into (dtls-ep-keys (ep.ep-s-hs)) o0 0 dtls-hs-encrypted-ext 1 dtls-ep-ee-body
+    in let o1 = dtls-ep-seal-into (dtls-ep-keys (ep.ep-s-hs)) oe 1 dtls-hs-finished 2 sfin
     in let ep2 = dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished sfin)
-    in DtlsEpStep { es-ep = ep2, es-out = o1 }
+    in DtlsEpStep { es-ep = __record-set ep2 "ep-msg-seq" 3, es-out = o1 }
 
   dtls-ep-server-fin : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-server-fin (ep) (m) =
+    if m.dm-seq /= dtls-ep-cfin-seq then dtls-ep-idle ep
+    else dtls-ep-server-fin-at ep m
+
+ RFC 9147 5.2: this server answers every ClientHello1 with a stateless HelloRetryRequest, so the client's messages
+ are ClientHello1 (message_seq 0), ClientHello2 (1) and Finished (2); a Finished at another message_seq is out of
+ order and is discarded.
+
+  dtls-ep-cfin-seq : Integer = 2
+
+  dtls-ep-server-fin-at : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-server-fin-at (ep) (m) =
     let th = tls13-transcript-hash (ep.ep-transcript)
     in if tls13-finished-ok (ep.ep-c-hs) th (m.dm-body)
     then DtlsEpStep { es-ep = __record-set ep "ep-done" True, es-out = [] }
-    else dtls-ep-idle ep
+    else dtls-ep-abort ep 51
 
 Section: Client Receive
 
   dtls-ep-client-msg : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
   dtls-ep-client-msg (ep) (m) (now) =
-    if m.dm-type /= dtls-hs-server-hello then dtls-ep-client-other ep m
+    if m.dm-type /= dtls-hs-server-hello then dtls-ep-client-seq ep m
     else if dtls-is-hrr (m.dm-body) then dtls-ep-client-hrr ep m now
     else dtls-ep-client-sh ep m
 
+ RFC 8446 4.1.4: a HelloRetryRequest names the suite the client offered, with an empty session id echo and
+ compression 0, as a ServerHello does; any other is discarded.
+
+ RFC 9147 section 5.2: a message below next_receive_seq MUST be discarded, one above it is discarded here (MAY,
+ the peer retransmits), and the one equal to it is processed and moves it on. RFC 9147 sets no message_seq for a
+ ServerHello after a stateless HelloRetryRequest, so next_receive_seq starts at the accepted ServerHello's own plus 1.
+
+  dtls-ep-client-seq : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-client-seq (ep) (m) =
+    if list-length (ep.ep-c-hs) == 0 then dtls-ep-client-other ep m
+    else if m.dm-seq /= ep.ep-recv-next then dtls-ep-idle ep
+    else dtls-ep-client-other (__record-set ep "ep-recv-next" (ep.ep-recv-next + 1)) m
+
+  dtls-ep-hrr-fields-ok : List Integer -> Boolean
+  dtls-ep-hrr-fields-ok (b) =
+    if list-length b < 38 then False
+    else if list-at b 34 /= 0 then False
+    else if list-at b 35 * 256 + list-at b 36 /= tls-cipher-aes-128-gcm-sha256 then False
+    else list-at b 37 == 0
+
   dtls-ep-client-hrr : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
   dtls-ep-client-hrr (ep) (m) (now) =
-    when dtls-hrr-cookie (m.dm-body)
+    if (ep.ep-hs).hs-flight == dtls-flight-ch2 then dtls-ep-client-hrr-again ep m
+    else if dtls13-legacy-ok (m.dm-body) == False then dtls-ep-idle ep
+    else if dtls13-sh-version-ok (m.dm-body) == False then dtls-ep-idle ep
+    else if dtls-ep-hrr-fields-ok (m.dm-body) == False then dtls-ep-idle ep
+    else if dtls-ep-hrr-exts-ok (m.dm-body) == False then dtls-ep-idle ep
+    else when dtls-hrr-cookie (m.dm-body)
       is None -> dtls-ep-idle ep
-      is Just (c) -> dtls-ep-client-ch2 ep m c now
+      is Just (c) -> if list-length c == 0 then dtls-ep-idle ep else dtls-ep-client-ch2 ep m c now
+
+ RFC 8446 4.1.4 and 4.2.8: a HelloRetryRequest to this client carries supported_versions and the cookie, each once,
+ inside a length that fits; a key_share is out of rule, as X25519, the one group offered, already had a share. The
+ cookie is 1 byte or more (4.2.2). Any other is discarded (RFC 9147 4.5.2).
+
+  dtls-ep-hrr-exts-ok : List Integer -> Boolean
+  dtls-ep-hrr-exts-ok (b) =
+    if list-length b < 40 then False
+    else if 40 + list-at b 38 * 256 + list-at b 39 /= list-length b then False
+    else dtls-ep-hrr-ext-walk b 40 []
+
+  dtls-ep-hrr-ext-walk : List Integer, Integer, List Integer -> Boolean
+  dtls-ep-hrr-ext-walk (b) (off) (seen) =
+    if off == list-length b then True
+    else if off + 4 > list-length b then False
+    else dtls-ep-hrr-ext-one b off seen (list-at b off * 256 + list-at b (off + 1)) (list-at b (off + 2) * 256 + list-at b (off + 3))
+
+  dtls-ep-hrr-ext-one : List Integer, Integer, List Integer, Integer, Integer -> Boolean
+  dtls-ep-hrr-ext-one (b) (off) (seen) (t) (n) =
+    if off + 4 + n > list-length b then False
+    else if tep-ee-seen seen t 0 then False
+    else if t == tls-ext-supported-versions then dtls-ep-hrr-ext-walk b (off + 4 + n) (seen & [t])
+    else if t == dtls-ext-cookie-type then dtls-ep-hrr-ext-walk b (off + 4 + n) (seen & [t])
+    else False
+
+ RFC 8446 4.1.4: a second HelloRetryRequest MUST abort with unexpected_message (10). A stateless server answers
+ each retransmitted ClientHello1 with the same HelloRetryRequest, so one equal to the one in the transcript (after
+ the 36-byte message_hash entry) is a duplicate and is discarded.
+
+  dtls-ep-client-hrr-again : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-client-hrr-again (ep) (m) =
+    let hrr = tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
+    in if tls13-ct-equal (dtls-take-at (ep.ep-transcript) 36 (list-length hrr)) hrr then dtls-ep-idle ep
+    else dtls-ep-abort ep 10
 
   dtls-ep-client-ch2 : DtlsEp, DtlsMsg, List Integer, Integer -> DtlsEpStep
   dtls-ep-client-ch2 (ep) (m) (cookie) (now) =
     let r = dtls-hs-step (ep.ep-hs) (EvHelloRetry cookie now)
-    in let body = dtls-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) cookie
+    in let body = dtls13-client-hello-body (dtls-ep-random ep) [] (ep.ep-pub) cookie
     in let hrr = tls13-msg-transcript dtls-hs-server-hello (m.dm-body)
     in let ch2 = tls13-msg-transcript dtls-hs-client-hello body
     in let tr = tls13-transcript-after-hrr (ep.ep-ch1) & hrr & ch2
-    in let ep2 = __record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr
-    in DtlsEpStep { es-ep = ep2, es-out = dtls-ep-wrap-into ep2 [] dtls-hs-client-hello 1 body }
+    in let ms = ep.ep-msg-seq
+    in let ep2 = __record-set (__record-set (__record-set ep "ep-hs" (r.step-state)) "ep-transcript" tr) "ep-msg-seq" (ms + 1)
+    in DtlsEpStep { es-ep = ep2, es-out = dtls-ep-wrap-into ep2 [] dtls-hs-client-hello ms body }
+
+ A ServerHello is taken only when it echoes the client's empty session id, names the one suite offered with
+ compression 0, carries DTLS 1.3's legacy_version and supported_versions and an X25519 key share of 32 bytes (RFC 8446 4.1.3)
+ and no other extension, each once (4.2, tep-sh-exts-alert);
+ any other is discarded (RFC 9147 4.5.2), which leaves the genuine one free to arrive.
+
+  dtls-ep-sh-ok : List Integer -> Boolean
+  dtls-ep-sh-ok (b) =
+    if list-length b < 38 then False
+    else if dtls13-legacy-ok b == False then False
+    else if list-at b 34 /= 0 then False
+    else if list-at b 35 * 256 + list-at b 36 /= tls-cipher-aes-128-gcm-sha256 then False
+    else if list-at b 37 /= 0 then False
+    else if tep-sh-exts-alert b /= 0 then False
+    else if dtls13-sh-version-ok b == False then False
+    else dtls-ep-sh-share-ok (dtls-sh-find-ext b tls-ext-key-share)
+
+  dtls-ep-sh-share-ok : Maybe (List Integer) -> Boolean
+  dtls-ep-sh-share-ok (m) =
+    when m
+      is None -> False
+      is Just (e) ->
+        (if list-length e /= 36 then False
+         else if list-at e 0 * 256 + list-at e 1 /= tls-group-x25519 then False
+         else list-at e 2 * 256 + list-at e 3 == 32)
 
   dtls-ep-client-sh : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-sh (ep) (m) =
-    when dtls-sh-key-share (m.dm-body)
+    if dtls-ep-sh-ok (m.dm-body) == False then dtls-ep-idle ep
+    else when dtls-sh-key-share (m.dm-body)
       is None -> dtls-ep-idle ep
       is Just (peer) -> dtls-ep-client-keys ep m peer
 
@@ -373,20 +594,46 @@ Section: Client Receive
     in let hs = tls13-handshake-secret shared
     in let th = tls13-transcript-hash tr
     in DtlsEpStep {
-      es-ep = dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th),
+      es-ep = __record-set (dtls-ep-with-keys ep peer hs tr (tls13-client-hs-traffic hs th) (tls13-server-hs-traffic hs th)) "ep-recv-next" (m.dm-seq + 1),
       es-out = []
     }
 
   dtls-ep-client-other : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-other (ep) (m) =
-    if m.dm-type == dtls-hs-certificate then dtls-ep-client-cert ep m
+    if m.dm-type == dtls-hs-encrypted-ext then dtls-ep-client-ee ep m
+    else if ep.ep-flight-next == 0 then dtls-ep-abort ep 10
+    else if m.dm-type == dtls-hs-certificate then dtls-ep-client-cert ep m
     else if m.dm-type == dtls-hs-cert-verify then dtls-ep-client-cv ep m
     else if m.dm-type == dtls-hs-finished then dtls-ep-client-fin ep m
     else dtls-ep-idle ep
 
+ RFC 8446 section 4.3.1: the server's encrypted flight opens with EncryptedExtensions, so a Certificate,
+ CertificateVerify or Finished before it is unexpected_message (10), and its content is checked as TLS checks it
+ (tep-ee-alert). A second EncryptedExtensions is a retransmission (RFC 9147 section 5.8) and is discarded.
+
+  dtls-ep-client-ee : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-client-ee (ep) (m) =
+    if ep.ep-flight-next /= 0 then dtls-ep-idle ep
+    else dtls-ep-client-ee-check ep m (tep-ee-alert (m.dm-body))
+
+  dtls-ep-client-ee-check : DtlsEp, DtlsMsg, Integer -> DtlsEpStep
+  dtls-ep-client-ee-check (ep) (m) (alert) =
+    if alert /= 0 then dtls-ep-abort ep alert
+    else dtls-ep-fold (__record-set ep "ep-flight-next" 1) m
+
   dtls-ep-client-cert : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-cert (ep) (m) =
-    dtls-ep-fold (dtls-ep-cert-peer-key ep m) m
+    if tep-cert-decodes (m.dm-body) == False then dtls-ep-abort ep 50
+    else dtls-ep-client-cert-key (dtls-ep-cert-peer-key ep m) m
+
+ RFC 8446 sections 4.4.2.4, 4.4.3 and 4.4.4, as TlsEndpoint: under anchors a certificate that does not chain to one,
+ or does not name the expected peer, is bad_certificate (42) and a CertificateVerify that does not verify
+ decrypt_error (51); a Finished that does not verify is decrypt_error on either side.
+
+  dtls-ep-client-cert-key : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-client-cert-key (ep) (m) =
+    if list-length (ep.ep-anchors) > 0 & x509-can-verify (ep.ep-peer-key) == False then dtls-ep-abort ep 42
+    else dtls-ep-fold ep m
 
   dtls-ep-fold : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-fold (ep) (m) =
@@ -415,8 +662,14 @@ Section: Client Receive
 
   dtls-ep-client-cv : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-cv (ep) (m) =
+    if tep-cv-alert (m.dm-body) /= 0 then dtls-ep-abort ep (tep-cv-alert (m.dm-body))
+    else dtls-ep-client-cv-check ep m
+
+  dtls-ep-client-cv-check : DtlsEp, DtlsMsg -> DtlsEpStep
+  dtls-ep-client-cv-check (ep) (m) =
     let ok = tls-cv-verify True (ep.ep-peer-key) (m.dm-body) (tls13-transcript-hash (ep.ep-transcript))
-    in dtls-ep-fold (__record-set ep "ep-auth-done" ok) m
+    in if ok == False & list-length (ep.ep-anchors) > 0 then dtls-ep-abort ep 51
+    else dtls-ep-fold (__record-set ep "ep-auth-done" ok) m
 
  The server's Finished. Verify it, then send ours. A client that sends
  its Finished before checking the server's has authenticated nothing and
@@ -424,13 +677,13 @@ Section: Client Receive
 
   dtls-ep-client-fin : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-fin (ep) (m) =
-    if dtls-ep-auth-missing ep then dtls-ep-idle ep
+    if dtls-ep-auth-missing ep then dtls-ep-abort ep 10
     else dtls-ep-client-fin-check ep m
 
   dtls-ep-client-fin-check : DtlsEp, DtlsMsg -> DtlsEpStep
   dtls-ep-client-fin-check (ep) (m) =
     let th = tls13-transcript-hash (ep.ep-transcript)
-    in if tls13-finished-ok (ep.ep-s-hs) th (m.dm-body) == False then dtls-ep-idle ep
+    in if tls13-finished-ok (ep.ep-s-hs) th (m.dm-body) == False then dtls-ep-abort ep 51
     else
       dtls-ep-client-send-fin (dtls-ep-derive-app ep ((ep.ep-transcript) & tls13-msg-transcript dtls-hs-finished (m.dm-body)))
 
@@ -456,8 +709,9 @@ Section: Client Receive
   dtls-ep-client-send-fin : DtlsEp -> DtlsEpStep
   dtls-ep-client-send-fin (ep) =
     let th = tls13-transcript-hash (ep.ep-transcript)
-    in DtlsEpStep { es-ep = __record-set ep "ep-done" True,
-                    es-out = dtls-ep-seal-into (dtls-ep-keys (ep.ep-c-hs)) [] 0 dtls-hs-finished 2 (tls13-verify-data (ep.ep-c-hs) th) }
+    in let ms = ep.ep-msg-seq
+    in DtlsEpStep { es-ep = __record-set (__record-set ep "ep-done" True) "ep-msg-seq" (ms + 1),
+                    es-out = dtls-ep-seal-into (dtls-ep-keys (ep.ep-c-hs)) [] 0 dtls-hs-finished ms (tls13-verify-data (ep.ep-c-hs) th) }
 
 Section: Application Data
 
@@ -482,8 +736,7 @@ Section: Application Data
     in let master = tls13-master-secret (ep.ep-hs-secret)
     in let c-ap = tls13-client-ap-traffic master th
     in let s-ap = tls13-server-ap-traffic master th
-    in let e1 = __record-set (__record-set (__record-set ep "ep-transcript" tr) "ep-c-ap" c-ap) "ep-s-ap" s-ap
-    in __record-set e1 "ep-app-in" (__list-with-capacity dtls-ep-app-cap)
+    in __record-set (__record-set (__record-set ep "ep-transcript" tr) "ep-c-ap" c-ap) "ep-s-ap" s-ap
 
  A traffic secret is not a key. The write key, IV and the sequence-number
  encryption key are each expanded out of it -- the sn-key over the "sn"
@@ -492,12 +745,29 @@ Section: Application Data
  c-ap / s-ap); the epoch is keyed, so each derives its own distinct key.
 
   dtls-ep-keys : List Integer -> DtlsKeys
-  dtls-ep-keys (secret) =
-    DtlsKeys {
-      dk-key = tls13-traffic-key secret,
-      dk-iv = tls13-traffic-iv secret,
-      dk-sn-key = dtls-sn-key secret 16
-    }
+  dtls-ep-keys (secret) = dtls-ep-keys-into (__list-with-capacity 16) (__list-with-capacity 12) (__list-with-capacity 16) __heap-save secret
+
+ Each record derives its three keys by HKDF, about 33 KB of heap for 44 bytes kept: the results are reserved before
+ a heap mark (arguments evaluate left to right), copied in, and the derivation's heap restored, as TlsEndpoint's
+ tep-key. A derivation longer than its reservation is returned as derived and the heap is not restored.
+
+  dtls-ep-keys-into : List Integer, List Integer, List Integer, Integer, List Integer -> DtlsKeys
+  dtls-ep-keys-into (k) (iv) (sn) (mark) (secret) =
+    let dk = tls13-traffic-key secret
+    in let di = tls13-traffic-iv secret
+    in let ds = dtls-sn-key secret 16
+    in if list-length dk > 16 | list-length di > 12 | list-length ds > 16 then DtlsKeys { dk-key = dk, dk-iv = di, dk-sn-key = ds }
+    else dtls-ep-keys-kept (dtls-ep-copy-into k dk 0) (dtls-ep-copy-into iv di 0) (dtls-ep-copy-into sn ds 0) mark
+
+  dtls-ep-keys-kept : List Integer, List Integer, List Integer, Integer -> DtlsKeys
+  dtls-ep-keys-kept (k) (iv) (sn) (mark) =
+    let restored = __heap-restore mark
+    in DtlsKeys { dk-key = k, dk-iv = iv, dk-sn-key = sn }
+
+  dtls-ep-copy-into : List Integer, List Integer, Integer -> List Integer
+  dtls-ep-copy-into (out) (src) (i) =
+    if i >= list-length src then out
+    else dtls-ep-copy-into (list-push out (list-at src i)) src (i + 1)
 
   dtls-ep-seal-hs : DtlsKeys, Integer, List Integer -> List Integer
   dtls-ep-seal-hs (k) (seq) (msg) =
@@ -506,11 +776,26 @@ Section: Application Data
   dtls-ep-send-app : DtlsEp, List Integer -> DtlsEpStep
   dtls-ep-send-app (ep) (data) =
     if ep.ep-done == False then dtls-ep-idle ep
-    else let secret = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
-    in let rec = dtls-seal (dtls-ep-keys secret) dtls-ep-app-epoch (ep.ep-app-write-seq) data dtls-ep-content-app
+    else if ep.ep-app-write-seq >= dtls-ep-seal-limit then dtls-ep-idle ep
+    else if ep.ep-app-write-seq >= dtls-ep-ku-at & ep.ep-ku-pending < 0 then
+      dtls-ep-send-sealed (dtls-ep-ku-send ep (if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap) []) data
+    else dtls-ep-send-sealed (dtls-ep-idle ep) data
+
+ RFC 9147 4.5.3 and RFC 8446 5.5: one AES-GCM key seals at most 2^24.5 records. At write sequence 2^24 the sender
+ sends its own KeyUpdate ahead of the data and goes on under the old key until the peer's ACK moves it (section 8);
+ at the floor of 2^24.5 it refuses to send under that key at all.
+
+  dtls-ep-ku-at : Integer = 16777216
+  dtls-ep-seal-limit : Integer = 23726566
+
+  dtls-ep-send-sealed : DtlsEpStep, List Integer -> DtlsEpStep
+  dtls-ep-send-sealed (st) (data) =
+    let ep = st.es-ep
+    in let secret = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
+    in let rec = dtls-seal (dtls-ep-keys secret) (ep.ep-write-epoch) (ep.ep-app-write-seq) data dtls-ep-content-app
     in DtlsEpStep {
       es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1),
-      es-out = [rec]
+      es-out = st.es-out & [rec]
     }
 
  RFC 9147 section 4.5.1: a record whose sequence number is already in the
@@ -529,26 +814,240 @@ Section: Application Data
 
   dtls-ep-recv-app : DtlsEp, List Integer -> DtlsEpStep
   dtls-ep-recv-app (ep) (rec) =
+    if ep.ep-peer-closed then dtls-ep-idle ep
+    else if list-length rec < 1 then dtls-ep-idle ep
+    else if bit-and (list-at rec 0) dtls-epoch-mask == bit-and (ep.ep-read-epoch) dtls-epoch-mask then dtls-ep-recv-cur ep rec
+    else if list-length (ep.ep-prev-secret) == 0 then dtls-ep-idle ep
+    else if bit-and (list-at rec 0) dtls-epoch-mask == bit-and (ep.ep-read-epoch - 1) dtls-epoch-mask then dtls-ep-recv-prev ep rec
+    else dtls-ep-idle ep
+
+  dtls-ep-recv-cur : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-recv-cur (ep) (rec) =
     let secret = if ep.ep-server then ep.ep-c-ap else ep.ep-s-ap
-    in when dtls-open (dtls-ep-keys secret) 0 rec
+    in dtls-ep-recv-marked ep rec secret __heap-save
+
+ An application record is opened under a heap mark and its content appended into the room already reserved, so the
+ two AES key schedules and the plaintext it costs (about 100 KB however small the record) are given back. The room
+ grows only once a record has authenticated: one that does not fit gives the heap back, grows the room, and is
+ opened again, which happens once per doubling. Any other content type gives the heap back and takes the unmarked
+ path.
+
+  dtls-ep-recv-marked : DtlsEp, List Integer, List Integer, Integer -> DtlsEpStep
+  dtls-ep-recv-marked (ep) (rec) (secret) (mark) =
+    when dtls-open-near-raw (dtls-ep-keys secret) ((ep.ep-app-window).dw-right + 1) rec
+      is None -> dtls-ep-marked-idle ep mark
+      is Just (o) ->
+        if dtls-replay-ok (ep.ep-app-window) (o.do-seq) == False then dtls-ep-marked-idle ep mark
+        else if dtls-opened-type o /= dtls-ep-content-app then dtls-ep-recv-unmarked ep rec secret mark
+        else if list-length (ep.ep-app-in) + o.do-len > ep.ep-app-room & ep.ep-app-room < dtls-ep-app-cap then dtls-ep-recv-regrow ep rec secret (o.do-len) mark
+        else dtls-ep-app-marked ep (dtls-ep-append (ep.ep-app-in) (o.do-inner) 0 (o.do-len)) (o.do-seq) mark
+
+  dtls-ep-marked-idle : DtlsEp, Integer -> DtlsEpStep
+  dtls-ep-marked-idle (ep) (mark) =
+    let restored = __heap-restore mark
+    in dtls-ep-idle ep
+
+  dtls-ep-recv-unmarked : DtlsEp, List Integer, List Integer, Integer -> DtlsEpStep
+  dtls-ep-recv-unmarked (ep) (rec) (secret) (mark) =
+    let restored = __heap-restore mark
+    in dtls-ep-recv-cur-open ep rec secret
+
+  dtls-ep-recv-regrow : DtlsEp, List Integer, List Integer, Integer, Integer -> DtlsEpStep
+  dtls-ep-recv-regrow (ep) (rec) (secret) (n) (mark) =
+    let restored = __heap-restore mark
+    in let grown = dtls-ep-grow-app ep (list-length (ep.ep-app-in) + n)
+    in dtls-ep-recv-marked grown rec secret __heap-save
+
+  dtls-ep-app-marked : DtlsEp, List Integer, Integer, Integer -> DtlsEpStep
+  dtls-ep-app-marked (ep) (appended) (seq) (mark) =
+    let restored = __heap-restore mark
+    in let e0 = __record-set ep "ep-app-window" (dtls-replay-accept (ep.ep-app-window) seq)
+    in DtlsEpStep { es-ep = __record-set e0 "ep-app-read-seq" (ep.ep-app-read-seq + 1), es-out = [] }
+
+  dtls-ep-recv-cur-open : DtlsEp, List Integer, List Integer -> DtlsEpStep
+  dtls-ep-recv-cur-open (ep) (rec) (secret) =
+    when dtls-open-near-raw (dtls-ep-keys secret) ((ep.ep-app-window).dw-right + 1) rec
+      is None -> dtls-ep-idle ep
+      is Just (o) ->
+        if dtls-replay-ok (ep.ep-app-window) (o.do-seq) == False then dtls-ep-idle ep
+        else if dtls-opened-type o == dtls-ep-content-app then DtlsEpStep { es-ep = dtls-ep-app-accept-raw ep o, es-out = [] }
+        else dtls-ep-recv-cur-plain ep (dtls-plain-of (Just o))
+
+  dtls-ep-app-accept-raw : DtlsEp, DtlsOpened -> DtlsEp
+  dtls-ep-app-accept-raw (ep) (o) =
+    let e0 = __record-set ep "ep-app-window" (dtls-replay-accept (ep.ep-app-window) (o.do-seq))
+    in let e1 = __record-set e0 "ep-app-read-seq" (ep.ep-app-read-seq + 1)
+    in dtls-ep-take-app-n e1 (o.do-inner) (o.do-len)
+
+  dtls-ep-recv-cur-plain : DtlsEp, Maybe DtlsPlain -> DtlsEpStep
+  dtls-ep-recv-cur-plain (ep) (m) =
+    when m
       is None -> dtls-ep-idle ep
       is Just (p) ->
-        if dtls-replay-ok (ep.ep-app-window) (p.dp-seq) == False then dtls-ep-idle ep
+        if p.dp-type == dtls-ep-content-alert then dtls-ep-on-alert (dtls-ep-app-accept ep p) (p.dp-content)
+        else if dtls-ep-app-type-ok (p.dp-type) == False then dtls-ep-abort ep 10
+        else if p.dp-type == dtls-content-handshake then dtls-ep-post-hs (dtls-ep-app-accept ep p) p (ep.ep-read-epoch)
+        else if p.dp-type == dtls-content-ack then dtls-ep-on-ack (dtls-ep-app-accept ep p) (p.dp-content)
         else DtlsEpStep { es-ep = dtls-ep-app-accept ep p, es-out = [] }
+
+ RFC 9147 section 8: records sent before a KeyUpdate can arrive after it, so the receiver keeps the previous
+ epoch's key a while. This endpoint keeps exactly one previous epoch, with its own replay window, until the next
+ KeyUpdate replaces it or the association ends; a memory read therefore exposes at most one epoch more than the
+ current key does. In that epoch it takes data, alerts and ACKs, and a KeyUpdate there is the peer retransmitting
+ one this side already took (its ACK was lost), so it is acknowledged again and the key does not move.
+
+  dtls-ep-recv-prev : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-recv-prev (ep) (rec) =
+    when dtls-open-near (dtls-ep-keys (ep.ep-prev-secret)) ((ep.ep-prev-window).dw-right + 1) rec
+      is None -> dtls-ep-idle ep
+      is Just (p) ->
+        if dtls-replay-ok (ep.ep-prev-window) (p.dp-seq) == False then dtls-ep-idle ep
+        else if dtls-ep-app-type-ok (p.dp-type) == False & p.dp-type /= dtls-ep-content-alert then dtls-ep-abort ep 10
+        else dtls-ep-prev-take (__record-set ep "ep-prev-window" (dtls-replay-accept (ep.ep-prev-window) (p.dp-seq))) p
+
+  dtls-ep-prev-take : DtlsEp, DtlsPlain -> DtlsEpStep
+  dtls-ep-prev-take (ep) (p) =
+    if p.dp-type == dtls-ep-content-alert then dtls-ep-on-alert ep (p.dp-content)
+    else if p.dp-type == dtls-content-handshake then dtls-ep-post-hs ep p (ep.ep-read-epoch - 1)
+    else if p.dp-type == dtls-content-ack then dtls-ep-on-ack ep (p.dp-content)
+    else DtlsEpStep { es-ep = dtls-ep-take-app ep (p.dp-content), es-out = [] }
+
+ RFC 8446 section 5: a protected record's type in the application epoch is application_data, handshake (a
+ post-handshake message), alert, or DTLS 1.3's ack (26, RFC 9147 section 7); any other is unexpected_message (10).
+ In the handshake epoch it is handshake, alert or ack, so application_data there is refused as well.
+
+ RFC 9147 sections 7 and 8, RFC 8446 4.6.3: after the handshake a client takes NewSessionTicket (4) and KeyUpdate
+ (24), a server KeyUpdate only. A KeyUpdate is one whole message of one byte (0 or 1) alone in its record; it is
+ acknowledged by an ACK naming its record (epoch, sequence) under this side's sending key, and the peer's secret
+ moves to HKDF-Expand-Label(secret, "traffic upd", "", 32) as the next epoch, its replay window and sequence from 0.
+
+  dtls-ep-post-hs : DtlsEp, DtlsPlain, Integer -> DtlsEpStep
+  dtls-ep-post-hs (ep) (p) (epoch) =
+    when dtls-msg-parse (p.dp-content)
+      is None -> dtls-ep-abort ep 50
+      is Just (m) -> dtls-ep-post-hs-msg ep p m epoch
+
+  dtls-ep-post-hs-msg : DtlsEp, DtlsPlain, DtlsMsg, Integer -> DtlsEpStep
+  dtls-ep-post-hs-msg (ep) (p) (m) (epoch) =
+    if m.dm-type == 4 & ep.ep-server == False then dtls-ep-ack-only ep epoch (p.dp-seq)
+    else if m.dm-type /= 24 then dtls-ep-abort ep 10
+    else if m.dm-length /= 1 then dtls-ep-abort ep 50
+    else if m.dm-frag-offset /= 0 | m.dm-frag-length /= 1 then dtls-ep-abort ep 50
+    else if list-length (p.dp-content) /= 13 then dtls-ep-abort ep 10
+    else if list-at (m.dm-body) 0 > 1 then dtls-ep-abort ep 47
+    else if epoch /= ep.ep-read-epoch then dtls-ep-ack-only ep epoch (p.dp-seq)
+    else dtls-ep-key-update ep (p.dp-seq) (list-at (m.dm-body) 0)
+
+ RFC 9147 sections 5.8.4 and 7: the server retransmits a NewSessionTicket until an ACK names its record, so the
+ client, which keeps no ticket, still acknowledges each one under its sending key.
+
+  dtls-ep-ack-only : DtlsEp, Integer, Integer -> DtlsEpStep
+  dtls-ep-ack-only (ep) (epoch) (rec-seq) =
+    let own = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
+    in let ack = dtls-seal (dtls-ep-keys own) (ep.ep-write-epoch) (ep.ep-app-write-seq) (dtls-ack-encode [DtlsRecordNum { rn-epoch = epoch, rn-seq = rec-seq }]) dtls-content-ack
+    in DtlsEpStep { es-ep = __record-set ep "ep-app-write-seq" (ep.ep-app-write-seq + 1), es-out = [ack] }
+
+  dtls-ep-key-update : DtlsEp, Integer, Integer -> DtlsEpStep
+  dtls-ep-key-update (ep) (rec-seq) (req) =
+    let own = if ep.ep-server then ep.ep-s-ap else ep.ep-c-ap
+    in let ack = dtls-seal (dtls-ep-keys own) (ep.ep-write-epoch) (ep.ep-app-write-seq) (dtls-ack-encode [DtlsRecordNum { rn-epoch = ep.ep-read-epoch, rn-seq = rec-seq }]) dtls-content-ack
+    in let old-peer = if ep.ep-server then ep.ep-c-ap else ep.ep-s-ap
+    in let old-window = ep.ep-app-window
+    in let e0 = if ep.ep-server then __record-set ep "ep-c-ap" (tep-next-secret (ep.ep-c-ap))
+                else __record-set ep "ep-s-ap" (tep-next-secret (ep.ep-s-ap))
+    in let ek = __record-set (__record-set e0 "ep-prev-secret" old-peer) "ep-prev-window" old-window
+    in let e1 = __record-set (__record-set ek "ep-read-epoch" (ep.ep-read-epoch + 1)) "ep-app-window" dtls-window-new
+    in let e2 = __record-set (__record-set e1 "ep-app-read-seq" 0) "ep-app-write-seq" (ep.ep-app-write-seq + 1)
+    in if req == 0 | ep.ep-ku-pending >= 0 then DtlsEpStep { es-ep = e2, es-out = [ack] }
+    else dtls-ep-ku-send e2 own [ack]
+
+ The answer to update_requested is this side's own KeyUpdate (update_not_requested) under the old sending secret,
+ at this side's next message_seq (RFC 9147 section 5.2: each message sent takes the next one); the sending secret and epoch move only when the peer's ACK names that record (RFC 9147 section 8).
+
+  dtls-ep-ku-send : DtlsEp, List Integer, List (List Integer) -> DtlsEpStep
+  dtls-ep-ku-send (ep) (own) (outs) =
+    let ms = ep.ep-msg-seq
+    in let rec = dtls-seal (dtls-ep-keys own) (ep.ep-write-epoch) (ep.ep-app-write-seq) [24, 0, 0, 1, bit-shru ms 8, bit-and ms 255, 0, 0, 0, 0, 0, 1, 0] dtls-content-handshake
+    in let e1 = __record-set (__record-set (__record-set ep "ep-ku-pending" (ep.ep-app-write-seq)) "ep-app-write-seq" (ep.ep-app-write-seq + 1)) "ep-msg-seq" (ms + 1)
+    in DtlsEpStep { es-ep = e1, es-out = outs & [rec] }
+
+  dtls-ep-on-ack : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-on-ack (ep) (bs) =
+    if ep.ep-ku-pending < 0 then dtls-ep-idle ep
+    else if dtls-ep-ack-names bs 0 (dtls-ack-count bs) (ep.ep-write-epoch) (ep.ep-ku-pending) == False then dtls-ep-idle ep
+    else dtls-ep-idle (dtls-ep-move-write ep)
+
+  dtls-ep-move-write : DtlsEp -> DtlsEp
+  dtls-ep-move-write (ep) =
+    let e0 = if ep.ep-server then __record-set ep "ep-s-ap" (tep-next-secret (ep.ep-s-ap))
+             else __record-set ep "ep-c-ap" (tep-next-secret (ep.ep-c-ap))
+    in __record-set (__record-set (__record-set e0 "ep-write-epoch" (ep.ep-write-epoch + 1)) "ep-app-write-seq" 0) "ep-ku-pending" (0 - 1)
+
+  dtls-ep-ack-names : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  dtls-ep-ack-names (bs) (i) (n) (epoch) (seq) =
+    if i >= n then False
+    else if 2 + i * 16 + 16 > list-length bs then False
+    else if dtls-ep-rd64 bs (2 + i * 16) == epoch & dtls-ep-rd64 bs (10 + i * 16) == seq then True
+    else dtls-ep-ack-names bs (i + 1) n epoch seq
+
+  dtls-ep-rd64 : List Integer, Integer -> Integer
+  dtls-ep-rd64 (bs) (off) = dtls-ep-rd64-loop bs off 0 0
+
+  dtls-ep-rd64-loop : List Integer, Integer, Integer, Integer -> Integer
+  dtls-ep-rd64-loop (bs) (off) (i) (acc) = if i >= 8 then acc else dtls-ep-rd64-loop bs off (i + 1) (acc * 256 + list-at bs (off + i))
+
+  dtls-ep-app-type-ok : Integer -> Boolean
+  dtls-ep-app-type-ok (t) = t == dtls-ep-content-app | t == dtls-content-handshake | t == dtls-content-ack
+
+ RFC 8446 section 6, as TlsEndpoint: close_notify (0) after the handshake ends what the peer sends, the endpoint
+ keeps done and what it received and reads nothing more; user_canceled (90) changes nothing; any other alert, and
+ a closure before the handshake is done, ends the association with no answer; an alert that is not two bytes is
+ decode_error (50). A plaintext alert is believed only before the handshake keys exist.
+
+  dtls-ep-content-alert : Integer = 21
+
+  dtls-ep-on-alert : DtlsEp, List Integer -> DtlsEpStep
+  dtls-ep-on-alert (ep) (alert) =
+    if list-length alert /= 2 then dtls-ep-abort ep 50
+    else if list-at alert 1 == 90 then dtls-ep-idle ep
+    else if list-at alert 1 == 0 then
+      (if ep.ep-done then dtls-ep-idle (__record-set ep "ep-peer-closed" True) else dtls-ep-shut ep)
+    else dtls-ep-shut ep
+
+  dtls-ep-shut : DtlsEp -> DtlsEpStep
+  dtls-ep-shut (ep) =
+    let st = dtls-ep-abort ep 0
+    in DtlsEpStep { es-ep = st.es-ep, es-out = [] }
 
   dtls-ep-app-accept : DtlsEp, DtlsPlain -> DtlsEp
   dtls-ep-app-accept (ep) (p) =
     let e0 = __record-set ep "ep-app-window" (dtls-replay-accept (ep.ep-app-window) (p.dp-seq))
     in let e1 = __record-set e0 "ep-app-read-seq" (ep.ep-app-read-seq + 1)
-    in if p.dp-type == dtls-ep-content-app then
-      __record-set e1 "ep-app-in" (dtls-ep-append (ep.ep-app-in) (p.dp-content) 0 (list-length (p.dp-content)))
+    in if p.dp-type == dtls-ep-content-app then dtls-ep-take-app e1 (p.dp-content)
     else e1
 
- Application data accumulates into ONE list, reserved to capacity at the
- handshake's end and pushed into in place, the discipline TlsEndpoint uses:
- the obvious per-record append copies the whole buffer every record and, on
- a heap with no collector, leaves every intermediate copy live. A body past
- the cap stops growing rather than reallocating.
+ Application data accumulates into ONE list pushed into in place: the per-record append copies the whole buffer
+ every record and, on a heap with no collector, leaves every intermediate copy live. The room is sized to the data
+ received (L-PEROBJECT: a server holds one per association): none until data arrives, then what is needed or twice
+ the room held, whichever is more, up to the cap, so the copies made while growing total less than the room itself.
+ A body past the cap stops growing rather than reallocating.
+
+  dtls-ep-take-app : DtlsEp, List Integer -> DtlsEp
+  dtls-ep-take-app (ep) (content) = dtls-ep-take-app-n ep content (list-length content)
+
+  dtls-ep-take-app-n : DtlsEp, List Integer, Integer -> DtlsEp
+  dtls-ep-take-app-n (ep) (src) (n) =
+    let need = list-length (ep.ep-app-in) + n
+    in let grown = if need <= ep.ep-app-room then ep else dtls-ep-grow-app ep need
+    in __record-set grown "ep-app-in" (dtls-ep-append (grown.ep-app-in) src 0 n)
+
+  dtls-ep-grow-app : DtlsEp, Integer -> DtlsEp
+  dtls-ep-grow-app (ep) (need) =
+    let wanted = if need > 2 * ep.ep-app-room then need else 2 * ep.ep-app-room
+    in let room = if wanted > dtls-ep-app-cap then dtls-ep-app-cap else wanted
+    in if room <= ep.ep-app-room then ep
+    else
+      __record-set (__record-set ep "ep-app-in" (dtls-ep-append (__list-with-capacity room) (ep.ep-app-in) 0 (list-length (ep.ep-app-in)))) "ep-app-room" room
 
   dtls-ep-append : List Integer, List Integer, Integer, Integer -> List Integer
   dtls-ep-append (dst) (src) (i) (n) =
@@ -558,6 +1057,16 @@ Section: Application Data
 
   dtls-ep-app-in : DtlsEp -> List Integer
   dtls-ep-app-in (ep) = ep.ep-app-in
+
+ A consumer that has read the first k bytes drains them (L-PEROBJECT): a session then holds what it has not read,
+ not everything it has carried, and its buffer does not fill to the cap, past which it would take nothing more.
+
+  dtls-ep-app-drain : DtlsEp, Integer -> DtlsEp
+  dtls-ep-app-drain (ep) (k) =
+    let n = list-length (ep.ep-app-in)
+    in if k <= 0 then ep
+    else if k >= n then __record-set (__record-set ep "ep-app-in" []) "ep-app-room" 0
+    else __record-set (__record-set ep "ep-app-in" (dtls-ep-append (__list-with-capacity (n - k)) (ep.ep-app-in) k n)) "ep-app-room" (n - k)
 
   dtls-ep-hs-right : DtlsEp -> Integer
   dtls-ep-hs-right (ep) = let w = ep.ep-hs-window in w.dw-right
@@ -626,12 +1135,15 @@ Section: Helpers
     is otherwise -> False
 
   dtls-ep-abort-key-share : DtlsEp -> DtlsEpStep
-  dtls-ep-abort-key-share (ep) =
+  dtls-ep-abort-key-share (ep) = dtls-ep-abort ep 47
+
+  dtls-ep-abort : DtlsEp, Integer -> DtlsEpStep
+  dtls-ep-abort (ep) (desc) =
     let hs = __record-set (ep.ep-hs) "hs-phase" PhFailed
     in let e1 = __record-set (__record-set (__record-set ep "ep-hs" hs) "ep-done" False) "ep-auth-done" False
     in let e2 = __record-set (__record-set (__record-set e1 "ep-hs-secret" []) "ep-c-hs" []) "ep-s-hs" []
-    in let e3 = __record-set (__record-set e2 "ep-c-ap" []) "ep-s-ap" []
-    in DtlsEpStep { es-ep = e3, es-out = [dtls-plain-encode 21 0 (ep.ep-send-seq) [2, 47]] }
+    in let e3 = __record-set (__record-set (__record-set e2 "ep-c-ap" []) "ep-s-ap" []) "ep-prev-secret" []
+    in DtlsEpStep { es-ep = e3, es-out = [dtls-plain-encode 21 0 (ep.ep-send-seq) [2, desc]] }
 
   dtls-ep-with-keys : DtlsEp, List Integer, List Integer, List Integer, List Integer, List Integer -> DtlsEp
   dtls-ep-with-keys (ep) (peer) (hs) (tr) (c) (s) =

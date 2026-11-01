@@ -27,7 +27,7 @@ Section: Result Category
 
 Section: Search Result
 
-  SearchResult = record {
+  GsSearchResult = record {
     sr-id : Text,
     sr-title : Text,
     sr-subtitle : Text,
@@ -37,8 +37,8 @@ Section: Search Result
     sr-score : Integer
   }
 
-  search-result : Text, Text, Text, Text, SearchCategory, Text -> SearchResult
-  search-result (id) (title) (subtitle) (icon) (cat) (action) = SearchResult {
+  search-result : Text, Text, Text, Text, SearchCategory, Text -> GsSearchResult
+  search-result (id) (title) (subtitle) (icon) (cat) (action) = GsSearchResult {
     sr-id = id, sr-title = title, sr-subtitle = subtitle, sr-icon = icon,
     sr-category = cat, sr-action = action, sr-score = 0
   }
@@ -49,7 +49,7 @@ Section: Search Provider
     sprov-id : Text,
     sprov-name : Text,
     sprov-category : SearchCategory,
-    sprov-entries : List SearchResult,
+    sprov-entries : List GsSearchResult,
     sprov-entry-count : Integer
   }
 
@@ -59,7 +59,7 @@ Section: Search Provider
     sprov-entries = [], sprov-entry-count = 0
   }
 
-  sprov-add-entry : SearchProvider, SearchResult -> SearchProvider
+  sprov-add-entry : SearchProvider, GsSearchResult -> SearchProvider
   sprov-add-entry (prov) (entry) =
     __record-set (__record-set prov "sprov-entries" (list-push (prov.sprov-entries) entry)) "sprov-entry-count" (prov.sprov-entry-count + 1)
 
@@ -70,7 +70,7 @@ Section: State
     gs-query : Text,
     gs-providers : List SearchProvider,
     gs-provider-count : Integer,
-    gs-results : List SearchResult,
+    gs-results : List GsSearchResult,
     gs-result-count : Integer,
     gs-selected : Integer,
     gs-history : List Text,
@@ -113,11 +113,11 @@ Section: Search
     let results = if text-length query == 0 then [] else gs-search-all st query
     in __record-set (__record-set (__record-set (__record-set st "gs-query" query) "gs-results" results) "gs-result-count" (list-length results)) "gs-selected" 0
 
-  gs-search-all : GlobalSearchState, Text -> List SearchResult
+  gs-search-all : GlobalSearchState, Text -> List GsSearchResult
   gs-search-all (st) (query) =
     gs-search-providers (st.gs-providers) query 0 (st.gs-provider-count) [] (st.gs-max-results)
 
-  gs-search-providers : List SearchProvider, Text, Integer, Integer, List SearchResult, Integer -> List SearchResult
+  gs-search-providers : List SearchProvider, Text, Integer, Integer, List GsSearchResult, Integer -> List GsSearchResult
   gs-search-providers (provs) (query) (i) (n) (acc) (max-results) =
     if i >= n then acc
     else if list-length acc >= max-results then acc
@@ -125,11 +125,11 @@ Section: Search
     in let matches = gs-search-provider prov query (max-results - list-length acc)
     in gs-search-providers provs query (i + 1) n (acc & matches) max-results
 
-  gs-search-provider : SearchProvider, Text, Integer -> List SearchResult
+  gs-search-provider : SearchProvider, Text, Integer -> List GsSearchResult
   gs-search-provider (prov) (query) (max-count) =
     gs-match-entries (prov.sprov-entries) query 0 (prov.sprov-entry-count) [] max-count
 
-  gs-match-entries : List SearchResult, Text, Integer, Integer, List SearchResult, Integer -> List SearchResult
+  gs-match-entries : List GsSearchResult, Text, Integer, Integer, List GsSearchResult, Integer -> List GsSearchResult
   gs-match-entries (entries) (query) (i) (n) (acc) (max-count) =
     if i >= n then acc
     else if list-length acc >= max-count then acc
@@ -139,12 +139,12 @@ Section: Search
       in gs-match-entries entries query (i + 1) n (list-push acc scored) max-count
     else gs-match-entries entries query (i + 1) n acc max-count
 
-  gs-matches : SearchResult, Text -> Boolean
+  gs-matches : GsSearchResult, Text -> Boolean
   gs-matches (result) (query) =
     if text-contains (result.sr-title) query then True
     else text-contains (result.sr-subtitle) query
 
-  gs-score-result : SearchResult, Text -> SearchResult
+  gs-score-result : GsSearchResult, Text -> GsSearchResult
   gs-score-result (result) (query) =
     let score = if text-starts-with (result.sr-title) query then 100
     else if text-contains (result.sr-title) query then 50

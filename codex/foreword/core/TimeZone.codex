@@ -1,0 +1,370 @@
+Chapter: TimeZone
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzCompile
+  cites Foreword chapter CCE
+
+ A zone is its compiled transitions (TzCompile). Instants are seconds since
+ 1970-01-01 UTC; a local time is the same count read on the zone's clock.
+ Converting a local time answers Exact, Ambiguous (the local time occurs
+ twice, at a fall-back: earlier instant first) or Skipped (it does not
+ occur, at a spring-forward: the instants it would denote under the offset
+ before and under the offset after the transition). Only
+ local-to-utc-choosing picks one instant, and only as its caller says.
+
+Section: Zones
+
+  Zone = record { name : Text, initial : TzType, trans : List TzTrans, footer : TzFooter }
+
+  zone-of-compiled : Text, TzCompiled -> Zone
+  zone-of-compiled (name) (c) = Zone { name = name, initial = c.initial, trans = c.trans, footer = c.footer }
+
+ The table runs through tz-year-last; a query past it first extends the table
+ with the footer's transitions through the year after the instant asked about.
+
+  zone-cover : Zone, Integer -> Zone
+  zone-cover (z) (t) =
+    let year = tz-year-of-days (tz-floor-div t 86400) + 1
+    in if year <= tz-year-last | list-length (z.footer.rules) == 0 then z
+    else let last = if list-length (z.trans) == 0 then z.initial else (list-at (z.trans) (list-length (z.trans) - 1)).kind
+    in Zone { name = z.name, initial = z.initial, trans = tz-append (z.trans) (tz-footer-trans (z.footer) last year), footer = z.footer }
+
+  tz-append : List TzTrans, List TzTrans -> List TzTrans
+  tz-append (a) (b) = tz-append-loop (for x in a -> x) b 0
+
+  tz-append-loop : List TzTrans, List TzTrans, Integer -> List TzTrans
+  tz-append-loop (acc) (b) (i) = if i >= list-length b then acc else tz-append-loop (list-push acc (list-at b i)) b (i + 1)
+
+  zone-from-db : TzDb, Text -> Maybe Zone
+  zone-from-db (db) (name) =
+    when tz-find-zone db (tz-link-target db name 0)
+      is None -> None
+      is Just (z) -> Just (zone-of-compiled name (tz-compile db z))
+
+  tz-link-target : TzDb, Text, Integer -> Text
+  tz-link-target (db) (name) (i) =
+    if i >= list-length (db.links) then name
+    else if (list-at (db.links) i).alias == name then (list-at (db.links) i).target
+    else tz-link-target db name (i + 1)
+
+Section: UTC to Local
+
+ The type in force at an instant: the last transition at or before it, by
+ binary search, or the zone's initial type before the first.
+
+  zone-type-at : Zone, Integer -> TzType
+  zone-type-at (z) (t) =
+    let k = tz-last-at (z.trans) t 0 (list-length (z.trans) - 1) (0 - 1)
+    in if k < 0 then z.initial else (list-at (z.trans) k).kind
+
+  tz-last-at : List TzTrans, Integer, Integer, Integer, Integer -> Integer
+  tz-last-at (ts) (t) (lo) (hi) (best) =
+    if lo > hi then best
+    else let mid = (lo + hi) / 2
+    in if (list-at ts mid).at <= t then tz-last-at ts t (mid + 1) hi mid
+    else tz-last-at ts t lo (mid - 1) best
+
+  utc-offset-at : Zone, Integer -> Integer
+  utc-offset-at (z) (t) = (zone-type-at (zone-cover z t) t).utoff
+
+  utc-to-local : Zone, Integer -> Integer
+  utc-to-local (z) (t) = t + utc-offset-at z t
+
+Section: Local to UTC
+
+  LocalResolution =
+    | Exact (Integer)
+    | Ambiguous (Integer) (Integer)
+    | Skipped (Integer) (Integer)
+
+  LocalChoice =
+    | Earlier
+    | Later
+    | AfterGap
+    | Refuse
+
+ Every candidate offset is an offset in force within two days of the local
+ time (no zone's offset exceeds 26 hours); a candidate u = local - offset is
+ valid when the offset in force at u is that offset.
+
+  tz-window : Integer = 172800
+
+  local-to-utc : Zone, Integer -> LocalResolution
+  local-to-utc (z0) (local) =
+    let z = zone-cover z0 (local + tz-window)
+    in let offs = tz-offsets-near z local
+    in let valid = tz-valid z local offs 0 []
+    in if list-length valid == 1 then Exact (list-at valid 0)
+    else if list-length valid >= 2 then Ambiguous (tz-min valid 0 (list-at valid 0)) (tz-max valid 0 (list-at valid 0))
+    else tz-skipped z local
+
+  tz-offsets-near : Zone, Integer -> List Integer
+  tz-offsets-near (z) (local) =
+    let lo = local - tz-window
+    in let k = tz-last-at (z.trans) lo 0 (list-length (z.trans) - 1) (0 - 1)
+    in tz-offsets-from (z.trans) (k + 1) (local + tz-window) [utc-offset-at z lo]
+
+  tz-offsets-from : List TzTrans, Integer, Integer, List Integer -> List Integer
+  tz-offsets-from (ts) (i) (hi) (acc) =
+    if i >= list-length ts then acc
+    else if (list-at ts i).at > hi then acc
+    else let o = (list-at ts i).kind.utoff
+    in tz-offsets-from ts (i + 1) hi (if tz-has acc o 0 then acc else list-push acc o)
+
+  tz-has : List Integer, Integer, Integer -> Boolean
+  tz-has (xs) (v) (i) = if i >= list-length xs then False else if list-at xs i == v then True else tz-has xs v (i + 1)
+
+  tz-valid : Zone, Integer, List Integer, Integer, List Integer -> List Integer
+  tz-valid (z) (local) (offs) (i) (acc) =
+    if i >= list-length offs then acc
+    else let u = local - list-at offs i
+    in tz-valid z local offs (i + 1) (if utc-offset-at z u == list-at offs i & tz-has acc u 0 == False then list-push acc u else acc)
+
+  tz-min : List Integer, Integer, Integer -> Integer
+  tz-min (xs) (i) (m) = if i >= list-length xs then m else tz-min xs (i + 1) (if list-at xs i < m then list-at xs i else m)
+
+  tz-max : List Integer, Integer, Integer -> Integer
+  tz-max (xs) (i) (m) = if i >= list-length xs then m else tz-max xs (i + 1) (if list-at xs i > m then list-at xs i else m)
+
+ A local time no offset reaches lies in a gap: the transition whose
+ before-offset puts the local time after it and whose after-offset puts it
+ before it.
+
+  tz-skipped : Zone, Integer -> LocalResolution
+  tz-skipped (z) (local) =
+    let lo = local - tz-window
+    in let k = tz-last-at (z.trans) lo 0 (list-length (z.trans) - 1) (0 - 1)
+    in tz-gap-from z local (k + 1)
+
+  tz-gap-from : Zone, Integer, Integer -> LocalResolution
+  tz-gap-from (z) (local) (i) =
+    if i >= list-length (z.trans) then Exact (local - utc-offset-at z local)
+    else let t = list-at (z.trans) i
+    in let before = utc-offset-at z (t.at - 1)
+    in let after = t.kind.utoff
+    in if local >= t.at + before & local < t.at + after then Skipped (local - before) (local - after)
+    else tz-gap-from z local (i + 1)
+
+ Earlier and Later take the smaller and the larger instant of either case.
+ AfterGap is ruling T5's default for a schedule: the earlier instant of a
+ repeated local time, and the transition instant itself (the first instant
+ after the gap) for a skipped one.
+
+  local-to-utc-choosing : Zone, Integer, LocalChoice -> Maybe Integer
+  local-to-utc-choosing (z0) (local) (choice) =
+    let z = zone-cover z0 (local + tz-window)
+    in when local-to-utc z local
+      is Exact (u) -> Just u
+      is Ambiguous (a) (b) -> tz-pick z choice a b False
+      is Skipped (a) (b) -> tz-pick z choice a b True
+
+  tz-pick : Zone, LocalChoice, Integer, Integer, Boolean -> Maybe Integer
+  tz-pick (z) (choice) (a) (b) (gap) =
+    let lo = if a < b then a else b
+    in let hi = if a < b then b else a
+    in when choice
+      is Earlier -> Just lo
+      is Later -> Just hi
+      is AfterGap -> (if gap then Just (tz-first-after z lo) else Just lo)
+      is Refuse -> None
+
+  tz-first-after : Zone, Integer -> Integer
+  tz-first-after (z) (t) =
+    let k = tz-last-at (z.trans) t 0 (list-length (z.trans) - 1) (0 - 1)
+    in if k + 1 < list-length (z.trans) then (list-at (z.trans) (k + 1)).at else t
+Section: Bytes
+
+ One zone as bytes: "CTZ2", the name, the initial type, the transition
+ count, each transition, then the footer: its standard offset, format and rules. A text is a 1-byte length and its bytes; an
+ offset is 4 bytes and an instant 8, two's complement, big-endian.
+
+  tz-be : Integer, Integer -> List Integer
+  tz-be (v) (n) = tz-be-loop v n []
+
+  tz-be-loop : Integer, Integer, List Integer -> List Integer
+  tz-be-loop (v) (n) (acc) =
+    if n <= 0 then acc
+    else tz-be-loop (bit-shr v 8) (n - 1) ([bit-and v 255] & acc)
+
+  tz-text-bytes : Text -> List Integer
+  tz-text-bytes (s) = [text-length s] & (for i in tz-range 0 (text-length s) -> to-unicode (char-code-at s i))
+
+  tz-range : Integer, Integer -> List Integer
+  tz-range (a) (b) = tz-range-loop a b []
+
+  tz-range-loop : Integer, Integer, List Integer -> List Integer
+  tz-range-loop (a) (b) (acc) = if a >= b then acc else tz-range-loop (a + 1) b (list-push acc a)
+
+  tz-zone-to-bytes : Zone -> List Integer
+  tz-zone-to-bytes (z) =
+    [67, 84, 90, 50] & tz-text-bytes (z.name) & tz-be (z.initial.utoff) 4 & tz-text-bytes (z.initial.abbr)
+      & tz-be (list-length (z.trans)) 4
+      & tz-concat (for t in (z.trans) -> tz-be (t.at) 8 & tz-be (t.kind.utoff) 4 & tz-text-bytes (t.kind.abbr))
+      & tz-be (z.footer.stdoff) 4 & tz-text-bytes (z.footer.format) & tz-be (list-length (z.footer.rules)) 4
+      & tz-concat (for r in (z.footer.rules) -> tz-rule-bytes r)
+
+ A footer rule: from and to (4 bytes each), month, the day's kind, number and
+ weekday (1 byte each), at (4), its kind (1), save (4), dst (1), the letter.
+
+  tz-rule-bytes : TzRule -> List Integer
+  tz-rule-bytes (r) =
+    tz-be (r.from) 4 & tz-be (r.to) 4 & [r.month, r.day.kind, r.day.num, r.day.weekday] & tz-be (r.at) 4 & [r.at-kind] & tz-be (r.save) 4
+      & [if r.save-dst then 1 else 0] & tz-text-bytes (r.letter)
+
+  tz-concat : List (List Integer) -> List Integer
+  tz-concat (xs) = tz-concat-loop xs 0 []
+
+  tz-concat-loop : List (List Integer), Integer, List Integer -> List Integer
+  tz-concat-loop (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else tz-concat-loop xs (i + 1) (tz-push-all acc (list-at xs i) 0)
+
+  tz-push-all : List Integer, List Integer, Integer -> List Integer
+  tz-push-all (acc) (bs) (i) = if i >= list-length bs then acc else tz-push-all (list-push acc (list-at bs i)) bs (i + 1)
+
+  tz-get-be : List Integer, Integer, Integer -> Integer
+  tz-get-be (bs) (at) (n) = tz-get-be-loop bs at n 0 n
+
+  tz-get-be-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  tz-get-be-loop (bs) (at) (n) (acc) (width) =
+    if n <= 0 then (if width < 8 & bit-and acc (bit-shl 1 (width * 8 - 1)) /= 0 then acc - bit-shl 1 (width * 8) else acc)
+    else tz-get-be-loop bs (at + 1) (n - 1) (bit-or (bit-shl acc 8) (list-at bs at)) width
+
+  tz-get-text : List Integer, Integer -> Text
+  tz-get-text (bs) (at) = text-concat-list (for i in tz-range 0 (list-at bs at) -> char-to-text (code-to-char (from-unicode (list-at bs (at + 1 + i)))))
+
+ tz-zone-of-bytes refuses (None) anything short of a whole, well-formed
+ record: the magic, every length inside the buffer, and no byte left over.
+
+  tz-zone-of-bytes : List Integer -> Maybe Zone
+  tz-zone-of-bytes (bs) =
+    if list-length bs < 4 then None
+    else if list-at bs 0 /= 67 | list-at bs 1 /= 84 | list-at bs 2 /= 90 | list-at bs 3 /= 50 then None
+    else tz-of-bytes-name bs 4
+
+  tz-fits : List Integer, Integer, Integer -> Boolean
+  tz-fits (bs) (at) (n) = at >= 0 & n >= 0 & at + n <= list-length bs
+
+  tz-of-bytes-name : List Integer, Integer -> Maybe Zone
+  tz-of-bytes-name (bs) (at) =
+    if tz-fits bs at 1 == False then None
+    else let nl = list-at bs at
+    in if tz-fits bs (at + 1) (nl + 4 + 1) == False then None
+    else let name = tz-get-text bs at
+    in let off = tz-get-be bs (at + 1 + nl) 4
+    in let a0 = at + 1 + nl + 4
+    in let al = list-at bs a0
+    in if tz-fits bs (a0 + 1) (al + 4) == False then None
+    else let abbr = tz-get-text bs a0
+    in let c0 = a0 + 1 + al
+    in let count = tz-get-be bs c0 4
+    in if count < 0 then None
+    else tz-of-bytes-trans bs (c0 + 4) count name (TzType { utoff = off, dst = False, abbr = abbr }) []
+
+  tz-of-bytes-trans : List Integer, Integer, Integer, Text, TzType, List TzTrans -> Maybe Zone
+  tz-of-bytes-trans (bs) (at) (left) (name) (initial) (acc) =
+    if left == 0 then tz-of-bytes-footer bs at name initial acc
+    else if tz-fits bs at 13 == False then None
+    else let al = list-at bs (at + 12)
+    in if tz-fits bs (at + 13) al == False then None
+    else let tr = TzTrans { at = tz-get-be bs at 8, kind = TzType { utoff = tz-get-be bs (at + 8) 4, dst = False, abbr = tz-get-text bs (at + 12) } }
+    in tz-of-bytes-trans bs (at + 13 + al) (left - 1) name initial (list-push acc tr)
+
+  tz-of-bytes-footer : List Integer, Integer, Text, TzType, List TzTrans -> Maybe Zone
+  tz-of-bytes-footer (bs) (at) (name) (initial) (trans) =
+    if tz-fits bs at 5 == False then None
+    else let stdoff = tz-get-be bs at 4
+    in let fl = list-at bs (at + 4)
+    in if tz-fits bs (at + 5) (fl + 4) == False then None
+    else let format = tz-get-text bs (at + 4)
+    in let n = tz-get-be bs (at + 5 + fl) 4
+    in if n < 0 then None
+    else tz-of-bytes-rules bs (at + 9 + fl) n name initial trans stdoff format []
+
+  tz-of-bytes-rules : List Integer, Integer, Integer, Text, TzType, List TzTrans, Integer, Text, List TzRule -> Maybe Zone
+  tz-of-bytes-rules (bs) (at) (left) (name) (initial) (trans) (stdoff) (format) (acc) =
+    if left == 0 then (if at == list-length bs then Just (Zone { name = name, initial = initial, trans = trans, footer = TzFooter { stdoff = stdoff, format = format, rules = acc } }) else None)
+    else if tz-fits bs at 23 == False then None
+    else let ll = list-at bs (at + 22)
+    in if tz-fits bs (at + 23) ll == False then None
+    else let r = TzRule {
+      name = "", from = tz-get-be bs at 4, to = tz-get-be bs (at + 4) 4, month = list-at bs (at + 8),
+      day = TzDay { kind = list-at bs (at + 9), num = list-at bs (at + 10), weekday = list-at bs (at + 11) },
+      at = tz-get-be bs (at + 12) 4, at-kind = list-at bs (at + 16), save = tz-get-be bs (at + 17) 4,
+      save-dst = list-at bs (at + 21) == 1, letter = tz-get-text bs (at + 22)
+    }
+    in tz-of-bytes-rules bs (at + 23 + ll) (left - 1) name initial trans stdoff format (list-push acc r)
+
+Section: The Database File
+
+ TZDB.BIN: "CTZB", the entry count (4 bytes), then per entry its name (a
+ text), the offset of its record from the end of the entries and the
+ record's length (4 bytes each), then the records (tz-zone-to-bytes). A
+ link's entry names the alias and points at its target's record.
+
+  tz-db-build : TzDb -> List Integer
+  tz-db-build (db) =
+    let records = for z in (db.zones) -> tz-zone-to-bytes (zone-of-compiled (z.name) (tz-compile db z))
+    in let offsets = tz-offsets records 0 0 []
+    in let zone-entries = tz-concat (for i in tz-range 0 (list-length (db.zones)) -> tz-text-bytes ((list-at (db.zones) i).name) & tz-be (list-at offsets i) 4 & tz-be (list-length (list-at records i)) 4)
+    in let link-entries = tz-concat (for k in (db.links) -> tz-link-entry db records offsets k)
+    in [67, 84, 90, 66] & tz-be (list-length (db.zones) + list-length (db.links)) 4 & zone-entries & link-entries & tz-concat records
+
+  tz-offsets : List (List Integer), Integer, Integer, List Integer -> List Integer
+  tz-offsets (rs) (i) (at) (acc) = if i >= list-length rs then acc else tz-offsets rs (i + 1) (at + list-length (list-at rs i)) (list-push acc at)
+
+  tz-zone-index : TzDb, Text, Integer -> Integer
+  tz-zone-index (db) (name) (i) =
+    if i >= list-length (db.zones) then 0 - 1
+    else if (list-at (db.zones) i).name == name then i
+    else tz-zone-index db name (i + 1)
+
+  tz-link-entry : TzDb, List (List Integer), List Integer, TzLink -> List Integer
+  tz-link-entry (db) (records) (offsets) (k) =
+    let i = tz-zone-index db (k.target) 0
+    in if i < 0 then [] else tz-text-bytes (k.alias) & tz-be (list-at offsets i) 4 & tz-be (list-length (list-at records i)) 4
+
+ tz-db-zone answers the zone a name denotes, under that name (an alias keeps
+ its own name), or None for a name the file does not hold or a file that is
+ not whole.
+
+  tz-db-zone : List Integer, Text -> Maybe Zone
+  tz-db-zone (bs) (name) =
+    if list-length bs < 8 then None
+    else if list-at bs 0 /= 67 | list-at bs 1 /= 84 | list-at bs 2 /= 90 | list-at bs 3 /= 66 then None
+    else let n = tz-get-be bs 4 4
+    in let blob = tz-entries-end bs 8 n
+    in if blob < 0 then None
+    else tz-db-find bs 8 n blob (tz-text-bytes name)
+
+  tz-entries-end : List Integer, Integer, Integer -> Integer
+  tz-entries-end (bs) (at) (left) =
+    if left == 0 then at
+    else if tz-fits bs at 1 == False then 0 - 1
+    else let l = list-at bs at
+    in if tz-fits bs at (1 + l + 8) == False then 0 - 1
+    else tz-entries-end bs (at + 1 + l + 8) (left - 1)
+
+  tz-db-find : List Integer, Integer, Integer, Integer, List Integer -> Maybe Zone
+  tz-db-find (bs) (at) (left) (blob) (want) =
+    if left == 0 then None
+    else let l = list-at bs at
+    in if tz-bytes-at bs at want 0 then
+      (let off = tz-get-be bs (at + 1 + l) 4
+      in let len = tz-get-be bs (at + 5 + l) 4
+      in if off < 0 | len < 0 | tz-fits bs (blob + off) len == False then None
+      else when tz-zone-of-bytes (tz-slice bs (blob + off) len)
+        is None -> None
+        is Just (z) -> Just (Zone { name = tz-get-text bs at, initial = z.initial, trans = z.trans, footer = z.footer }))
+    else tz-db-find bs (at + 1 + l + 8) (left - 1) blob want
+
+  tz-bytes-at : List Integer, Integer, List Integer, Integer -> Boolean
+  tz-bytes-at (bs) (at) (want) (i) =
+    if i >= list-length want then True
+    else if list-at bs (at + i) /= list-at want i then False
+    else tz-bytes-at bs at want (i + 1)
+
+  tz-slice : List Integer, Integer, Integer -> List Integer
+  tz-slice (bs) (at) (n) = tz-slice-loop bs at n 0 []
+
+  tz-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tz-slice-loop (bs) (at) (n) (i) (acc) = if i >= n then acc else tz-slice-loop bs at n (i + 1) (list-push acc (list-at bs (at + i)))

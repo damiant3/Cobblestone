@@ -1,7 +1,7 @@
 # Fireworks -- open capabilities
 
-App-domain backlog. There is no platform-wide register any more:
-`docs/PM/BACKLOG.md` was deleted 2026-07-23 and must not be recreated.
+App-domain backlog. There is no platform-wide register:
+`docs/PM/BACKLOG.md` must not be recreated.
 `docs/PM/CurrentPlan.md` carries the shape and the priority order for
 the platform. Anything that is this application's own behaviour lives
 here.
@@ -23,3 +23,4 @@ access-denied that reads like a plug fault (P-NOEDIT).
 | FW-2 | **Palm and willow shells read pale rather than coloured** | The other burst types (ring, peony, crackle, chrysanthemum) show their colour. Removing pure white from the palette, weighting the shell mix away from the willow types, widening the palm arms and shortening the ascent trail each helped a little and not one of them explained it. Same instruction as FW-1: read the packed colour and intensity words the kernel writes for one identified burst, instead of reasoning from the picture. |
 | FW-4 | **The page's render and post shaders are hand-written WGSL** | Sky, city, particles, water, bright pass, blur and composite. The wgsl plug lowers COMPUTE stages only, so this is the plug's gap rather than the app's, and it is what the gpushow README already says about render-stage emission. Nothing here can close without that. |
 | FW-5 | **The bare-metal app and the web app share a name and nothing else** | `Fireworks.codex` draws the USA 250 scene on the host GPU triangle rasterizer through the codex-vm command buffer; the web app rebuilt the same idea for WebGPU. Two skylines, two particle systems, two sets of landmarks. Neither is wrong and the duplication is real. |
+| FW-6 | **Test coverage: 2 of 2 library chapters are reached by no computing test** | `pwsh build/coverage-census.ps1 -Tree apps/fireworks -List` names them (2026-10-26). Open: a computing test for each, or a deletion. |

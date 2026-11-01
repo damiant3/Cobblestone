@@ -1,8 +1,7 @@
 Chapter: Concurrent
 
   cites Foreword chapter Maybe
-
- We say:
+  cites Foreword chapter Linear
 
 Section: Task Type
 
@@ -22,19 +21,23 @@ Section: Sequential Primitives
 Section: Parallel Map
 
   par-map : (a -> b), List a -> List b
-  par-map (f) (xs) =
-    let tasks = par-fork-all f xs 0 (list-length xs) []
-    in par-await-all tasks 0 (list-length tasks) []
+  par-map (f) (xs) = tasks-await-all (par-fork-all f xs 0 (list-length xs) [])
 
-  par-fork-all : (a -> b), List a, Integer, Integer, List (Task b) -> List (Task b)
+  par-fork-all : (a -> b), List a, Integer, Integer, linear List (Task b) -> linear List (Task b)
   par-fork-all (f) (xs) (i) (len) (acc) =
     if i == len then acc
-    else par-fork-all f xs (i + 1) len (list-push acc (fork (\u -> f (list-at xs i))))
+    else par-fork-all f xs (i + 1) len (tasks-push acc (fork (\u -> f (list-at xs i))))
 
-  par-await-all : List (Task a), Integer, Integer, List a -> List a
-  par-await-all (tasks) (i) (len) (acc) =
-    if i == len then acc
-    else par-await-all tasks (i + 1) len (list-push acc (await (list-at tasks i)))
+  tasks-push : linear List (Task a), linear Task a -> linear List (Task a)
+  tasks-push (ts) (t) = list-push (freeze ts) (freeze t)
+
+  tasks-await-all : linear List (Task a) -> List a
+  tasks-await-all (ts) = tasks-await-from (freeze ts) 0 []
+
+  tasks-await-from : List (Task a), Integer, List a -> List a
+  tasks-await-from (ts) (i) (acc) =
+    if i >= list-length ts then acc
+    else tasks-await-from ts (i + 1) (list-push acc (await (list-at ts i)))
 
 Section: Race (First to Finish)
 

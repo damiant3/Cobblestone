@@ -184,12 +184,6 @@ Section: Type Parsing
          __record-set st "bag" (bag-add (st.bag) (make-error cdx-wrapping-band-not-hw-width ("a wrapping band must be exactly its hardware width, and " & show lo & " to " & show hi & " is not: the store wraps at the width, so the field can hold a value outside the declared range while the bounds prover still trusts that range. Widen the band to the whole width, or use clamping or error") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
       is otherwise -> st
 
- `and` USED TO BE AN ORDINARY IDENTIFIER matched by text in this one position,
- which is why a bound annotation could spell its separator without spending a
- keyword. It became a keyword on 2026-08-19 (boolean `and`), so the token KIND
- is what to look for now; the old text test stays behind it because it costs
- one comparison and it is the only thing that would have caught this.
-
   expect-and-keyword : ParseState -> ParseState
   expect-and-keyword (st) =
     if current-kind st == AndKeyword then advance st
@@ -247,6 +241,7 @@ Section: Type Parsing
     let at = skip-newlines-pos (st.tokens) (st.pos + 1) (list-length (st.tokens))
     in let next = peek-kind st (at - st.pos)
     in if is-type-ident next then True
+    else if next == LinearKeyword then is-colon (peek-kind st (at - st.pos + 1)) == False
     else if is-left-bracket next then True
     else if is-left-paren next then True
     else if is-ident next then if is-colon (peek-kind st (at - st.pos + 1)) then False else True
@@ -334,14 +329,6 @@ Section: Type Parsing
     else if is-signed-literal-atom st then parse-signed-literal-atom st
     else let tok = current st
     in TypeOk (deck-record (NamedType tok)) (advance st)
-
- Adjacency is what separates this from binary subtraction, and it has
- to be adjacency in the SOURCE rather than token order: `1 - 3` and
- `-2` produce the same two token kinds. The digits must begin at the
- byte immediately after the minus. That also makes the synthesized
- token honest -- its text is read straight out of the source across
- both tokens, so `token-text` answers "-2" without anything being
- fabricated.
 
   is-signed-literal-atom : ParseState -> Boolean
   is-signed-literal-atom (st) =
@@ -447,12 +434,6 @@ Section: Type Parsing
    column = 0,
    file-id = 0
   }
-
- Inside effect brackets the identifier case is load-bearing:
- a PascalCase identifier is a concrete
- effect name; a lowercase identifier is the row's tail variable. A
- row names at most one tail (CDX1120), and a tail is bare -- no scope
- literal, no dotted sub-effect (CDX1121).
 
   parse-effect-names : ParseState, List Token, List Token, List Token -> (List Token, ParseState, List Token, List Token)
   parse-effect-names (st) (acc) (sacc) (tacc) =
@@ -1041,15 +1022,6 @@ Section: Type Definition Parsing
 
 Section: Document Parsing
 
- The ceiling is the PARSE scratch reservation's top. THREE walks write
- that deck here and all three are bounded, because guarding only the
- middle one does not keep the deck inside its floor -- measured
- 2026-07-21 by keying the phase's report on the post-hoc parse-ov flag
- alone, where a compile with parse-top-level guarded still raised
- CDX9002 at a 2.5 MB floor. scan-class-instance-defs and check-pagination
- each walk the whole token list again, after parse-top-level has stopped,
- and between them they carried the deck past the ceiling on their own.
-
   parse-document : ParseState, Integer -> Document
   parse-document (st) (ceiling) =
     let st0 = __record-set st "deck-ceiling" ceiling
@@ -1168,9 +1140,6 @@ Section: Quotations
        then parse-trusting-key ttok st1 citing
     else parse-trusting-floor ttok st1 citing
 
- A trust FLOOR: trusting above N. The floor is the threshold every quoted
- work's signer must clear. The above word is optional.
-
   parse-trusting-floor : Token, ParseState, Text -> (CitesDecl, ParseState)
   parse-trusting-floor (ttok) (st1) (citing) =
     let st2 = if is-above-keyword (current-kind st1) then advance st1 else st1
@@ -1186,14 +1155,9 @@ Section: Quotations
          trust-floor = text-to-integer (token-text n-tok)
         }), st3)
 
- A trusted KEY: trusting "<fingerprint>" "<public-key-hex>" <score>. The
- fingerprint is the lookup name a signed work will claim; the public key is
- the bytes its signature is verified against; the score is how far this
- source trusts that key. Because the key is named here in the source rather
- than in the offered works, a forged work signed by any other key is
- verified against the wrong bytes and refused -- the messenger cannot
- vouch for its own message. The two texts still carry their quotation
- marks in the token, so the body is what quote-body-text lifts out.
+ Because the key is named here in the source rather than in the offered
+ works, a forged work signed by any other key is verified against the wrong
+ bytes and refused -- the messenger cannot vouch for its own message.
 
   parse-trusting-key : Token, ParseState, Text -> (CitesDecl, ParseState)
   parse-trusting-key (ttok) (st1) (citing) =
@@ -1214,20 +1178,6 @@ Section: Quotations
         }), st4)
 
 Section: Grounds
-
- A grounds declaration names the hardware effects a chapter is the
- SOURCE of -- the layer where the abstraction meets the metal. Its
- functions may perform those effects without declaring them (the
- internal exemption, no bookkeeping); a function that DECLARES the
- effect in its signature publishes it to out-of-kernel callers (a root).
- The exemption is scoped to the named effects, so a chapter grounding
- Device.Port that performs Device.Mmio is still rejected. Each named
- effect rides the header as a decl-grounds CitesDecl carrying the effect
- name (chapter-name) and the chapter that grounds it (citing-chapter);
- grounds-strings collects them into the Document as "slug\neffect"
- entries the type checker reads. A dotted effect
- (Device.Mmio) is read base-dot-member, the same shape parse-effect-names
- reads inside a row.
 
   parse-grounds : Token, ParseState, Text, LinkedList CitesDecl -> (List CitesDecl, ParseState)
   parse-grounds (gtok) (st) (citing) (acc) =
@@ -1321,15 +1271,6 @@ Section: Sorting Out The Header
     else False
 
 Section: Chapter Pagination
-
- A chapter may span several files. Each file is a PAGE, and says so:
- `Page 3 of 13`. That is why a repeated `Chapter:` name is not an error
- -- the X86-64 code generator is one chapter across thirteen files, and
- the parser is right to merge them.
-
- So: a chapter that appears once needs nothing. A chapter that appears
- k > 1 times must have, on every page, `Page N of M` with M == k and
- the N distinct. Anything else is CDX3004.
 
   PageOcc = record {
    po-chapter : Text,
@@ -1886,29 +1827,6 @@ Section: Chapter Pagination
    ti-state : ParseState
   }
 
- One top-level item is the unit of reclamation in the parser. The
- syntax tree a definition parse builds lives in the bivy, and until
- 2026-09-01 all of it stayed there until the phase compact: 162 MB on
- the compiler's own unit for a keep copy of 14 MB, at addresses no later
- phase touches. The item's survivors are copied onto the scratch deck
- before the bivy rewinds to the mark taken before the item was tried: the
- definition or type definition itself, the list cell that holds it, and
- the parse state, whose bag may carry diagnostics whose text was built in
- the bivy. Tokens sit on the LEX deck below the mark and are shared by
- the copy, which is what keeps the copy small. An item that parses as
- nothing still moves the state, so its state is kept the same way.
-
- The copy's floor is the DECK cursor at the item's start, not the bivy
- mark. The parser deck-records some nodes as it goes (a TypeAnn, a claim's
- Def, a CitesDecl), and those sit below the bivy mark by address while
- their children sit above it; a copier that shares everything below the
- bivy mark keeps such a node and lets its children rewind. Measured by
- the gate, 2026-09-01: 43 definitions with mismatched bodies and 396
- phantom definitions in the text round-trip. Every deck node the item
- made is at or above the deck cursor it started from, and so is every
- bivy node, so that cursor is the one floor that copies both and shares
- the tokens and earlier items beneath it.
-
   parse-top-def-item : LinkedList Def, LinkedList TypeDef, Text, ParseState, Integer -> TopItem
   parse-top-def-item (defs) (type-defs) (ch-title) (st) (mark) =
     let floor = __deck-pos
@@ -1947,10 +1865,6 @@ Section: Chapter Pagination
     in let msg = prefix & " begins no definition, so it would be dropped; indent a continuation past column 3"
     in let diag = make-error cdx-top-level-token-dropped msg (token-to-span tok)
     in __record-set st "bag" (bag-add (st.bag) diag)
-
- A type definition is tried first and the definition parse re-reads from
- the SAME state when it is not one -- st, not the type parser's returned
- state, exactly as the two functions this replaces did.
 
   parse-top-item : LinkedList Def, LinkedList TypeDef, Text, ParseState -> TopItem
   parse-top-item (defs) (type-defs) (ch-title) (st) =
@@ -2353,14 +2267,10 @@ Section: Header Scanning (streaming)
     in let effs2 = __linked-list-push effect-defs ed
     in scan-top-level headers type-defs effs2 imports cur-chap ch-title sec-titles chap-names (skip-newlines ops-st)
 
- One top-level item, scanned and RETURNED rather than handed onward.
- These two used to tail-call scan-top-level between them, which made the
- scan a three-function mutual recursion nesting once per top-level
- definition: measured at 2,393 nested scan-top-level frames on the
- 2.5 MB back-end unit, and mutual tail calls are what no plug and not
- bare metal flattens (every TCO in the fleet is self-only). Returning
- the outcome instead leaves scan-top-level tail-calling ITSELF, which is
- the shape everyone already flattens.
+ One top-level item, scanned and RETURNED rather than handed onward, so
+ scan-top-level tail-calls only ITSELF: every TCO in the fleet is
+ self-only, and a mutual recursion here nests once per top-level
+ definition (2,393 frames on the 2.5 MB back-end unit).
 
   ScanItem = record {
    si-headers : LinkedList DefHeader,

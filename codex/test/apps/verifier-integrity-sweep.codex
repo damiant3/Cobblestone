@@ -1,0 +1,85 @@
+Chapter: VerifierIntegritySweep
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+  cites Foreword chapter CCE
+
+ A seeded single-byte flip sweep and a truncation sweep over a signed CDX,
+ through the in-memory integrity check and the at-an-address one. Every input
+ must return a verdict; only the unflipped, untruncated binary is accepted.
+
+Section: Helpers
+
+  vis-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  vis-bin : List Integer
+  vis-bin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195, 144, 195],
+      rodata-bytes = [1, 2, 3],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) vis-sk []
+
+  vis-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vis-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else vis-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  vis-flip : Integer, Integer -> Integer
+  vis-flip (pos) (k) = if k == 0 then 1 + (pos * 37 - (pos * 37 / 255) * 255) else if k == 1 then 128 else 255
+
+  vis-poke : Integer, List Integer, Integer -> Integer
+  vis-poke (addr) (bs) (i) =
+    if i >= list-length bs then addr
+    else let w = poke-byte addr i (list-at bs i)
+    in vis-poke addr bs (i + 1)
+
+  vis-hdr : List Integer -> List Integer
+  vis-hdr (bs) = vis-mutate bs (0 - 1) 0 0 (if list-length bs < cdx-header-fixed-size then list-length bs else cdx-header-fixed-size) []
+
+  vis-ok : List Integer -> Integer
+  vis-ok (bs) = if (verify-integrity bs).accepted then 1 else 0
+
+  vis-ok-at : List Integer -> Integer
+  vis-ok-at (bs) =
+    let mark = __heap-save
+    in let addr = vis-poke (alloc-bytes (list-length bs + 1)) bs 0
+    in let r = if list-length bs < cdx-header-fixed-size then 0 else if (verify-integrity-at addr (list-length bs) (vis-hdr bs)).accepted then 1 else 0
+    in let d = __heap-restore mark
+    in r
+
+  vis-flips : List Integer, Integer, Integer, Integer, Integer -> Integer
+  vis-flips (base) (pos) (k) (at) (acc) =
+    if pos >= list-length base then acc
+    else if k >= 3 then vis-flips base (pos + 1) 0 at acc
+    else let m = vis-mutate base pos (vis-flip pos k) 0 (list-length base) []
+    in vis-flips base pos (k + 1) at (acc + (if at == 1 then vis-ok-at m else vis-ok m))
+
+  vis-cuts : List Integer, Integer, Integer, Integer -> Integer
+  vis-cuts (base) (n) (at) (acc) =
+    if n >= list-length base then acc
+    else let m = vis-mutate base (0 - 1) 0 0 n []
+    in vis-cuts base (n + 1) at (acc + (if at == 1 then vis-ok-at m else vis-ok m))
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let b = vis-bin
+    in let n = list-length b
+    in act
+      print-line-uni ("binary " & show n & " bytes, accepted " & show (vis-ok b) & ", at an address " & show (vis-ok-at b))
+      print-line-uni ("flips " & show (n * 3) & ": accepted " & show (vis-flips b 0 0 0 0) & ", at an address " & show (vis-flips b 0 0 1 0))
+      print-line-uni ("cuts " & show n & ": accepted " & show (vis-cuts b 0 0 0) & ", at an address " & show (vis-cuts b 0 1 0))
+    end

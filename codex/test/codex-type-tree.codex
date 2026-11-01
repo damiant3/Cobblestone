@@ -1,0 +1,85 @@
+Chapter: CodexTypeTreeTest
+  cites Codex chapter CodexType Tree
+  cites Codex chapter Codex Types
+  cites Codex chapter Name
+  cites Foreword chapter Console
+
+Section: Rendering
+  tags : List CodexType, Integer -> Text
+  tags (xs) (i) =
+    if i >= list-length xs then ""
+    else (if i > 0 then "," else "") & tag (list-at xs i) & tags xs (i + 1)
+
+  field-tags : List RecordField, Integer -> Text
+  field-tags (fs) (i) =
+    if i >= list-length fs then ""
+    else
+      let r = list-at fs i
+      in (if i > 0 then "," else "") & name-value r.name & ":" & tag r.type-val & field-tags fs (i + 1)
+
+  ctor-tags : List SumCtor, Integer -> Text
+  ctor-tags (cs) (i) =
+    if i >= list-length cs then ""
+    else
+      let c = list-at cs i
+      in "|" & name-value c.name & "(" & tags c.fields 0 & ")" & ctor-tags cs (i + 1)
+
+  tag : CodexType -> Text
+  tag (ty) =
+    when ty
+     is TextTy -> "Text"
+     is TypeVar (id) -> "v" & show id
+     is FunTy (p) (row) (r) -> "Fun(" & tag p & "->" & tag r & ")"
+     is ListTy (e) -> "List " & tag e
+     is LinkedListTy (e) -> "LinkedList " & tag e
+     is ForAllTy (id) (body) -> "forall " & show id & "." & tag body
+     is ConstructedTy (n) (args) -> name-value n & "<" & tags args 0 & ">"
+     is RecordTy (n) (args) (fs) -> name-value n & "<" & tags args 0 & ">{" & field-tags fs 0 & "}"
+     is SumTy (n) (args) (cs) -> name-value n & "<" & tags args 0 & ">" & ctor-tags cs 0
+     is TypeApply (a) (b) -> "(" & tag a & " " & tag b & ")"
+     is PropEqTy (a) (b) -> tag a & "==" & tag b
+     is VectorTy (n) (t) -> "Vec" & show n & "<" & tag t & ">"
+     is LinearTy (inner) -> "linear " & tag inner
+     is otherwise -> "?"
+
+Section: Visitors
+  bump : CodexType -> CodexType
+  bump (ty) =
+    when ty
+     is TypeVar (id) -> TypeVar (__narrow (id + 100))
+     is otherwise -> ty
+
+  digits : CodexType, Integer -> Integer
+  digits (ty) (acc) =
+    when ty
+     is TypeVar (id) -> acc * 10 + id
+     is otherwise -> acc * 10 + 9
+
+  v : Integer -> CodexType
+  v (n) = TypeVar (__narrow n)
+
+  field : Text, CodexType -> RecordField
+  field (n) (t) = RecordField { name = make-name n, type-val = t }
+
+  ctor : Text, List CodexType -> SumCtor
+  ctor (n) (fs) = SumCtor { name = make-name n, fields = fs, return-type = [] }
+
+  probe : CodexType -> Text
+  probe (ty) = tag ty & " map=> " & tag (codex-type-map-children bump ty) & " fold=" & show (codex-type-fold-children digits ty 0)
+
+Section: Cases
+  opening : [Console] Nothing = act
+    print-line-uni (probe (FunTy (v 1) empty-row (v 2)))
+    print-line-uni (probe (ListTy (v 3)))
+    print-line-uni (probe (LinkedListTy (v 3)))
+    print-line-uni (probe (ForAllTy 7 (v 1)))
+    print-line-uni (probe (ConstructedTy (make-name "Pair") [v 1, v 2, TextTy]))
+    print-line-uni (probe (RecordTy (make-name "R") [v 1] [field "a" (v 2), field "b" (v 3)]))
+    print-line-uni (probe (SumTy (make-name "S") [v 1] [ctor "A" [v 2, v 3], ctor "B" []]))
+    print-line-uni (probe (TypeApply (v 1) (v 2)))
+    print-line-uni (probe (PropEqTy (v 2) (v 1)))
+    print-line-uni (probe (VectorTy 4 (v 3)))
+    print-line-uni (probe (LinearTy (v 2)))
+    print-line-uni (probe TextTy)
+    print-line-uni (probe (FunTy (ListTy (v 1)) empty-row (v 2)))
+  end

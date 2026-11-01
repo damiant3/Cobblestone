@@ -2,11 +2,6 @@ Chapter: WGSL Emitter
   cites Foreword chapter CCE
   cites Foreword chapter StringUtils
 
- Generates WGSL (WebGPU Shading Language) compute shaders from the Codex
- typed IR. Unlike the PTX and SPIR-V plugs, WGSL is a high-level
- structured language: no SSA, no basic blocks, real if/else and operators,
- and storage buffers instead of raw pointers.
-
  A function whose last parameter is named "gid" (and which has at least two
  parameters) is treated as a compute kernel. Its buffer parameters -- the
  ones used as the base of a device-load/device-store -- become module-scope
@@ -15,13 +10,6 @@ Chapter: WGSL Emitter
  a plain WGSL helper function.
 
 Section: Refusal
-
- A generator that answers where it cannot lower ships a plausible wrong
- shader, and nothing downstream can tell that from a correct one
- (L-BAILVALUE). Every construct this emitter does not implement emits an
- identifier that does not exist and says what it was, so the module fails at
- createShaderModule with the construct's name in the message, and
- codex/plugs/wgsl/run.ps1 refuses the run before an output file is written.
 
  The rules these refusals and the lowerings below are measured against are
  docs/Reference/WgslSpec.md, distilled from the W3C Candidate Recommendation
@@ -82,12 +70,6 @@ Section: Context
    bbinds : List BufBind,
    multi : List Text
   }
-
- A helper names a buffer by ITS OWN parameter name and the module-scope
- variable is named for the KERNEL's, so `ss-gather (buf)` called as
- `ss-gather gdep` must emit `ssao_step_gdep_buf` and not `ssao_step_buf_buf`.
- brens carries that rename for the helper being emitted; it is empty in a
- kernel, where the two names are already the same.
 
   BufRen = record {
    br-from : Text,
@@ -192,9 +174,6 @@ Section: Float Support
  the integer arithmetic already here, and it costs no precision. `0x1.0a3d70p-1f`
  IS the f32 whose bits are 1057300152, with nothing to round. The `f` suffix
  pins the type rather than leaning on AbstractFloat conversion.
-
- Checked over 428,984 sampled f32 bit patterns before relying on it: every one
- round-trips exactly.
 
  AN OVERFLOW REFUSES rather than lying. An f64 too large for f32 becomes an
  infinity, and WGSL has no literal for one; the old bitcast could at least spell
@@ -347,12 +326,6 @@ Section: Math Intrinsics
 
 Section: Bit Intrinsics
 
- Codex spells the bit operations as builtin CALLS, so before this they reached
- the generic apply path and came out as bit_and(a, b): a function WGSL does not
- have. The whole set is in the language (8.10), and two of its rules differ
- from every other binary operator, which is why this is not a line in the
- operator table:
-
  The right operand of << and >> must be u32. An i32 shift count does not
  compile, and it is the operand type every other operator would have wanted.
 
@@ -403,14 +376,6 @@ Section: Bit Intrinsics
     else if name == "bit-shl" then "(" & a & " << " & sh & ")"
     else if name == "bit-shr" then "(" & a & " >> " & sh & ")"
     else "bitcast<i32>(bitcast<u32>(" & a & ") >> " & sh & ")"
-
- Storage buffers are emitted as array<i32> (wgsl-emit-buffer-decls). An f32
- element is the same 32 bits, therefore device-load-f32 and device-store-f32
- move it through bitcast, which reinterprets and never converts. WGSL has no
- f64, and an f16 element is half a 32-bit word, which a store cannot write
- without racing the thread that owns the other half; those forms are
- recognised here, which is what makes buffer discovery find their base, and
- then refused at emission.
 
   wgsl-is-f64-device-op : Text -> Boolean
   wgsl-is-f64-device-op (name) =
@@ -474,9 +439,6 @@ Section: Workgroup Model
     if i >= list-length ns then False
     else if text-contains wgsl-model-names (" " & list-at ns i & " ") then True
     else wgsl-uses-model ns (i + 1)
-
- A statement the model contributes: a barrier or a shared store. Empty when the
- expression is neither.
 
   wgsl-model-stmt : WgslCtx, IRExpr -> Text
   wgsl-model-stmt (ctx) (e) =
@@ -685,13 +647,6 @@ Section: Expression Emission
     in if folded /= "" then folded
     else "(" & wgsl-iexpr ctx l & " " & wgsl-bin-op op & " " & wgsl-iexpr ctx r & ")"
 
- `~` and `~0` compare a float's ordinal, as the x86-64 backend does
- (`float-to-ordinal-sized`): the IEEE bits read as sign and magnitude and
- mapped to two's complement, so +0 and -0 share ordinal 0 and adjacent floats
- differ by one. `~0` is equal ordinals; `~` is ordinals at most 4 apart. WGSL
- has no 64-bit integer, so the distance is the unsigned difference taken in
- the order that cannot wrap.
-
   wgsl-is-approx-eq : IRBinaryOp -> Boolean
   wgsl-is-approx-eq (op) =
     when op
@@ -780,9 +735,6 @@ Section: Statement Body Emission
     in when (chain.root)
      is IrName (n) (ty) (sp) -> wgsl-is-device-store n
      is otherwise -> False
-
- An act statement `if c then <store> else <no store>` is the store under a
- WGSL if; empty when the statement is not that shape.
 
   wgsl-guarded-store : WgslCtx, IRExpr -> Text
   wgsl-guarded-store (ctx) (e) =
@@ -898,20 +850,6 @@ Section: Buffer Discovery
       wgsl-collect-act stmts (wgsl-collect-buffers e acc) (i + 1)
 
 Section: Buffer Forwarding
-
- wgsl-collect-buffers reads ONE body, so a parameter that is a buffer only by
- being PASSED ON is invisible to it. `earth-pixel` forwards `framebuf` and
- `tex` to `earth-shade-pixel`, and `bh-pixel` forwards `framebuf` two hops
- through the self-recursive `bh-march`. Such a parameter was typed i32 and, in
- a kernel, became a uniform scalar rather than a storage binding, so the call
- failed against the callee's pointer parameter with `got 'i32'`.
-
- Everything downstream already handles a buffer parameter: wgsl-arg-piece
- emits the binding address at the call site, wgsl-emit-params-b types the
- pointer, and the loop lowering holds it out of the parameter moves. Only the
- SET was wrong, so the forwarding is resolved to a fixpoint here, before
- anything is emitted. Two rounds settle the globe kernels; the cap is a
- termination guard, not a limit anyone should reach.
 
   BufEntry = record {
    be-name : Text,
@@ -1044,16 +982,6 @@ Section: Function Classification
 
 Section: Buffer Name Binding
 
- A helper names a buffer by its own parameter name; the module-scope variable
- is named for the KERNEL's. `ss-gather (buf)` called as `ss-gather gdep` must
- emit `ssao_step_gdep_buf`, so the emitter has to know two things the helper
- itself does not say: which kernel it serves, and which of that kernel's
- buffers each of its parameters stands for.
-
- Both are recorded at the call sites, where the caller's name, the callee's
- parameter and the argument are all in hand at once. `bb-kernel` is settled
- there too, so resolving a chain later needs the binds and nothing else.
-
  A helper whose binds reach two or more kernels is emitted once per kernel,
  as `<helper>__<kernel>`: WGSL createShaderModule rejects an entry point that
  references two module-scope variables on one binding.
@@ -1071,12 +999,6 @@ Section: Buffer Name Binding
     if i >= list-length rs then n
     else let r = list-at rs i
     in if r.br-from == n then r.br-to else wgsl-ren-lookup rs n (i + 1)
-
- A SELF-CALL IS NOT A BINDING. A self-recursive helper passes its own buffer
- parameter straight through, so the bind would say `buf` comes from `buf` and
- resolution would walk the helper to itself until the fuel ran out -- and the
- helper is usually defined before the kernel that calls it, so that useless
- bind is the one found first. Skipping it leaves the kernel's.
 
   wgsl-bind-add : Text, Boolean, Text, Text, IRExpr, List BufBind -> List BufBind
   wgsl-bind-add (caller) (ck) (cname) (pn) (a) (acc) =
@@ -1148,10 +1070,6 @@ Section: Buffer Name Binding
     if i >= list-length defs then acc
     else let d = list-at defs i
     in wgsl-binds-loop defs m (i + 1) (wgsl-bind-scan defs m (d.name) (wgsl-is-kernel d) (d.body) acc)
-
- Resolution walks callee-to-caller until it reaches a kernel. The fuel is the
- chain depth, not the tree size: a helper calling a helper calling a kernel's
- buffer is two steps, and eight is far past anything here.
 
   wgsl-bind-find : List BufBind, Text, Text, Integer -> Integer
   wgsl-bind-find (bs) (callee) (param) (i) =
@@ -1279,12 +1197,6 @@ Section: Helper Function Emission
     in let p = list-at params i
     in sep & wgsl-sanitize (p.name) & " : " & wgsl-ty-text (p.type-val) & wgsl-emit-params params (i + 1)
 
- A helper that uses a parameter as a device-load/store base NAMES THE MODULE-
- SCOPE BUFFER, exactly as the entry point does. hbufs is the set of such
- parameter names; they are dropped from the signature and from every call, and
- the helper ctx keeps the kernel's prefix so device-load emits
- `<kernel>_<name>_buf[i]`.
-
  IT USED TO PASS A STORAGE POINTER, and WGSL does not allow one as a user
  function parameter: pointer parameters are restricted to the function, private
  and workgroup address spaces, and `storage` needs the
@@ -1294,10 +1206,6 @@ Section: Helper Function Emission
  | error: Function [2] `earth_shade_pixel` is invalid
  |   = Argument `framebuf` at index 0 is a pointer of space Storage ...,
  |     which can't be passed
-
- The pointer bought nothing. The buffers are module-scope `var<storage>` in
- every kernel that has them, and the entry point already reads them by name --
- only the helpers took the long way round.
 
   wgsl-helper-ctx : WgslCtx, Text, List Text -> WgslCtx
   wgsl-helper-ctx (ctx) (hname) (hbufs) =
@@ -1322,11 +1230,6 @@ Section: Helper Function Emission
       bbinds = ctx.bbinds,
       multi = ctx.multi
     }
-
- A buffer reaches a helper through the module scope now, so it is neither a
- parameter nor an argument. Filtering the lists keeps the separator logic in the
- emitters below unchanged -- they count from zero and a skip inside them would
- leave a stray comma.
 
   wgsl-drop-buf-params : List IRParam, List Text, Integer, List IRParam -> List IRParam
   wgsl-drop-buf-params (ps) (bufs) (i) (acc) =
@@ -1538,11 +1441,6 @@ Section: Kernel Emission
      & kprefix & "_" & wgsl-sanitize b & "_buf : array<i32>;\n"
      & wgsl-emit-buffer-decls kprefix buffers (i + 1)
 
- A uniform field was typed i32 whatever the parameter was, so a kernel with a
- Real scalar parameter declared an i32 field and then used it as an f32. WGSL
- has almost no implicit conversion (6.1.2), so that is a type error rather than
- a silent coercion, but it is the parameter's own type that decides it.
-
   wgsl-scalar-ty : List IRParam, Text, Integer -> Text
   wgsl-scalar-ty (ps) (n) (i) =
     if i >= list-length ps then "i32"
@@ -1698,12 +1596,6 @@ Section: Reachability
 
 Section: Chapter Emission
 
- The loop's progress test compares a length captured BEFORE the pass, not the
- length of `acc.done` read after it: `list-push` writes into the caller's list
- whenever it has spare capacity (COMPILER-42), so `acc2.done` and `acc.done`
- can be the same object and comparing their lengths compares a list with
- itself. That test is then true on the first pass whatever the pass did.
-
  WGSL has no forward declarations: a function or module-scope const must be
  declared before it is used, and the IR does not hand us defs in dependency
  order. So helpers are emitted by a topological pass -- a def is emitted once
@@ -1780,9 +1672,6 @@ Section: Chapter Emission
   wgsl-kernel-model (defs) (d) =
     wgsl-uses-model (wgsl-reach-of defs (wgsl-collect-calls (d.body) []) (list-length defs)) 0
 
- The size is captured before the pass: wgsl-add-callees pushes into the list
- it is handed (COMPILER-42), so the list after is the list before.
-
   wgsl-reach-of : List IRDef, List Text, Integer -> List Text
   wgsl-reach-of (defs) (acc) (iters) =
     if iters <= 0 then acc
@@ -1804,23 +1693,10 @@ Section: Chapter Emission
 
 Section: Undelivered Definitions
 
- A definition that is reachable, called, and never emitted produces a module
- that calls a function nobody defined, and the plug used to say NOTHING: the
- validator caught it as `unresolved call target`, four faults deep, with no
- hint of which pass dropped it. An instrument that cannot express a failure
- reports success (L-STATES, TheKeyboardWasNeverSilent).
-
- So this does not answer "something was dropped". It answers with a NAMED
- STATE per definition, because "not blocked" and "blocked by X" send you to
- different places:
-
    BLOCKED BY <names>  the topological pass never saw these callees finish,
                        so the fault is in readiness or in emission ORDER
    READY, NEVER EMITTED  nothing was blocking it, so the pass stopped early:
                        the iteration cap, or the loop's own exit condition
-
- It reads only emitset, done and the definition list, so it cannot be fooled
- by the emission path it reports on.
 
   wgsl-missing-names : List Text, List Text, Integer, List Text -> List Text
   wgsl-missing-names (emitset) (done) (i) (acc) =

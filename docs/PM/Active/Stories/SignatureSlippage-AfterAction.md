@@ -1,6 +1,6 @@
 # Signature slippage: after-action report
 
-The report the SignatureSlippage campaign owes (`docs/Designs/Active/Security/SignatureSlippage.md`, part E), in the
+The report the SignatureSlippage campaign owes (`docs/Designs/Done/Security/SignatureSlippage.md`, part E), in the
 manner of the Rogers Commission on Challenger: what happened, when, why each check that touched the code missed it,
 the organizational causes, the census of the shape across the tree, and the LESSONS row with the runner that refuses
 the shape. Every fact below cites the depot, a published standard, or a run named with its kernel. A naive reader

@@ -10,11 +10,6 @@ Section: Control Flow
  value whose bit 31 was flipped with integer instructions comes back unboxed
  and the next f32 operation reads it as NaN.
 
- One helper, two callers, on purpose: `rv-emit-frameless-arg` carried its own
- copy that was integer-only whatever the type, which is what this defect
- actually was on this lane -- the general emitter was wrong about width and
- the frameless one was wrong about floats existing.
-
   rv-negate-into : RvState, Integer, Integer, CodexType -> RvState
   rv-negate-into (st) (rd) (src) (ty) =
     if rv-is-real-approx-type ty then
@@ -68,13 +63,6 @@ Section: Control Flow
  97..127 the sixteen accented Latin letters and fifteen Cyrillic ones. One
  band cannot express that, which is why is-letter needs this and is-digit
  does not.
-
- The operand is read by the two adds and never again. `rv-alloc-temp` rotates
- a pool of FOUR registers, so a fourth allocation after the operand's own
- would be handed the operand's register back; three temps is the budget that
- keeps the result from landing on a value still to be read. RV64 has no
- set-less-than-immediate-unsigned here, so the width takes the third temp and
- is loaded twice rather than held in a fourth.
 
   rv-emit-is-char-class2 : RvState, IRExpr, Integer, Integer, Integer, Integer -> RvEmitResult
   rv-emit-is-char-class2 (st) (arg) (lo1) (hi1) (lo2) (hi2) =
@@ -513,12 +501,13 @@ Section: Control Flow
 
   rv-emit-act : RvState, List IRActStmt -> RvEmitResult
   rv-emit-act (st) (stmts) =
-    rv-emit-act-loop st stmts 0 rv-zero
+    rv-emit-act-loop st stmts 0 rv-zero (st.tco.in-tail-pos)
 
-  rv-emit-act-loop : RvState, List IRActStmt, Integer, Integer -> RvEmitResult
-  rv-emit-act-loop (st) (stmts) (i) (last-reg) =
-    if i >= list-length stmts then RvEmitResult { state = st, reg = last-reg }
-    else let saved-next-local = st.next-local
+  rv-emit-act-loop : RvState, List IRActStmt, Integer, Integer, Boolean -> RvEmitResult
+  rv-emit-act-loop (st0) (stmts) (i) (last-reg) (act-tail) =
+    if i >= list-length stmts then RvEmitResult { state = st0, reg = last-reg }
+    else let st = rv-set-tail-pos st0 (if i == list-length stmts - 1 then act-tail else False)
+    in let saved-next-local = st.next-local
     in let saved-next-temp = st.next-temp
     in when list-at stmts i
      is IrDoExec (expr) (s) ->
@@ -527,13 +516,13 @@ Section: Control Flow
         (er.state).next-local
       else saved-next-local
       in let st1 = __record-set (__record-set (er.state) "next-local" max-nl) "next-temp" saved-next-temp
-      in rv-emit-act-loop st1 stmts (i + 1) (er.reg)
+      in rv-emit-act-loop st1 stmts (i + 1) (er.reg) act-tail
      is IrDoBind (name) (ty) (expr) (s) ->
       let er = rv-emit-expr st expr
       in let loc = rv-alloc-local (er.state)
       in let st1 = rv-store-local (loc.state) (loc.reg) (er.reg)
       in let st2 = rv-bind-local st1 name (loc.reg)
-      in rv-emit-act-loop st2 stmts (i + 1) (loc.reg)
+      in rv-emit-act-loop st2 stmts (i + 1) (loc.reg) act-tail
 
 Section: Try-Fail
 
@@ -582,8 +571,6 @@ Section: Try-Fail
     in let st8 = rv-emit-current-entry (rv-emit st7 (rv-sd rv-try-fr rv-t0 112)) rv-try-en
     in rv-emit (rv-emit (rv-emit st8 (rv-ld rv-t0 rv-try-en rv-try-head-offset)) (rv-sd rv-try-fr rv-t0 0)) (rv-sd rv-try-en rv-try-fr rv-try-head-offset)
 
- Pops the frame in `slot`. a0 is preserved: it carries the `try`'s value.
-
   rv-emit-try-pop-frame : RvState, Integer -> RvState
   rv-emit-try-pop-frame (st) (slot) =
     let st1 = rv-emit-current-entry (rv-try-frame-addr st slot) rv-try-en
@@ -593,11 +580,6 @@ Section: Try-Fail
   rv-emit-try-take-message (st) (slot) (msg-loc) =
     let st1 = rv-emit (rv-try-frame-addr st slot) (rv-ld rv-a0 rv-try-fr 128)
     in rv-store-local (rv-emit-try-pop-frame st1 slot) msg-loc rv-a0
-
- With no frame the message is printed and the program stops. With one, the
- deck is put back first: when the frame was built outside every deck and the
- unwind leaves from inside one, s1 is the deck cursor, so it is written back
- to the deck before s1 returns to the bivy.
 
   rv-emit-fail-raise : RvState, Integer -> RvState
   rv-emit-fail-raise (st) (msg-reg) =
@@ -707,7 +689,7 @@ Section: Apply
     in let args = chain.args
     in when func
      is IrName (name) (fty) (s) ->
-      if st.tco.active & st.tco.in-tail-pos & name == st.tco.current-func
+      if st.tco.active & st.tco.in-tail-pos & name == st.tco.current-func & list-length args == list-length (st.tco.param-locals)
       then rv-emit-tail-call st args
       else let st-nt = rv-set-tail-pos st False
       in if (st.deck-record-intrinsic) & name == "deck-record" & list-length args == 1
@@ -740,6 +722,8 @@ Section: Apply
        then rv-emit-mask4-count st-nt (list-at args 0)
       else if name == "mask4-any" | name == "mask4-all" | name == "mask4-none" | name == "mask4-count" | name == "vec4-select" | name == "vec4-reduce-add"
        then rv-emit-unsupported-vec4 st-nt name
+      else if name == "fail" & list-length args == 1
+       then rv-emit-fail st-nt (list-at args 0)
       else if name == "show" & list-length args == 1
        then when rv-strip-unit-ty (ir-expr-type (list-at args 0))
         is BooleanTy -> rv-emit-show-bool st-nt (list-at args 0)
@@ -1066,7 +1050,7 @@ Section: Apply
     else if name == "int-mod" & list-length args == 2 then
       rv-emit-int-mod st (list-at args 0) (list-at args 1)
     else let user-fn = rv-find-func-offset (st.func-names) (st.func-offsets) name 0
-    in if (user-fn >= 0) & (rv-is-inline-here name (list-length args) == False) then
+    in if (user-fn >= 0) & ((rv-is-inline-here name (list-length args) == False) | rv-user-shadows-inline st name) then
       rv-emit-user-call st name args
     else if name == "__narrow" & list-length args == 1 then rv-emit-expr st (list-at args 0)
     else if name == "address-of" & list-length args == 1 then rv-emit-address-of st (list-at args 0)
@@ -1100,6 +1084,8 @@ Section: Apply
     else if name == "print-line-raw" & list-length args == 1 then
       rv-emit-single-arg-call st "print-line-uni" (list-at args 0)
     else if name == "print-uni" & list-length args == 1 then
+      rv-emit-single-arg-call st "print-uni" (list-at args 0)
+    else if name == "print-text" & list-length args == 1 then
       rv-emit-single-arg-call st "print-uni" (list-at args 0)
     else if name == "print-error" & list-length args == 1 then
       rv-emit-single-arg-call st "print-line-uni" (list-at args 0)
@@ -1259,6 +1245,12 @@ Section: Apply
     else if name == "cpu-cpuid-edx" then rv-emit-unsupported-cpu st "cpu-cpuid-edx"
     else if name == "write-cntp-tval-el0" then rv-emit-unsupported-arm64 st "write-cntp-tval-el0"
     else if name == "write-cntp-ctl-el0" then rv-emit-unsupported-arm64 st "write-cntp-ctl-el0"
+    else if name == "write-icc-pmr-el1" then rv-emit-unsupported-arm64 st "write-icc-pmr-el1"
+    else if name == "write-icc-igrpen1-el1" then rv-emit-unsupported-arm64 st "write-icc-igrpen1-el1"
+    else if name == "write-icc-eoir1-el1" then rv-emit-unsupported-arm64 st "write-icc-eoir1-el1"
+    else if name == "write-icc-sre-el1" then rv-emit-unsupported-arm64 st "write-icc-sre-el1"
+    else if name == "write-daif" then rv-emit-unsupported-arm64 st "write-daif"
+    else if name == "write-vbar-el1" then rv-emit-unsupported-arm64 st "write-vbar-el1"
     else if name == "port-in-byte" then rv-emit-unsupported-port st "port-in-byte"
     else if name == "port-out-byte" then rv-emit-unsupported-port st "port-out-byte"
     else if name == "port-in-16" then rv-emit-unsupported-port st "port-in-16"
@@ -1284,11 +1276,6 @@ Section: Apply
       rv-emit-three-arg-call st "__buf-write-bytes" args
     else if name == "chan-text-send" & list-length args == 2 then rv-emit-int-lit st 0
     else if name == "chan-text-recv" & list-length args == 1 then rv-emit-empty-text st
-    else if name == "s-new" then rv-emit-int-lit st 0
-    else if name == "s-close" & list-length args == 1 then rv-emit-int-lit st 0
-    else if name == "s-send" & list-length args == 2 then rv-emit-int-lit st 0
-    else if name == "s-recv" & list-length args == 1 then rv-emit-int-lit st 0
-    else if name == "s-recv-value" & list-length args == 1 then rv-emit-int-lit st 0
     else if name == "mask-any" & list-length args == 1 then rv-emit-mask-any st (list-at args 0)
     else if name == "mask-all" & list-length args == 1 then rv-emit-mask-all st (list-at args 0)
     else if name == "mask-none" & list-length args == 1 then rv-emit-mask-none st (list-at args 0)

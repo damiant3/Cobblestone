@@ -1,0 +1,115 @@
+Chapter: TzLocalTest
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hmac
+  cites Foreword chapter CCE
+  cites Foreword chapter Console
+
+ Local to UTC at every transition of every zone through 2037. A transition
+ at t from offset a to offset b is probed at the local times t+a-1, t+a,
+ t+b-1 and t+b; each answers "E u", "A u1 u2" (ambiguous, earlier first)
+ or "S u1 u2" (skipped: under the offset before, then after). The test
+ prints the zone, its probe count, the SHA-256 of its lines and whether the
+ zone survives its byte encoding; build/tz-oracle.ps1 -Local computes the
+ same lines from Python's zoneinfo (fold 0 and fold 1).
+
+Section: Probes
+
+  tz-hex-digit : Integer -> Text
+  tz-hex-digit (n) = substring "0123456789abcdef" n 1
+
+  tz-hex : List Integer, Integer -> Text
+  tz-hex (bs) (i) =
+    if i >= list-length bs then ""
+    else tz-hex-digit (bit-shr (list-at bs i) 4) & tz-hex-digit (bit-and (list-at bs i) 15) & tz-hex bs (i + 1)
+
+  res-text : LocalResolution -> Text
+  res-text (r) =
+    when r
+      is Exact (u) -> "E " & show u
+      is Ambiguous (a) (b) -> "A " & show a & " " & show b
+      is Skipped (a) (b) -> "S " & show a & " " & show b
+
+  probe-lines : Zone, Integer, Integer, List Text -> List Text
+  probe-lines (z) (i) (prev) (acc) =
+    if i >= list-length (z.trans) then acc
+    else let t = list-at (z.trans) i
+    in let b = t.kind.utoff
+    in let ls = [t.at + prev - 1, t.at + prev, t.at + b - 1, t.at + b]
+    in probe-lines z (i + 1) b (probe-push z ls 0 acc)
+
+  probe-push : Zone, List Integer, Integer, List Text -> List Text
+  probe-push (z) (ls) (j) (acc) =
+    if j >= list-length ls then acc
+    else probe-push z ls (j + 1) (list-push acc ("L " & show (list-at ls j) & " " & res-text (local-to-utc z (list-at ls j))))
+
+  same-zone : Zone, Zone -> Boolean
+  same-zone (a) (b) =
+    a.name == b.name & a.initial.utoff == b.initial.utoff & a.initial.abbr == b.initial.abbr
+      & list-length (a.trans) == list-length (b.trans) & same-trans (a.trans) (b.trans) 0
+
+  same-trans : List TzTrans, List TzTrans, Integer -> Boolean
+  same-trans (x) (y) (i) =
+    if i >= list-length x then True
+    else let p = list-at x i
+    in let q = list-at y i
+    in if p.at /= q.at | p.kind.utoff /= q.kind.utoff | p.kind.abbr /= q.kind.abbr then False
+    else same-trans x y (i + 1)
+
+  round-trip : Zone -> Text
+  round-trip (z) =
+    let bs = tz-zone-to-bytes z
+    in let whole = when tz-zone-of-bytes bs is None -> False is Just (back) -> same-zone z back
+    in let short = when tz-zone-of-bytes (tz-take bs (list-length bs - 1)) is None -> True is Just (back) -> False
+    in if whole & short then "bytes ok" else "BYTES BAD"
+
+  tz-take : List Integer, Integer -> List Integer
+  tz-take (xs) (n) = tz-take-loop xs n 0 []
+
+  tz-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  tz-take-loop (xs) (n) (i) (acc) = if i >= n then acc else tz-take-loop xs n (i + 1) (list-push acc (list-at xs i))
+
+  zone-line : TzDb, TzZone -> Text
+  zone-line (db) (zz) =
+    let z = zone-of-compiled (zz.name) (tz-compile db zz)
+    in let lines = probe-lines z 0 (z.initial.utoff) []
+    in zz.name & " " & show (list-length lines) & " " & tz-hex (hash-words-to-bytes (sha256 (text-to-unicode-bytes (text-concat-list (for l in lines -> l & "\n"))))) 0 & " " & round-trip z
+
+  print-zones : TzDb, Integer -> [Console] Nothing
+  print-zones (db) (i) =
+    if i >= list-length (db.zones) then print-line-uni "end"
+    else let m = __heap-save
+    in act
+      print-line-uni (zone-line db (list-at (db.zones) i))
+      print-next db i m
+    end
+
+  print-next : TzDb, Integer, Integer -> [Console] Nothing
+  print-next (db) (i) (m) = let r = __heap-restore m in print-zones db (i + 1)
+
+ Europe/London on the two nights a daily 01:30 schedule meets: local 01:30
+ on 2026-10-25 occurs twice, and on 2027-03-28 not at all.
+
+  london-nights : TzDb -> Text
+  london-nights (db) =
+    when zone-from-db db "Europe/London"
+      is None -> "london missing"
+      is Just (z) ->
+        let fold = tz-days 2026 10 25 * 86400 + 5400
+        in let gap = tz-days 2027 3 28 * 86400 + 5400
+        in "london 2026-10-25 01:30 " & res-text (local-to-utc z fold) & " after-gap " & show-pick (local-to-utc-choosing z fold AfterGap)
+          & "\nlondon 2027-03-28 01:30 " & res-text (local-to-utc z gap) & " after-gap " & show-pick (local-to-utc-choosing z gap AfterGap)
+          & " refuse " & show-pick (local-to-utc-choosing z gap Refuse)
+
+  show-pick : Maybe Integer -> Text
+  show-pick (m) = when m is None -> "none" is Just (u) -> show u
+
+  opening : [Console] Nothing =
+    let db = tz-parse tz-sources
+    in act
+      print-line-uni (london-nights db)
+      print-zones db 0
+    end

@@ -185,7 +185,7 @@ $cells | Where-Object { $doc -notcontains $_ }      # must be empty
 | 36248 | **devint-last-vec-addr** | 8 | The vector of the most recent such interrupt. A test programs a line, then demands that line answered rather than merely that something arrived. Read with 36240 by `codex/test/hpet-interrupt.codex` |
 | 36256 | **ap-id-next-addr** | 8 | The next core id to hand out. An application processor starts in real mode knowing nothing, with no id in any register, so the last act of its trampoline is a locked exchange-add here. The boot processor seeds it with 1 before the start-up IPI and keeps 0 for itself. A dense counter rather than the LAPIC id: the value indexes four arrays of `smp-max-cores` entries, and a LAPIC id is an identifier, not an index |
 | 36264 | **net-driver-cb** | 56 | NIC selector at +0: 0 NE2000, 1 e1000, 2 virtio-net, 3 unavailable. The e1000 addresses are mmio, rx-ring, rx-bufs, ctrl-blk, tx-ring and tx-bufs at +8 through +48. For card 2, +8 instead holds the persistent virtio control-block address; the other address cells are unused. Binding writes the selector last. A discovered but refused virtio device binds card 3 and does not fall back to another NIC. Zero preserves the NE2000 path for callers that never probe. DMA lifetime and failure semantics: [x86 virtio network driver](../apps/uoaix/VirtioNetX86.md). |
-| 36320 | **guard-page-base-addr** | 8 | The demand-paging guard page, published rather than recomputed: `emit-demand-unmap` (`codex/compiler/Emit/X86_64Boot.codex`) derives it once from the reported RAM size and stores it here, and `build` (`Core/PhaseAllocator.codex`) reads it to decide whether a deck reservation would leap the page. Two places deriving the same geometry is how they drift apart. **This row was missing from this table until 2026-08-14**, which is exactly the failure the warning below describes: the chapter that claims the cell says in its own prose that 36320 is the next free scalar above `net-driver-cb`, so a reader who trusted this table alone would have taken a cell the compiler already owns |
+| 36320 | **guard-page-base-addr** | 8 | The demand-paging guard page, published rather than recomputed: `emit-demand-unmap` (`codex/compiler/Emit/X86_64Boot.codex`) derives it once from the reported RAM size and stores it here, and `build` (`Core/PhaseAllocator.codex`) reads it to decide whether a deck reservation would leap the page. Two places deriving the same geometry is how they drift apart. |
 | 36328 | **net-driver-poll-cell** | 8 | Empty receive polls per NetIO tick, measured once by `net-driver-calibrate` (`codex/os/net/NetDriver.codex`) at bring-up and read by `net-io-tick-interval`. Zero until something brings a driver up, and a value below the floor reads as the 100000 fallback NetIO shipped until 2026-08-14, so a guest that never probes keeps the numbers it was tuned with. It exists because the cost of one poll belongs to the DRIVER: one million empty polls cost 15.52 s on the NE2000 model and 0.029 s on the e1000, which reads a descriptor from RAM where the NE2000 takes a VM exit, and every retransmit bound in `NetworkStack` is a count of ticks |
 | 36336 | deck-ceiling-addr | 8 | Deck allocator ceiling (`X86_64Boot.codex`) |
 | 36344 | deck-reservation-top-addr | 8 | Top of the current deck reservation |
@@ -209,7 +209,7 @@ only `codex-vm.c`, all of them grepped exactly that, and the app-level
 `net-driver-cb` above that. Measured 2026-07-29 under OVMF and again
 2026-07-30 under codex-vm: a USB bring-up wrote the diag magic into 36200,
 the PCI vendor id into 36208, CAPLENGTH into 36216, xECP into 36232 and
-maxports into 36256. `xhci-diag` now lives at 118784 (main 12283) and this
+maxports into 36256. `xhci-diag` lives at 118784 and this
 band is its own again.
 
 **And the region a relocated block lands in has stack arrays in it, which is
@@ -375,7 +375,7 @@ reclamation.
 The immutable probe, source bundle, compiler log, hashes and depth traces
 are in `D:/Projects/Cobblestone-val/build-output/check-chapter-25637`.
 The entry/lifetime audit changes no compiler allocation or time complexity.
-Every compiler chapter now compiles with only what it cites (main 28693); what an uninitialized deck does is measured under "A deck entered without a reservation" below.
+Every compiler chapter compiles with only what it cites; what an uninitialized deck does is measured under "A deck entered without a reservation" below.
 
 ## The runtime list header, and why hand-rolled builders corrupt silently
 
@@ -493,8 +493,7 @@ restores R10 to the deck-pos, reclaiming all bivy scratch. Deck data
 persists as the base for subsequent phases.
 
 Phase work does NOT all run inside one `deck-record` extent, and the bivy is
-not near zero: this paragraph said both until 2026-09-01 and the measurement
-below is what it cost. The CHECK walk, the SCOPE resolver and the parser all
+not near zero. The CHECK walk, the SCOPE resolver and the parser all
 run deck-exited or through per-call extents, so their per-definition scratch
 lands in the bivy above the phase's reservation, and until the change below
 nothing reclaimed it before the phase compact.
@@ -589,9 +588,9 @@ space, not memory -- physical consumption is what a phase actually
 writes. Floors are flat rather than derived; see "Why the floors are flat"
 below.
 The pipeline has 6 TEXT-mode frontend phases plus emit. CDX mode adds
-RESOLVE, LIFT, and INLINE between LOWER and EMIT (CL 2429 split the
-frontend so TEXT skips those). ConstructedTy resolution and lambda
-lifting run in their own phases (CLs 2135, 2169), each with an
+RESOLVE, LIFT, and INLINE between LOWER and EMIT (TEXT skips those).
+ConstructedTy resolution and lambda lifting run in their own phases,
+each with an
 independent `phase-compact` cycle so bivy scratch is reclaimed.
 
 Three phases use the **reservation-copy pattern** (CLs 3805, 3849,
@@ -601,18 +600,18 @@ One `phase-compact` then reclaims the scratch, bivy, and unused
 reservation tail. This means the heap does NOT monotonically stack --
 dead decks are reclaimed at phase boundaries:
 
-- **Frontend keep deck** (CL 3894): reserved below everything in
+- **Frontend keep deck**: reserved below everything in
   `compile-checked` (S x 40 + 2 MB). At the desugar boundary,
   `copy-as-*` copies the AChapter, assignments, colliding, bags,
   heap-marks, and phase-metrics into the reservation. One compact
   reclaims the LEX deck, PARSE keep deck, and DESUGAR deck together.
   SCOPE starts at ~57 MB instead of ~146 MB.
 
-- **PARSE keep deck** (CL 3849): reserved below the parse scratch
+- **PARSE keep deck**: reserved below the parse scratch
   (tokens x 160 + 1 MB). `copy-sx-*` copies the Document and
   assignments into the reservation; one compact reclaims the scratch.
 
-- **LOWER scratch reclamation** (CL 3805): RESOLVE deck reserved
+- **LOWER scratch reclamation**: RESOLVE deck reserved
   first, bounded LOWER scratch above it, `rewrite-ir-chapter`
   deep-copies survivors into the reservation.
 
@@ -643,7 +642,7 @@ moving those PatResult wrappers off the deck is the lever.
 | LOWER | 328 MB | 158.6 MB | 58.9x | 2.07x | reservation-copy |
 | RESOLVE | 200 MB (CDX only) | 19.4 MB | 7.2x | 10.3x | standard |
 | LIFT | 104 MB (CDX only) | 37.0 MB | 13.8x | 2.8x | standard |
-| EMIT | per-func | -- | -- | -- | streaming (CL 3793) |
+| EMIT | per-func | -- | -- | -- | streaming |
 
 **PARSE keep is 11.1 MB, and it reads as small because `copy-sx-text` carries
 the `address-of t < b` guard its siblings `copy-sx-token` and `copy-sx-span`
@@ -654,17 +653,13 @@ it reads is never plausible; the tell is a ratio that GROWS with input
 size (0.09x on a 2.9 KB source, 21x on this one), which is duplication of
 something shared, not structure.
 
-**LOWER was the tightest deck at 1.20x and tightening with every source
-byte, and the reason was a bug, not the workload.** 45 per cent of the
-LOWER deck was `slug-has-suffix` allocating a substring per assignment
-scanned in the bare-name cite fallback -- per citation whose composed key
-misses, per slug transition, in every defs walk, and LOWER retains its
-walk because `lower-chapter` is deck-wrapped (CL 2968). An intra-compiler
-`cites Codex chapter X` always takes that fallback (the concat prefixes
-chapters by directory, so `Codex--X` never matches), and 25 such cites
-stood in the unit at ~5.4 MB each. Fixed in CL 10026 (in-place compare):
-LOWER fell 266.7 to 158.1 MB and its cost is not superlinear in
-citations. The tight rows are now DESUGAR (1.76x MEASURE, ~1.5x in CDX
+**The bare-name cite fallback must not allocate per assignment scanned.**
+It runs per citation whose composed key misses, per slug transition, in
+every defs walk, and LOWER retains its walk because `lower-chapter` is
+deck-wrapped. An intra-compiler `cites Codex chapter X` always takes that
+fallback (the concat prefixes chapters by directory, so `Codex--X` never
+matches). `slug-has-suffix` (`ChapterScoper.codex`) therefore compares in
+place, and LOWER's cost is not superlinear in citations. The tight rows are DESUGAR (1.76x MEASURE, ~1.5x in CDX
 mode, where it is the binding phase: `-Decks 65` refuses naming DESUGAR
 and 70 compiles) and SCOPE (1.71x). Those are the rows to watch.
 
@@ -799,7 +794,7 @@ base     Reservation-copy pattern means dead decks are reclaimed.
           │  LIFT deck           (CDX only)      │
           │  Floor: 96 MB                        │
           ├──────────────────────────────────────┤
-          │  EMIT (streaming, CL 3793)           │
+          │  EMIT (streaming)                    │
           │  EmitWorkspace (code 8 MB + data 2M) │
           │  Accumulator lists (11 × 32K cap)    │
           │  Per-function CodegenState            │
@@ -984,10 +979,8 @@ builds read it as the retired 0x700000 output-ring write position.
 ### Collision Detection
 
 `emit-prologue` (`codex/compiler/Emit/X86_64.codex`) can emit two checks, and
-**NEITHER is unconditional.** This section used to open "every function
-prologue performs two checks", which is wrong in a way that matters: it makes
-`stack-min-rsp-addr` look like a reading any build can take, and it cannot be.
-Corrected 2026-08-18 against the emitter.
+**NEITHER is unconditional**, so `stack-min-rsp-addr` is not a reading every
+build can take.
 
 1. **Stack tracking**, guarded by `if st1.trace-alloc`: compare RSP against
    the stored minimum (`stack-min-rsp-addr`), and if RSP is lower, update it.
@@ -1009,20 +1002,7 @@ There is no stack instrument in a normal build. Anything that needs to know
 what the stack is doing needs a `trace-alloc` build, which also turns on
 allocation tracing and a serial dump, or it needs a new instrument.
 
-**And until 2026-08-20 that advice named a build nobody could make.** The
-switch was severed at three points at once: `build/compile.ps1 -Trace` set the
-mode word `trace`, `emit-cdx` never read it, and
-`compile-to-cdx-with-exit-mode` passed the emitter's `trace` argument as a
-literal `False` -- so this store, `emit-alloc-trace` and
-`emit-trace-serial-dump` were all unreachable while `-Trace` exited 0 and
-handed back an ordinary binary. Found by val 2026-08-19 (a `-Trace` desk was
-byte-for-byte the same SIZE as an ordinary one, which a per-prologue check
-cannot be); reconnected by root 2026-08-20 by threading the mode word through
-that call. `build/trace-arm.ps1` is the runner that keeps it connected: same
-source, same kernel, the switch the only difference, asserting the `-Trace`
-binary is larger AND that `stack-min-rsp-addr` narrows under `-Trace` and only
-under `-Trace`. Measured at the reconnect: plain 88,465 bytes and `narrowed:
-0`, trace 91,721 bytes and `narrowed: 1`.
+`build/compile.ps1 -Trace` is that build: the mode word `trace` reaches `emit-cdx`, which emits this store, `emit-alloc-trace` and `emit-trace-serial-dump`. `build/trace-arm.ps1` keeps the switch connected: same source, same kernel, the switch the only difference, asserting the `-Trace` binary is larger AND that `stack-min-rsp-addr` narrows under `-Trace` and only under `-Trace` (measured 2026-08-20: plain 88,465 bytes and `narrowed: 0`, trace 91,721 bytes and `narrowed: 1`).
 
 ### The Guard Page (2026-08-04)
 
@@ -1500,8 +1480,7 @@ arithmetic. Debug builds of the transpiled zig are larger than the
 hand-written ones (every value is `i64` and every helper is a call), which
 is the plug's shape, not a defect.
 
-`collatz` is 18 since the bounded-division fix (it was 13 before it, and
-this table said 13 with a re-measure warning until 2026-08-17). Its `n` is
+`collatz` is 18. Its `n` is
 an unbounded `Integer`, so `n / 2` and `int-mod n 2` cannot take the
 one-instruction shift/mask: those are correct only for a dividend proven
 non-negative, and for any other they lower to `idiv`, which is what
@@ -1573,7 +1552,7 @@ Cross-compiled via the RISC-V and ARM64 plug pipelines
 with the kernel digest at its head). Compared against
 `riscv64-linux-gnu-gcc` and `aarch64-linux-gnu-gcc` 13.3.0. Measured
 2026-08-17 on seed `D354208C631FDDA7` with the plugs built from the same
-source; the RV64 table said the CL 6287 numbers until then.
+source.
 
 | Bench   | Codex RV64 | GCC -O0 | GCC -O2 | GCC -Os | Codex ARM64 | GCC -O0 | GCC -O2 | GCC -Os |
 |---------|----------:|--------:|--------:|--------:|------------:|--------:|--------:|--------:|
@@ -1612,7 +1591,7 @@ reordered mixed-TCO, last-arg skip in TCO shuffle.
 The ARM64 kernel binary starts with a 2 KB exception vector table
 (16 entries × 32 instructions × 4 bytes), followed by `__start`.
 
-### `__start` Runtime Detection (CL 5010)
+### `__start` Runtime Detection
 
 `__start` detects whether it was entered from a UEFI stub or bare
 metal by checking X28 (the heap register):

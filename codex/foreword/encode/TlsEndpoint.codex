@@ -10,26 +10,12 @@ Chapter: TlsEndpoint
   cites Foreword chapter Maybe
   cites Encode chapter DtlsHello (dtls-take-at)
 
- The TLS 1.3 endpoint over a reliable byte stream (RFC 8446): the thing
- that turns the record layer, the key schedule, the handshake messages and
- the X.509 authentication into a connection that can actually carry
- application data. It is the TCP sibling of DtlsEndpoint, and it reuses the
- pure RFC 8446 primitives that live -- for historical reasons -- in the
- Dtls* chapters: the transcript hash, the Finished, the ServerHello key
- share parser, the hello bodies. DTLS 1.3 inherits those from TLS 1.3
- unchanged, so this cites them rather than copying them.
-
- What TLS-over-TCP adds over the DTLS endpoint, and why this is a separate
- chapter rather than a reuse of that one: the server flight after the
- ServerHello is ENCRYPTED under the handshake traffic keys (the DTLS
- endpoint sends it in the clear and says so), there is an
- EncryptedExtensions message, and the handshake derives the MASTER secret
- and the two APPLICATION traffic secrets, so this endpoint can carry
- application bytes. There is no cookie, no HelloRetryRequest-for-DoS and no
- retransmission: a reliable stream has none of the datagram problems those
- solve.
-
- We say:
+ The TLS 1.3 endpoint over a reliable byte stream (RFC 8446). The server
+ flight after the ServerHello is ENCRYPTED under the handshake traffic
+ keys, there is an EncryptedExtensions message, and the handshake derives
+ the MASTER secret and the two APPLICATION traffic secrets. There is no
+ cookie, no HelloRetryRequest-for-DoS and no retransmission: a reliable
+ stream has none of the datagram problems those solve.
 
 Section: Types
 
@@ -49,6 +35,7 @@ Section: Types
     tep-app-read-seq : Integer,
     tep-app-write-seq : Integer,
     tep-phase : Integer,
+    tep-hs-next : Integer,
     tep-cert-chain : List (List Integer),
     tep-sign-priv : List Integer,
     tep-sign-pub : List Integer,
@@ -58,7 +45,9 @@ Section: Types
     tep-auth-done : Boolean,
     tep-expected-peer : List Integer,
     tep-done : Boolean,
-    tep-app-in : List Integer
+    tep-app-in : List Integer,
+    tep-app-room : Integer,
+    tep-hs-pend : List Integer
   }
 
   TlsEpStep = record {
@@ -76,41 +65,67 @@ Section: Construction
     TlsEp { tep-server = False, tep-priv = priv, tep-pub = x25519-public-key priv,
             tep-random = random, tep-transcript = [], tep-hs-secret = [], tep-c-hs = [], tep-s-hs = [],
             tep-c-ap = [], tep-s-ap = [], tep-read-seq = 0, tep-write-seq = 0, tep-app-read-seq = 0,
-            tep-app-write-seq = 0, tep-phase = 0, tep-cert-chain = [], tep-sign-priv = [], tep-sign-pub = [],
+            tep-app-write-seq = 0, tep-phase = 0, tep-hs-next = 0, tep-cert-chain = [], tep-sign-priv = [], tep-sign-pub = [],
             tep-anchors = anchors, tep-cal-now = cal-now,
             tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, tep-auth-done = False,
-            tep-expected-peer = expected, tep-done = False, tep-app-in = [] }
+            tep-expected-peer = expected, tep-done = False, tep-app-in = [], tep-app-room = 0, tep-hs-pend = [] }
 
   tls-ep-server-new : List Integer, List Integer, List (List Integer), List Integer, List Integer -> TlsEp
   tls-ep-server-new (priv) (random) (chain) (sign-priv) (sign-pub) =
     TlsEp { tep-server = True, tep-priv = priv, tep-pub = x25519-public-key priv,
             tep-random = random, tep-transcript = [], tep-hs-secret = [], tep-c-hs = [], tep-s-hs = [],
             tep-c-ap = [], tep-s-ap = [], tep-read-seq = 0, tep-write-seq = 0, tep-app-read-seq = 0,
-            tep-app-write-seq = 0, tep-phase = 0, tep-cert-chain = chain, tep-sign-priv = sign-priv,
+            tep-app-write-seq = 0, tep-phase = 0, tep-hs-next = 0, tep-cert-chain = chain, tep-sign-priv = sign-priv,
             tep-sign-pub = sign-pub, tep-anchors = [], tep-cal-now = [],
             tep-peer-key = X509Key { xk-alg = KeyUnknown, xk-bytes = [], xk-mod = [], xk-exp = [] }, tep-auth-done = False,
-            tep-expected-peer = [], tep-done = False, tep-app-in = [] }
+            tep-expected-peer = [], tep-done = False, tep-app-in = [], tep-app-room = 0, tep-hs-pend = [] }
 
 Section: Record And Message Helpers
-
- The 32-byte hello random, taken from the caller's bytes.
 
   tep-rand32 : TlsEp -> List Integer
   tep-rand32 (ep) = dtls-take-at (ep.tep-random) 0 32
 
- Encrypt a payload as a TLS record under a traffic secret, deriving the
- AES-128-GCM key and IV from the secret each time.
-
   tep-enc : List Integer, Integer, Integer, List Integer -> List Integer
   tep-enc (secret) (seq) (ctype) (payload) =
-    tls13-record-encrypt (tls13-traffic-key secret) (tls13-traffic-iv secret) seq ctype payload
+    tls13-record-encrypt (tep-key secret) (tep-iv secret) seq ctype payload
 
   tep-dec : List Integer, Integer, List Integer -> Maybe TlsInner
   tep-dec (secret) (seq) (rec) =
-    tls13-record-decrypt (tls13-traffic-key secret) (tls13-traffic-iv secret) seq rec
+    tls13-record-decrypt (tep-key secret) (tep-iv secret) seq rec
 
- The payload of a plaintext record (bytes past the 5-byte header, for the
- declared length).
+  tep-dec-open : List Integer, Integer, List Integer -> Maybe TlsOpen
+  tep-dec-open (secret) (seq) (rec) =
+    tls13-record-open (tep-key secret) (tep-iv secret) seq rec
+
+ Each record derives its key and IV by HKDF, about 23 KB of heap for 28 bytes kept: the result is reserved before a
+ heap mark (arguments evaluate left to right), copied in, and the derivation's heap restored.
+
+  tep-key : List Integer -> List Integer
+  tep-key (secret) = tep-key-into (__list-with-capacity 32) __heap-save secret
+
+  tep-key-into : List Integer, Integer, List Integer -> List Integer
+  tep-key-into (out) (mark) (secret) = tep-keep out mark 32 (tls13-traffic-key secret)
+
+  tep-iv : List Integer -> List Integer
+  tep-iv (secret) = tep-iv-into (__list-with-capacity 16) __heap-save secret
+
+  tep-iv-into : List Integer, Integer, List Integer -> List Integer
+  tep-iv-into (out) (mark) (secret) = tep-keep out mark 16 (tls13-traffic-iv secret)
+
+ A derivation longer than the reservation would grow the kept list above the mark, so it is returned as derived and
+ the heap is not restored.
+
+  tep-keep : List Integer, Integer, Integer, List Integer -> List Integer
+  tep-keep (out) (mark) (cap) (derived) =
+    if list-length derived > cap then derived
+    else let kept = tep-copy-into out derived 0
+    in let restored = __heap-restore mark
+    in kept
+
+  tep-copy-into : List Integer, List Integer, Integer -> List Integer
+  tep-copy-into (out) (src) (i) =
+    if i >= list-length src then out
+    else tep-copy-into (list-push out (list-at src i)) src (i + 1)
 
   tep-rec-payload : List Integer -> List Integer
   tep-rec-payload (rec) = dtls-take-at rec 5 (list-at rec 3 * 256 + list-at rec 4)
@@ -136,6 +151,28 @@ Section: Record And Message Helpers
     in let e3 = __record-set (__record-set e2 "tep-c-ap" []) "tep-s-ap" []
     in TlsEpStep { tes-ep = e3, tes-out = [tls-encode-record 21 [2, desc]] }
 
+ RFC 8446 section 6: an alert is two bytes, level and description. close_notify (0) after the handshake ends what the
+ peer sends: the endpoint goes to phase 4, keeps what it received and reads nothing more (6.1); user_canceled (90)
+ is followed by a close_notify and changes nothing; any other alert, and a closure before the handshake is done,
+ ends the connection with no answer (6.2). A plaintext alert is believed only before any key is in use (phase 0
+ or 1); after that it is unauthenticated and dropped.
+
+  tep-on-alert : TlsEp, List Integer -> TlsEpStep
+  tep-on-alert (ep) (alert) =
+    if list-length alert /= 2 then tep-abort-alert ep 50
+    else if list-at alert 1 == 90 then tep-idle ep
+    else if list-at alert 1 == 0 then
+      (if ep.tep-phase >= 3 then tep-idle (__record-set ep "tep-phase" 4) else tep-peer-ended ep)
+    else tep-peer-ended ep
+
+  tep-peer-ended : TlsEp -> TlsEpStep
+  tep-peer-ended (ep) =
+    let st = tep-abort-alert ep 0
+    in TlsEpStep { tes-ep = st.tes-ep, tes-out = [] }
+
+  tep-plain-alert : TlsEp, List Integer -> TlsEpStep
+  tep-plain-alert (ep) (alert) = if ep.tep-phase > 1 then tep-idle ep else tep-on-alert ep alert
+
 Section: Client Hello
 
   tls-ep-hello : TlsEp -> TlsEpStep
@@ -153,28 +190,166 @@ Section: Receive Dispatch
     if ep.tep-phase < 0 then tep-idle ep
     else if list-length rec < 5 then tep-idle ep
     else let ct = list-at rec 0
-    in if ct == tls-content-change-cipher then tep-idle ep
+    in if ct == tls-content-change-cipher then tep-on-ccs ep rec
+    else if list-at rec 3 * 256 + list-at rec 4 > tep-record-cap ct then tep-abort-alert ep 22
     else if ep.tep-server then tep-server-recv ep rec ct
     else tep-client-recv ep rec ct
+
+ RFC 8446 5.1 and 5.2: a protected record (outer type application_data, 23) carries at most 2^14 + 256 bytes, any
+ other at most 2^14; a longer one is record_overflow (22).
+
+ RFC 8446 section 5: a change_cipher_spec record of the one byte 0x01 is dropped between the first ClientHello and
+ the peer's Finished; any other value, or one before a ClientHello or after the handshake, is unexpected_message.
+
+  tep-on-ccs : TlsEp, List Integer -> TlsEpStep
+  tep-on-ccs (ep) (rec) =
+    if list-length rec /= 6 then tep-abort-alert ep 10
+    else if list-at rec 3 /= 0 then tep-abort-alert ep 10
+    else if list-at rec 4 /= 1 then tep-abort-alert ep 10
+    else if list-at rec 5 /= 1 then tep-abort-alert ep 10
+    else if ep.tep-phase == 0 then tep-abort-alert ep 10
+    else if ep.tep-done then tep-abort-alert ep 10
+    else tep-idle ep
+
+  tep-record-cap : Integer -> Integer
+  tep-record-cap (ct) = if ct == tls-content-application then 16640 else 16384
 
 Section: Client Receive
 
   tep-client-recv : TlsEp, List Integer, Integer -> TlsEpStep
   tep-client-recv (ep) (rec) (ct) =
-    if ct == tls-content-handshake then tep-client-sh ep (tep-rec-payload rec)
+    if ct == tls-content-handshake then tep-client-plain ep (tep-rec-payload rec)
     else if ct == tls-content-application then
       (if ep.tep-phase >= 3 then tep-client-app ep rec else tep-client-enc-hs ep rec)
+    else if ct == tls-content-alert then tep-plain-alert ep (tep-rec-payload rec)
     else tep-idle ep
 
- The ServerHello arrives in the clear. Parse the server's key share, do the
- X25519 agreement, and derive the handshake traffic secrets over the
- transcript through the ServerHello.
+ RFC 8446 section 4: a handshake message out of order is unexpected_message (10). The one plaintext handshake
+ message a client takes is the ServerHello answering its own ClientHello, in phase 1; a ServerHello at any other
+ time is a second handshake over live keys.
+
+  tep-client-plain : TlsEp, List Integer -> TlsEpStep
+  tep-client-plain (ep) (msg) =
+    if ep.tep-phase /= 1 then tep-abort-alert ep 10
+    else if list-length msg < 4 then tep-abort-alert ep 50
+    else if list-at msg 0 /= dtls-hs-server-hello then tep-abort-alert ep 10
+    else tep-client-sh ep msg
+
+ RFC 8446 4.1.3 and 4.2.1: the ServerHello must echo the client's (empty) session id, carry legacy_version 0x0303,
+ the one suite offered and compression 0, and name 0x0304 in supported_versions; its key share must be the X25519
+ entry offered. A field that differs is illegal_parameter (47); a missing or other version is protocol_version
+ (70). A HelloRetryRequest is not answered.
 
   tep-client-sh : TlsEp, List Integer -> TlsEpStep
   tep-client-sh (ep) (msg) =
-    when dtls-sh-key-share (tep-msg-body msg)
-      is None -> tep-idle ep
+    if dtls-is-hrr (tep-msg-body msg) then tep-client-hrr ep (tep-msg-body msg)
+    else if tep-sh-fields-ok (tep-msg-body msg) == False then tep-abort-alert ep 47
+    else if tep-sh-exts-alert (tep-msg-body msg) /= 0 then tep-abort-alert ep (tep-sh-exts-alert (tep-msg-body msg))
+    else if tep-sh-version-ok (tep-msg-body msg) == False then tep-abort-alert ep 70
+    else if tep-sh-share-ok (dtls-sh-find-ext (tep-msg-body msg) tls-ext-key-share) == False then tep-abort-alert ep 47
+    else when dtls-sh-key-share (tep-msg-body msg)
+      is None -> tep-abort-alert ep 47
       is Just (peer) -> tep-client-derive ep (tep-msg-body msg) peer
+
+ RFC 8446 4.1.4 and 4.4.1: this client offers X25519 alone and sends its share, so a HelloRetryRequest may ask only
+ for a cookie. Its fields are checked as a ServerHello's (47); it carries supported_versions and the cookie, each
+ once (key_share, server_name, supported_groups and signature_algorithms are illegal_parameter 47, any other
+ unsupported_extension 110, a bad length decode_error 50); one with no cookie would change nothing (47), an empty
+ cookie is decode_error (50), and a second one unexpected_message (10). The answer is ClientHello2, the same hello
+ carrying the cookie, over the transcript message_hash(ClientHello1), HelloRetryRequest, ClientHello2.
+
+  tep-client-hrr : TlsEp, List Integer -> TlsEpStep
+  tep-client-hrr (ep) (b) =
+    if list-length (ep.tep-transcript) > 0 & list-at (ep.tep-transcript) 0 == tls13-msg-message-hash then tep-abort-alert ep 10
+    else if tep-sh-fields-ok b == False then tep-abort-alert ep 47
+    else if tep-hrr-exts-alert b /= 0 then tep-abort-alert ep (tep-hrr-exts-alert b)
+    else if tep-sh-version-ok b == False then tep-abort-alert ep 70
+    else when dtls-hrr-cookie b
+      is None -> tep-abort-alert ep 47
+      is Just (c) -> if list-length c == 0 then tep-abort-alert ep 50 else tep-client-ch2 ep b c
+
+  tep-client-ch2 : TlsEp, List Integer, List Integer -> TlsEpStep
+  tep-client-ch2 (ep) (hrr) (cookie) =
+    let msg = tls13-msg-transcript dtls-hs-client-hello (dtls-client-hello-body (tep-rand32 ep) [] (ep.tep-pub) cookie)
+    in let tr = tls13-transcript-after-hrr (ep.tep-transcript) & tls13-msg-transcript dtls-hs-server-hello hrr & msg
+    in TlsEpStep { tes-ep = __record-set ep "tep-transcript" tr, tes-out = [tls-encode-record tls-content-handshake msg] }
+
+  tep-hrr-exts-alert : List Integer -> Integer
+  tep-hrr-exts-alert (b) =
+    if list-length b < 40 then 50
+    else if 40 + list-at b 38 * 256 + list-at b 39 /= list-length b then 50
+    else tep-hrr-ext-walk b 40 []
+
+  tep-hrr-ext-walk : List Integer, Integer, List Integer -> Integer
+  tep-hrr-ext-walk (b) (off) (seen) =
+    if off == list-length b then 0
+    else if off + 4 > list-length b then 50
+    else tep-hrr-ext-one b off seen (list-at b off * 256 + list-at b (off + 1)) (list-at b (off + 2) * 256 + list-at b (off + 3))
+
+  tep-hrr-ext-one : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  tep-hrr-ext-one (b) (off) (seen) (t) (n) =
+    if off + 4 + n > list-length b then 50
+    else if tep-ee-seen seen t 0 then 47
+    else if t == tls-ext-supported-versions then tep-hrr-ext-walk b (off + 4 + n) (seen & [t])
+    else if t == dtls-ext-cookie-type then tep-hrr-ext-walk b (off + 4 + n) (seen & [t])
+    else if t == tls-ext-key-share then 47
+    else if t == tls-ext-server-name then 47
+    else if t == tls-ext-supported-groups then 47
+    else if t == tls-ext-signature-algorithms then 47
+    else 110
+
+  tep-sh-fields-ok : List Integer -> Boolean
+  tep-sh-fields-ok (b) =
+    if list-length b < 38 then False
+    else if list-at b 0 /= 3 then False
+    else if list-at b 1 /= 3 then False
+    else if list-at b 34 /= 0 then False
+    else if list-at b 35 * 256 + list-at b 36 /= tls-cipher-aes-128-gcm-sha256 then False
+    else list-at b 37 == 0
+
+ RFC 8446 section 4.2: a ServerHello carries only supported_versions and key_share of what this client offers (no
+ pre_shared_key is offered), each once. A type twice, or one the client offered that a ServerHello may not carry
+ (server_name, supported_groups, signature_algorithms), is illegal_parameter (47); any other is unsupported_extension
+ (110); a length that does not fit is decode_error (50). The extensions start at body byte 38 behind the empty
+ session id echo that tep-sh-fields-ok has checked.
+
+  tep-sh-exts-alert : List Integer -> Integer
+  tep-sh-exts-alert (b) =
+    if list-length b < 40 then 50
+    else if 40 + list-at b 38 * 256 + list-at b 39 /= list-length b then 50
+    else tep-sh-ext-walk b 40 []
+
+  tep-sh-ext-walk : List Integer, Integer, List Integer -> Integer
+  tep-sh-ext-walk (b) (off) (seen) =
+    if off == list-length b then 0
+    else if off + 4 > list-length b then 50
+    else tep-sh-ext-one b off seen (list-at b off * 256 + list-at b (off + 1)) (list-at b (off + 2) * 256 + list-at b (off + 3))
+
+  tep-sh-ext-one : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  tep-sh-ext-one (b) (off) (seen) (t) (n) =
+    if off + 4 + n > list-length b then 50
+    else if tep-ee-seen seen t 0 then 47
+    else if t == tls-ext-supported-versions then tep-sh-ext-walk b (off + 4 + n) (seen & [t])
+    else if t == tls-ext-key-share then tep-sh-ext-walk b (off + 4 + n) (seen & [t])
+    else if t == tls-ext-server-name then 47
+    else if t == tls-ext-supported-groups then 47
+    else if t == tls-ext-signature-algorithms then 47
+    else 110
+
+  tep-sh-version-ok : List Integer -> Boolean
+  tep-sh-version-ok (b) =
+    when dtls-sh-find-ext b tls-ext-supported-versions
+      is None -> False
+      is Just (v) -> if list-length v /= 2 then False else (if list-at v 0 /= 3 then False else list-at v 1 == 4)
+
+  tep-sh-share-ok : Maybe (List Integer) -> Boolean
+  tep-sh-share-ok (m) =
+    when m
+      is None -> False
+      is Just (e) ->
+        (if list-length e /= 36 then False
+         else if list-at e 0 * 256 + list-at e 1 /= tls-group-x25519 then False
+         else list-at e 2 * 256 + list-at e 3 == 32)
 
   tep-client-derive : TlsEp, List Integer, List Integer -> TlsEpStep
   tep-client-derive (ep) (sh-body) (peer) =
@@ -193,19 +368,23 @@ Section: Client Receive
   tep-store-hs (ep) (tr) (hs) (c) (s) =
     __record-set (__record-set (__record-set (__record-set ep "tep-transcript" tr) "tep-hs-secret" hs) "tep-c-hs" c) "tep-s-hs" s
 
- An encrypted handshake record. Decrypt under the server handshake key at
- the current read sequence, bump the sequence for every record in the
- epoch, and fold every handshake message the record carried into the
- machine -- servers are allowed to coalesce EncryptedExtensions,
- Certificate, CertificateVerify and Finished into one record.
+ Servers are allowed to coalesce EncryptedExtensions, Certificate,
+ CertificateVerify and Finished into one record.
 
   tep-client-enc-hs : TlsEp, List Integer -> TlsEpStep
   tep-client-enc-hs (ep) (rec) =
     when tep-dec (ep.tep-s-hs) (ep.tep-read-seq) rec
       is None -> tep-idle ep
       is Just (inner) ->
-        (if inner.ti-type /= tls-content-handshake then __step-bump-read ep
-         else tep-client-hs-msgs (__record-set ep "tep-read-seq" (ep.tep-read-seq + 1)) (inner.ti-data) 0 [])
+        (if inner.ti-type == tls-content-alert then tep-on-alert (__record-set ep "tep-read-seq" (ep.tep-read-seq + 1)) (inner.ti-data)
+         else if inner.ti-type /= tls-content-handshake then tep-abort-alert ep 10
+         else tep-client-hs-held ep ((ep.tep-hs-pend) & inner.ti-data))
+
+ The held tail is read before the field is cleared: __record-set writes the endpoint in place (L-ALIAS).
+
+  tep-client-hs-held : TlsEp, List Integer -> TlsEpStep
+  tep-client-hs-held (ep) (buf) =
+    tep-client-hs-msgs (__record-set (__record-set ep "tep-read-seq" (ep.tep-read-seq + 1)) "tep-hs-pend" []) buf 0 []
 
   __step-bump-read : TlsEp -> TlsEpStep
   __step-bump-read (ep) = TlsEpStep {
@@ -215,19 +394,92 @@ Section: Client Receive
 
   tep-client-hs-msgs : TlsEp, List Integer, Integer, List (List Integer) -> TlsEpStep
   tep-client-hs-msgs (ep) (buf) (off) (outs) =
-    if off + 4 > list-length buf then TlsEpStep { tes-ep = ep, tes-out = outs }
+    if ep.tep-phase < 0 then TlsEpStep { tes-ep = ep, tes-out = outs }
+    else if off == list-length buf then TlsEpStep { tes-ep = ep, tes-out = outs }
+    else if off + 4 > list-length buf then tep-hs-hold ep buf off outs
     else let len = list-at buf (off + 1) * 65536 + list-at buf (off + 2) * 256 + list-at buf (off + 3)
-    in if off + 4 + len > list-length buf then TlsEpStep { tes-ep = ep, tes-out = outs }
+    in if len > tep-hs-msg-cap then tep-hs-refuse (tep-abort-alert ep 47) outs
+    else if off + 4 + len > list-length buf then tep-hs-hold ep buf off outs
     else let step = tep-client-hs-one ep (list-at buf off) (dtls-take-at buf (off + 4) len)
     in tep-client-hs-msgs (step.tes-ep) buf (off + 4 + len) (outs & step.tes-out)
 
+ RFC 8446 5.1: a handshake message can span records, so the tail of one that has not ended waits in tep-hs-pend
+ for the next protected handshake record. tep-hs-msg-cap is our bound, not the RFC's (OpenSSL's max_cert_list
+ default): a message declared past it is illegal_parameter (47) before anything is held for it, so an
+ unauthenticated server cannot make the client hold more.
+
+  tep-hs-msg-cap : Integer = 102400
+
+  tep-hs-refuse : TlsEpStep, List (List Integer) -> TlsEpStep
+  tep-hs-refuse (st) (outs) = TlsEpStep { tes-ep = st.tes-ep, tes-out = outs & st.tes-out }
+
+  tep-hs-hold : TlsEp, List Integer, Integer, List (List Integer) -> TlsEpStep
+  tep-hs-hold (ep) (buf) (off) (outs) =
+    TlsEpStep { tes-ep = __record-set ep "tep-hs-pend" (dtls-take-at buf off (list-length buf - off)), tes-out = outs }
+
   tep-client-hs-one : TlsEp, Integer, List Integer -> TlsEpStep
   tep-client-hs-one (ep) (t) (body) =
-    if t == dtls-hs-encrypted-ext then tep-fold ep t body
+    if t /= tep-flight-type (ep.tep-hs-next) then tep-abort-alert ep 10
+    else tep-client-hs-take (__record-set ep "tep-hs-next" (ep.tep-hs-next + 1)) t body
+
+ RFC 8446 section 4: under certificate authentication the server's encrypted flight is EncryptedExtensions,
+ Certificate, CertificateVerify, Finished, in that order and once each; any other message is unexpected_message (10).
+
+  tep-flight-type : Integer -> Integer
+  tep-flight-type (k) =
+    if k == 0 then dtls-hs-encrypted-ext
+    else if k == 1 then dtls-hs-certificate
+    else if k == 2 then dtls-hs-cert-verify
+    else if k == 3 then dtls-hs-finished
+    else 0 - 1
+
+  tep-client-hs-take : TlsEp, Integer, List Integer -> TlsEpStep
+  tep-client-hs-take (ep) (t) (body) =
+    if t == dtls-hs-encrypted-ext then tep-client-ee ep body
     else if t == dtls-hs-certificate then tep-client-cert ep body
     else if t == dtls-hs-cert-verify then tep-client-cv ep body
     else if t == dtls-hs-finished then tep-client-fin ep body
     else tep-idle ep
+
+ RFC 8446 4.3.1 and 4.2: EncryptedExtensions is Extension extensions<0..2^16-1>, each type at most once. Of the
+ extensions the ClientHello offers, only server_name (with empty extension_data, RFC 6066 section 3) and
+ supported_groups may appear in it; key_share, supported_versions and signature_algorithms there are
+ illegal_parameter (47), one never offered unsupported_extension (110), and a length that does not fit decode_error (50).
+
+  tep-client-ee : TlsEp, List Integer -> TlsEpStep
+  tep-client-ee (ep) (body) =
+    let a = tep-ee-alert body
+    in if a /= 0 then tep-abort-alert ep a
+    else tep-fold ep dtls-hs-encrypted-ext body
+
+  tep-ee-alert : List Integer -> Integer
+  tep-ee-alert (body) =
+    if list-length body < 2 then 50
+    else if 2 + list-at body 0 * 256 + list-at body 1 /= list-length body then 50
+    else tep-ee-walk body 2 []
+
+  tep-ee-walk : List Integer, Integer, List Integer -> Integer
+  tep-ee-walk (body) (off) (seen) =
+    if off == list-length body then 0
+    else if off + 4 > list-length body then 50
+    else tep-ee-one body off seen (list-at body off * 256 + list-at body (off + 1)) (list-at body (off + 2) * 256 + list-at body (off + 3))
+
+  tep-ee-one : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  tep-ee-one (body) (off) (seen) (t) (n) =
+    if off + 4 + n > list-length body then 50
+    else if tep-ee-seen seen t 0 then 47
+    else if t == tls-ext-server-name then (if n /= 0 then 50 else tep-ee-walk body (off + 4) (seen & [t]))
+    else if t == tls-ext-supported-groups then tep-ee-walk body (off + 4 + n) (seen & [t])
+    else if t == tls-ext-key-share then 47
+    else if t == tls-ext-supported-versions then 47
+    else if t == tls-ext-signature-algorithms then 47
+    else 110
+
+  tep-ee-seen : List Integer, Integer, Integer -> Boolean
+  tep-ee-seen (seen) (t) (i) =
+    if i >= list-length seen then False
+    else if list-at seen i == t then True
+    else tep-ee-seen seen t (i + 1)
 
   tep-fold : TlsEp, Integer, List Integer -> TlsEpStep
   tep-fold (ep) (t) (body) =
@@ -237,25 +489,31 @@ Section: Client Receive
     }
 
  THE TRANSCRIPT IS A RECORD OF WHAT WAS RECEIVED, NOT OF WHAT WAS
- BELIEVED. Both this message and CertificateVerify fold unconditionally.
- They used to fold only on success, which cost a whole capability: a
- client with NO trust anchors does not require authentication
- (tep-auth-missing says so), but it also cannot verify a chain, so the
- Certificate went unfolded, the client's transcript diverged from the
- server's by exactly that message, and the server Finished then failed to
- verify. An unauthenticated handshake was impossible -- not because we
- refused it, but because declining to record a message we could not check
- corrupted the hash. Nothing in the loopback could see it: there the
- certificate always verifies.
-
- The security property is unmoved and lives one layer up. Verification
- decides tep-peer-key and tep-auth-done, and tep-auth-missing refuses the
- Finished when anchors were supplied and authentication did not happen. A
- folded message is not a trusted one.
+ BELIEVED. A folded message is not a trusted one.
 
   tep-client-cert : TlsEp, List Integer -> TlsEpStep
   tep-client-cert (ep) (body) =
-    tep-fold (tep-cert-peer-key ep body) dtls-hs-certificate body
+    if tep-cert-decodes body == False then tep-abort-alert ep 50
+    else tep-client-cert-key (tep-cert-peer-key ep body) body
+
+ RFC 8446 4.4.2 and 4.4.2.4: a server Certificate that does not decode, or carries no entry, is decode_error (50),
+ with anchors or without.
+
+  tep-cert-decodes : List Integer -> Boolean
+  tep-cert-decodes (body) =
+    when tls-cert-parse body
+      is None -> False
+      is Just (ders) -> list-length ders > 0
+
+ RFC 8446 sections 4.4.2.4, 4.4.3 and 4.4.4: under anchors a certificate that does not chain to one, or does not name
+ the expected peer, is bad_certificate (42) and a CertificateVerify that does not verify decrypt_error (51); a
+ Finished that does not verify is decrypt_error on either side. A client with no anchors authenticates nobody, so it
+ refuses neither of the first two.
+
+  tep-client-cert-key : TlsEp, List Integer -> TlsEpStep
+  tep-client-cert-key (ep) (body) =
+    if list-length (ep.tep-anchors) > 0 & x509-can-verify (ep.tep-peer-key) == False then tep-abort-alert ep 42
+    else tep-fold ep dtls-hs-certificate body
 
   tep-cert-peer-key : TlsEp, List Integer -> TlsEp
   tep-cert-peer-key (ep) (body) =
@@ -269,11 +527,8 @@ Section: Client Receive
       is None -> ep
       is Just (certs) -> tep-cert-key-walk ep certs
 
- The identity check is inside x509-chain-verify, which cannot be called
- without saying who was expected. A chain that is genuine but belongs to
- somebody else answers ChainWrongIdentity and leaves the peer key unset,
- so the handshake goes no further: authentication is not "the certificate
- is real", it is "the certificate is theirs".
+ Authentication is not "the certificate is real", it is "the certificate
+ is theirs".
 
   tep-cert-key-walk : TlsEp, List X509Cert -> TlsEp
   tep-cert-key-walk (ep) (certs) =
@@ -283,25 +538,42 @@ Section: Client Receive
 
  CertificateVerify: the signature is checked over the transcript hash
  THROUGH the Certificate -- the transcript as it stands before this
- message is folded in. The verdict becomes tep-auth-done; the message
- folds either way.
+ message is folded in.
 
   tep-client-cv : TlsEp, List Integer -> TlsEpStep
   tep-client-cv (ep) (body) =
-    let ok = tls-cv-verify True (ep.tep-peer-key) body (tls13-transcript-hash (ep.tep-transcript))
-    in tep-fold (__record-set ep "tep-auth-done" ok) dtls-hs-cert-verify body
+    if tep-cv-alert body /= 0 then tep-abort-alert ep (tep-cv-alert body)
+    else tep-client-cv-check ep body
 
- The server's Finished. A client that required authentication and did not
- get it stops here. Otherwise verify the Finished over the transcript
- through CertificateVerify, then fold it, derive the application secrets
- over the transcript through the server Finished, and send our own Finished
- -- encrypted under the client handshake key -- over that same hash.
+ RFC 8446 4.4.3 and section 6: a CertificateVerify whose signature does not fill its body exactly is decode_error
+ (50), and one whose scheme is not among the four tls-ext-sig-algs offers is illegal_parameter (47), with anchors
+ or without; a signature that does not verify stays decrypt_error (51) under anchors.
+
+  tep-cv-alert : List Integer -> Integer
+  tep-cv-alert (body) =
+    if list-length body < 4 then 50
+    else if list-length body /= 4 + tls-cv-len body then 50
+    else if tep-cv-offered (tls-cv-scheme-of body) == False then 47
+    else 0
+
+  tep-cv-offered : Integer -> Boolean
+  tep-cv-offered (s) =
+    if s == tls-sig-ed25519 then True
+    else if s == tls-sig-ecdsa-p256-sha256 then True
+    else if s == tls-sig-ecdsa-p384-sha384 then True
+    else s == tls-sig-rsa-pss-sha256
+
+  tep-client-cv-check : TlsEp, List Integer -> TlsEpStep
+  tep-client-cv-check (ep) (body) =
+    let ok = tls-cv-verify True (ep.tep-peer-key) body (tls13-transcript-hash (ep.tep-transcript))
+    in if ok == False & list-length (ep.tep-anchors) > 0 then tep-abort-alert ep 51
+    else tep-fold (__record-set ep "tep-auth-done" ok) dtls-hs-cert-verify body
 
   tep-client-fin : TlsEp, List Integer -> TlsEpStep
   tep-client-fin (ep) (body) =
     if tep-auth-missing ep then tep-idle ep
     else if tls13-finished-ok (ep.tep-s-hs) (tls13-transcript-hash (ep.tep-transcript)) body == False then
-      tep-idle ep
+      tep-abort-alert ep 51
     else tep-client-finish ep body
 
   tep-auth-missing : TlsEp -> Boolean
@@ -322,19 +594,128 @@ Section: Client Receive
   tep-store-app (ep) (tr) (c-ap) (s-ap) =
     let e1 = __record-set (__record-set (__record-set ep "tep-transcript" tr) "tep-c-ap" c-ap) "tep-s-ap" s-ap
     in let e2 = __record-set (__record-set (__record-set e1 "tep-phase" 3) "tep-app-read-seq" 0) "tep-app-write-seq" 0
-    in __record-set (__record-set e2 "tep-done" True) "tep-app-in" (__list-with-capacity tep-app-cap)
+    in __record-set (__record-set (__record-set e2 "tep-done" True) "tep-app-in" []) "tep-app-room" 0
 
   tep-client-app : TlsEp, List Integer -> TlsEpStep
   tep-client-app (ep) (rec) =
-    when tep-dec (ep.tep-s-ap) (ep.tep-app-read-seq) rec
+    if ep.tep-phase == 4 then tep-idle ep
+    else tep-recv-marked ep rec (ep.tep-s-ap) __heap-save
+
+ Application data is appended straight out of the decrypted plaintext; every other type is copied out as a TlsInner.
+
+  tep-app-open : TlsEp, TlsOpen -> TlsEpStep
+  tep-app-open (ep) (o) =
+    if o.to-type == tls-content-application then
+      (let e1 = __record-set ep "tep-app-read-seq" (ep.tep-app-read-seq + 1)
+       in TlsEpStep { tes-ep = __record-set e1 "tep-app-in" (tep-append-bytes (ep.tep-app-in) (o.to-plain) 0 (o.to-len)), tes-out = [] })
+    else tep-app-step ep (tls13-open-inner o)
+
+ An application record is opened under a heap mark and its content appended into the room already reserved, so the
+ AES key schedule and the plaintext it costs are given back however small the record. The room grows only once a
+ record has authenticated: one that does not fit gives the heap back, grows the room (what is needed or twice the
+ room held, up to the cap) and is opened again, once per doubling. Any other content type gives the heap back and
+ is opened unmarked.
+
+  tep-recv-marked : TlsEp, List Integer, List Integer, Integer -> TlsEpStep
+  tep-recv-marked (ep) (rec) (secret) (mark) =
+    when tep-dec-open secret (ep.tep-app-read-seq) rec
+      is None -> tep-marked-idle ep mark
+      is Just (o) ->
+        if o.to-type /= tls-content-application then tep-recv-unmarked ep rec secret mark
+        else if list-length (ep.tep-app-in) + o.to-len > ep.tep-app-room & ep.tep-app-room < tep-app-cap then tep-recv-regrow ep rec secret (o.to-len) mark
+        else tep-app-marked ep (tep-append-bytes (ep.tep-app-in) (o.to-plain) 0 (o.to-len)) mark
+
+  tep-marked-idle : TlsEp, Integer -> TlsEpStep
+  tep-marked-idle (ep) (mark) =
+    let restored = __heap-restore mark
+    in tep-idle ep
+
+  tep-recv-unmarked : TlsEp, List Integer, List Integer, Integer -> TlsEpStep
+  tep-recv-unmarked (ep) (rec) (secret) (mark) =
+    let restored = __heap-restore mark
+    in when tep-dec-open secret (ep.tep-app-read-seq) rec
       is None -> tep-idle ep
-      is Just (inner) -> TlsEpStep { tes-ep = tep-app-accept ep inner, tes-out = [] }
+      is Just (o) -> tep-app-open ep o
+
+  tep-recv-regrow : TlsEp, List Integer, List Integer, Integer, Integer -> TlsEpStep
+  tep-recv-regrow (ep) (rec) (secret) (n) (mark) =
+    let restored = __heap-restore mark
+    in tep-recv-marked (tep-grow-app ep (list-length (ep.tep-app-in) + n)) rec secret __heap-save
+
+  tep-app-marked : TlsEp, List Integer, Integer -> TlsEpStep
+  tep-app-marked (ep) (appended) (mark) =
+    let restored = __heap-restore mark
+    in TlsEpStep { tes-ep = __record-set ep "tep-app-read-seq" (ep.tep-app-read-seq + 1), tes-out = [] }
+
+  tep-grow-app : TlsEp, Integer -> TlsEp
+  tep-grow-app (ep) (need) =
+    let wanted = if need > 2 * ep.tep-app-room then need else 2 * ep.tep-app-room
+    in let room = if wanted > tep-app-cap then tep-app-cap else wanted
+    in if room <= ep.tep-app-room then ep
+    else
+      __record-set (__record-set ep "tep-app-in" (tep-append-bytes (__list-with-capacity room) (ep.tep-app-in) 0 (list-length (ep.tep-app-in)))) "tep-app-room" room
 
  A record in the application epoch is only application DATA if its inner
  content type says so. A server's post-handshake NewSessionTicket or a
  KeyUpdate arrives here as an inner handshake record; it advances the
  sequence like any other record but must never be appended to the response
  body, or the body is corrupted by bytes the caller never asked for.
+
+ RFC 8446 section 5: a protected record's inner type is handshake, alert or application_data, and application_data
+ only once the handshake is done; any other is unexpected_message (10).
+
+  tep-app-step : TlsEp, TlsInner -> TlsEpStep
+  tep-app-step (ep) (inner) =
+    if inner.ti-type == tls-content-application then TlsEpStep { tes-ep = tep-app-accept ep inner, tes-out = [] }
+    else if inner.ti-type == tls-content-handshake then tep-post-hs (tep-app-accept ep inner) (inner.ti-data) 0 []
+    else if inner.ti-type == tls-content-alert then tep-on-alert (tep-app-accept ep inner) (inner.ti-data)
+    else tep-abort-alert ep 10
+
+ RFC 8446 sections 4.6 and 7.2: after the handshake a client takes NewSessionTicket (4) and KeyUpdate (24), a server
+ KeyUpdate only (no post_handshake_auth is offered, so no CertificateRequest comes). KeyUpdate is one byte, 0
+ (update_not_requested) or 1 (update_requested), and ends its record, because the next record is under the next key:
+ application_traffic_secret_N+1 = HKDF-Expand-Label(secret_N, "traffic upd", "", 32), its sequence from 0. A request
+ is answered with a KeyUpdate of 0 under the old sending secret, then the sending secret moves.
+
+  tep-hs-new-session-ticket : Integer = 4
+  tep-hs-key-update : Integer = 24
+
+  tep-post-hs : TlsEp, List Integer, Integer, List (List Integer) -> TlsEpStep
+  tep-post-hs (ep) (buf) (off) (outs) =
+    if off == list-length buf then TlsEpStep { tes-ep = ep, tes-out = outs }
+    else if off + 4 > list-length buf then tep-abort-alert ep 50
+    else tep-post-hs-one ep buf off outs (list-at buf off) (list-at buf (off + 1) * 65536 + list-at buf (off + 2) * 256 + list-at buf (off + 3))
+
+  tep-post-hs-one : TlsEp, List Integer, Integer, List (List Integer), Integer, Integer -> TlsEpStep
+  tep-post-hs-one (ep) (buf) (off) (outs) (t) (n) =
+    if off + 4 + n > list-length buf then tep-abort-alert ep 50
+    else if t == tep-hs-key-update then
+      (if n /= 1 then tep-abort-alert ep 50
+       else if off + 5 /= list-length buf then tep-abort-alert ep 10
+       else if list-at buf (off + 4) > 1 then tep-abort-alert ep 47
+       else tep-key-update ep (list-at buf (off + 4)) outs)
+    else if t == tep-hs-new-session-ticket & ep.tep-server == False then tep-post-hs ep buf (off + 4 + n) outs
+    else tep-abort-alert ep 10
+
+  tep-next-secret : List Integer -> List Integer
+  tep-next-secret (secret) = tls13-expand-label secret "traffic upd" [] 32
+
+  tep-key-update : TlsEp, Integer, List (List Integer) -> TlsEpStep
+  tep-key-update (ep) (req) (outs) =
+    let e0 = if ep.tep-server then __record-set ep "tep-c-ap" (tep-next-secret (ep.tep-c-ap))
+             else __record-set ep "tep-s-ap" (tep-next-secret (ep.tep-s-ap))
+    in let e1 = __record-set e0 "tep-app-read-seq" 0
+    in if req == 0 then TlsEpStep { tes-ep = e1, tes-out = outs }
+    else tep-key-update-send e1 outs
+
+  tep-key-update-send : TlsEp, List (List Integer) -> TlsEpStep
+  tep-key-update-send (ep) (outs) =
+    let own-secret = if ep.tep-server then ep.tep-s-ap else ep.tep-c-ap
+    in let rec = tep-enc own-secret (ep.tep-app-write-seq) tls-content-handshake [tep-hs-key-update, 0, 0, 1, 0]
+    in let e0 = if ep.tep-server then __record-set ep "tep-s-ap" (tep-next-secret own-secret)
+                else __record-set ep "tep-c-ap" (tep-next-secret own-secret)
+    in let e1 = __record-set e0 "tep-app-write-seq" 0
+    in TlsEpStep { tes-ep = e1, tes-out = outs & [rec] }
 
   tep-app-cap : Integer = 262144
 
@@ -345,14 +726,13 @@ Section: Client Receive
       __record-set e1 "tep-app-in" (tep-append-bytes (ep.tep-app-in) (inner.ti-data) 0 (list-length (inner.ti-data)))
     else e1
 
- Application data accumulates into ONE list, reserved to capacity at the
- handshake's end and pushed into in place -- the same discipline http-recv
- uses on the cleartext path. The obvious `app-in & chunk` per record copies
- the whole buffer every record, which is quadratic in the number of records
- and, on a heap with no collector, leaves every intermediate copy live until
- the fetch returns. list-push writes in place while the list is under
- capacity, so the accumulation is linear; a body past the cap stops growing
- rather than reallocating.
+ `app-in & chunk` per record copies the whole buffer every record, which is
+ quadratic in the number of records and, on a heap with no collector,
+ leaves every intermediate copy live until the fetch returns. list-push
+ doubles a full list's capacity, so the append is amortised linear and the
+ copies it leaves sum to under twice the final buffer; the buffer starts
+ empty, so a handshake reserves nothing for it.
+ A body past the cap stops growing.
 
   tep-append-bytes : List Integer, List Integer, Integer, Integer -> List Integer
   tep-append-bytes (dst) (src) (i) (n) =
@@ -377,23 +757,170 @@ Section: Server Receive
 
   tep-server-recv : TlsEp, List Integer, Integer -> TlsEpStep
   tep-server-recv (ep) (rec) (ct) =
-    if ct == tls-content-handshake then tep-server-ch ep (tep-rec-payload rec)
+    if ct == tls-content-handshake then tep-server-plain ep (tep-rec-payload rec)
     else if ct == tls-content-application then
       (if ep.tep-phase >= 3 then tep-server-app ep rec else tep-server-enc-hs ep rec)
+    else if ct == tls-content-alert then tep-plain-alert ep (tep-rec-payload rec)
     else tep-idle ep
 
  RFC 8446 section 4.4.2.2: the server's certificate must be signable in a
  scheme the client's signature_algorithms lists, and a server with no such
  certificate aborts with handshake_failure.
 
+ A server takes a plaintext ClientHello in phase 0, and in phase 1 the one that answers its HelloRetryRequest.
+
+  tep-server-plain : TlsEp, List Integer -> TlsEpStep
+  tep-server-plain (ep) (msg) =
+    if ep.tep-phase > 1 then tep-abort-alert ep 10
+    else if list-length msg < 4 then tep-abort-alert ep 50
+    else if list-at msg 0 /= dtls-hs-client-hello then tep-abort-alert ep 10
+    else tep-server-ch ep msg
+
+ RFC 8446 4.1.2 and 4.2.1: a ClientHello that does not offer 0x0304 in supported_versions is protocol_version (70),
+ one whose cipher_suites hold no TLS_AES_128_GCM_SHA256 is handshake_failure (40), one whose
+ legacy_compression_methods is anything but the single byte 0 is illegal_parameter (47), and one whose fixed fields
+ run past the message, whose legacy_session_id is over 32 bytes, or whose cipher_suites length is zero or odd is
+ decode_error (50).
+
+  tep-ch-fields : List Integer -> Integer
+  tep-ch-fields (b) =
+    if list-length b < 35 then 50
+    else if list-at b 34 > 32 then 50
+    else let o = 35 + list-at b 34
+    in if o + 2 > list-length b then 50
+    else let cs = list-at b o * 256 + list-at b (o + 1)
+    in if cs == 0 then 50
+    else if bit-and cs 1 == 1 then 50
+    else let c = o + 2 + cs
+    in if c + 2 > list-length b then 50
+    else if tep-ch-version-ok b == False then 70
+    else if tep-ch-has-suite b (o + 2) c == False then 40
+    else if list-at b c /= 1 then 47
+    else if list-at b (c + 1) /= 0 then 47
+    else 0
+
+  tep-ch-has-suite : List Integer, Integer, Integer -> Boolean
+  tep-ch-has-suite (b) (i) (stop) =
+    if i + 1 >= stop then False
+    else if list-at b i * 256 + list-at b (i + 1) == tls-cipher-aes-128-gcm-sha256 then True
+    else tep-ch-has-suite b (i + 2) stop
+
+  tep-ch-version-ok : List Integer -> Boolean
+  tep-ch-version-ok (b) =
+    when dtls-ch-find-ext b tls-ext-supported-versions
+      is None -> False
+      is Just (v) -> if list-length v < 3 then False else tep-ch-version-in v 1 (1 + list-at v 0)
+
+  tep-ch-version-in : List Integer, Integer, Integer -> Boolean
+  tep-ch-version-in (v) (i) (stop) =
+    if i + 1 >= stop then False
+    else if i + 1 >= list-length v then False
+    else if list-at v i == 3 & list-at v (i + 1) == 4 then True
+    else tep-ch-version-in v (i + 2) stop
+
   tep-server-ch : TlsEp, List Integer -> TlsEpStep
   tep-server-ch (ep) (msg) =
-    if dtls-ch-offers-in (tep-msg-body msg) tls-ext-signature-algorithms (tls-cv-scheme-for (ep.tep-sign-pub)) == False then
+    if tep-ch-fields (tep-msg-body msg) /= 0 then tep-abort-alert ep (tep-ch-fields (tep-msg-body msg))
+    else if tep-exts-block-alert (tep-msg-body msg) (dtls-ch-ext-offset (tep-msg-body msg) - 2) /= 0 then
+      tep-abort-alert ep (tep-exts-block-alert (tep-msg-body msg) (dtls-ch-ext-offset (tep-msg-body msg) - 2))
+    else if dtls-ch-offers-in (tep-msg-body msg) tls-ext-signature-algorithms (tls-cv-scheme-for (ep.tep-sign-pub)) == False then
       tep-abort-alert ep 40
     else tep-server-ch-share ep msg
 
+ RFC 8446 4.1.2 and 4.2: a hello's extensions block (its 2-byte length at off) ends the message exactly, every
+ extension inside its length, else decode_error (50); a type twice is illegal_parameter (47). The types seen are
+ one bit each of a 1024-word map, so a block of k extensions costs one pass and 8 KiB however large k is; a list
+ of seen types would cost k squared on a hello an unauthenticated peer chose.
+
+  tep-exts-block-alert : List Integer, Integer -> Integer
+  tep-exts-block-alert (b) (off) =
+    if off < 0 then 50
+    else if off + 2 > list-length b then 50
+    else if off + 2 + list-at b off * 256 + list-at b (off + 1) /= list-length b then 50
+    else tep-exts-dup-walk b (off + 2) (tep-zero-words (__list-with-capacity 1024) 0)
+
+  tep-zero-words : List Integer, Integer -> List Integer
+  tep-zero-words (acc) (i) = if i >= 1024 then acc else tep-zero-words (list-push acc 0) (i + 1)
+
+  tep-exts-dup-walk : List Integer, Integer, List Integer -> Integer
+  tep-exts-dup-walk (b) (off) (bits) =
+    if off == list-length b then 0
+    else if off + 4 > list-length b then 50
+    else tep-exts-dup-one b off bits (list-at b off * 256 + list-at b (off + 1)) (list-at b (off + 2) * 256 + list-at b (off + 3))
+
+  tep-exts-dup-one : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  tep-exts-dup-one (b) (off) (bits) (t) (n) =
+    let w = bit-shru t 6
+    in let m = bit-shl 1 (bit-and t 63)
+    in if off + 4 + n > list-length b then 50
+    else if bit-and (list-at bits w) m /= 0 then 47
+    else tep-exts-dup-walk b (off + 4 + n) (list-set-at bits w (bit-or (list-at bits w) m))
+
   tep-server-ch-share : TlsEp, List Integer -> TlsEpStep
   tep-server-ch-share (ep) (msg) =
+    if tep-ch-vecs-alert (dtls-ch-find-ext (tep-msg-body msg) tls-ext-supported-versions) (dtls-ch-find-ext (tep-msg-body msg) tls-ext-supported-groups) (dtls-ch-find-ext (tep-msg-body msg) tls-ext-signature-algorithms) /= 0 then
+      tep-abort-alert ep 50
+    else if tep-ch-ks-alert (dtls-ch-find-ext (tep-msg-body msg) tls-ext-key-share) /= 0 then
+      tep-abort-alert ep (tep-ch-ks-alert (dtls-ch-find-ext (tep-msg-body msg) tls-ext-key-share))
+    else tep-server-ch-shared ep msg
+
+ RFC 8446 4.2.8 and 4.2.8.2: client_shares fills its extension exactly and every KeyShareEntry fits inside it with a
+ key_exchange of at least one byte, else decode_error (50); a group twice, or an X25519 entry not 32 bytes, is
+ illegal_parameter (47). Groups seen are bits of the 1024-word map tep-exts-block-alert uses, for the same reason.
+
+ RFC 8446 4.2.1, 4.2.3, 4.2.7 and section 6: supported_versions is a 1-byte length of 2-byte versions, and
+ supported_groups and signature_algorithms a 2-byte length of 2-byte ids; each vector fills its extension exactly
+ with a whole, non-zero number of items, else decode_error (50). v, g and s are the three extensions as found.
+
+  tep-ch-vecs-alert : Maybe (List Integer), Maybe (List Integer), Maybe (List Integer) -> Integer
+  tep-ch-vecs-alert (v) (g) (s) =
+    if tep-vec-alert v 1 /= 0 then 50
+    else if tep-vec-alert g 2 /= 0 then 50
+    else tep-vec-alert s 2
+
+  tep-vec-alert : Maybe (List Integer), Integer -> Integer
+  tep-vec-alert (m) (w) =
+    when m
+      is None -> 0
+      is Just (e) -> tep-vec-of e w (if list-length e < w then 0 - 1 else if w == 1 then list-at e 0 else list-at e 0 * 256 + list-at e 1)
+
+  tep-vec-of : List Integer, Integer, Integer -> Integer
+  tep-vec-of (e) (w) (n) =
+    if n <= 0 then 50
+    else if w + n /= list-length e then 50
+    else if bit-and n 1 == 1 then 50
+    else 0
+
+  tep-ch-ks-alert : Maybe (List Integer) -> Integer
+  tep-ch-ks-alert (m) =
+    when m
+      is None -> 0
+      is Just (e) -> tep-ks-alert e
+
+  tep-ks-alert : List Integer -> Integer
+  tep-ks-alert (e) =
+    if list-length e < 2 then 50
+    else if 2 + list-at e 0 * 256 + list-at e 1 /= list-length e then 50
+    else tep-ks-walk e 2 (tep-zero-words (__list-with-capacity 1024) 0)
+
+  tep-ks-walk : List Integer, Integer, List Integer -> Integer
+  tep-ks-walk (e) (off) (bits) =
+    if off == list-length e then 0
+    else if off + 4 > list-length e then 50
+    else tep-ks-one e off bits (list-at e off * 256 + list-at e (off + 1)) (list-at e (off + 2) * 256 + list-at e (off + 3))
+
+  tep-ks-one : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  tep-ks-one (e) (off) (bits) (g) (n) =
+    let w = bit-shru g 6
+    in let m = bit-shl 1 (bit-and g 63)
+    in if n == 0 then 50
+    else if off + 4 + n > list-length e then 50
+    else if bit-and (list-at bits w) m /= 0 then 47
+    else if g == tls-group-x25519 & n /= 32 then 47
+    else tep-ks-walk e (off + 4 + n) (list-set-at bits w (bit-or (list-at bits w) m))
+
+  tep-server-ch-shared : TlsEp, List Integer -> TlsEpStep
+  tep-server-ch-shared (ep) (msg) =
     when dtls-ch-key-share (tep-msg-body msg)
       is None -> tep-server-no-share ep (tep-msg-body msg)
       is Just (peer) -> tep-server-flight ep (tep-msg-body msg) peer
@@ -464,24 +991,34 @@ Section: Server Receive
     let e1 = tep-store-hs ep tr hs c-hs s-hs
     in let e2 = __record-set (__record-set e1 "tep-c-ap" c-ap) "tep-s-ap" s-ap
     in let e3 = __record-set (__record-set (__record-set e2 "tep-phase" 2) "tep-read-seq" 0) "tep-app-read-seq" 0
-    in __record-set e3 "tep-app-in" (__list-with-capacity tep-app-cap)
-
- The client's Finished, encrypted under the client handshake key. Verify it
- over the transcript through the server Finished; if it holds, both sides
- share the handshake secret and the connection is open.
+    in __record-set (__record-set e3 "tep-app-in" []) "tep-app-room" 0
 
   tep-server-enc-hs : TlsEp, List Integer -> TlsEpStep
   tep-server-enc-hs (ep) (rec) =
     when tep-dec (ep.tep-c-hs) (ep.tep-read-seq) rec
       is None -> tep-idle ep
       is Just (inner) ->
-        (if inner.ti-type /= tls-content-handshake then tep-idle ep else tep-server-fin ep (inner.ti-data))
+        (if inner.ti-type == tls-content-alert then tep-on-alert (__record-set ep "tep-read-seq" (ep.tep-read-seq + 1)) (inner.ti-data)
+         else if inner.ti-type /= tls-content-handshake then tep-abort-alert ep 10
+         else tep-server-fin ep (inner.ti-data))
 
   tep-server-fin : TlsEp, List Integer -> TlsEpStep
   tep-server-fin (ep) (buf) =
-    let vd = dtls-take-at buf 4 (list-at buf 1 * 65536 + list-at buf 2 * 256 + list-at buf 3)
+    if list-length buf < 4 then tep-abort-alert ep 50
+    else if list-at buf 0 /= dtls-hs-finished then tep-abort-alert ep 10
+    else tep-server-fin-sized ep buf (list-at buf 1 * 65536 + list-at buf 2 * 256 + list-at buf 3)
+
+ RFC 8446 sections 4 and 5.1: the client's flight here is its Finished alone, and handshake data after it in the
+ same record would span the key change, so another type or a byte past it is unexpected_message (10); a length past
+ the record is decode_error (50).
+
+  tep-server-fin-sized : TlsEp, List Integer, Integer -> TlsEpStep
+  tep-server-fin-sized (ep) (buf) (n) =
+    if 4 + n > list-length buf then tep-abort-alert ep 50
+    else if 4 + n < list-length buf then tep-abort-alert ep 10
+    else let vd = dtls-take-at buf 4 n
     in if tls13-finished-ok (ep.tep-c-hs) (tls13-transcript-hash (ep.tep-transcript)) vd == False then
-      tep-idle ep
+      tep-abort-alert ep 51
     else
       TlsEpStep {
         tes-ep = __record-set (__record-set (__record-set ep "tep-phase" 3) "tep-app-write-seq" 0) "tep-done" True,
@@ -490,21 +1027,36 @@ Section: Server Receive
 
   tep-server-app : TlsEp, List Integer -> TlsEpStep
   tep-server-app (ep) (rec) =
-    when tep-dec (ep.tep-c-ap) (ep.tep-app-read-seq) rec
-      is None -> tep-idle ep
-      is Just (inner) -> TlsEpStep { tes-ep = tep-app-accept ep inner, tes-out = [] }
+    if ep.tep-phase == 4 then tep-idle ep
+    else tep-recv-marked ep rec (ep.tep-c-ap) __heap-save
 
 Section: Application Data
 
   tls-ep-send-app : TlsEp, List Integer -> TlsEpStep
   tls-ep-send-app (ep) (data) =
     if ep.tep-done == False then tep-idle ep
+    else tep-send-chunks ep data 0 [] False
+
+ A record carries at most tls13-max-plain bytes of content, so a longer send is cut into records of that size, each
+ under its own sequence number; an empty send is one empty record.
+
+ RFC 8446 5.5: one AES-GCM key seals at most 2^24.5 records. At write sequence 2^24 the sender first sends its own
+ KeyUpdate (update_not_requested) and goes on under the next secret, which leaves about 6.9 million records of
+ margin for the records already in flight.
+
+  tep-ku-at : Integer = 16777216
+
+  tep-send-chunks : TlsEp, List Integer, Integer, List (List Integer), Boolean -> TlsEpStep
+  tep-send-chunks (ep) (data) (off) (acc) (sent) =
+    if off >= list-length data & sent then TlsEpStep { tes-ep = ep, tes-out = acc }
+    else if ep.tep-app-write-seq >= tep-ku-at then tep-send-after-ku (tep-key-update-send ep []) data off acc
     else let sec = if ep.tep-server then ep.tep-s-ap else ep.tep-c-ap
-    in let rec = tep-enc sec (ep.tep-app-write-seq) tls-content-application data
-    in TlsEpStep {
-      tes-ep = __record-set ep "tep-app-write-seq" (ep.tep-app-write-seq + 1),
-      tes-out = [rec]
-    }
+    in let n = if list-length data - off > tls13-max-plain then tls13-max-plain else list-length data - off
+    in let rec = tls13-record-encrypt-at (tep-key sec) (tep-iv sec) (ep.tep-app-write-seq) tls-content-application data off n
+    in tep-send-chunks (__record-set ep "tep-app-write-seq" (ep.tep-app-write-seq + 1)) data (off + n) (list-push acc rec) True
+
+  tep-send-after-ku : TlsEpStep, List Integer, Integer, List (List Integer) -> TlsEpStep
+  tep-send-after-ku (st) (data) (off) (acc) = tep-send-chunks (st.tes-ep) data off (acc & st.tes-out) (off > 0)
 
  close_notify, RFC 8446 section 6.1: an alert of level warning (1) and
  description 0, protected under the application traffic key like any other
@@ -530,3 +1082,13 @@ Section: Accessors
 
   tls-ep-app-in : TlsEp -> List Integer
   tls-ep-app-in (ep) = ep.tep-app-in
+
+ A consumer that has read the first k bytes drains them (L-PEROBJECT): a session then holds what it has not read,
+ not everything it has carried, and its buffer does not fill to the cap, past which it would take nothing more.
+
+  tls-ep-app-drain : TlsEp, Integer -> TlsEp
+  tls-ep-app-drain (ep) (k) =
+    let n = list-length (ep.tep-app-in)
+    in if k <= 0 then ep
+    else if k >= n then __record-set (__record-set ep "tep-app-in" []) "tep-app-room" 0
+    else __record-set (__record-set ep "tep-app-in" (tep-append-bytes (__list-with-capacity (n - k)) (ep.tep-app-in) k n)) "tep-app-room" (n - k)

@@ -1,0 +1,43 @@
+Chapter: GossipDisseminationTest
+  cites Net chapter GossipProtocol
+  cites Foreword chapter Console
+
+ Node a knows eight peers (p1 to p7, then b) and pings b once a round. Six
+ updates ride a ping and each rides three, so the first six joins retire
+ after round 3 and the last two after round 6.
+
+Section: Fixtures
+
+  gdt-peers : GossipState, Integer -> GossipState
+  gdt-peers (st) (i) =
+    if i > 7 then gos-add-peer st (gossip-peer-new "b" "10.0.0.2")
+    else gdt-peers (gos-add-peer st (gossip-peer-new ("p" & show i) ("10.0.1." & show i))) (i + 1)
+
+  GdtPair = record { gd-a : GossipState, gd-b : GossipState }
+
+  gdt-round : GdtPair, Integer -> GdtPair
+  gdt-round (pr) (now) =
+    let out = gos-ping (pr.gd-a)
+    in when out.gpo-msg
+      is GmPing (from) (seq) (updates) -> GdtPair { gd-a = out.gpo-state, gd-b = gos-handle-ping (pr.gd-b) from seq updates now }
+      is GmAck (from) (seq) (updates) -> pr
+      is GmPingReq (from) (target) (seq) -> pr
+      is GmPingReqAck (from) (target) (alive) -> pr
+
+  gdt-rounds : GdtPair, Integer, Integer -> GdtPair
+  gdt-rounds (pr) (r) (n) = if r >= n then pr else gdt-rounds (gdt-round pr r) (r + 1) n
+
+  gdt-line : Text, GdtPair -> Text
+  gdt-line (label) (pr) =
+    label & ": b knows " & show ((pr.gd-b).gos-peer-count) & ", a queued " & show (((pr.gd-a).gos-queue).uq-count) & ", a sent " & show ((pr.gd-a).gos-updates-sent) & " in " & show ((pr.gd-a).gos-pings-sent) & " pings"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let start = GdtPair { gd-a = gdt-peers (gossip-new "a" "10.0.0.1") 1, gd-b = gossip-new "b" "10.0.0.2" }
+    in act
+      print-line-uni (gdt-line "after 3" (gdt-rounds start 0 3))
+      print-line-uni (gdt-line "after 6" (gdt-rounds start 0 6))
+      print-line-uni (gdt-line "after 9" (gdt-rounds start 0 9))
+    end
+  end

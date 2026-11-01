@@ -12,12 +12,6 @@ Section: Emit Buffers
 
 Section: Deck Guard
 
- COMPILER-27, Damian's ruling 2026-08-27: the guard goes in behind a
- compile-time flag, and the toggle is a single operation. 0 selects the
- unguarded bump, anything else selects the guarded one. It is read by
- heap-bump-imm and heap-bump-reg at EMIT time, so the emitted program carries
- no test of this flag; it carries either the guard or nothing.
-
   deck-guard-enabled : Integer = 1
 
 Section: Work Budgets
@@ -35,35 +29,6 @@ Section: Work Budgets
  call returns an error node and the parse carries on.
 
   max-parse-stall : Integer = 4096
-
- What the bound was protecting against, and why the check still lives in
- the checker rather than the emitter: past the ceiling the emitter walked
- off the end of four separate 16-bit counters in sequence -- the slot
- number first, then next-local, then spill-count, then next-temp -- and
- the first one to go tripped __narrow, which traps with an invalid opcode.
- A list literal no longer reaches that chain, but the counters are still
- 16 bits and a function that acquires that many locals by any other route
- still would.
-
- There was no diagnostic on that path and there could not be one, for a
- reason that has nothing to do with the emitter's reporting: __narrow
- traps. The failure is a hardware fault at the instruction, not a branch
- the emitter reaches and could report from. Refusing the literal at check
- time is what gets the author a source span and a sentence instead of a
- register dump.
-
- An earlier version of this paragraph said instead that a diagnostic
- raised inside emit-function is dropped, because codegen-carry-forward
- takes the bag from the state before the function. That is FALSE and it
- was measured false: st-add-error and its siblings are __record-set on
- the bag, __record-set mutates in place and returns the same record, and
- reset-func-state is itself a chain of __record-set, so the state
- emit-function works on is the record the caller is holding. The bag
- propagates by mutation. A bounded return type makes emit-return-guard
- raise CDX4010 from inside emit-function and it arrives with its span;
- codex/test/range-let-carry pins exactly that through a bounded field
- store. The claim is recorded here only because it survived two entries
- in the register and this file before anyone compiled a probe.
 
   max-list-literal-elems : Integer = 65504
 
@@ -88,87 +53,19 @@ Section: Demand Decks
  Every phase deck is a generous fixed floor. Address space is the only
  cost - the boot demand-pages the heap range and physical memory
  commits on touch - so the floors are sized for the arena, not for the
- source. These replaced the survey multiplier system, which sized decks
- from source length and corrupted silently when it under-reserved.
+ source.
 
- A floor that is not generous ENOUGH used to fail the same way the
- multiplier did: the parse keep-deck copy (copy-sx-document) wrote past
- the floor into the scratch it is still reading, the copier dereferenced
- its own overwrite, and the compile died in a #GP with no diagnostic --
- the post-copy overflow check never ran. A 444 KB single-unit source
- (the GopBoot boot bundle) was the first to push the copied CST past
- 64 MB. Since 2026-07-20 the parse keep copy SAYS SO
- instead: a guard band the width of demand-parse-guard-band sits
- between the keep reservation and the scratch, the def and type-def
- copy loops stop at the floor, and the phase raises CDX9002 -- fired
- rather than assumed, by starving this keep floor to 2 MB and watching
- the selfhost compile refuse with the diagnostic. The CHECK-KEEP deep
- copy carries the same discipline (its mc-ceiling).
- The LEX deck carries the same discipline since 2026-07-21:
- tokenize-collect reads __deck-pos every token and stops at
- demand-lex-guard-band below the reservation ceiling. It is the phase
- that starving demonstrably reaches FIRST -- `compile.ps1 -Decks 5`
- used to die in a #GP inside __linked_list_to_list, and the prose here
- said that crash was an over-full parse SCRATCH colliding with the
- bivy. Measured 2026-07-21, it was not: at 5 per cent the parse
- scratch fits (12.6 MB used against a 19.2 MB floor) and the LEX deck
- does not (28.7 MB against 4.8 MB), so the deck grew into the bivy
- holding the token linked list and the crash was the lexer reading its
- own overwrite one call later.
-
- DESUGAR carries the same discipline since 2026-07-21, and finding it
- needed the phase trace: `-Decks` at 30, 40, 50 and 60 all complete LEX
- and PARSE and then die inside DESUGAR, in three different shared
- runtime helpers, so the crash site named nothing. This section said
- DESUGAR had "no bulk write path to hang a check on". It has four --
- desugar-defs-ll, desugar-type-defs-ll, rewrite-constrained-defs and
- insert-dicts-at-call-sites, each one iteration per definition -- and
- they now read __deck-pos per definition and stop a
- demand-desugar-guard-band short of the ceiling. The band is sized for
+ The DESUGAR band is sized for
  ONE definition's desugared tree plus the wind-down, because the check
  runs before a definition is desugared rather than after, and it is
  deliberately generous: a band that is too big costs a spurious CDX9002
  that says exactly what to do about it, and a band that is too small
  costs silent corruption. The asymmetry is the whole argument.
 
- SCOPE, CHECK and LOWER joined them on 2026-07-21, and RESOLVE and LIFT
- on the same day, so every phase that reserves a deck now stops on the
- write path rather than reporting damage afterwards. SCOPE is the one
- worth remembering: its first guard went on scope-adefs-ll, which
- writes 0.3 MB of the phase's 56.3, and the phase went on dying in a
- divide error at a starved floor because the walk that writes the other
- 53.3 was unguarded. The lesson is that a guard belongs where the bytes
- are, and that where the bytes are is a measurement, not a reading of
- the code. RESOLVE and LIFT were both measured with deck-pos probes
- before either guard was written.
-
- RESOLVE and LIFT joined them on 2026-07-21, and finding out how cost
- more than writing them. A loop inside a phase-wide deck-record extent
- reads a FROZEN __deck-pos -- the cell is only written back when the
- nesting counter returns to zero -- so deck-short-of there compares the
- floor against the band and never mentions the usage. Both of these
- phases are that shape and both use deck-bound-short-of instead, which
- reads the live frontier. The full account is in PhaseAllocator beside
- the two predicates; the measurement is an in-loop probe that printed
- __deck-pos unchanged through 19.1 MB of writing.
-
- CHECK is the exception and the reason is three lines of check-chapter:
- it issues a __deck-exit immediately before the per-definition walk and
- a __deck-enter after it, so that walk runs OUTSIDE the extent and the
- cell is live. Swapping CHECK to deck-bound-short-of reads the BIVY
- pointer, which is above every deck ceiling, and truncates the walk on
- its first definition -- that is the "truncates silently on an
- eight-kilobyte program" this paragraph used to attribute to all three.
- It was CHECK alone, it was not silent (40-odd CDX2000 emit errors), and
- the caller-side report was never the problem: `check-sat` and
- `lower-sat` are both evaluated after their extents have exited, where
- the cell is live.
-
- **LOWER's headroom is 1.06x, not the 1.11x this file used to record.**
- Measured 2026-07-21 in CDX mode: -Decks 93 refuses and 94 compiles, so
- LOWER uses 312 to 315 MB of its 335.5 MB floor. The old figure came
- from -Measure, which runs no IR pipeline and therefore measures a
- smaller LOWER than the one that ships. It is by a wide margin the
+ **LOWER's headroom is 1.06x.** Measured 2026-07-21 in CDX mode: -Decks 93
+ refuses and 94 compiles, so LOWER uses 312 to 315 MB of its 335.5 MB
+ floor (-Measure runs no IR pipeline and reads a smaller LOWER than the
+ one that ships). It is by a wide margin the
  tightest deck in the compiler and the row to watch.
 
  These two are 384 MB rather than 192 because 192 was reached by adding
@@ -193,16 +90,15 @@ Section: Demand Decks
  build-quire unit one point. 704 MB puts the tightest unit at 48 and costs
  35.8 MB more reservation at scale 64. The three points of slack are worth about
  four more constructors at the measured 4.75 MB each. A third bump is the signal
- to stop bumping and size the derivation instead (CurrentPlan ruling 20).
+ to stop bumping and size the derivation instead.
   demand-check-floor : Integer = 738197504
   demand-check-guard-band : Integer = 8388608
   demand-check-keep-floor : Integer = 100663296
 
  The CHECK walk is deck-exited, so a definition's inference scratch lands in
- the bivy and its deck-record boxes on the check deck, and until 2026-09-01
- neither was reclaimed before the phase compact: measured on the compiler's
- own unit, 643 MB of bivy and 366 MB of deck for a survivor set the keep copy
- holds in under 96 MB. The walk now closes a batch whenever the two together
+ the bivy and its deck-record boxes on the check deck: unreclaimed, measured on
+ the compiler's own unit, 643 MB of bivy and 366 MB of deck for a survivor set
+ the keep copy holds in under 96 MB. The walk closes a batch whenever the two together
  pass this budget: the batch's survivors are copied into the keep deck through
  the same memoized copier the phase end uses, and both cursors rewind to the
  batch start. The budget bounds the per-batch address memo below, which is

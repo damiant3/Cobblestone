@@ -22,7 +22,7 @@ $debug=[BitConverter]::ToInt32($cdx,220)
 $contentEnd=if($debug -eq 0){$cdx.Length}else{$debug}
 if($contentEnd -lt $rodata+$rodataSize -or $contentEnd -gt $cdx.Length){throw 'CDX content extent invalid'}
 $sha=[Security.Cryptography.SHA256]::Create()
-try{$hash=[Convert]::ToHexString($sha.ComputeHash($cdx,224,$contentEnd-224))}finally{$sha.Dispose()}
+try{$body=$sha.ComputeHash($cdx,224,$contentEnd-224);$hash=[Convert]::ToHexString($sha.ComputeHash([byte[]]($cdx[0..7]+$cdx[136..223]+$body)))}finally{$sha.Dispose()}
 if($hash -cne [Convert]::ToHexString($cdx,8,32)){throw 'CDX content hash mismatch'}
 if([BitConverter]::ToUInt32($cdx,$text) -ne 0x1badb002 -or [BitConverter]::ToUInt32($cdx,$text+12) -ne 0x100000 -or [BitConverter]::ToUInt32($cdx,$text+28) -ne 0x100020){throw 'Unsupported BIOS trampoline'}
 $payloadSize=$rodata+$rodataSize-$text

@@ -131,6 +131,15 @@ Section: Signing
     & text-to-bytes (show rec.rr-timestamp)
     & text-to-bytes ":"
     & text-to-bytes (show rec.rr-effective)
+    & text-to-bytes (":" & show (text-length rec.rr-reason) & ":")
+    & text-to-bytes rec.rr-reason
+    & supersedes-to-bytes rec.rr-supersedes
+
+  supersedes-to-bytes : Maybe (List Integer) -> List Integer
+  supersedes-to-bytes (sup) =
+    when sup
+      is None -> text-to-bytes ":none"
+      is Just (sid) -> text-to-bytes (":sup:" & show (list-length sid) & ":") & sid
 
   scope-to-bytes : RevocationScope -> List Integer
   scope-to-bytes (scope) =
@@ -145,6 +154,7 @@ Section: Store Operations
   revocation-add : RevocationStore, RevocationRecord -> RevocationStore
   revocation-add (store) (rec) =
     if verify-revocation rec == False then store
+    else if sha256-to-hex (sha256 (revocation-signing-payload rec)) /= sha256-to-hex rec.rr-id then store
     else if revocation-authorized rec == False then store
     else if revocation-exists store rec.rr-id then store
     else let added = __record-set store "rs-records" (list-push store.rs-records rec)

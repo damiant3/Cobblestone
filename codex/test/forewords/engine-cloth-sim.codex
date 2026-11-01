@@ -1,7 +1,54 @@
 Chapter: FwdClothSimTest
   cites Engine chapter ClothSim
 
+Section: Fixtures
+
+  clt-cfg : ClothConfig
+  clt-cfg = ClothConfig { cc-width = 3, cc-height = 3, cc-spacing = 50, cc-mass = 100, cc-stiffness = 900, cc-damping = 990, cc-break-threshold = 3000, cc-iterations = 4 }
+
+  clt-p : ClothState, Integer -> SoftParticle
+  clt-p (cl) (i) = list-at (cl.cl-body.sb-particles) i
+
+  clt-pos : ClothState, Integer -> Text
+  clt-pos (cl) (i) =
+    let p = clt-p cl i
+    in show (p.sft-x) & "," & show (p.sft-y) & "," & show (p.sft-z)
+
+  clt-move : ClothState, Integer, Integer, Integer, Integer -> ClothState
+  clt-move (cl) (i) (x) (y) (z) =
+    let p = clt-p cl i
+    in let q = SoftParticle { sft-x = x, sft-y = y, sft-z = z, sft-px = x, sft-py = y, sft-pz = z, sft-rest-x = p.sft-rest-x, sft-rest-y = p.sft-rest-y, sft-rest-z = p.sft-rest-z, sft-mass = p.sft-mass, sft-pinned = True }
+    in __record-set cl "cl-body" (__record-set (cl.cl-body) "sb-particles" (list-set-at (for e in cl.cl-body.sb-particles -> e) i q))
+
+  clt-steps : ClothState, Integer -> ClothState
+  clt-steps (cl) (n) =
+    if n <= 0 then cl
+    else clt-steps (cloth-step cl 16) (n - 1)
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "Engine/ClothSim OK"
-  end
+
+  opening : [Console] Nothing =
+    let c0 = cloth-create clt-cfg 0 0 0
+    in let parts = c0.cl-body.sb-part-count
+    in let cons = c0.cl-body.sb-con-count
+    in let broken = list-length (c0.cl-broken)
+    in let p3 = clt-pos c0 3
+    in let p8 = clt-pos c0 8
+    in let windy = cloth-apply-wind (cloth-create clt-cfg 0 0 0) 500 0 0
+    in let w0 = clt-pos windy 0
+    in let w3 = clt-pos windy 3
+    in let fallen = clt-steps (cloth-create clt-cfg 0 0 0) 5
+    in let pinned7 = clt-steps (cloth-pin (cloth-create clt-cfg 0 0 0) 1 2) 5
+    in let calm = clt-steps (cloth-create clt-cfg 0 0 0) 5
+    in let dragged = clt-steps (clt-move (cloth-create clt-cfg 0 0 0) 8 5000 0 5000) 1
+    in let hit = cloth-collide-sphere (cloth-create clt-cfg 0 0 0) 100 10 100 30
+    in let hit-pinned = cloth-collide-sphere (cloth-create clt-cfg 0 0 0) 0 10 0 30
+    in act
+      print-line-uni ("3x3: particles " & show parts & ", constraints " & show cons & ", broken slots " & show broken)
+      print-line-uni ("rest: p3 " & p3 & ", p8 " & p8 & ", top row pinned " & (if (clt-p c0 0).sft-pinned & (clt-p c0 2).sft-pinned & (if (clt-p c0 3).sft-pinned then False else True) then "yes" else "no"))
+      print-line-uni ("wind 500: p0 " & w0 & ", p3 " & w3)
+      print-line-uni ("5 steps: p0 " & clt-pos fallen 0 & ", p8 fell below 0: " & (if (clt-p fallen 8).sft-y < 0 then "yes" else "no"))
+      print-line-uni ("pin 1,2 then 5 steps: p7 " & clt-pos pinned7 7)
+      print-line-uni ("tearing: 5 calm steps broke " & show (cloth-broken-count calm) & ", p8 dragged to 5000 broke " & show (cloth-broken-count dragged))
+      print-line-uni ("sphere r 30 centred 10 above p8: p8 " & clt-pos hit 8 & "; above pinned p0: p0 " & clt-pos hit-pinned 0)
+    end

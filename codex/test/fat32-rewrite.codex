@@ -1,0 +1,68 @@
+Chapter: Fat32Rewrite
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ A file written again under its own name is replaced: one directory entry,
+ the new bytes read back, the old chain free. A short name, a long name and
+ the dual-boot path EFI/Codex/codex.efi, each written twice as a re-install
+ does. A repeated mkdir is refused, and a write under a directory's name is
+ refused rather than replacing the directory.
+
+Section: Helpers
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  bytes-of : Maybe (List Integer) -> Text
+  bytes-of (m) = when m
+    is None -> "none"
+    is Just (bs) -> "[" & show (list-length bs) & "] first " & (if list-length bs == 0 then "-" else show (list-at bs 0))
+
+  cluster-of : Maybe Fat16DirEntry -> Integer
+  cluster-of (m) = when m
+    is None -> 0
+    is Just (e) -> e.de-cluster
+
+  count-name : List Text, Text, Integer, Integer -> Integer
+  count-name (xs) (n) (i) (acc) =
+    if i >= list-length xs then acc
+    else count-name xs n (i + 1) (if list-at xs i == n then acc + 1 else acc)
+
+  join-names : List Text, Integer, Text -> Text
+  join-names (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else join-names xs (i + 1) (acc & (if i == 0 then "" else " ") & list-at xs i)
+
+  rewrite : Fat32Volume, Text, List Integer, List Integer -> [Device.Block] Text
+  rewrite (vol) (path) (a) (b) = act
+    w1 <- fat32-write-file vol path a
+    e1 <- fat32-resolve-path vol path
+    w2 <- fat32-write-file vol path b
+    r <- fat32-read-bytes vol path
+    old <- fat32-next-cluster vol (cluster-of e1)
+    path & ": writes " & yn w1 & " " & yn w2 & " read " & bytes-of r & " old cluster free=" & yn (old == 0)
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    fmt <- fat32-format 2048 20480 "CODEX"
+    vol <- fat32-init 2048
+    a <- rewrite vol "BOOT.EFI" [1, 1, 1, 1] [2, 2]
+    print-line-uni a
+    names <- fat32-list-root vol
+    print-line-uni ("BOOT.EFI entries " & show (count-name names "BOOT.EFI" 0 0))
+    b <- rewrite vol "LongNameOnFat32.bin" [3, 3, 3] [4]
+    print-line-uni b
+    names2 <- fat32-list-root vol
+    print-line-uni ("root " & join-names names2 0 "")
+    c <- rewrite vol "EFI/Codex/codex.efi" [5, 5] [6, 6, 6]
+    print-line-uni c
+    d1 <- fat32-mkdir vol (vol.f32-root-cluster) "EFI"
+    names3 <- fat32-list-root vol
+    print-line-uni ("mkdir EFI again " & show d1 & " entries " & show (count-name names3 "EFI" 0 0))
+    wd <- fat32-write-file vol "EFI" [7]
+    print-line-uni ("write over directory " & yn wd)
+  end

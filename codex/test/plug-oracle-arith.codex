@@ -59,12 +59,6 @@ Section: List literals
 
 Section: List push
 
- `list-push` and `list-snoc` are two SOURCE names for one operation and the
- IR carries whichever the source wrote, so a plug that registers only one of
- them emits a call to a function it never defines for the other. Sixteen
- registered `list-snoc` alone while `list-push` is the spelling this codebase
- uses, and nothing here saw it because this subject exercised neither name.
-
   push-len : Integer -> Integer
   push-len (n) = list-length (list-push [10, 20] n)
 
@@ -74,28 +68,13 @@ Section: List push
   snoc-len : Integer -> Integer
   snoc-len (n) = list-length (list-snoc [10, 20] n)
 
- Aliasing is deliberately NOT asked about here. Measured on x86-64
- 2026-08-16: after `let a = [] in let b = list-push a n in let c =
- list-push a (n + 1)`, all three names report length 2 and the same element,
- so `__list_snoc` extended the topmost allocation in place and returned the
- same pointer both times. A non-empty literal behaves the same way. No
- transpilation target reproduces that, and a row asserting it would fail every
- plug that copies -- which is most of them -- while passing the ones that
- append in place. It belongs in plugs-backlog 1.7, not in a cross-language
- oracle.
-
 Section: Mutable records
 
  A store into a `mutable` record field is the quietest thing a plug can get
  wrong: emit it as an expression whose result is discarded and the program
  compiles, runs, and answers the value the field had BEFORE the store. Kotlin
  does exactly that (`rec.copy(field = value)` in statement position) and Scala
- has the same shape, so this is not hypothetical. Nothing ran a plug's output
- on a mutable record before this.
-
- Two fields and two stores, because a plug can emit a single store correctly by
- accident and still drop the second, and the read-back is what makes a
- discarded store visible at all.
+ has the same shape.
 
   mutable Cell = record {
     ca : Integer,
@@ -138,10 +117,6 @@ Section: Deep recursion
   pong : Integer -> Integer
   pong (n) = if n <= 0 then 1 else ping (n - 1)
 
- sum-to is the row nothing can flatten, because the call is not in tail
- position, and the only recursion row whose answer is a large number rather
- than 0: a plug that returns a wrong value instead of dying is caught here.
-
   sum-to : Integer -> Integer
   sum-to (n) = if n <= 0 then 0 else n + sum-to (n - 1)
 
@@ -159,14 +134,6 @@ Section: Lambdas
  the arguments and a target that spells it as a chain of one-argument
  calls both run, and they disagree only when the chain is applied to more
  arguments than the innermost lambda declares.
-
- The second parameter carries a DIFFERENT type from the first on purpose.
- Every parameter here typed Integer would let a wrong or missing type on
- any parameter but the first run correctly anyway, which is exactly how
- this class stayed invisible: a lambda whose later parameters reached the
- wire untyped answered correctly on x86-64, which needs no annotation to
- build the call, and would be refused by a statically typed target and
- guessed at by C or Java.
 
   lam-one : Integer -> Integer
   lam-one (n) = (\x -> x + 100) n

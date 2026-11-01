@@ -86,9 +86,9 @@ $debugOff  = R32 220
 # is always there to check. Verified 2026-08-15 to reproduce exactly on
 # seed/Codex.cdx, build/output/Sut.cdx, stage1.cdx and canary-factorial.cdx.
 # 
-# The hash covers the content region only: sha256-buf over [0, full-len) of the
-# code buffer, which lands in the file at [224, debugOff) when a debug map is
-# present and [224, EOF) when it is not.
+# The hash is SHA-256 of header bytes [0, 8) and [136, 224) followed by the SHA-256
+# of the content region, which lands in the file at [224, debugOff) when a debug
+# map is present and [224, EOF) when it is not (CDX format version 2).
 function Deny([string]$why) {
     throw "[cdx-to-pe] REFUSED: $why. Refusing to emit a boot image from a CDX that does not check out."
 }
@@ -128,7 +128,8 @@ if ($debugOff -gt 0 -and $debugOff -lt $CdxHeaderSize) {
 }
 $contentEnd = if ($debugOff -gt 0) { $debugOff } else { $cdx.Length }
 $sha = [System.Security.Cryptography.SHA256]::Create()
-$calcHash = ($sha.ComputeHash($cdx, $CdxHeaderSize, $contentEnd - $CdxHeaderSize) | ForEach-Object { $_.ToString('x2') }) -join ''
+$bodyHash = $sha.ComputeHash($cdx, $CdxHeaderSize, $contentEnd - $CdxHeaderSize)
+$calcHash = ($sha.ComputeHash([byte[]]($cdx[0..7] + $cdx[136..223] + $bodyHash)) | ForEach-Object { $_.ToString('x2') }) -join ''
 $storedHash = (($cdx[8..39]) | ForEach-Object { $_.ToString('x2') }) -join ''
 if ($calcHash -ne $storedHash) {
     Deny "content hash mismatch over bytes $CdxHeaderSize..$contentEnd -- header says $storedHash, content hashes to $calcHash"
@@ -1166,7 +1167,8 @@ $codePages = [int](($textSz + $rodataSz + 4095) / 4096)
 # named on the console (L-BEDTRUE). Every page of the linked range must lie in an
 # EfiConventionalMemory descriptor (type 7); descriptors are DescSize apart, with
 # PhysicalStart at +8 and NumberOfPages at +24. 'S', 'P' and 'M' halt as in the
-# ExitBootServices block below; 'R' is the refusal.
+# ExitBootServices block below; 'R' is the refusal. 'D' halts on a DescSize below
+# 40, sizeof(EFI_MEMORY_DESCRIPTOR): a 0 never advances the walk.
 function GuardHalt([char]$c) { return [byte[]]@(0xB0, [byte][int]$c, 0x66, 0xBA, 0xF8, 0x03, 0xEE, 0x66, 0xBA, 0xF8, 0x02, 0xEE, 0xFA, 0xF4, 0xEB, 0xFD) }
 $guardEnd  = [long]$ImageBase + [long]$codePages * 4096
 $guardMsg  = "COMPILER-130: payload range 0x{0:X8}-0x{1:X8} is not free conventional memory in this firmware's map; nothing was loaded.`r`n" -f $ImageBase, $guardEnd
@@ -1194,6 +1196,9 @@ $g.AddRange([byte[]]@(73, 139, 71, 96, 255, 144, 56, 0, 0, 0))
 $g.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10)); $g.AddRange([byte[]](GuardHalt 'M'))
 # rsi map, r9 map end, r11 DescSize
 $g.AddRange([byte[]]@(72, 139, 116, 36, 72, 72, 139, 76, 36, 40, 76, 141, 12, 14, 76, 139, 92, 36, 56))
+# cmp r11, 40; jae over the 'D' halt
+$g.AddRange([byte[]]@(73, 131, 251, 40, 115, 16))
+$g.AddRange([byte[]](GuardHalt 'D'))
 $g.AddRange([byte[]]@(0x48, 0xBF)); $g.AddRange([BitConverter]::GetBytes([long]$ImageBase))             # rdi = first uncovered page
 $g.AddRange([byte[]]@(0x49, 0xB8)); $g.AddRange([BitConverter]::GetBytes([long]$guardEnd))              # r8 = range end
 $gOuter = $g.Count
@@ -1308,6 +1313,9 @@ if ($HeapFloorPages -gt 0) {
     $z.AddRange([byte[]]@(0x48, 0x85, 0xC0, 0x74, 0x10)); $z.AddRange([byte[]](GuardHalt 'M'))
     # rsi map, r9 map end, r11 DescSize
     $z.AddRange([byte[]]@(72, 139, 116, 36, 72, 72, 139, 76, 36, 40, 76, 141, 12, 14, 76, 139, 92, 36, 56))
+    # cmp r11, 40; jae over the 'D' halt
+    $z.AddRange([byte[]]@(73, 131, 251, 40, 115, 16))
+    $z.AddRange([byte[]](GuardHalt 'D'))
     $z.AddRange([byte[]]@(0x48, 0xBF)); $z.AddRange([BitConverter]::GetBytes([long]$HeapCeiling))          # rdi = ceiling
     # fb present: rax = fb base - backoff
     $z.AddRange([byte[]]@(77, 133, 228, 116, 17, 76, 137, 224, 72, 45))

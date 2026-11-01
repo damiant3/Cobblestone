@@ -1,0 +1,115 @@
+Chapter: FatTableBound
+  cites Foreword chapter Fat16
+  cites Foreword chapter Fat32
+
+ A BPB whose FAT is smaller than its data region claims more clusters than the
+ FAT has slots. FAT16: 512 bytes a sector, 4 a cluster, 1 reserved, 2 FATs,
+ 512 root entries (32 sectors), 20000 sectors. A 1-sector FAT has 256 slots,
+ so 254 clusters, the last 255, where the data region alone gives 4991; a
+ 20-sector FAT has 5120 slots and the data region's 4981 stand. FAT32: 512
+ bytes a sector, 1 a cluster, 32 reserved, 2 FATs, 40000 sectors. A 1-sector
+ FAT has 128 slots, so 126 clusters, the last 127, against 39966 from the data
+ region; a 516-sector FAT leaves the data region's 38936. A bytes per sector of
+ 4096 or 1024 is refused on both formats, the zero volume, because the block
+ device reads 512-byte sectors; the same BPBs at 512 gave 4981 and 38936.
+ A reserved-sector count of 0 or a FAT count of 0 is refused on both formats;
+ one FAT is a legal volume and keeps its clusters. A FAT16 total of 40
+ sectors ends inside its own root directory (1 reserved, 40 FAT, 32 root) and
+ is refused; 73 ends where the data region starts and keeps its root.
+
+Section: Buffers
+
+  fb-zero : Integer, Integer -> Integer
+  fb-zero (b) (i) = if i >= 512 then 0 else let p = poke-byte b i 0 in fb-zero b (i + 1)
+
+  fb-u16 : Integer, Integer, Integer -> Integer
+  fb-u16 (b) (o) (v) =
+    let lo = poke-byte b o (bit-and v 255)
+    in poke-byte b (o + 1) (bit-and (bit-shru v 8) 255)
+
+  fb-u32 : Integer, Integer, Integer -> Integer
+  fb-u32 (b) (o) (v) =
+    let lo = fb-u16 b o (bit-and v 65535)
+    in fb-u16 b (o + 2) (bit-and (bit-shru v 16) 65535)
+
+  fb-bpb16 : Integer, Integer -> Integer
+  fb-bpb16 (bps) (fat-sz) =
+    let b = alloc-bytes 512
+    in let z = fb-zero b 0
+    in let w = fb-u16 b 11 bps + poke-byte b 13 4 + fb-u16 b 14 1 + poke-byte b 16 2 + fb-u16 b 17 512 + fb-u16 b 19 20000 + fb-u16 b 22 fat-sz
+    in b
+
+  fb-bpb32 : Integer, Integer -> Integer
+  fb-bpb32 (bps) (fat-sz) =
+    let b = alloc-bytes 512
+    in let z = fb-zero b 0
+    in let w = fb-u16 b 11 bps + poke-byte b 13 1 + fb-u16 b 14 32 + poke-byte b 16 2 + fb-u32 b 32 40000 + fb-u32 b 36 fat-sz + fb-u32 b 44 2
+    in b
+
+Section: Reporting
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  fb-16 : Integer, Integer -> Text
+  fb-16 (fat-sz) (probe) = fb-16-at 512 fat-sz probe
+
+  fb-16-at : Integer, Integer, Integer -> Text
+  fb-16-at (bps) (fat-sz) (probe) =
+    let v = fat16-parse-bpb 0 (fb-bpb16 bps fat-sz)
+    in "fat16 " & (if bps == 512 then "" else "bps " & show bps & " ") & "fat " & show fat-sz & ": clusters " & show (v.vol-cluster-count) & " last " & show (fat16-last-cluster v)
+      & " ok last=" & yn (fat16-cluster-ok v (fat16-last-cluster v)) & " past=" & yn (fat16-cluster-ok v (fat16-last-cluster v + 1))
+      & " c" & show probe & "=" & yn (fat16-cluster-ok v probe)
+
+  fb-32 : Integer, Integer -> Text
+  fb-32 (fat-sz) (probe) = fb-32-at 512 fat-sz probe
+
+  fb-32-at : Integer, Integer, Integer -> Text
+  fb-32-at (bps) (fat-sz) (probe) =
+    let v = fat32-parse-bpb32 0 (fb-bpb32 bps fat-sz) 3
+    in "fat32 " & (if bps == 512 then "" else "bps " & show bps & " ") & "fat " & show fat-sz & ": clusters " & show (v.f32-total-clusters) & " last " & show (fat32-last-cluster v)
+      & " ok last=" & yn (fat32-cluster-ok v (fat32-last-cluster v)) & " past=" & yn (fat32-cluster-ok v (fat32-last-cluster v + 1))
+      & " c" & show probe & "=" & yn (fat32-cluster-ok v probe)
+
+  fb-rn16 : Integer, Integer -> Text
+  fb-rn16 (reserved) (nfats) =
+    let b = fb-bpb16 512 20
+    in let w = fb-u16 b 14 reserved + poke-byte b 16 nfats
+    in let v = fat16-parse-bpb 0 b
+    in "fat16 reserved " & show reserved & " fats " & show nfats & ": clusters " & show (v.vol-cluster-count)
+
+  fb-rn32 : Integer, Integer -> Text
+  fb-rn32 (reserved) (nfats) =
+    let b = fb-bpb32 512 516
+    in let w = fb-u16 b 14 reserved + poke-byte b 16 nfats
+    in let v = fat32-parse-bpb32 0 b 3
+    in "fat32 reserved " & show reserved & " fats " & show nfats & ": clusters " & show (v.f32-total-clusters)
+
+  fb-total16 : Integer -> Text
+  fb-total16 (total) =
+    let b = fb-bpb16 512 20
+    in let w = fb-u16 b 19 total
+    in let v = fat16-parse-bpb 0 b
+    in "fat16 total " & show total & ": root sectors " & show (fat16-root-sector-count v) & " clusters " & show (v.vol-cluster-count)
+
+Section: Entry
+  opening : [Console] Nothing = act
+    print-line-uni (fb-16 1 4000)
+    print-line-uni (fb-16 20 4000)
+    print-line-uni (fb-16 0 2)
+    print-line-uni (fb-32 1 30000)
+    print-line-uni (fb-32 516 30000)
+    print-line-uni (fb-32 0 2)
+    print-line-uni (fb-16-at 4096 20 4000)
+    print-line-uni (fb-16-at 1024 20 4000)
+    print-line-uni (fb-32-at 4096 516 30000)
+    print-line-uni (fb-32-at 1024 516 30000)
+    print-line-uni (fb-rn16 0 2)
+    print-line-uni (fb-rn16 1 0)
+    print-line-uni (fb-rn16 1 1)
+    print-line-uni (fb-rn32 0 2)
+    print-line-uni (fb-rn32 32 0)
+    print-line-uni (fb-rn32 32 1)
+    print-line-uni (fb-total16 40)
+    print-line-uni (fb-total16 73)
+  end

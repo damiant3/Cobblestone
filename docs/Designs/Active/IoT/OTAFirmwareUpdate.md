@@ -30,7 +30,7 @@ five-phase verifier, activated to the inactive slot. The Adversarial
 Scenario below (tampered image in transit) is refused at Gate A with Result
 5, still booting the old slot.
 
-**Steps 5-7 are built.** `Foreword chapter OtaBoot` is
+**Steps 5-7 are built, and no board boot path calls them yet** (`codex/os/os-backlog.md`), so the selector runs only under its tests. `Foreword chapter OtaBoot` is
 the boot selector. The record lives in one flash page and the candidate
 flag is a single aligned word (`flash-write-word`), so the device wakes
 having either fully accepted the candidate or never heard of it; the
@@ -47,7 +47,7 @@ against real flash, simulating a reboot by re-reading the record rather
 than threading state.
 
 The selector re-checks the **hash** and not the signature. The signature
-was checked at Gate A and again by Gate B before the bank was ever
+was checked by Gate B before the bank was ever
 marked, and re-parsing a CDX header would put a parser in every boot
 path, which is what "the boot selector must be small" forbids. What the
 re-check catches is the bank changing after Gate B blessed it.

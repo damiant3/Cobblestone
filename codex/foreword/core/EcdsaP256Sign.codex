@@ -16,8 +16,6 @@ Chapter: EcdsaP256Sign
  square-and-multiply over a secret base. A key whose signing time an
  attacker can measure over many signatures is exposed to this chapter.
 
- We say:
-
 Section: RFC 6979 Nonce
 
  RFC 6979 section 3.2 with HMAC-SHA256. For qlen = hlen = 256, bits2int
@@ -57,13 +55,29 @@ Section: RFC 6979 Nonce
 Section: The Ladder
 
   p256s-ladder : List Integer, EcPoint, EcField -> EcPoint
-  p256s-ladder (k) (p) (f) = p256s-rung k f (ec-infinity f) p (list-length k * 8 - 1)
+  p256s-ladder (k) (p) (f) =
+    let r0 = p256s-copy-pt (ec-infinity f)
+    in let r1 = p256s-copy-pt p
+    in let done = p256s-rung k f r0 r1 (list-length k * 8 - 1)
+    in r0
 
-  p256s-rung : List Integer, EcField, EcPoint, EcPoint, Integer -> EcPoint
+  p256s-copy-pt : EcPoint -> EcPoint
+  p256s-copy-pt (p) = EcPoint { ep-x = for v in p.ep-x -> v, ep-y = for v in p.ep-y -> v, ep-z = for v in p.ep-z -> v }
+
+  p256s-rung : List Integer, EcField, EcPoint, EcPoint, Integer -> Integer
   p256s-rung (k) (f) (r0) (r1) (i) =
-    if i < 0 then r0
-    else if cb-bit-at k i == 1 then p256s-rung k f (ec-add-pt r0 r1 f) (ec-double r1 f) (i - 1)
-    else p256s-rung k f (ec-double r0 f) (ec-add-pt r0 r1 f) (i - 1)
+    if i < 0 then 0
+    else let mark = __heap-save
+    in let one = cb-bit-at k i == 1
+    in let n0 = if one then ec-add-pt r0 r1 f else ec-double r0 f
+    in let n1 = p256s-copy-pt (if one then ec-double r1 f else ec-add-pt r0 r1 f)
+    in let w = p256s-store r0 n0 f + p256s-store r1 n1 f
+    in let r = __heap-restore mark
+    in p256s-rung k f r0 r1 (i - 1)
+
+  p256s-store : EcPoint, EcPoint, EcField -> Integer
+  p256s-store (dst) (src) (f) =
+    ec-store-limbs dst.ep-x src.ep-x 0 f.ef-n + ec-store-limbs dst.ep-y src.ep-y 0 f.ef-n + ec-store-limbs dst.ep-z src.ep-z 0 f.ef-n
 
 Section: Keys
 

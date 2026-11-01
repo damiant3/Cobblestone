@@ -1,0 +1,38 @@
+Chapter: MmioMapX86PureTest
+  cites Kernel chapter MmioMapX86
+  cites Foreword chapter Result
+
+Section: Entry
+  mmp-table : Integer, Integer -> Text
+  mmp-table (page) (entry) =
+    let parent = alloc-bytes 8
+    in let stored = poke-qword parent 0 entry
+    in let t = mx-table parent 0
+    in if t == page then "own" else show t
+
+  mmp-bool : Boolean -> Text
+  mmp-bool (b) = if b then "T" else "F"
+
+  mmp-cache : Boolean, Integer -> Text
+  mmp-cache (mtrr) (kind) =
+    if kind > 7 then ""
+    else mmp-bool (mx-cache-uc kind mtrr) & mmp-cache mtrr (kind + 1)
+
+  mmp-window : Integer, Integer -> Text
+  mmp-window (base) (size) = when mx-check-window base size
+    is Ok (b) -> "ok " & show b
+    is Err (e) -> e
+
+  opening : [Console] Nothing = act
+    let raw = alloc-bytes 8192
+    in let page = bit-and (raw + 4095) (0 - 4096)
+    in print-line-uni ("table " & mmp-table page (page + 3) & " " & mmp-table page (page + 3 + #8000000000000000)
+      & " " & mmp-table page (page + 131) & " " & mmp-table page (page + 1) & " " & mmp-table page 3 & " " & mmp-table page (#C0000000 + 3))
+    print-line-uni ("identity " & mmp-bool (mx-identity (#C0000000 + 3) #C0000123 mx-address-mask)
+      & mmp-bool (mx-identity (#C0000000 + 1) #C0000123 mx-address-mask)
+      & mmp-bool (mx-identity (#C0001000 + 3) #C0000123 mx-address-mask)
+      & mmp-bool (mx-identity (#C0000000 + 131) #C01FF123 #000FFFFFFFE00000))
+    print-line-uni ("cache-uc mtrr-uc " & mmp-cache True 0 & " mtrr-wb " & mmp-cache False 0)
+    print-line-uni ("window " & mmp-window #BFFFF000 4096 & " | " & mmp-window #C0000000 0 & " | " & mmp-window #C0000000 1048577)
+  end
+Page 1

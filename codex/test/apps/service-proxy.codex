@@ -1,0 +1,24 @@
+Chapter: ServiceProxyTest
+  cites Net chapter ServiceProxy
+  cites Net chapter LoadBalancer
+  cites Foreword chapter Console
+
+ The retry cap is 5000 ms over a 100 ms base doubling per attempt, so
+ attempt 6 (6400) is the first capped one; attempt 70 is past the signed
+ 64-bit range of 100 * 2^attempt.
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let pe0 = policy-engine-new
+    in let pe1 = pe-add-policy pe0 (net-policy-new "p1" "deny-ab" "a" "b" PolicyDeny)
+    in print-line-uni ("policy keeps the caller's engine: old " & show (pe0.pe-count) & "/" & show (list-length (pe0.pe-policies)) & " " & pol-action-label (pe-evaluate pe0 "a" "b") & ", new " & show (pe1.pe-count) & " " & pol-action-label (pe-evaluate pe1 "a" "b"))
+    let t0 = trace-new "t1" "s1" "edge" "GET /" 3
+    in let t1 = trace-finish t0 200 5
+    in let t2 = trace-finish-error t0 "upstream" 6
+    in print-line-uni ("finish keeps the caller's trace: old end " & show (t0.tc-end-time) & " status " & show (t0.tc-status) & ", ok " & show (t1.tc-status) & "@" & show (t1.tc-end-time) & ", error " & show (t2.tc-status) & " " & t2.tc-error & "@" & show (t2.tc-end-time))
+    let sp0 = service-proxy-new "edge"
+    in let sp1 = sp-add-pool sp0 (pool-new "shards" LbRoundRobin)
+    in print-line-uni ("pool keeps the caller's proxy: old " & show (sp0.sp-pool-count) & "/" & show (list-length (sp0.sp-pools)) & ", new " & show (sp1.sp-pool-count))
+    print-line-uni ("retry delay: " & show (retry-delay retry-default 0) & " " & show (retry-delay retry-default 5) & " " & show (retry-delay retry-default 6) & " " & show (retry-delay retry-default 70))
+  end

@@ -1,4 +1,8 @@
 Chapter: NetworkDiag
+  cites Net chapter Ethernet
+  cites Net chapter Icmp
+  cites Net chapter Tcp
+  cites Foreword chapter Maybe
   cites UI chapter Widget
   cites UI chapter Layout
 
@@ -95,31 +99,161 @@ Section: State
 
 Section: Actions
 
+  nd-with : NetworkDiagState, List DiagResult, List NetInterface, Boolean, DiagTool, Text, Integer, SpeedResult -> NetworkDiagState
+  nd-with (st) (results) (ifaces) (running) (tool) (target) (port) (speed) = NetworkDiagState {
+    nd-results = results, nd-result-count = list-length results,
+    nd-interfaces = ifaces, nd-interface-count = list-length ifaces,
+    nd-running = running, nd-current-tool = tool, nd-target = target,
+    nd-port = port, nd-last-speed = speed
+  }
+
   nd-set-target : NetworkDiagState, Text -> NetworkDiagState
-  nd-set-target (st) (t) = __record-set st "nd-target" t
+  nd-set-target (st) (t) = nd-with st (st.nd-results) (st.nd-interfaces) (st.nd-running) (st.nd-current-tool) t (st.nd-port) (st.nd-last-speed)
 
   nd-set-tool : NetworkDiagState, DiagTool -> NetworkDiagState
-  nd-set-tool (st) (t) = __record-set st "nd-current-tool" t
+  nd-set-tool (st) (t) = nd-with st (st.nd-results) (st.nd-interfaces) (st.nd-running) t (st.nd-target) (st.nd-port) (st.nd-last-speed)
 
   nd-set-port : NetworkDiagState, Integer -> NetworkDiagState
-  nd-set-port (st) (p) = __record-set st "nd-port" p
+  nd-set-port (st) (p) = nd-with st (st.nd-results) (st.nd-interfaces) (st.nd-running) (st.nd-current-tool) (st.nd-target) p (st.nd-last-speed)
 
   nd-start : NetworkDiagState -> NetworkDiagState
-  nd-start (st) = __record-set st "nd-running" True
+  nd-start (st) = nd-with st (st.nd-results) (st.nd-interfaces) True (st.nd-current-tool) (st.nd-target) (st.nd-port) (st.nd-last-speed)
 
   nd-add-result : NetworkDiagState, DiagResult -> NetworkDiagState
-  nd-add-result (st) (r) =
-    __record-set (__record-set (__record-set st "nd-results" (list-push (st.nd-results) r)) "nd-result-count" (st.nd-result-count + 1)) "nd-running" False
+  nd-add-result (st) (r) = nd-with st (st.nd-results & [r]) (st.nd-interfaces) False (st.nd-current-tool) (st.nd-target) (st.nd-port) (st.nd-last-speed)
 
   nd-add-interface : NetworkDiagState, NetInterface -> NetworkDiagState
-  nd-add-interface (st) (iface) =
-    __record-set (__record-set st "nd-interfaces" (list-push (st.nd-interfaces) iface)) "nd-interface-count" (st.nd-interface-count + 1)
+  nd-add-interface (st) (iface) = nd-with st (st.nd-results) (st.nd-interfaces & [iface]) (st.nd-running) (st.nd-current-tool) (st.nd-target) (st.nd-port) (st.nd-last-speed)
 
   nd-update-speed : NetworkDiagState, SpeedResult -> NetworkDiagState
-  nd-update-speed (st) (speed) = __record-set st "nd-last-speed" speed
+  nd-update-speed (st) (speed) = nd-with st (st.nd-results) (st.nd-interfaces) (st.nd-running) (st.nd-current-tool) (st.nd-target) (st.nd-port) speed
 
   nd-clear-results : NetworkDiagState -> NetworkDiagState
-  nd-clear-results (st) = __record-set (__record-set st "nd-results" []) "nd-result-count" 0
+  nd-clear-results (st) = nd-with st [] (st.nd-interfaces) (st.nd-running) (st.nd-current-tool) (st.nd-target) (st.nd-port) (st.nd-last-speed)
+
+Section: Ping
+
+ An echo request is ICMP type 8 and its reply type 0 (RFC 792); a reply
+ counts only when its identifier and sequence are the request's. A lost
+ probe is written as a round trip of -1.
+
+  nd-ping-request : List Integer, List Integer, Integer, Integer -> List Integer
+  nd-ping-request (src) (dst) (ident) (seq) = icmp-build-echo-ip src dst ident seq [seq, 0, 0, 0, 0, 0, 0, 0]
+
+  nd-icmp-of : List Integer -> Maybe IcmpMessage
+  nd-icmp-of (pkt) =
+    if list-length pkt < 20 then None
+    else if ip-header-valid pkt == False | list-at pkt 9 /= ip-proto-icmp then None
+    else icmp-parse-checked (nd-slice pkt (bit-and (list-at pkt 0) 15 * 4) (list-length pkt))
+
+  nd-is-reply : List Integer, Integer, Integer -> Boolean
+  nd-is-reply (pkt) (ident) (seq) =
+    when nd-icmp-of pkt
+      is None -> False
+      is Just (m) -> m.icmp-type == icmp-type-echo-reply & m.identifier == ident & m.sequence == seq
+
+  nd-ping-summary : List Integer -> Text
+  nd-ping-summary (rtts) =
+    let got = nd-received rtts 0 0
+    in let sent = list-length rtts
+    in show sent & " sent, " & show got & " received, " & show (if sent == 0 then 0 else (sent - got) * 100 / sent) & "% loss" & (if got == 0 then "" else ", rtt min/avg/max " & show (nd-rtt-min rtts 0 (0 - 1)) & "/" & show (nd-rtt-sum rtts 0 0 / got) & "/" & show (nd-rtt-max rtts 0 0) & " ms")
+
+  nd-received : List Integer, Integer, Integer -> Integer
+  nd-received (rtts) (i) (acc) =
+    if i >= list-length rtts then acc
+    else nd-received rtts (i + 1) (if list-at rtts i >= 0 then acc + 1 else acc)
+
+  nd-rtt-min : List Integer, Integer, Integer -> Integer
+  nd-rtt-min (rtts) (i) (best) =
+    if i >= list-length rtts then best
+    else let r = list-at rtts i
+    in nd-rtt-min rtts (i + 1) (if r >= 0 & (best < 0 | r < best) then r else best)
+
+  nd-rtt-max : List Integer, Integer, Integer -> Integer
+  nd-rtt-max (rtts) (i) (best) =
+    if i >= list-length rtts then best
+    else nd-rtt-max rtts (i + 1) (if list-at rtts i > best then list-at rtts i else best)
+
+  nd-rtt-sum : List Integer, Integer, Integer -> Integer
+  nd-rtt-sum (rtts) (i) (acc) =
+    if i >= list-length rtts then acc
+    else nd-rtt-sum rtts (i + 1) (if list-at rtts i >= 0 then acc + list-at rtts i else acc)
+
+Section: Traceroute
+
+ A probe is an echo request whose IPv4 time to live (byte 8) is the hop
+ number, carried again as the ICMP sequence. A router that drops it answers
+ Time Exceeded (type 11), quoting the dropped packet's IPv4 header and its
+ first 8 bytes, which hold the probe's identifier and sequence; the target
+ answers with an echo reply; type 3 is Destination Unreachable.
+
+  TraceHop = record {
+    th-kind : Integer,
+    th-ttl : Integer,
+    th-from : Text
+  }
+
+  nd-trace-probe : List Integer, List Integer, Integer, Integer -> List Integer
+  nd-trace-probe (src) (dst) (ident) (ttl) =
+    let pkt = nd-ping-request src dst ident ttl
+    in let hdr = nd-slice pkt 0 8 & [ttl, list-at pkt 9, 0, 0] & nd-slice pkt 12 20
+    in let ck = ip-checksum hdr 0 20 0
+    in nd-slice hdr 0 10 & write-be16 ck & nd-slice hdr 12 20 & nd-slice pkt 20 (list-length pkt)
+
+  nd-trace-classify : List Integer, Integer -> TraceHop
+  nd-trace-classify (pkt) (ident) =
+    let none = TraceHop { th-kind = 0, th-ttl = 0, th-from = "" }
+    in when nd-icmp-of pkt
+      is None -> none
+      is Just (m) -> nd-trace-kind m (nd-ip-text pkt 12) ident none
+
+  nd-trace-kind : IcmpMessage, Text, Integer, TraceHop -> TraceHop
+  nd-trace-kind (m) (from) (ident) (none) =
+    if m.icmp-type == icmp-type-echo-reply then (if m.identifier == ident then TraceHop { th-kind = 2, th-ttl = m.sequence, th-from = from } else none)
+    else if m.icmp-type == 11 | m.icmp-type == icmp-type-dest-unreachable then nd-trace-quoted (m.payload) ident (if m.icmp-type == 11 then 1 else 3) from none
+    else none
+
+  nd-trace-quoted : List Integer, Integer, Integer, Text, TraceHop -> TraceHop
+  nd-trace-quoted (q) (ident) (kind) (from) (none) =
+    if list-length q < 28 then none
+    else let at = bit-and (list-at q 0) 15 * 4
+    in if at < 20 | list-length q < at + 8 | list-at q 9 /= ip-proto-icmp | read-be16 q (at + 4) /= ident then none
+    else TraceHop { th-kind = kind, th-ttl = read-be16 q (at + 6), th-from = from }
+
+  nd-hop-line : TraceHop -> Text
+  nd-hop-line (h) =
+    if h.th-kind == 1 then show (h.th-ttl) & "  " & h.th-from
+    else if h.th-kind == 2 then show (h.th-ttl) & "  " & h.th-from & "  reached"
+    else if h.th-kind == 3 then show (h.th-ttl) & "  " & h.th-from & "  unreachable"
+    else "*"
+
+Section: Connections
+
+  nd-conn-line : TcpConnection -> Text
+  nd-conn-line (c) = nd-ip-list-text (c.local-ip) & ":" & show (c.local-port) & "  " & nd-ip-list-text (c.remote-ip) & ":" & show (c.remote-port) & "  " & tcp-state-name (c.state)
+
+  nd-conn-dump : List TcpConnection, Integer, List Text -> List Text
+  nd-conn-dump (conns) (i) (acc) =
+    if i >= list-length conns then acc
+    else nd-conn-dump conns (i + 1) (acc & [nd-conn-line (list-at conns i)])
+
+Section: Bytes
+
+  nd-slice : List Integer, Integer, Integer -> List Integer
+  nd-slice (xs) (start) (stop) = nd-slice-loop xs start stop []
+
+  nd-slice-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  nd-slice-loop (xs) (i) (stop) (acc) =
+    if i >= stop | i >= list-length xs then acc
+    else nd-slice-loop xs (i + 1) stop (list-push acc (list-at xs i))
+
+  nd-ip-text : List Integer, Integer -> Text
+  nd-ip-text (pkt) (at) = nd-ip-list-text (nd-slice pkt at (at + 4))
+
+  nd-ip-list-text : List Integer -> Text
+  nd-ip-list-text (ip) =
+    if list-length ip /= 4 then "?"
+    else show (list-at ip 0) & "." & show (list-at ip 1) & "." & show (list-at ip 2) & "." & show (list-at ip 3)
 
 Section: Widget
 

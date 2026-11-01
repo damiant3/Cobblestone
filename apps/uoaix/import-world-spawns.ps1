@@ -394,8 +394,8 @@ $prisoners=@('4|skeleton','4|zombie','2|ghoul','1|lich')
 $regionOverrides=@{5505L=$lowUndead;5506L=$lowUndead;3850L=$prisoners;3851L=$prisoners}
 # Damian, 2026-10-09 (UOAIX-218): "the swamps on the mainland have lizardman and snakes, the ice island has polar bears
 # and walrus and arctic wolves, fire island should have demon and dragon spawn on the temple". Added to the source's own
-# entries (the existing data is the base). UOX3 has no arctic wolf; its white wolf is the snow wolf. No source names a
-# Fire Island temple; the Shrine of Humility (4270,3693) lies in Fire Isle Jungle 6.
+# entries (the existing data is the base). UOX3 has no arctic wolf; its white wolf is the snow wolf. The temple is the
+# Fire Temple at 4588,3568 (Damian, 2026-10-26: "its called Fire Temple 4588, 3568"), UOX3's location 48 light.
 $swamp=@('4|lizardman','2|spearlizardman','2|macelizardman','3|snake','1|giantserpent')
 $ice=@('25|polarbear','25|walrus','25|whitewolf')
 $fireTemple=@('15|daemon','8|dragon','15|drake')
@@ -409,7 +409,7 @@ $orcCamp=@('20|orclord','20|orcmage')
 # Damian, 2026-10-10 (UOAIX-240): "remove the dullcopper elementals, and any reference to the horribly bad ore system of
 # the official expansions". A group that named one keeps its other choices at their weights.
 $expansionOreElementals=@('dullcopperele','shadowironele','copperele','bronzeele','goldenele','agapiteele','veriteele','valoriteele')
-$regionThemes=@{5660L=$swamp;5850L=$swamp;5690L=$ice;5791L=$ice;5792L=$ice;5793L=$ice;5794L=$ice;5795L=$ice;5796L=$ice;5797L=$ice;5798L=$ice;5873L=$fireTemple;5511L=$orcCamp}
+$regionThemes=@{5660L=$swamp;5850L=$swamp;5690L=$ice;5791L=$ice;5792L=$ice;5793L=$ice;5794L=$ice;5795L=$ice;5796L=$ice;5797L=$ice;5798L=$ice;5685L=$fireTemple;5511L=$orcCamp}
 function FieldNumber($fields,[string]$key,[long]$fallback){if($fields.ContainsKey($key)){Number $fields[$key]}else{$fallback}}
 $regionInputs=[Collections.Generic.List[object]]::new()
 $regionSections=@{}

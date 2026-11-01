@@ -221,7 +221,7 @@ systems, a UI compositor, CORDIC trig, Mat4/Quaternion/LinearAlgebra,
 procedural generation (cellular automata, diamond-square, Voronoi,
 Perlin), pathfinding (A*, hex grids), rollback netcode, save/load, and
 a hardware framebuffer driver (VBE 32bpp XRGB8888). The GPU backend
-has PTX and SPIR-V plug emitters (CL 4432) for dual-target GPU
+has PTX and SPIR-V plug emitters for dual-target GPU
 compilation, and the SIMD design (SIMD.md) specifies `Vector N T` types
 with SSE2/AVX/NEON/SVE/RISC-V V targets.
 

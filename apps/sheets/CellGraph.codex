@@ -4,33 +4,10 @@ Chapter: CellGraph
   cites Works chapter GopAhci
   cites Foreword chapter CCE
 
- Recalculation order, DERIVED. A formula's dependencies are the cells its
- expression names, an edge runs from a named cell to the cell naming it,
- and the order is a topological sort of that graph. Row-major order and
- the order the formulas were typed in are both wrong and both look right
- on a sheet small enough to read, which is why the order is computed and
- never assumed.
-
- A cycle is an ERROR NAMING THE CELLS, never a spin and never a fuel cap
- that answers a number. Kahn's algorithm leaves exactly the cycle members
- unemitted, so the entries the sort could not place ARE the report.
-
- A RANGE IS EXPANDED HERE and not in the parser. `formula-refs` answers a
- range's two corners because the parser does not know the sheet's bounds;
- this chapter holds the sheet, so `A1:B9` becomes an edge from every cell
- in the rectangle that carries a formula of its own.
-
- Formulas live BESIDE the cells rather than inside them. A cell in
- CellStore is a kind and a four-byte payload, and a parsed expression
- does not fit in four bytes; a formula table keyed by cell also keeps the
- store's dense block a fixed size per sheet.
-
  The adjacency is CSR over dense blocks, counted then filled, so the sort
  is one pass over vertices plus one over edges rather than a scan of
  every edge per vertex: for a 1,000-vertex chain, two thousand steps
  against a million comparisons.
-
- We say:
 
 Section: The Formula Table
 
@@ -70,11 +47,6 @@ Section: The Formula Table
   gr-slot-at (pg) (r) (c) =
     if sheet-in (pg.pg-blk) r c == False then 0
     else peek-32 (pg.pg-slot) (gr-index (pg.pg-blk) r c * gr-word)
-
- A second formula written to the same cell REPLACES the first entry
- rather than appending a second, because two entries for one cell would
- both be sorted and both evaluated, and the later one would win by
- accident of order.
 
   graph-put : Program, Integer, Integer, Text -> Program
   graph-put (pg) (r) (c) (src) =
@@ -136,11 +108,6 @@ Section: The Formula Table
 
 Section: The Edges
 
- An edge runs FROM a cell a formula names TO the cell holding that
- formula, because the named cell must carry a value before the naming
- one is evaluated. A reference to a cell with no formula of its own is a
- constant and contributes no edge.
-
  The edge list is built with `list-push`, which extends in place: the
  list is created inside `graph-edges` from a fresh `[]`, consumed by
  `graph-csr`, and handed to nobody. Concatenation would cost n squared over
@@ -157,9 +124,6 @@ Section: The Edges
 
   gr-hi : Integer, Integer -> Integer
   gr-hi (a) (b) = if a > b then a else b
-
- A range written backwards (`B9:A1`) names the same rectangle as the one
- written forwards, so the corners are ordered here rather than refused.
 
   gr-range-cols : Program, Integer, Integer, Integer, Integer, List Integer -> List Integer
   gr-range-cols (pg) (r) (c) (c2) (to) (acc) =
@@ -202,9 +166,6 @@ Section: The Edges
   graph-edges (pg) = gr-edges-from pg 0 (graph-count pg) []
 
 Section: Compressed Adjacency
-
- Counted, prefix-summed, then filled: `gr-start` holds where each
- vertex's successors begin and `gr-adj` holds the successors themselves.
 
   Csr = record {
     cs-n : Integer,
@@ -297,10 +258,6 @@ Section: The Sort
     else if i == 0 then gr-names pg xs (i + 1) n (graph-name pg (list-at xs i))
     else gr-names pg xs (i + 1) n (acc & " " & graph-name pg (list-at xs i))
 
- A formula that did not parse is reported before the sort, because an
- order computed over a tree that does not exist is an answer to a
- question nobody asked.
-
   gr-first-bad : Program, Integer, Integer -> Integer
   gr-first-bad (pg) (i) (n) =
     if i >= n then 0 - 1
@@ -346,12 +303,6 @@ Section: The Sort
 
 Section: What An Edit Recomputes
 
- The transitive dependents of the edited cell, IN THE DERIVED ORDER.
- Reachability is marked in a dense block and the plan is then filtered by
- the mark, so the answer is a subsequence of the full order rather than a
- set a caller has to sort again. The edited cell is included, because the
- cell itself is recomputed first.
-
   gr-mark-succ : Csr, Integer, Integer, Integer, Integer, Integer -> Integer
   gr-mark-succ (g) (mark) (q) (k) (e) (tail) =
     if k >= e then tail
@@ -374,15 +325,6 @@ Section: What An Edit Recomputes
     if i >= n then acc
     else if peek-32 mark (list-at order i * gr-word) == 0 then gr-filter order (i + 1) n mark acc
     else gr-filter order (i + 1) n mark (list-push acc (list-at order i))
-
- The sort consumes `cs-indeg`, so the dependents walk builds its own CSR
- rather than reusing the sorted one. Two builds of a graph this size cost
- less than a subtle sharing fault.
-
- THE EDITED CELL USUALLY HOLDS NO FORMULA. A data cell is a constant and
- therefore has no vertex, so the roots of the walk are the formulas that
- name the cell DIRECTLY, found by asking each expression whether it uses
- the cell. A cell that does hold a formula is its own single root.
 
   gr-in-range : RangeRef, Integer, Integer -> Boolean
   gr-in-range (g) (r) (c) =
@@ -412,12 +354,6 @@ Section: What An Edit Recomputes
     else if gr-uses ((list-at (pg.pg-cells) i).fc-expr) r c then
       gr-roots-scan pg (i + 1) n r c (list-push acc i)
     else gr-roots-scan pg (i + 1) n r c acc
-
- Every accumulator in this chapter is built with `list-push` and every
- one of them is created inside its own call from a fresh `[]`: the sort's
- order, the cycle report, the dependents filter and the edge list are
- each handed to one caller and dropped. That is the condition L-ALIAS
- names, and it is checked per accumulator rather than assumed.
 
   gr-roots : Program, Integer, Integer -> List Integer
   gr-roots (pg) (r) (c) =

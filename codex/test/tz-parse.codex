@@ -1,0 +1,53 @@
+Chapter: TzParseTest
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter Console
+
+ The whole vendored release parsed: counts, every error, every zone and
+ link name (build/tz-oracle.ps1 -Names compares the set with Python's
+ tzdata at the same release), and Europe/London's lines and the EU rules
+ field by field.
+
+Section: Printing
+
+  db : TzDb
+  db = tz-parse tz-sources
+
+  day-text : TzDay -> Text
+  day-text (d) =
+    if d.kind == tz-day-fixed then show (d.num)
+    else if d.kind == tz-day-last then "last" & show (d.weekday)
+    else if d.kind == tz-day-geq then show (d.weekday) & ">=" & show (d.num)
+    else show (d.weekday) & "<=" & show (d.num)
+
+  line-text : TzZoneLine -> Text
+  line-text (z) =
+    "off " & show (z.stdoff) & " rules " & show (z.rules-kind) & ":" & z.rules-name & ":" & show (z.rules-save)
+      & " format " & z.format
+      & (if z.has-until then " until " & show (z.until.year) & "-" & show (z.until.month) & " day " & day-text (z.until.day) & " at " & show (z.until.at) & "/" & show (z.until.at-kind) else "")
+
+  rule-text : TzRule -> Text
+  rule-text (r) =
+    r.name & " " & show (r.from) & "-" & show (r.to) & " month " & show (r.month) & " day " & day-text (r.day)
+      & " at " & show (r.at) & "/" & show (r.at-kind) & " save " & show (r.save) & (if r.save-dst then " dst" else " std") & " letter " & r.letter
+
+  lines-of : List Text -> Text
+  lines-of (xs) = text-concat-list (for x in xs -> x & "\n")
+
+  london : List Text
+  london =
+    when tz-find-zone db "Europe/London"
+      is None -> ["london missing"]
+      is Just (z) -> for l in (z.lines) -> "london " & line-text l
+
+  eu : List Text
+  eu = for r in (db.rules) -> (if r.name == "EU" then "rule " & rule-text r else "")
+
+  nonempty : List Text, Integer, List Text -> List Text
+  nonempty (xs) (i) (acc) = if i >= list-length xs then acc else nonempty xs (i + 1) (if list-at xs i == "" then acc else list-push acc (list-at xs i))
+
+  opening : [Console] Nothing = act
+    print-line-uni ("release " & tz-release & " rules " & show (list-length (db.rules)) & " zones " & show (list-length (db.zones)) & " links " & show (list-length (db.links)) & " errors " & show (list-length (db.errors))
+      & "\n" & lines-of (db.errors) & lines-of london & lines-of (nonempty eu 0 [])
+      & lines-of (for z in (db.zones) -> "zone " & z.name) & lines-of (for k in (db.links) -> "link " & k.alias & " -> " & k.target) & "end")
+  end

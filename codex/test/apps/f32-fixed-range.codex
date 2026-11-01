@@ -1,0 +1,48 @@
+Chapter: F32FixedRange
+
+  cites AI chapter GpuProxy
+  cites AI chapter SafeTensors
+  cites AI chapter Gguf
+  cites Foreword chapter Console
+
+Section: Cases
+
+ Fixed point here is the value times 1000. Past the Integer range (an exponent
+ above 52 after the bias, or the all-ones exponent of inf and NaN) a decode
+ saturates to 9223372036854775807 with the value's sign; a magnitude below
+ 2^-62 reads 0.
+
+  le : Integer -> List Integer
+  le (w) = [bit-and w 255, bit-and (bit-shru w 8) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 24) 255]
+
+  words : List Integer
+  words = [#3FC00000, #C0000000, #5D800000, #DD800000, #7F800000, #7FC00000, #0DA24260, #20800000, #5A800000]
+
+  names : List Text
+  names = ["1.5", "-2", "2^60", "-2^60", "inf", "nan", "1e-30", "2^-62", "2^54"]
+
+  row : Integer -> Text
+  row (i) =
+    let w = list-at words i
+    in list-at names i & ": gpu " & show (gpu-f32-raw-to-fixed w) & ", st " & show (st-f32-to-fixed w) & ", bf16 " & show (st-bf16-to-fixed (bit-shru w 16))
+
+  rows : Integer, List Text -> List Text
+  rows (i) (acc) = if i >= list-length words then acc else rows (i + 1) (list-push acc (row i))
+
+  gguf-words : List Integer
+  gguf-words = [#3FC00000, #C0000000, #3F000000, #BE800000, #3A83126F, #0DA24260, #40490FD0, #447A2000, #C7F12065, #53800000, #59800000, #59FFFFFF, #5A000000, #00000001, #807FFFFF, #00000000, #80000000, #7F800000, #FF800000, #7FC00000]
+
+  gguf-rows : Integer, List Text -> List Text
+  gguf-rows (i) (acc) =
+    if i >= list-length gguf-words then acc
+    else let w = list-at gguf-words i
+    in gguf-rows (i + 1) (list-push acc ("gguf " & show i & ": " & show (list-at (gguf-read-f32-fixed (le w) 0 1) 0)))
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni (text-concat-list (for t in (rows 0 []) -> t & "\n"))
+    print-line-uni (text-concat-list (for t in (gguf-rows 0 []) -> t & "\n"))
+  end
+
+Page 1

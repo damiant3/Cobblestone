@@ -1,0 +1,73 @@
+Chapter: DiffusionMatchedHistogram
+  cites Diffusion chapter MatchedNoise
+  cites Foreword chapter Console
+
+ MatchedNoise's reference histogram on the GPU against its CPU count, over
+ diffusion-matched-noise's formula picture (64 x 128) with the left 32
+ columns masked (6144 of 8192 pixels kept).
+
+Section: Inputs
+
+  dmh-pic : Integer, Integer -> Integer
+  dmh-pic (a) (i) =
+    if i >= 64 * 128 * 3 then a
+    else let p = i / 3
+    in let c = i - p * 3
+    in let y = p / 128
+    in let x = p - y * 128
+    in let s = poke-byte a i (int-mod (x * 7 + y * 13 + c * 50 + int-mod (x * y) 23) 256)
+    in dmh-pic a (i + 1)
+
+  dmh-keep : Integer, Integer -> Integer
+  dmh-keep (a) (i) =
+    if i >= 64 * 128 then a
+    else let s = poke-byte a i (if int-mod i 128 < 32 then 0 else 1)
+    in dmh-keep a (i + 1)
+
+  dmh-agree : List Integer, List Integer, Integer, Integer -> Integer
+  dmh-agree (g) (h) (k) (n) = if k >= 256 then n else dmh-agree g h (k + 1) (if list-at g k == list-at h k then n + 1 else n)
+
+  dmh-sum : List Integer, Integer, Integer -> Integer
+  dmh-sum (xs) (k) (s) = if k >= list-length xs then s else dmh-sum xs (k + 1) (s + list-at xs k)
+
+  dmh-line : Integer, Integer, Integer -> Text
+  dmh-line (pic) (keep) (c) =
+    let g = md-gpu-counts pic keep c (64 * 128)
+    in let h = md-byte-counts pic keep c 0 (64 * 128) (md-zeros 256 [])
+    in if list-length g /= 256 then "channel " & show c & ": gpu path no"
+    else "channel " & show c & ": gpu path yes, bins agree " & show (dmh-agree g h 0 0) & " of 256, total " & show (dmh-sum g 0 0) & " (cpu " & show (dmh-sum h 0 0) & ")"
+
+  dmh-vals : Integer, Integer, Integer -> Integer
+  dmh-vals (v) (i) (m) =
+    if i >= m then v
+    else let x = if i == 5 then 0.0 * (0.0 - 1.0) else real-from-int (int-mod (i * 7919) 97) - 48.0 + (if int-mod i 5 == 0 then 0.25 else 0.0)
+    in let s = md-set v i x
+    in dmh-vals v (i + 1) m
+
+  dmh-same : Integer, Integer, Integer, Integer, Integer -> Integer
+  dmh-same (a) (b) (i) (m) (n) = if i >= m then n else dmh-same a b (i + 1) m (if peek-32 a (i * 4) == peek-32 b (i * 4) then n + 1 else n)
+
+  dmh-sorted : Integer, Integer, Integer, Integer -> Boolean
+  dmh-sorted (v) (o) (i) (m) = if i + 1 >= m then True else if md-get v (peek-32 o (i * 4)) > md-get v (peek-32 o (i * 4 + 4)) then False else dmh-sorted v o (i + 1) m
+
+  dmh-sort-line : Integer -> Text
+  dmh-sort-line (m) =
+    let v = dmh-vals (md-new m) 0 m
+    in let g = md-gpu-sort v m
+    in let c = md-sort-from v (md-iota (alloc-bytes (m * 4)) 0 m) (alloc-bytes (m * 4)) 1 m
+    in if g == 0 then "sort " & show m & ": gpu path no"
+    else "sort " & show m & ": gpu path yes, ascending " & (if dmh-sorted v g 0 m then "yes" else "no") & ", same order as the cpu merge at " & show (dmh-same g c 0 m 0) & " of " & show m
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let pic = dmh-pic (alloc-bytes (64 * 128 * 3)) 0
+    in let keep = dmh-keep (alloc-bytes (64 * 128)) 0
+    in act
+      print-line-uni (dmh-line pic keep 0)
+      print-line-uni (dmh-line pic keep 1)
+      print-line-uni (dmh-line pic keep 2)
+      print-line-uni (dmh-sort-line 6000)
+      print-line-uni (dmh-sort-line 1)
+    end
+  end

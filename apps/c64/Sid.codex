@@ -19,8 +19,6 @@ Chapter: Sid
  and resonance map the 11-bit FC and 4-bit RES registers onto stable
  coefficients rather than reproducing the 6581's exact analogue curve.
 
- We say:
-
 Section: Constants
 
   sid-clk : Integer = 985248
@@ -135,6 +133,13 @@ Section: Envelope
  attack, 2 = decay-sustain), and its rate counter are packed into one
  integer: env in the low byte, state at *256, rate counter at *1024.
 
+  sid-voice-env : Integer, Integer, Integer, Integer -> Integer
+  sid-voice-env (ep) (ctl) (regbase) (ad-reg) =
+    let ad = peek-byte regbase ad-reg
+    in let sr = peek-byte regbase (ad-reg + 1)
+    in let gate = bit-and ctl 1
+    in sid-env-advance (int-mod ep 256) (int-mod (ep / 256) 4) (ep / 1024) gate (bit-shru ad 4) (bit-and ad #F) (bit-shru sr 4) (bit-and sr #F)
+
   sid-env-advance : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   sid-env-advance (env) (state) (ratectr) (gate) (att) (dec) (sus) (rel) =
     let st = if gate == 0 then 0 else if state == 0 then 1 else state
@@ -189,9 +194,9 @@ Section: Sample
     in let ep0 = peek-32 rt 12
     in let ep1 = peek-32 rt 16
     in let ep2 = peek-32 rt 20
-    in let ne0 = sid-env-advance (int-mod ep0 256) (int-mod (ep0 / 256) 4) (ep0 / 1024) (bit-and c0 1) (bit-shru (peek-byte regbase 5) 4) (bit-and (peek-byte regbase 5) #F) (bit-shru (peek-byte regbase 6) 4) (bit-and (peek-byte regbase 6) #F)
-    in let ne1 = sid-env-advance (int-mod ep1 256) (int-mod (ep1 / 256) 4) (ep1 / 1024) (bit-and c1 1) (bit-shru (peek-byte regbase 12) 4) (bit-and (peek-byte regbase 12) #F) (bit-shru (peek-byte regbase 13) 4) (bit-and (peek-byte regbase 13) #F)
-    in let ne2 = sid-env-advance (int-mod ep2 256) (int-mod (ep2 / 256) 4) (ep2 / 1024) (bit-and c2 1) (bit-shru (peek-byte regbase 19) 4) (bit-and (peek-byte regbase 19) #F) (bit-shru (peek-byte regbase 20) 4) (bit-and (peek-byte regbase 20) #F)
+    in let ne0 = sid-voice-env ep0 c0 regbase 5
+    in let ne1 = sid-voice-env ep1 c1 regbase 12
+    in let ne2 = sid-voice-env ep2 c2 regbase 19
     in let env0 = int-mod ne0 256
     in let env1 = int-mod ne1 256
     in let env2 = int-mod ne2 256
@@ -250,13 +255,6 @@ Section: Sample
     in 0
 
 Section: Render
-
- Render nsamples of 48 kHz 16-bit stereo PCM from the 32 SID register
- bytes at regbase into buf (which must hold nsamples * 4 bytes).
- sid-render is a self-contained one-shot: it allocates and resets a fresh
- state block, so each call starts silent. sid-render-stream renders into
- a caller-owned state block and leaves it running, so successive calls
- continue the same oscillators, envelopes and filter without a click.
 
   sid-loop : Integer, Integer, Integer, Integer, Integer -> Integer
   sid-loop (regbase) (rt) (buf) (nsamples) (i) =

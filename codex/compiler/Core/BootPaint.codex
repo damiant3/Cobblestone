@@ -17,8 +17,6 @@ Chapter: BootPaint
  quires to its right. It needs no foreword code either -- peek-qword, peek-32
  and poke-32 are builtins, so the whole channel is arithmetic.
 
- We say:
-
 Section: Handoff
 
  The block cdx-to-pe.ps1's UEFI stub writes before it jumps, and its layout is
@@ -199,6 +197,16 @@ Section: Clock
     if bit-and mode 4 == 4 then v
     else (v / 16) * 10 + int-mod v 16
 
+ Register 11 bit 1 set means 24-hour hours; clear means 12-hour, with bit 7
+ of the hour register marking PM.
+
+  bp-hour : Integer, Integer -> Integer
+  bp-hour (mode) (raw) =
+    let v = bp-bcd mode (bit-and raw 127)
+    in if bit-and mode 2 == 2 then v
+    else if bit-and raw 128 == 128 then (if v == 12 then 12 else v + 12)
+    else (if v == 12 then 0 else v)
+
   bp-rtc-wait : Integer -> Integer
   bp-rtc-wait (fuel) =
     if fuel <= 0 then 0
@@ -211,7 +219,7 @@ Section: Clock
     else if bp-armed 0 == False then 0
     else let w = bp-rtc-wait 100000
     in let mode = bp-cmos 11
-    in bp-bcd mode (bp-cmos 4) * 3600 + bp-bcd mode (bp-cmos 2) * 60 + bp-bcd mode (bp-cmos 0)
+    in bp-hour mode (bp-cmos 4) * 3600 + bp-bcd mode (bp-cmos 2) * 60 + bp-bcd mode (bp-cmos 0)
 
   bp-2d : Integer -> Text
   bp-2d (n) = if n < 10 then "0" & integer-to-text n else integer-to-text n

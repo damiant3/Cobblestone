@@ -1,0 +1,54 @@
+Chapter: TzDbTest
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone
+  cites Foreword chapter Sha256
+  cites Foreword chapter Hmac
+  cites Foreword chapter Console
+
+ TZDB.BIN built in the guest: its length and SHA-256 (build/tz-db.ps1
+ writes the same bytes from tools/tz-db.codex and prints the same hash), a
+ zone and an alias looked up and compared with the compiled zone, and the
+ refusals: a name the file does not hold, a truncated file, a wrong magic.
+
+Section: Body
+
+  tz-hex-digit : Integer -> Text
+  tz-hex-digit (n) = substring "0123456789abcdef" n 1
+
+  tz-hex : List Integer, Integer -> Text
+  tz-hex (bs) (i) =
+    if i >= list-length bs then ""
+    else tz-hex-digit (bit-shr (list-at bs i) 4) & tz-hex-digit (bit-and (list-at bs i) 15) & tz-hex bs (i + 1)
+
+  same-trans : List TzTrans, List TzTrans, Integer -> Boolean
+  same-trans (x) (y) (i) =
+    if i >= list-length x then list-length x == list-length y
+    else if i >= list-length y then False
+    else let p = list-at x i
+    in let q = list-at y i
+    in if p.at /= q.at | p.kind.utoff /= q.kind.utoff | p.kind.abbr /= q.kind.abbr then False
+    else same-trans x y (i + 1)
+
+  look : List Integer, TzDb, Text, Text -> Text
+  look (bs) (db) (name) (target) =
+    when tz-db-zone bs name
+      is None -> name & " none"
+      is Just (z) ->
+        (when zone-from-db db target
+          is None -> name & " target missing"
+          is Just (want) -> name & " as " & z.name & " " & show (list-length (z.trans)) & " transitions, same as " & target & " " & (if same-trans (z.trans) (want.trans) 0 & list-length (z.footer.rules) == list-length (want.footer.rules) then "yes" else "NO"))
+
+  opening : [Console] Nothing =
+    let db = tz-parse tz-sources
+    in let bs = tz-db-build db
+    in act
+      print-line-uni ("tzdb " & show (list-length bs) & " bytes sha256 " & tz-hex (hash-words-to-bytes (sha256 bs)) 0)
+      print-line-uni (look bs db "Europe/London" "Europe/London")
+      print-line-uni (look bs db "US/Eastern" "America/New_York")
+      print-line-uni (look bs db "Australia/Lord_Howe" "Australia/Lord_Howe")
+      print-line-uni (look bs db "Nowhere/Missing" "Europe/London")
+      print-line-uni (look (tz-slice bs 0 100) db "Europe/London" "Europe/London")
+      print-line-uni (look (list-set-at (for b in bs -> b) 3 65) db "Europe/London" "Europe/London")
+  end

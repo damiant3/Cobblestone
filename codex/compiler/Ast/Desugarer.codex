@@ -1,6 +1,6 @@
 Chapter: Desugarer
   cites Codex chapter Build Settings (max-recursion-depth, demand-desugar-guard-band)
-  cites Codex chapter Phase Allocator (deck-short-of)
+  cites Codex chapter Phase Allocator (deck-bound-short-of)
   cites Codex chapter Syntax Nodes (copy-sx-span, copy-sx-ov, copy-sx-text)
   cites Codex chapter Tokens (token-text, lit-text-to-integer)
   cites Codex chapter AST Nodes (aexpr-span)
@@ -686,7 +686,7 @@ Section: Document Desugaring
     }))
 
   deck-out-of-room : Integer -> Boolean
-  deck-out-of-room (ceiling) = deck-short-of ceiling demand-desugar-guard-band
+  deck-out-of-room (ceiling) = deck-bound-short-of ceiling demand-desugar-guard-band
 
   DesugarResult = record {
    dr-chapter : AChapter,
@@ -796,20 +796,6 @@ Section: Document Desugaring
     in if deriving-has (td.deriving) "Ord" then
       __linked-list-push acc2 (gen-compare-def td)
     else acc2
-
- EVERY SUM GETS `__eq_<T>`, not only the sums that derive Eq or name their own
- type in a field. The helper is built in the DESUGARER, so it travels in the IR
- and every backend receives it; a sum without one forces each backend to carry
- an inline equality of its own, and the arm64 one refuses two shapes rather
- than guess (a sum with more than one field-carrying constructor, because two
- constructors can hold different types at one field index, and a field that
- resolves to a sum, because inlining does not terminate on a recursive type).
- Synthesising for every sum retires both refusals and puts one equality at one
- site instead of three. COMPILER-63.
-
- `gen-field-eq` compares each field pair with `==`, so a sum-typed field
- resolves to THAT type's helper rather than being inlined, which is what makes
- the recursive case terminate.
 
 
  The type checker refuses `==` on a type whose helper is withheld (CDX2099),
@@ -2085,11 +2071,6 @@ Section: Document Desugaring
       is AActExpr (stmts) (s) ->
        deck-record (AActExpr (insert-dict-refs-stmts stmts info 0 (list-length stmts) []) s)
       is otherwise -> expr
-
- The Eq dictionary is checked at the call, so its reference carries a place to
- report: an empty span at the callee's start. Empty, because the checker keys a
- recorded type by start and length, and the callee's own entry at that start is
- what lowering reads to resolve the dictionary.
 
   dict-ref-span : Text, SourceSpan -> SourceSpan
   dict-ref-span (dict) (ns) =

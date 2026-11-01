@@ -1,5 +1,8 @@
 Chapter: VpnFirewall
   cites Foreword chapter Maybe
+  cites Foreword chapter ChaCha20Poly1305
+  cites Foreword chapter DiffieHellman
+  cites Foreword chapter Hkdf
   cites UI chapter Widget
   cites UI chapter Layout
 
@@ -99,56 +102,256 @@ Section: State
 
 Section: VPN Actions
 
+  vf-with : VpnFirewallState, List VpnProfile, Text, ProxyMode, Boolean, List FwRule, Integer, ConnProfile -> VpnFirewallState
+  vf-with (st) (profiles) (active) (proxy) (enabled) (rules) (next-id) (profile) = VpnFirewallState {
+    vf-vpn-profiles = profiles, vf-vpn-count = list-length profiles, vf-active-vpn = active,
+    vf-proxy = proxy, vf-firewall-enabled = enabled,
+    vf-fw-rules = rules, vf-fw-rule-count = list-length rules, vf-fw-next-id = next-id,
+    vf-conn-profile = profile
+  }
+
   vf-add-vpn : VpnFirewallState, VpnProfile -> VpnFirewallState
-  vf-add-vpn (st) (profile) =
-    __record-set (__record-set st "vf-vpn-profiles" (list-push (st.vf-vpn-profiles) profile)) "vf-vpn-count" (st.vf-vpn-count + 1)
+  vf-add-vpn (st) (p) = vf-with st (st.vf-vpn-profiles & [p]) (st.vf-active-vpn) (st.vf-proxy) (st.vf-firewall-enabled) (st.vf-fw-rules) (st.vf-fw-next-id) (st.vf-conn-profile)
 
   vf-connect-vpn : VpnFirewallState, Text -> VpnFirewallState
-  vf-connect-vpn (st) (id) =
-    let updated = vf-set-vpn-connected (st.vf-vpn-profiles) id True 0 (st.vf-vpn-count) []
-    in __record-set (__record-set st "vf-vpn-profiles" updated) "vf-active-vpn" id
+  vf-connect-vpn (st) (id) = vf-with st (vf-set-vpn-connected (st.vf-vpn-profiles) id True 0 []) id (st.vf-proxy) (st.vf-firewall-enabled) (st.vf-fw-rules) (st.vf-fw-next-id) (st.vf-conn-profile)
 
   vf-disconnect-vpn : VpnFirewallState -> VpnFirewallState
-  vf-disconnect-vpn (st) =
-    let updated = vf-set-vpn-connected (st.vf-vpn-profiles) (st.vf-active-vpn) False 0 (st.vf-vpn-count) []
-    in __record-set (__record-set st "vf-vpn-profiles" updated) "vf-active-vpn" ""
+  vf-disconnect-vpn (st) = vf-with st (vf-set-vpn-connected (st.vf-vpn-profiles) (st.vf-active-vpn) False 0 []) "" (st.vf-proxy) (st.vf-firewall-enabled) (st.vf-fw-rules) (st.vf-fw-next-id) (st.vf-conn-profile)
 
-  vf-set-vpn-connected : List VpnProfile, Text, Boolean, Integer, Integer, List VpnProfile -> List VpnProfile
-  vf-set-vpn-connected (profiles) (target) (val) (i) (n) (acc) =
-    if i >= n then acc
+  vf-set-vpn-connected : List VpnProfile, Text, Boolean, Integer, List VpnProfile -> List VpnProfile
+  vf-set-vpn-connected (profiles) (target) (val) (i) (acc) =
+    if i >= list-length profiles then acc
     else let p = list-at profiles i
-    in let updated = if p.vp-id == target then __record-set p "vp-connected" val else p
-    in vf-set-vpn-connected profiles target val (i + 1) n (list-push acc updated)
+    in let updated = if p.vp-id == target then VpnProfile { vp-id = p.vp-id, vp-name = p.vp-name, vp-protocol = p.vp-protocol, vp-server = p.vp-server, vp-port = p.vp-port, vp-connected = val, vp-auto-connect = p.vp-auto-connect } else p
+    in vf-set-vpn-connected profiles target val (i + 1) (acc & [updated])
 
 Section: Proxy Actions
 
   vf-set-proxy : VpnFirewallState, ProxyMode -> VpnFirewallState
-  vf-set-proxy (st) (mode) = __record-set st "vf-proxy" mode
+  vf-set-proxy (st) (mode) = vf-with st (st.vf-vpn-profiles) (st.vf-active-vpn) mode (st.vf-firewall-enabled) (st.vf-fw-rules) (st.vf-fw-next-id) (st.vf-conn-profile)
 
 Section: Firewall Actions
 
   vf-toggle-firewall : VpnFirewallState -> VpnFirewallState
-  vf-toggle-firewall (st) = __record-set st "vf-firewall-enabled" (if st.vf-firewall-enabled then False else True)
+  vf-toggle-firewall (st) = vf-with st (st.vf-vpn-profiles) (st.vf-active-vpn) (st.vf-proxy) (st.vf-firewall-enabled == False) (st.vf-fw-rules) (st.vf-fw-next-id) (st.vf-conn-profile)
 
   vf-add-rule : VpnFirewallState, Text, Integer, Text, FwAction, Text -> VpnFirewallState
   vf-add-rule (st) (app) (port) (proto) (action) (desc) =
-    let rule = fw-rule (st.vf-fw-next-id) app port proto action desc
-    in __record-set (__record-set (__record-set st "vf-fw-rules" (list-push (st.vf-fw-rules) rule)) "vf-fw-rule-count" (st.vf-fw-rule-count + 1)) "vf-fw-next-id" (st.vf-fw-next-id + 1)
+    vf-with st (st.vf-vpn-profiles) (st.vf-active-vpn) (st.vf-proxy) (st.vf-firewall-enabled) (st.vf-fw-rules & [fw-rule (st.vf-fw-next-id) app port proto action desc]) (st.vf-fw-next-id + 1) (st.vf-conn-profile)
 
   vf-remove-rule : VpnFirewallState, Integer -> VpnFirewallState
   vf-remove-rule (st) (rule-id) =
-    let filtered = vf-filter-rules (st.vf-fw-rules) rule-id 0 (st.vf-fw-rule-count) []
-    in __record-set (__record-set st "vf-fw-rules" filtered) "vf-fw-rule-count" (list-length filtered)
+    vf-with st (st.vf-vpn-profiles) (st.vf-active-vpn) (st.vf-proxy) (st.vf-firewall-enabled) (vf-filter-rules (st.vf-fw-rules) rule-id 0 []) (st.vf-fw-next-id) (st.vf-conn-profile)
 
-  vf-filter-rules : List FwRule, Integer, Integer, Integer, List FwRule -> List FwRule
-  vf-filter-rules (rules) (exclude) (i) (n) (acc) =
-    if i >= n then acc
+  vf-filter-rules : List FwRule, Integer, Integer, List FwRule -> List FwRule
+  vf-filter-rules (rules) (exclude) (i) (acc) =
+    if i >= list-length rules then acc
     else let rule = list-at rules i
-    in if rule.fw-id == exclude then vf-filter-rules rules exclude (i + 1) n acc
-    else vf-filter-rules rules exclude (i + 1) n (list-push acc rule)
+    in vf-filter-rules rules exclude (i + 1) (if rule.fw-id == exclude then acc else acc & [rule])
 
   vf-set-conn-profile : VpnFirewallState, ConnProfile -> VpnFirewallState
-  vf-set-conn-profile (st) (p) = __record-set st "vf-conn-profile" p
+  vf-set-conn-profile (st) (p) = vf-with st (st.vf-vpn-profiles) (st.vf-active-vpn) (st.vf-proxy) (st.vf-firewall-enabled) (st.vf-fw-rules) (st.vf-fw-next-id) p
+
+Section: Packet Filter
+
+ An IPv4 header (RFC 791): version in the high nibble of byte 0, header
+ length in 32-bit words in its low nibble, protocol at byte 9 (1 ICMP,
+ 6 TCP, 17 UDP). TCP and UDP carry the destination port in the two bytes
+ after the source port, big-endian. A rule's port 0 and protocol "any"
+ match everything.
+
+  vf-filter : VpnFirewallState, List Integer -> FwAction
+  vf-filter (st) (pkt) =
+    if st.vf-firewall-enabled == False then FwAllow
+    else if vf-ipv4-ok pkt == False then FwDeny
+    else vf-filter-rules-match (st.vf-fw-rules) (vf-proto-name (list-at pkt 9)) (vf-dst-port pkt) (st.vf-conn-profile) 0
+
+  vf-ipv4-ok : List Integer -> Boolean
+  vf-ipv4-ok (pkt) =
+    if list-length pkt < 20 then False
+    else let ihl = bit-and (list-at pkt 0) 15
+    in bit-shru (list-at pkt 0) 4 == 4 & ihl >= 5 & list-length pkt >= ihl * 4 + (if list-at pkt 9 == 6 | list-at pkt 9 == 17 then 4 else 0)
+
+  vf-proto-name : Integer -> Text
+  vf-proto-name (p) = if p == 6 then "tcp" else if p == 17 then "udp" else if p == 1 then "icmp" else "other"
+
+  vf-dst-port : List Integer -> Integer
+  vf-dst-port (pkt) =
+    let at = bit-and (list-at pkt 0) 15 * 4
+    in if list-at pkt 9 == 6 | list-at pkt 9 == 17 then list-at pkt (at + 2) * 256 + list-at pkt (at + 3) else 0
+
+  vf-filter-rules-match : List FwRule, Text, Integer, ConnProfile, Integer -> FwAction
+  vf-filter-rules-match (rules) (proto) (port) (profile) (i) =
+    if i >= list-length rules then (when profile is ConnPublic -> FwDeny is otherwise -> FwAllow)
+    else let r = list-at rules i
+    in if r.fw-enabled & (r.fw-protocol == "any" | r.fw-protocol == proto) & (r.fw-port == 0 | r.fw-port == port) then r.fw-action
+    else vf-filter-rules-match rules proto port profile (i + 1)
+
+Section: Tunnel
+
+ A Noise IK shaped handshake as WireGuard runs it, with HKDF-SHA256 in
+ place of BLAKE2s, so it is WireGuard-style and not wire-compatible.
+ Initiation: type 1, the initiator's ephemeral public key, then its static
+ public key sealed under the key from DH(ephemeral, responder static).
+ Response: type 2, the responder's ephemeral public key, then an empty
+ payload sealed under the key after DH(ephemeral, ephemeral) and
+ DH(responder ephemeral, initiator static). Transport: type 4, a 64-bit
+ little-endian counter, the sealed packet; the nonce is four zero bytes then
+ the counter. The chaining key starts as HKDF-Extract of the protocol
+ name "codex-vpn-1".
+
+  VpnHandshake = record {
+    vh-ck : List Integer,
+    vh-msg : List Integer,
+    vh-peer : List Integer,
+    vh-ok : Boolean
+  }
+
+  VpnSession = record {
+    vs-send-key : List Integer,
+    vs-recv-key : List Integer,
+    vs-send-counter : Integer,
+    vs-recv-highest : Integer,
+    vs-ok : Boolean
+  }
+
+  VpnPacket = record {
+    vk-session : VpnSession,
+    vk-bytes : List Integer,
+    vk-ok : Boolean
+  }
+
+  vpn-protocol-name : List Integer = [99, 111, 100, 101, 120, 45, 118, 112, 110, 45, 49]
+
+  vpn-ck0 : List Integer
+  vpn-ck0 = hkdf-extract [] vpn-protocol-name
+
+  vpn-zero-nonce : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  vpn-mix : List Integer, List Integer -> List Integer
+  vpn-mix (ck) (dh) = hkdf-expand (hkdf-extract ck dh) [1] 32
+
+  vpn-key : List Integer, List Integer -> List Integer
+  vpn-key (ck) (dh) = hkdf-expand (hkdf-extract ck dh) [2] 32
+
+  vpn-fail : VpnHandshake
+  vpn-fail = VpnHandshake { vh-ck = [], vh-msg = [], vh-peer = [], vh-ok = False }
+
+  vpn-initiate : List Integer, List Integer, List Integer -> VpnHandshake
+  vpn-initiate (my-static) (my-ephemeral) (their-static-pub) =
+    let e-pub = x25519-public-key my-ephemeral
+    in let es = x25519-shared-secret my-ephemeral their-static-pub
+    in let ss = x25519-shared-secret my-static their-static-pub
+    in if list-length es /= 32 | list-length ss /= 32 then vpn-fail
+    else let ck1 = vpn-mix vpn-ck0 es
+    in let sealed = chacha20poly1305-encrypt (vpn-key vpn-ck0 es) vpn-zero-nonce (x25519-public-key my-static) e-pub
+    in if sealed.cp-valid == False then vpn-fail
+    else VpnHandshake { vh-ck = vpn-mix ck1 ss, vh-msg = [1] & e-pub & sealed.cp-ciphertext & sealed.cp-tag, vh-peer = their-static-pub, vh-ok = True }
+
+  vpn-respond : List Integer, List Integer, List (List Integer), List Integer -> VpnHandshake
+  vpn-respond (my-static) (my-ephemeral) (allowed) (msg) =
+    if list-length msg /= 81 | list-at msg 0 /= 1 then vpn-fail
+    else let e-i = vpn-slice msg 1 32
+    in let es = x25519-shared-secret my-static e-i
+    in if list-length es /= 32 then vpn-fail
+    else let opened = chacha20poly1305-decrypt (vpn-key vpn-ck0 es) vpn-zero-nonce (vpn-slice msg 33 32) e-i (vpn-slice msg 65 16)
+    in when opened
+      is None -> vpn-fail
+      is Just (s-i) -> vpn-respond-peer my-static my-ephemeral allowed e-i s-i (vpn-mix vpn-ck0 es)
+
+  vpn-respond-peer : List Integer, List Integer, List (List Integer), List Integer, List Integer, List Integer -> VpnHandshake
+  vpn-respond-peer (my-static) (my-ephemeral) (allowed) (e-i) (s-i) (ck1) =
+    let ss = x25519-shared-secret my-static s-i
+    in let ee = x25519-shared-secret my-ephemeral e-i
+    in let se = x25519-shared-secret my-ephemeral s-i
+    in if vpn-member allowed s-i 0 == False | list-length ss /= 32 | list-length ee /= 32 | list-length se /= 32 then vpn-fail
+    else let ck3 = vpn-mix (vpn-mix ck1 ss) ee
+    in let e-r = x25519-public-key my-ephemeral
+    in let sealed = chacha20poly1305-encrypt (vpn-key ck3 se) vpn-zero-nonce [] e-r
+    in VpnHandshake { vh-ck = vpn-mix ck3 se, vh-msg = [2] & e-r & sealed.cp-tag, vh-peer = s-i, vh-ok = sealed.cp-valid }
+
+  vpn-finish : VpnHandshake, List Integer, List Integer, List Integer -> VpnHandshake
+  vpn-finish (sent) (my-static) (my-ephemeral) (msg) =
+    if sent.vh-ok == False | list-length msg /= 49 | list-at msg 0 /= 2 then vpn-fail
+    else let e-r = vpn-slice msg 1 32
+    in let ee = x25519-shared-secret my-ephemeral e-r
+    in let se = x25519-shared-secret my-static e-r
+    in if list-length ee /= 32 | list-length se /= 32 then vpn-fail
+    else let ck3 = vpn-mix (sent.vh-ck) ee
+    in when chacha20poly1305-decrypt (vpn-key ck3 se) vpn-zero-nonce [] e-r (vpn-slice msg 33 16)
+      is None -> vpn-fail
+      is Just (empty) -> VpnHandshake { vh-ck = vpn-mix ck3 se, vh-msg = [], vh-peer = sent.vh-peer, vh-ok = True }
+
+  vpn-session : VpnHandshake, Boolean -> VpnSession
+  vpn-session (hs) (initiator) =
+    let k1 = hkdf-expand (hkdf-extract (hs.vh-ck) []) [1] 32
+    in let k2 = hkdf-expand (hkdf-extract (hs.vh-ck) []) [2] 32
+    in VpnSession { vs-send-key = if initiator then k1 else k2, vs-recv-key = if initiator then k2 else k1, vs-send-counter = 0, vs-recv-highest = 0 - 1, vs-ok = hs.vh-ok }
+
+  vpn-nonce : Integer -> List Integer
+  vpn-nonce (n) = [0, 0, 0, 0] & vpn-le64 n
+
+  vpn-le64 : Integer -> List Integer
+  vpn-le64 (n) = vpn-le-loop n 0 []
+
+  vpn-le-loop : Integer, Integer, List Integer -> List Integer
+  vpn-le-loop (n) (i) (acc) =
+    if i >= 8 then acc
+    else vpn-le-loop n (i + 1) (list-push acc (bit-and (bit-shru n (i * 8)) 255))
+
+  vpn-seal : VpnSession, VpnFirewallState, List Integer -> VpnPacket
+  vpn-seal (s) (fw) (pkt) =
+    if s.vs-ok == False then VpnPacket { vk-session = s, vk-bytes = [], vk-ok = False }
+    else when vf-filter fw pkt
+      is FwDeny -> VpnPacket { vk-session = s, vk-bytes = [], vk-ok = False }
+      is FwAllow -> vpn-seal-allowed s pkt
+
+  vpn-seal-allowed : VpnSession, List Integer -> VpnPacket
+  vpn-seal-allowed (s) (pkt) =
+    let header = [4] & vpn-le64 (s.vs-send-counter)
+    in let sealed = chacha20poly1305-encrypt (s.vs-send-key) (vpn-nonce (s.vs-send-counter)) pkt header
+    in let next = VpnSession { vs-send-key = s.vs-send-key, vs-recv-key = s.vs-recv-key, vs-send-counter = s.vs-send-counter + 1, vs-recv-highest = s.vs-recv-highest, vs-ok = True }
+    in VpnPacket { vk-session = next, vk-bytes = header & sealed.cp-ciphertext & sealed.cp-tag, vk-ok = sealed.cp-valid }
+
+  vpn-open : VpnSession, VpnFirewallState, List Integer -> VpnPacket
+  vpn-open (s) (fw) (wire) =
+    let refused = VpnPacket { vk-session = s, vk-bytes = [], vk-ok = False }
+    in if s.vs-ok == False | list-length wire < 25 | list-at wire 0 /= 4 then refused
+    else let header = vpn-slice wire 0 9
+    in let counter = vpn-read-le64 wire 1 0 0
+    in if counter <= s.vs-recv-highest then refused
+    else when chacha20poly1305-decrypt (s.vs-recv-key) (vpn-nonce counter) (vpn-slice wire 9 (list-length wire - 25)) header (vpn-slice wire (list-length wire - 16) 16)
+      is None -> refused
+      is Just (pkt) -> (when vf-filter fw pkt
+        is FwDeny -> refused
+        is FwAllow -> VpnPacket { vk-session = VpnSession { vs-send-key = s.vs-send-key, vs-recv-key = s.vs-recv-key, vs-send-counter = s.vs-send-counter, vs-recv-highest = counter, vs-ok = True }, vk-bytes = pkt, vk-ok = True })
+
+  vpn-read-le64 : List Integer, Integer, Integer, Integer -> Integer
+  vpn-read-le64 (bytes) (at) (i) (acc) =
+    if i >= 8 then acc
+    else vpn-read-le64 bytes at (i + 1) (bit-or acc (bit-shl (list-at bytes (at + i)) (i * 8)))
+
+  vpn-slice : List Integer, Integer, Integer -> List Integer
+  vpn-slice (xs) (start) (n) = vpn-slice-loop xs start n 0 (__list-with-capacity n)
+
+  vpn-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  vpn-slice-loop (xs) (start) (n) (i) (acc) =
+    if i >= n | start + i >= list-length xs then acc
+    else vpn-slice-loop xs start n (i + 1) (list-push acc (list-at xs (start + i)))
+
+  vpn-member : List (List Integer), List Integer, Integer -> Boolean
+  vpn-member (keys) (k) (i) =
+    if i >= list-length keys then False
+    else if vpn-bytes-equal (list-at keys i) k 0 then True
+    else vpn-member keys k (i + 1)
+
+  vpn-bytes-equal : List Integer, List Integer, Integer -> Boolean
+  vpn-bytes-equal (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else vpn-bytes-equal a b (i + 1)
 
 Section: Widget
 

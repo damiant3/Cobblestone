@@ -4,8 +4,6 @@ Chapter: TcpChecksumRefuse
   cites Net chapter Ethernet
   cites Foreword chapter Console
 
- We say:
-
 Section: Wire Fixtures
   srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
   cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
@@ -15,11 +13,6 @@ Section: Wire Fixtures
 
   psh : Integer = bit-or tcp-flag-psh tcp-flag-ack
   get-bytes : List Integer = [71, 69, 84, 32, 47, 32, 72, 84, 84, 80, 47, 49, 46, 49, 13, 10, 13, 10]
-
- corrupt-at flips one bit in one byte AFTER tcp-with-checksum has run, so the
- stored field is correct for the bytes the sender had and wrong for the bytes
- the receiver gets. That is the shape of the PR 64 DMA truncation this check
- exists to catch, and it is the only difference between the two arms.
 
   corrupt-at : List Integer, Integer -> List Integer
   corrupt-at (bytes) (i) = list-set-at bytes i (bit-xor (list-at bytes i) 1)
@@ -38,17 +31,9 @@ Section: Server Session
   listening : NetSession = (net-listen srv0).session
   established : NetSession = (net-process-frame listening c-syn).session
 
- The outbox is cleared because the handshake left its SYN-ACK in it. Counting
- an uncleared outbox would report 1 for both arms and discriminate nothing,
- which is the assertion this arm exists to make.
-
   base : NetSession = set-outbox established []
 
 Section: The Two Arms
-
- The control is not decoration. A checker that refuses everything and a checker
- that works are indistinguishable on the corrupt arm alone, which is the whole
- reason the absence of this check was invisible.
 
   clean-frame : List Integer = mk-frame 1001 5001 psh get-bytes (0 - 1)
   dirty-frame : List Integer = mk-frame 1001 5001 psh get-bytes 24
@@ -64,10 +49,6 @@ Section: The Two Arms
     in eth-build-frame srv-mac cli-mac eth-type-ipv4 (corrupt-at ip 16)
 
   bad-ip-result : NetResult = net-process-frame base bad-ip-frame
-
- A truncated receive is the arm the checksum cannot cover, because the checksum
- is computed over the bytes that ARRIVED and the header is one of them. Before
- ip-header-valid tested the length this frame took the guest down with EXC=06.
 
   take : List Integer, Integer, Integer, List Integer -> List Integer
   take (xs) (i) (n) (acc) =

@@ -4,8 +4,6 @@ Chapter: HttpClient
   cites Foreword chapter Maybe
   cites Foreword chapter CCE
 
- We say:
-
 Section: Request Building
 
   HttpClientRequest = record {
@@ -94,17 +92,74 @@ Section: Response Parsing
         valid = False
       }
     else let code = parse-status-code (list-at parts 1)
-    in let body-start = find-body-start bs 0 (list-length bs)
-    in let body = if body-start >= list-length bs then ""
+    in let len = list-length bs
+    in let body-start = find-body-start bs 0 len
+    in let headed = http-head-ended bs body-start
+    in let cl = if headed then http-content-length-field bs body-start else (-1)
+    in let bodiless = http-status-bodiless code
+    in let stop = if bodiless then body-start else if cl >= 0 then (if body-start + cl <= len then body-start + cl else len) else len
+    in let body = if body-start >= stop then ""
     else
-      text-concat-list (read-body-from-bytes bs body-start (list-length bs) (__list-with-capacity (list-length bs - body-start + 1)))
+      raw-bytes-to-text (http-body-cce bs body-start stop (__list-with-capacity (stop - body-start)))
     in HttpClientResponse {
       status-code = code,
       status-text = status-reason status-line 0 (text-length status-line) 0,
       body = body,
       content-length = text-length body,
-      valid = code >= 0
+      valid = if code < 0 then False
+        else if list-length bs < 7 then False
+        else if http-bytes-at bs 0 (http-to-ascii "HTTP/1.") 0 == False then False
+        else if headed & bodiless == False & http-field-present bs 0 body-start (http-to-ascii "transfer-encoding:") then False
+        else http-framed headed bodiless cl (len - body-start)
     }
+
+ RFC 9112 section 4: the status line opens with the HTTP version, and this parser frames HTTP/1.x only. HTTP-name
+ is case-sensitive (section 2.3), so the bytes compare exactly.
+
+  http-bytes-at : List Integer, Integer, List Integer, Integer -> Boolean
+  http-bytes-at (bs) (off) (want) (j) =
+    if j >= list-length want then True
+    else if off + j >= list-length bs then False
+    else if list-at bs (off + j) /= list-at want j then False
+    else http-bytes-at bs off want (j + 1)
+
+ RFC 9112 section 6.1: a server sends Transfer-Encoding only to a request that indicates HTTP/1.1, and this client
+ sends HTTP/1.0, so a response with a body and that field is faulty framing; its body would hold the transfer
+ coding's own bytes. A field name starts a line.
+
+  http-field-present : List Integer, Integer, Integer, List Integer -> Boolean
+  http-field-present (bs) (i) (header-end) (needle) =
+    if i + list-length needle > header-end then False
+    else if http-cl-line-start bs i == False then http-field-present bs (i + 1) header-end needle
+    else if http-cl-match bs i needle 0 (list-length needle) then True
+    else http-field-present bs (i + 1) header-end needle
+
+ RFC 9112 section 6.3: a 1xx, 204 or 304 response has no body whatever its
+ header fields say; otherwise a valid Content-Length is the body length and
+ a response that ends before it is incomplete, an invalid or disagreeing
+ Content-Length is an unrecoverable framing error, and with none the body
+ runs to the close. Section 2.1: the header section ends with an empty line.
+
+  http-framed : Boolean, Boolean, Integer, Integer -> Boolean
+  http-framed (headed) (bodiless) (cl) (have) =
+    if headed == False then False
+    else if bodiless then True
+    else if cl == 0 - 2 then True
+    else if cl < 0 then False
+    else cl <= have
+
+  http-status-bodiless : Integer -> Boolean
+  http-status-bodiless (code) =
+    if code >= 100 then (if code < 200 then True else if code == 204 then True else code == 304)
+    else False
+
+  http-head-ended : List Integer, Integer -> Boolean
+  http-head-ended (bs) (he) =
+    if he < 4 then False
+    else if list-at bs (he - 4) /= 13 then False
+    else if list-at bs (he - 3) /= 10 then False
+    else if list-at bs (he - 2) /= 13 then False
+    else list-at bs (he - 1) == 10
 
   read-line-from-bytes : List Integer, Integer, Integer, List Text -> List Text
   read-line-from-bytes (bs) (i) (len) (acc) =
@@ -124,6 +179,13 @@ Section: Response Parsing
         else find-body-start bs (i + 1) len
       else find-body-start bs (i + 1) len
     else find-body-start bs (i + 1) len
+
+  http-body-cce : List Integer, Integer, Integer, List Integer -> List Integer
+  http-body-cce (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else let b = list-at bs i
+    in let cp = from-unicode b
+    in http-body-cce bs (i + 1) stop (if cp >= 0 then cce-encode-into acc cp else if b == 9 then cce-encode-into acc (from-unicode 32) else acc)
 
   read-body-from-bytes : List Integer, Integer, Integer, List Text -> List Text
   read-body-from-bytes (bs) (i) (len) (acc) =
@@ -184,14 +246,52 @@ Section: Content Length
     else b
 
   http-content-length : List Integer, Integer -> Integer
-  http-content-length (bs) (header-end) = http-cl-scan bs 0 header-end (http-to-ascii "content-length:")
+  http-content-length (bs) (header-end) =
+    let v = http-content-length-field bs header-end
+    in if v == 0 - 2 then (-1) else v
+
+  http-content-length-field : List Integer, Integer -> Integer
+  http-content-length-field (bs) (header-end) = http-cl-scan bs 0 header-end (http-to-ascii "content-length:")
+
+ RFC 9110 section 8.6: Content-Length = 1*DIGIT, with optional whitespace (SP or
+ HTAB) around the field value. RFC 9112 section 6.3: differing Content-Length
+ values are an unrecoverable framing error. A field name starts a line.
 
   http-cl-scan : List Integer, Integer, Integer, List Integer -> Integer
-  http-cl-scan (bs) (i) (header-end) (needle) =
+  http-cl-scan (bs) (i) (header-end) (needle) = http-cl-find bs i header-end needle (0 - 2)
+
+  http-cl-find : List Integer, Integer, Integer, List Integer, Integer -> Integer
+  http-cl-find (bs) (i) (header-end) (needle) (found) =
     let n = list-length needle
-    in if i + n > header-end then (-1)
-    else if http-cl-match bs i needle 0 n then http-cl-value bs (i + n) header-end 0 False
-    else http-cl-scan bs (i + 1) header-end needle
+    in if i + n > header-end then found
+    else if http-cl-line-start bs i == False then http-cl-find bs (i + 1) header-end needle found
+    else if http-cl-match bs i needle 0 n == False then http-cl-find bs (i + 1) header-end needle found
+    else let v = http-cl-field bs (http-cl-ows bs (i + n) header-end) header-end 0 False
+    in if v < 0 then (-1)
+    else if found >= 0 then (if found /= v then (-1) else http-cl-find bs (i + 1) header-end needle v)
+    else http-cl-find bs (i + 1) header-end needle v
+
+  http-cl-line-start : List Integer, Integer -> Boolean
+  http-cl-line-start (bs) (i) = if i == 0 then True else list-at bs (i - 1) == 10
+
+  http-cl-ows : List Integer, Integer, Integer -> Integer
+  http-cl-ows (bs) (i) (header-end) =
+    if i >= header-end then i
+    else if list-at bs i == 32 then http-cl-ows bs (i + 1) header-end
+    else if list-at bs i == 9 then http-cl-ows bs (i + 1) header-end
+    else i
+
+  http-cl-field : List Integer, Integer, Integer, Integer, Boolean -> Integer
+  http-cl-field (bs) (i) (header-end) (acc) (any) =
+    if i >= header-end then (if any then acc else (-1))
+    else if acc >= http-cl-ceiling then (-1)
+    else let b = list-at bs i
+    in if b >= http-ascii-zero & b <= http-ascii-nine then http-cl-field bs (i + 1) header-end (acc * 10 + b - http-ascii-zero) True
+    else if any == False then (-1)
+    else let j = http-cl-ows bs i header-end
+    in if j >= header-end then acc
+    else if list-at bs j == 13 then acc
+    else (-1)
 
   http-cl-match : List Integer, Integer, List Integer, Integer, Integer -> Boolean
   http-cl-match (bs) (off) (needle) (j) (n) =
@@ -199,20 +299,7 @@ Section: Content Length
     else if http-ascii-lower (list-at bs (off + j)) /= list-at needle j then False
     else http-cl-match bs off needle (j + 1) n
 
-  http-ascii-minus : Integer = to-unicode (char-code (char-at "-" 0))
   http-cl-ceiling : Integer = 1000000000000000
-
-  http-cl-value : List Integer, Integer, Integer, Integer, Boolean -> Integer
-  http-cl-value (bs) (i) (header-end) (acc) (any) =
-    if i >= header-end then (if any then acc else (-1))
-    else if acc >= http-cl-ceiling then (-1)
-    else let b = list-at bs i
-    in if b >= http-ascii-zero then
-      if b <= http-ascii-nine then
-        http-cl-value bs (i + 1) header-end (acc * 10 + b - http-ascii-zero) True
-      else (if any then acc else http-cl-value bs (i + 1) header-end acc any)
-    else if b == http-ascii-minus then (if any then acc else (-1))
-    else (if any then acc else http-cl-value bs (i + 1) header-end acc any)
 
 Section: Queries
 

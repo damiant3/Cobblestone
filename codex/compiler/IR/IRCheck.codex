@@ -1,95 +1,16 @@
 Chapter: IRCheck
   cites Codex chapter Build Settings (max-recursion-depth)
+  cites Codex chapter CdxCodes (cdx-ir-check-violation)
   cites Codex chapter Diagnostic Bag (bag-add, empty-bag)
   cites Codex chapter Diagnostics (make-error)
   cites Codex chapter Source Text (synthetic-span)
   cites Codex chapter SkipListText (skip-list-text-from-list, skip-list-text-has, skip-list-text-insert)
   cites Semantics chapter Name Resolution (builtin-names, is-type-name)
 
- It is opt-in, and it is off in `default-ir-pipeline`. The shipping
- compiler pays nothing for it: no walk, no skip list, no allocation.
- Turn it on when a pass is under suspicion, and it is on for every
- definition in the chapter, which for a self-compile is every function
- in the compiler.
-
- Three things are checked, and only three.
-
- **Scope discipline under shadowing.** Every `IrName` must be bound by
- something. The scope walk seeds from the definition's parameters and
- admits binders from `IrLet`, `IrLambda`, match branch patterns
- (including constructor sub-patterns), `IrDoBind`, and handle clause
- parameters and resume names. But this IR legitimately names things
- that no binder introduced -- chapter-level definitions, builtins,
- effect operations, nullary constructors -- and the emitter resolves
- exactly those four when a name misses the locals (`emit-name`:
- locals, then `is-builtin`, then the user-arity table, then the
- handler table, then a nullary constructor tag). So the checker admits
- the same four, and a name is a violation only when it is in none of
- them. **A false positive here is worse than a miss.** Constructors are
- admitted by the name-resolver's own `is-type-name`, because the ctor
- list is not carried on the IRChapter; that is the one place this check
- is coarser than the emitter, and it is coarse in the safe direction.
-
- **Type presence.** Every expression node, parameter, and definition
- that carries a `CodexType` carries a resolved one. `ErrorTy` there
- means an earlier phase failed silently.
-
- The contract is not universal, and finding out where it fails was the
- first thing this checker did. **Three places in the IR carry `ErrorTy`
- on perfectly valid programs today**, and all three are excluded from
- the check rather than papered over:
-
- 1. **Constructor sub-patterns** -- `lookup-ctor-field-type` answers
-    `ErrorTy` for any scrutinee not already a resolved `SumTy`, which
-    is every polymorphic sum. `when b is Wrap (x)` types `x` as
-    `ErrorTy`.
- 2. **The element type of an empty `IrList`** -- `[]` has no element to
-    take a type from.
- 3. **Un-annotated lambdas** -- `let f = \a -> a + a in ...` lowers the
-    `IrLambda`, its parameters, and the `IrLet` that binds it with
-    `ErrorTy`; nothing carries the checker's inferred type down into
-    lowering for that node.
-
- None of the three is a miscompile -- codegen never reads those slots.
- All three are a warning to the middle-end campaign: **a pass may not
- yet reason from a type it reads out of the IR** without knowing which
- of these it is standing on. They are the honest reason the ErrorTy
- check is narrower than "every node".
-
- **Structural sanity.** A match with no branches, an apply whose
- function position is a literal, a let that binds the empty name.
-
- Limitations, stated so they are not assumed away: the three type holes
- above are not checked; the ErrorTy check is otherwise shallow (an
- `ErrorTy` nested inside a `ListTy` is not reported); no effect-row
- agreement is checked; no arity checking; a constructor name is
- admitted on its spelling, not against a constructor table; and the
- walk is depth- and scope-bounded, so a pathological tree is reported
- as unchecked rather than walked forever.
-
-Section: Diagnostic Code
-
- 9xxx is the compiler-internal band (CdxCodes: 9001 resource exhausted,
- 9002 deck overflow, 9003 escape violation). A malformed IR is the
- compiler's fault, never the program's, so it belongs here and nowhere
- else. The constant lives beside its only producer until CdxCodes can
- be edited to carry the registry entry.
-
-  cdx-ir-check-violation : Integer = 9004
-
 Section: Bounds
 
- The walk is bounded twice. Depth is the recursion budget every other
- tree walker in the compiler uses, so a cyclic or pathological IR
- cannot hang the checker. Scope is a fixed stack of names: binders are
- written into it by index and the count in hand is the only authority
- on what is in scope, which is what makes shadowing correct -- a sibling
- branch overwrites its predecessor's slots rather than inheriting them.
- The stack is allocated once for the whole chapter and never grows, so
- the scope walk allocates nothing per definition.
-
- Exhausting either bound is itself reported. The checker never answers
- "clean" about a subtree it did not read.
+ The scope stack is allocated once for the whole chapter and never
+ grows, so the scope walk allocates nothing per definition.
 
   ir-check-scope-cap : Integer = 1024
 
@@ -332,12 +253,6 @@ Section: Expressions
     in ir-check-clauses env cs nb depth (i + 1) len (ir-check-expr env (c.body) nb3 depth acc)
 
 Section: Patterns
-
- Patterns are walked for their binders only -- see hole 1 in the chapter
- prose for why their types are not checked. Codegen never reads them
- (it matches on tags and field offsets), so the IR is not wrong, but it
- is not typed either. The check belongs here the day lowering fills
- them in.
 
   ir-check-bind-pat : IRCheckEnv, IRPat, Integer, Integer -> Integer
   ir-check-bind-pat (env) (p) (nb) (depth) =

@@ -1,0 +1,95 @@
+Chapter: IvshmemChannel
+  cites Kernel chapter Ivshmem
+  cites Kernel chapter Pci
+  cites Kernel chapter MmioMapX86
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+Section: Channel
+  ivc-magic-request : Integer = #49565331
+
+  ivc-magic-reply : Integer = #49565332
+
+  ivc-text-bytes : Text, Integer, List Integer -> List Integer
+  ivc-text-bytes (t) (i) (acc) =
+    if i >= text-length t then acc
+    else ivc-text-bytes t (i + 1) (list-push acc (char-code-at t i))
+
+  ivc-send : IvshmemDev, Integer, Text -> Integer
+  ivc-send (dev) (magic) (msg) =
+    let bytes = ivc-text-bytes msg 0 []
+    in let w = shm-write-bytes dev 16 bytes 0 (list-length bytes)
+    in let n = shm-write-32 dev 8 (list-length bytes)
+    in if w < 0 | n < 0 then -1
+    else shm-write-32 dev 0 magic
+
+  ivc-receive : IvshmemDev -> Text
+  ivc-receive (dev) =
+    let n = shm-read-32 dev 8
+    in if n < 0 | n > 4096 then "<bad length>"
+    else raw-bytes-to-text (shm-read-bytes dev 16 n)
+
+Section: Spec Pins
+
+ Pinned to QEMU's ivshmem spec text, not to any device's answer: "The device
+ has vendor ID 1af4, device ID 1110, revision 1"; "BAR0 holds device registers
+ (256 Byte MMIO)"; IVPosition at BAR0 offset 8, "if the device is not
+ configured for interrupts, this is zero"; Doorbell at offset 12, "If the device
+ is not configured for interrupts, the write is ignored."
+
+  ivc-spec-id : Integer = #11101AF4
+
+  ivc-bar0-size : PciDevice -> Integer
+  ivc-bar0-size (d) =
+    let low = ivshmem-config d 16
+    in let command = bit-and (ivshmem-config d 4) 65535
+    in let off = ivshmem-config-write d 4 (bit-and command #FFF8)
+    in let probe = ivshmem-config-write d 16 #FFFFFFFF
+    in let mask = bit-and (ivshmem-config d 16) #FFFFFFF0
+    in let restore = ivshmem-config-write d 16 low
+    in let on = ivshmem-config-write d 4 command
+    in if bit-and low 1 /= 0 | mask == 0 then 0 else #100000000 - mask
+
+  ivc-pins : PciDevice -> [Console] Nothing
+  ivc-pins (d) =
+    let id = ivshmem-config d 0
+    in let rev = bit-and (ivshmem-config d 8) 255
+    in let bar0 = bit-and (ivshmem-config d 16) #FFFFFFF0
+    in let size0 = ivc-bar0-size d
+    in let mapped = when mx-check-window bar0 256
+      is Ok (m) -> True
+      is Err (why) -> False
+    in let pos = if mapped then bit-and (peek-32 bar0 8) #FFFFFFFF else -1
+    in let bell = if mapped then poke-32 bar0 12 1 else 0
+    in let pos-after = if mapped then bit-and (peek-32 bar0 8) #FFFFFFFF else -1
+    in act
+      print-line-uni ("SPEC id=" & show (id == ivc-spec-id) & " revision=" & show (rev == 1) & " bar0-256=" & show (size0 == 256))
+      print-line-uni ("SPEC ivposition-zero=" & show (pos == 0) & " doorbell-ignored=" & show (pos-after == 0))
+    end
+
+Section: Entry
+  ivc-pin-step : Maybe PciDevice -> [Console] Nothing
+  ivc-pin-step (found) =
+    when found
+      is None -> print-line-uni "SPEC device absent"
+      is Just (d) -> ivc-pins d
+
+  ivc-channel : IvshmemDev -> [Console] Nothing
+  ivc-channel (dev) =
+    if dev.shm-found == False then print-line-uni ("IVC " & format-ivshmem dev)
+    else let magic = shm-read-32 dev 0
+    in if magic == ivc-magic-request then act
+      print-line-uni ("IVC read request: " & ivc-receive dev)
+      print-line-uni ("IVC reply sent=" & show (ivc-send dev ivc-magic-reply "ack from the second guest" >= 0))
+    end
+    else if magic == ivc-magic-reply then print-line-uni ("IVC read reply: " & ivc-receive dev)
+    else act
+      print-line-uni ("IVC region empty, size " & show (dev.shm-size))
+      print-line-uni ("IVC request sent=" & show (ivc-send dev ivc-magic-request "hello from the first guest" >= 0))
+    end
+
+  opening : [Console] Nothing = act
+    ivc-pin-step (pci-find-device (pci-scan-bus 0) ivshmem-vendor ivshmem-device)
+    ivc-channel ivshmem-init
+  end

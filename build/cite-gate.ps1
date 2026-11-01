@@ -21,9 +21,8 @@
 #   - EXCEPT the allocation goldens: a codex/test chapter that reads the heap
 #     frontier (alloc-bytes, __heap-save) prints numbers the COMPILER decides,
 #     so any change under codex/compiler selects every one of them. A test
-#     that prints a frontier value read inside a LIBRARY chapter is not; on
-#     2026-09-23 the two libraries that print one (PerfMonitor perf-heap,
-#     DiagnosticShell diag-run-heap) reached no .expected.
+#     that prints a frontier value read inside a LIBRARY chapter (DiagnosticShell
+#     diag-run-heap) is not.
 #   - A subject with no .expected is COMPILED and not RUN. bvt.ps1 grades it
 #     as a compile, and this script reports the two counts apart rather than
 #     summing them, because "42 subjects" over 6 that can fail at runtime is

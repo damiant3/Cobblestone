@@ -2,12 +2,19 @@ Chapter: GopPrograms
   cites UI chapter Widget
   cites UI chapter Layout
   cites UI chapter Theme
-
- We say:
+  cites Foreword chapter StringUtils
+  cites Dev chapter GlobalSearch
+  cites Dev chapter AppLauncher
 
 Section: Geometry
 
   gpr-sel-cell : Integer = 0
+  gpr-q-len-cell : Integer = 4
+  gpr-q-at : Integer = 8
+  gpr-q-max : Integer = 40
+  gpr-mru-n-cell : Integer = 48
+  gpr-mru-at : Integer = 52
+  gpr-mru-max : Integer = 5
 
 Section: The Programs
 
@@ -54,7 +61,160 @@ Section: State
     poke-32 ps gpr-sel-cell (if i < 0 then 0 else if i >= gpr-count then gpr-count - 1 else i)
 
   gpr-ensure : Integer -> Integer
-  gpr-ensure (ps) = gpr-set-sel ps (gpr-sel ps)
+  gpr-ensure (ps) =
+    let q = poke-32 ps gpr-q-len-cell 0
+    in let recent = gpr-mru ps
+    in gpr-set-sel ps (if list-length recent > 0 then list-at recent 0 else gpr-sel ps)
+
+Section: Recent
+
+  gpr-scan-index : Integer, Integer -> Integer
+  gpr-scan-index (sc) (i) =
+    if i >= gpr-count then 0 - 1
+    else if (gpr-at i).ge-scan == sc then i
+    else gpr-scan-index sc (i + 1)
+
+  gpr-mru-n : Integer -> Integer
+  gpr-mru-n (ps) = peek-32 ps gpr-mru-n-cell
+
+  gpr-mru-loop : Integer, Integer, Integer, List Integer -> List Integer
+  gpr-mru-loop (ps) (i) (n) (acc) =
+    if i >= n then acc
+    else let e = gpr-scan-index (peek-byte ps (gpr-mru-at + i)) 0
+    in gpr-mru-loop ps (i + 1) n (if e < 0 then acc else list-push acc e)
+
+  gpr-mru : Integer -> List Integer
+  gpr-mru (ps) = gpr-mru-loop ps 0 (gpr-mru-n ps) []
+
+  gpr-mru-labels : List Integer, Integer, List Text -> List Text
+  gpr-mru-labels (es) (i) (acc) =
+    if i >= list-length es then acc
+    else gpr-mru-labels es (i + 1) (list-push acc ((gpr-at (list-at es i)).ge-label))
+
+  gpr-mru-store : Integer, List Text, Integer -> Integer
+  gpr-mru-store (ps) (ids) (i) =
+    if i >= list-length ids then poke-32 ps gpr-mru-n-cell i
+    else let e = gpr-label-index (list-at ids i) 0
+    in let b = poke-byte ps (gpr-mru-at + i) (if e < 0 then 0 else (gpr-at e).ge-scan)
+    in gpr-mru-store ps ids (i + 1)
+
+  gpr-launched : Integer, Integer -> Integer
+  gpr-launched (ps) (sc) =
+    let e = gpr-scan-index sc 0
+    in if e < 0 then sc
+    else let ids = gpr-mru-labels (gpr-mru ps) 0 []
+    in let next = al-add-recent ids ((gpr-at e).ge-label) (list-length ids) gpr-mru-max
+    in let s = gpr-mru-store ps next 0
+    in sc
+
+  gpr-in : List Integer, Integer, Integer -> Boolean
+  gpr-in (xs) (v) (i) = if i >= list-length xs then False else if list-at xs i == v then True else gpr-in xs v (i + 1)
+
+  gpr-mru-pick : List Integer, List Integer, Integer, List Integer -> List Integer
+  gpr-mru-pick (recent) (ms) (i) (acc) =
+    if i >= list-length recent then acc
+    else gpr-mru-pick recent ms (i + 1) (if gpr-in ms (list-at recent i) 0 then list-push acc (list-at recent i) else acc)
+
+  gpr-rest : List Integer, List Integer, Integer, List Integer -> List Integer
+  gpr-rest (ms) (recent) (i) (acc) =
+    if i >= list-length ms then acc
+    else gpr-rest ms recent (i + 1) (if gpr-in recent (list-at ms i) 0 then acc else list-push acc (list-at ms i))
+
+  gpr-recent-first : Integer, List Integer -> List Integer
+  gpr-recent-first (ps) (ms) =
+    let recent = gpr-mru ps
+    in gpr-rest ms recent 0 (gpr-mru-pick recent ms 0 [])
+
+Section: Search
+
+  gpr-q-len : Integer -> Integer
+  gpr-q-len (ps) = peek-32 ps gpr-q-len-cell
+
+ Scancode set 1: the letter rows start at 16, 30 and 44, the digit row at 2.
+
+  gpr-sc-char : Integer -> Text
+  gpr-sc-char (sc) =
+    if sc >= 16 & sc <= 25 then substring "qwertyuiop" (sc - 16) 1
+    else if sc >= 30 & sc <= 38 then substring "asdfghjkl" (sc - 30) 1
+    else if sc >= 44 & sc <= 50 then substring "zxcvbnm" (sc - 44) 1
+    else if sc >= 2 & sc <= 11 then substring "1234567890" (sc - 2) 1
+    else if sc == 57 then " "
+    else ""
+
+  gpr-q-pieces : Integer, Integer, Integer, List Text -> List Text
+  gpr-q-pieces (ps) (i) (n) (acc) =
+    if i >= n then acc
+    else gpr-q-pieces ps (i + 1) n (list-push acc (gpr-sc-char (peek-byte ps (gpr-q-at + i))))
+
+  gpr-query : Integer -> Text
+  gpr-query (ps) = text-concat-list (gpr-q-pieces ps 0 (gpr-q-len ps) (__list-with-capacity (gpr-q-len ps + 1)))
+
+  gpr-provider-add : SearchProvider, Integer -> SearchProvider
+  gpr-provider-add (p) (i) =
+    if i >= gpr-count then p
+    else let e = gpr-at i
+    in gpr-provider-add (sprov-add-entry p (search-result (show i) (text-to-lower (e.ge-label)) (text-to-lower (e.ge-group)) (e.ge-icon) ScApps (e.ge-label))) (i + 1)
+
+  gpr-label-index : Text, Integer -> Integer
+  gpr-label-index (label) (i) =
+    if i >= gpr-count then 0 - 1
+    else if (gpr-at i).ge-label == label then i
+    else gpr-label-index label (i + 1)
+
+  gpr-result-indices : List GsSearchResult, Integer, List Integer -> List Integer
+  gpr-result-indices (rs) (i) (acc) =
+    if i >= list-length rs then acc
+    else gpr-result-indices rs (i + 1) (list-push acc (gpr-label-index ((list-at rs i).sr-action) 0))
+
+  gpr-matches : Integer -> List Integer
+  gpr-matches (ps) =
+    let st = gs-set-query (gs-register-provider global-search-new (gpr-provider-add (search-provider-new "programs" "Programs" ScApps) 0)) (gpr-query ps)
+    in gpr-recent-first ps (gpr-result-indices (st.gs-results) 0 [])
+
+  gpr-pos-of : List Integer, Integer, Integer -> Integer
+  gpr-pos-of (ms) (v) (i) =
+    if i >= list-length ms then 0 - 1
+    else if list-at ms i == v then i
+    else gpr-pos-of ms v (i + 1)
+
+  gpr-step-match : Integer, Integer -> Integer
+  gpr-step-match (ps) (dir) =
+    let ms = gpr-matches ps
+    in let n = list-length ms
+    in if n == 0 then 0
+    else let at = gpr-pos-of ms (gpr-sel ps) 0
+    in let to = if at < 0 then 0 else if at + dir < 0 then 0 else if at + dir >= n then n - 1 else at + dir
+    in gpr-set-sel ps (list-at ms to)
+
+  gpr-q-set : Integer, Integer -> Integer
+  gpr-q-set (ps) (n) =
+    let q = poke-32 ps gpr-q-len-cell n
+    in let ms = gpr-matches ps
+    in if n > 0 & list-length ms > 0 then gpr-set-sel ps (list-at ms 0) else 0
+
+  gpr-q-push : Integer, Integer -> Integer
+  gpr-q-push (ps) (sc) =
+    let n = gpr-q-len ps
+    in if n >= gpr-q-max then 0
+    else let b = poke-byte ps (gpr-q-at + n) sc
+    in gpr-q-set ps (n + 1)
+
+  gpr-q-pop : Integer -> Integer
+  gpr-q-pop (ps) = if gpr-q-len ps <= 0 then 0 else gpr-q-set ps (gpr-q-len ps - 1)
+
+  gpr-search-cap : Integer = 8
+
+  gpr-search-rows : List Integer, Integer, Integer, List WidgetNode -> List WidgetNode
+  gpr-search-rows (ms) (sel) (i) (acc) =
+    if i >= list-length ms | i >= gpr-search-cap then acc
+    else gpr-search-rows ms sel (i + 1) (list-push acc (gpr-row (list-at ms i) sel))
+
+  gpr-search-tree : Integer -> WidgetNode
+  gpr-search-tree (ps) =
+    let ms = gpr-matches ps
+    in let head = widget-set-min-h (widget-label "gpr-q" ("Search: " & gpr-query ps & "_")) 22
+    in let rows = if list-length ms == 0 then [widget-set-min-h (widget-label "gpr-q-none" "no match") 22] else gpr-search-rows ms (gpr-sel ps) 0 []
+    in widget-panel "gpr-menu" DirColumn 2 ([head] & rows)
 
 Section: The Tree
 
@@ -198,7 +358,8 @@ Section: The Menu Tree
   gpr-menu-tree-cap : Integer, Boolean, Integer -> WidgetNode
   gpr-menu-tree-cap (ps) (across) (cap) =
     let win = gpr-window ps cap
-    in if across then widget-panel "gpr-menu" DirRow 8 (gpr-menu-cols 0 (gpr-sel ps) (gpr-open-group ps) win [])
+    in if gpr-q-len ps > 0 then gpr-search-tree ps
+    else if across then widget-panel "gpr-menu" DirRow 8 (gpr-menu-cols 0 (gpr-sel ps) (gpr-open-group ps) win [])
     else widget-panel "gpr-menu" DirColumn 2 (gpr-menu-rows 0 (gpr-sel ps) (gpr-open-group ps) win [])
 
   gpr-menu-tree : Integer, Boolean -> WidgetNode
@@ -208,9 +369,12 @@ Section: Keys
 
   gpr-key : Integer, Integer -> Integer
   gpr-key (ps) (sc) =
-    if sc == 72 then let d = gpr-set-sel ps (gpr-sel ps - 1) in 0
+    if gpr-q-len ps > 0 & (sc == 72 | sc == 80) then let d = gpr-step-match ps (if sc == 72 then 0 - 1 else 1) in 0
+    else if sc == 72 then let d = gpr-set-sel ps (gpr-sel ps - 1) in 0
     else if sc == 80 then let d = gpr-set-sel ps (gpr-sel ps + 1) in 0
-    else if sc == 28 then (gpr-at (gpr-sel ps)).ge-scan
+    else if sc == 28 then (if gpr-q-len ps > 0 & list-length (gpr-matches ps) == 0 then 0 else (gpr-at (gpr-sel ps)).ge-scan)
+    else if sc == 14 then let d = gpr-q-pop ps in 0
+    else if gpr-sc-char sc /= "" then let d = gpr-q-push ps sc in 0
     else 0
 
   gpr-id-scan : Text, Integer -> Integer

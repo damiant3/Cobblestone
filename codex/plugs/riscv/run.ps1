@@ -22,6 +22,12 @@ $ErrorActionPreference = 'Stop'
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx  = Join-Path $PlugDir 'build-output\riscv-plug.cdx'
 
+# The same freshness rule test-cross-batch.ps1 applies: a plug built before its
+# sources changed answers with the old codegen, and a single-subject run
+# (test-cross.ps1, compile-riscv.ps1) reached this runner with no rebuild.
+. (Join-Path $PSScriptRoot '..' 'common' 'plug-fresh.ps1')
+Update-StalePlug -PlugDir $PlugDir -PlugCdx $PlugCdx -ExtraDirs @('codex\compiler', 'codex\foreword')
+
 if (-not (Test-Path -PathType Leaf $PlugCdx)) {
     [Console]::Error.WriteLine("MISSING: $PlugCdx -- run plugs/riscv/build.ps1 first")
     exit 2

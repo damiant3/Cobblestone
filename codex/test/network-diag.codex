@@ -1,0 +1,55 @@
+Chapter: NetworkDiagTest
+  cites Dev chapter NetworkDiag
+  cites Net chapter Ethernet
+  cites Net chapter Icmp
+  cites Net chapter Tcp
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+  nt-src : List Integer = [10, 0, 2, 15]
+  nt-dst : List Integer = [10, 0, 2, 2]
+  nt-router : List Integer = [10, 0, 0, 1]
+
+  nt-icmp : Integer, Integer, List Integer -> List Integer
+  nt-icmp (kind) (code) (body) =
+    let raw = [kind, code, 0, 0, 0, 0, 0, 0] & body
+    in [kind, code] & write-be16 (ip-checksum raw 0 (list-length raw) 0) & [0, 0, 0, 0] & body
+
+  nt-reply : Integer, Integer -> List Integer
+  nt-reply (ident) (seq) = ip-build-packet nt-dst nt-src ip-proto-icmp (icmp-build-echo-reply (IcmpMessage { icmp-type = 8, code = 0, identifier = __narrow ident, sequence = __narrow seq, payload = [seq, 0, 0, 0, 0, 0, 0, 0] }))
+
+  nt-quote : List Integer -> List Integer
+  nt-quote (probe) = nd-slice probe 0 28
+
+  nt-flip : List Integer, Integer -> List Integer
+  nt-flip (xs) (at) = nd-slice xs 0 at & [bit-xor (list-at xs at) 1] & nd-slice xs (at + 1) (list-length xs)
+
+  nt-yn : Boolean -> Text
+  nt-yn (b) = if b then "yes" else "no"
+
+  nt-conn : TcpState, Integer, Integer -> TcpConnection
+  nt-conn (s) (lp) (rp) = TcpConnection { state = s, local-port = __narrow lp, remote-port = __narrow rp, local-ip = nt-src, remote-ip = nt-dst, send-next = 0, recv-next = 0, send-window = 0 }
+
+  nt-lines : List Text, Integer, Text -> Text
+  nt-lines (ls) (i) (acc) =
+    if i >= list-length ls then acc
+    else nt-lines ls (i + 1) (acc & (if i == 0 then "" else " | ") & list-at ls i)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let req = nd-ping-request nt-src nt-dst 77 1
+    in let probe = nd-trace-probe nt-src nt-dst 77 3
+    in let exceeded = ip-build-packet nt-router nt-src ip-proto-icmp (nt-icmp 11 0 (nt-quote probe))
+    in let foreign = ip-build-packet nt-router nt-src ip-proto-icmp (nt-icmp 11 0 (nt-quote (nd-trace-probe nt-src nt-dst 78 3)))
+    in let unreach = ip-build-packet nt-router nt-src ip-proto-icmp (icmp-build-unreachable 1 (nt-quote (nd-trace-probe nt-src nt-dst 77 4)))
+    in act
+      print-line-uni ("ping request: " & show (list-length req) & " bytes, header valid " & nt-yn (ip-header-valid req) & ", icmp type " & show (list-at req 20) & ", ttl " & show (list-at req 8))
+      print-line-uni ("reply matches: right one " & nt-yn (nd-is-reply (nt-reply 77 1) 77 1) & ", wrong sequence " & nt-yn (nd-is-reply (nt-reply 77 2) 77 1) & ", wrong identifier " & nt-yn (nd-is-reply (nt-reply 78 1) 77 1) & ", one flipped payload bit " & nt-yn (nd-is-reply (nt-flip (nt-reply 77 1) 30) 77 1) & ", 19 bytes " & nt-yn (nd-is-reply (nd-slice (nt-reply 77 1) 0 19) 77 1) & ", the request itself " & nt-yn (nd-is-reply req 77 1))
+      print-line-uni ("ping summary: " & nd-ping-summary [12, 15, 0 - 1, 9] & "; " & nd-ping-summary [0 - 1, 0 - 1])
+      print-line-uni ("probe at hop 3: ttl " & show (list-at probe 8) & ", header valid " & nt-yn (ip-header-valid probe) & ", sequence " & show (read-be16 probe 26))
+      print-line-uni ("hops: " & nd-hop-line (nd-trace-classify exceeded 77) & " | " & nd-hop-line (nd-trace-classify (ip-build-packet nt-dst nt-src ip-proto-icmp (icmp-build-echo-reply (IcmpMessage { icmp-type = 8, code = 0, identifier = 77, sequence = 5, payload = [] }))) 77) & " | " & nd-hop-line (nd-trace-classify unreach 77) & " | another probe's quote " & nd-hop-line (nd-trace-classify foreign 77) & " | a ping reply " & nd-hop-line (nd-trace-classify req 77))
+      print-line-uni ("connections: " & nt-lines (nd-conn-dump [nt-conn TcpEstablished 49152 80, nt-conn TcpListening 8080 0, nt-conn TcpTimeWait 49153 443] 0 []) 0 "")
+      print-line-uni (format-network-diag (nd-add-result (nd-set-target network-diag-new "10.0.2.2") (diag-result DiagPing "10.0.2.2" True 12 (nd-ping-summary [12]) 0)) & "; the default kept " & show (network-diag-new.nd-result-count))
+    end

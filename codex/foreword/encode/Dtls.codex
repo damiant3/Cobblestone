@@ -4,17 +4,8 @@ Chapter: Dtls
   cites Foreword chapter Hkdf
   cites Foreword chapter Maybe
 
- The DTLS 1.3 record layer (RFC 9147). This is the protection boundary
- for CoAP over coaps:// and for LwM2M, which mandates it -- the layer
- that turns a datagram codec into something that can cross a network
- without being read or forged.
-
- What this cut does not do, stated rather than implied: no Connection ID
- (the C bit is always 0), 16-bit sequence numbers only, and the length
- field is always present. Those are the shapes a client actually sends;
- the parser rejects the rest rather than mis-reading it.
-
- We say:
+ The DTLS 1.3 record layer (RFC 9147), the protection for CoAP over
+ coaps:// and for LwM2M, which mandates it.
 
 Section: Header Bits
 
@@ -83,9 +74,6 @@ Section: Key Derivation
             opaque label<7..255> = "tls13 " + Label;
             opaque context<0..255> = ""; } HkdfLabel;
 
- This is the real HKDF-Expand-Label, over the real foreword hkdf-expand
- (RFC 5869, counter-chained).
-
   dtls-tls13-prefix : List Integer = [116, 108, 115, 49, 51, 32]
 
   dtls-hkdf-expand-label : List Integer, List Integer, List Integer, Integer -> List Integer
@@ -139,9 +127,9 @@ Section: Sequence Number Encryption
 
  The RFC also requires the ciphertext to be at least 16 bytes, and says
  receivers MUST reject shorter records as if they had failed
- deprotection. dtls-open enforces that, and it is a security check rather
- than a bounds check: a short record would otherwise let a peer choose
- the bytes the mask is computed from.
+ deprotection. It is a security check rather than a bounds check: a short
+ record would otherwise let a peer choose the bytes the mask is computed
+ from.
 
   dtls-sn-mask : List Integer, List Integer -> List Integer
   dtls-sn-mask (sn-key) (ct) = aes-encrypt-block (dtls-take ct 16) (aes-expand-key-128 sn-key)
@@ -164,30 +152,65 @@ Section: Seal
   dtls-seal (k) (epoch) (seq) (content) (ctype) =
     let b0 = dtls-hdr-byte False True True epoch
     in let seq-plain = [bit-and (bit-shru seq 8) 255, bit-and seq 255]
-    in let inner = content & [ctype]
-    in let ct-len = list-length inner + 16
+    in let ct-len = list-length content + 17
     in let len-bytes = [bit-and (bit-shru ct-len 8) 255, bit-and ct-len 255]
     in let aad = [b0] & seq-plain & len-bytes
-    in let r = aesgcm-encrypt (k.dk-key) (dtls-nonce (k.dk-iv) seq) inner aad
-    in let ct = r.ciphertext & r.tag
-    in let seq-wire = dtls-xor-prefix seq-plain (dtls-sn-mask (k.dk-sn-key) ct) 2
-    in [b0] & seq-wire & len-bytes & ct
+    in dtls-seal-marked k seq content ctype aad (dtls-slice-loop aad 0 5 0 (__list-with-capacity (5 + ct-len))) __heap-save (5 + ct-len)
+
+ The record is reserved at its full length before a heap mark (arguments evaluate left to right), so sealing and
+ masking only write into it, and the two AES key schedules each record expands (about 34 KB each) are given back.
+ A record that does not come out at its full length is returned without restoring the heap.
+
+  dtls-seal-marked : DtlsKeys, Integer, List Integer, Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  dtls-seal-marked (k) (seq) (content) (ctype) (aad) (out) (mark) (total) =
+    let rec = aesgcm-seal-typed-into (k.dk-key) (dtls-nonce (k.dk-iv) seq) content 0 (list-length content) ctype aad out
+    in if list-length rec /= total then rec
+    else dtls-seal-kept (dtls-mask-seq rec (dtls-sn-mask (k.dk-sn-key) (dtls-slice rec 5 16))) mark
+
+  dtls-seal-kept : List Integer, Integer -> List Integer
+  dtls-seal-kept (rec) (mark) =
+    let restored = __heap-restore mark
+    in rec
+
+ The record is sealed into one list reserved for it, header first. RFC 9147 4.2.3 masks the sequence bytes with the
+ first 16 bytes of the ciphertext, so the header goes in with the plain sequence and bytes 1 and 2 are masked in
+ place once the ciphertext exists.
+
+  dtls-mask-seq : List Integer, List Integer -> List Integer
+  dtls-mask-seq (rec) (mask) =
+    list-set-at (list-set-at rec 1 (bit-xor (list-at rec 1) (list-at mask 0))) 2 (bit-xor (list-at rec 2) (list-at mask 1))
 
 Section: Open
 
- seq-hi carries the bits of the 64-bit sequence number that the two
- on-wire bytes cannot: only the low 16 are transmitted, so the receiver
- supplies the rest from its own knowledge of how far into the epoch it
- is. It is a multiple of 65536, and 0 until the first wrap.
-
- Guessing it wrong produces a wrong nonce, so the tag fails and the
- record is dropped. That is the correct outcome and not a bug to be
- worked around: the nonce binds the full sequence number, which is
- exactly what stops a record from being replayed into a different
- position in the stream.
+ Only the low 16 bits of the 64-bit sequence number are transmitted, and
+ the receiver supplies the rest. Guessing them wrong produces a wrong
+ nonce, so the tag fails and the record is dropped: the nonce binds the
+ full sequence number, which is exactly what stops a record from being
+ replayed into a different position in the stream.
 
   dtls-open : DtlsKeys, Integer, List Integer -> Maybe DtlsPlain
-  dtls-open (k) (seq-hi) (rec) =
+  dtls-open (k) (seq-hi) (rec) = dtls-plain-of (dtls-open-raw k seq-hi rec)
+
+ The raw forms hand back the decrypted plaintext as it came out of AES-GCM with the content's length, so a caller
+ that copies the content onward reads it from there rather than through a second exact copy (dtls-plain-of).
+
+  DtlsOpened = record {
+    do-inner : List Integer,
+    do-len : Integer,
+    do-seq : Integer
+  }
+
+  dtls-opened-type : DtlsOpened -> Integer
+  dtls-opened-type (o) = list-at (o.do-inner) (o.do-len)
+
+  dtls-plain-of : Maybe DtlsOpened -> Maybe DtlsPlain
+  dtls-plain-of (m) =
+    when m
+      is None -> None
+      is Just (o) -> Just (DtlsPlain { dp-content = dtls-slice-loop (o.do-inner) 0 (o.do-len) 0 (__list-with-capacity (o.do-len)), dp-type = dtls-opened-type o, dp-seq = o.do-seq })
+
+  dtls-open-raw : DtlsKeys, Integer, List Integer -> Maybe DtlsOpened
+  dtls-open-raw (k) (seq-hi) (rec) =
     if list-length rec < 5 then None
     else if dtls-is-record (list-at rec 0) == False then None
     else if dtls-has-cid (list-at rec 0) then None
@@ -195,40 +218,72 @@ Section: Open
     else if dtls-has-len (list-at rec 0) == False then None
     else dtls-open-body k seq-hi rec
 
-  dtls-open-body : DtlsKeys, Integer, List Integer -> Maybe DtlsPlain
+ RFC 9147 section 4.2.2: the record carries the low 16 bits of its sequence number, and the receiver takes the full
+ number closest to `expected` (one past the highest it has opened) that ends in them. dtls-open-near unmasks those
+ bits, reconstructs, and opens with the high part that gives that number.
+
+  dtls-open-near : DtlsKeys, Integer, List Integer -> Maybe DtlsPlain
+  dtls-open-near (k) (expected) (rec) = dtls-plain-of (dtls-open-near-raw k expected rec)
+
+  dtls-open-near-raw : DtlsKeys, Integer, List Integer -> Maybe DtlsOpened
+  dtls-open-near-raw (k) (expected) (rec) =
+    when dtls-peek-seq k rec
+      is None -> None
+      is Just (low) -> dtls-open-raw k (dtls-seq-near expected low - low) rec
+
+  dtls-peek-seq : DtlsKeys, List Integer -> Maybe Integer
+  dtls-peek-seq (k) (rec) =
+    if list-length rec < 21 then None
+    else if dtls-is-record (list-at rec 0) == False then None
+    else if dtls-has-seq16 (list-at rec 0) == False then None
+    else let plain = dtls-xor-prefix [list-at rec 1, list-at rec 2] (dtls-sn-mask (k.dk-sn-key) (dtls-slice rec 5 16)) 2
+    in Just (bit-or (bit-shl (list-at plain 0) 8) (list-at plain 1))
+
+  dtls-seq-near : Integer, Integer -> Integer
+  dtls-seq-near (expected) (low) =
+    let c = (expected - bit-and expected 65535) + low
+    in if c + 32768 < expected then c + 65536
+    else if c > expected + 32768 & c >= 65536 then c - 65536
+    else c
+
+  dtls-open-body : DtlsKeys, Integer, List Integer -> Maybe DtlsOpened
   dtls-open-body (k) (seq-hi) (rec) =
     let b0 = list-at rec 0
     in let len-hi = list-at rec 3
     in let len-lo = list-at rec 4
     in let ct-len = bit-or (bit-shl len-hi 8) len-lo
-    in let ct = dtls-slice rec 5 ct-len
-    in if list-length ct /= ct-len then None
+    in if 5 + ct-len > list-length rec then None
     else if ct-len < 16 then None
-    else dtls-open-verify k seq-hi b0 rec ct ct-len
+    else if ct-len > 16640 then None
+    else dtls-open-verify k seq-hi b0 rec ct-len
 
-  dtls-open-verify : DtlsKeys, Integer, Integer, List Integer, List Integer, Integer -> Maybe DtlsPlain
-  dtls-open-verify (k) (seq-hi) (b0) (rec) (ct) (ct-len) =
+  dtls-open-verify : DtlsKeys, Integer, Integer, List Integer, Integer -> Maybe DtlsOpened
+  dtls-open-verify (k) (seq-hi) (b0) (rec) (ct-len) =
     let seq-wire = [list-at rec 1, list-at rec 2]
-    in let seq-plain = dtls-xor-prefix seq-wire (dtls-sn-mask (k.dk-sn-key) ct) 2
+    in let seq-plain = dtls-xor-prefix seq-wire (dtls-sn-mask (k.dk-sn-key) (dtls-slice rec 5 16)) 2
     in let seq = seq-hi + bit-or (bit-shl (list-at seq-plain 0) 8) (list-at seq-plain 1)
     in let aad = [b0] & seq-plain & [list-at rec 3, list-at rec 4]
-    in let body = dtls-slice ct 0 (ct-len - 16)
-    in let tag = dtls-slice ct (ct-len - 16) 16
-    in let opened = aesgcm-decrypt (k.dk-key) (dtls-nonce (k.dk-iv) seq) body aad tag
+    in let tag = dtls-slice rec (5 + ct-len - 16) 16
+    in let opened = aesgcm-decrypt-at (k.dk-key) (dtls-nonce (k.dk-iv) seq) rec 5 (ct-len - 16) aad tag
     in when opened
       is None -> None
       is Just (inner) -> dtls-split-inner inner seq
 
-  dtls-split-inner : List Integer, Integer -> Maybe DtlsPlain
+ RFC 9147 section 4 and RFC 8446 5.2 and 5.4: a ciphertext is at most 2^14 + 256 bytes and the content inside it
+ at most 2^14; a record past either is discarded, authentic or not (RFC 9147 4.5.2).
+
+  dtls-split-inner : List Integer, Integer -> Maybe DtlsOpened
   dtls-split-inner (inner) (seq) =
-    let n = list-length inner
-    in if n < 1 then None
-    else
-      Just (DtlsPlain {
-        dp-content = dtls-slice inner 0 (n - 1),
-        dp-type = list-at inner (n - 1),
-        dp-seq = seq
-      })
+    let p = dtls-last-nonzero inner (list-length inner - 1)
+    in if p < 0 then None
+    else if p > 16384 then None
+    else Just (DtlsOpened { do-inner = inner, do-len = p, do-seq = seq })
+
+  dtls-last-nonzero : List Integer, Integer -> Integer
+  dtls-last-nonzero (bs) (i) =
+    if i < 0 then (-1)
+    else if list-at bs i /= 0 then i
+    else dtls-last-nonzero bs (i - 1)
 
 Section: Plaintext Records
 
@@ -305,8 +360,7 @@ Section: Anti-Replay
  load-bearing: the window MUST NOT be updated due to a received record
  until that record has been deprotected successfully.
 
- So dtls-replay-ok and dtls-replay-accept are separate functions, and a
- caller that accepts before it verifies has built a denial-of-service
+ A caller that accepts before it verifies has built a denial-of-service
  vector: one forged datagram with a high sequence number would slam the
  window shut on every real record behind it.
 

@@ -39,6 +39,17 @@ Section: Broker Side
   topic-of : MqttEp -> Integer
   topic-of (ep) = list-length (mqtt-ep-in-topic ep)
 
+  ready-ep : Integer -> MqttEp
+  ready-ep (n) = (mqtt-ep-recv ((mqtt-ep-connect mqtt-ep-new default-mqtt-connect).ms-ep) (connack n) 0).ms-ep
+
+  good-publish : List Integer
+  good-publish = [50, 9, 0, 3, 97, 47, 98, 0, 7, 0, 1]
+
+  inbound-report : Text, List Integer -> Text
+  inbound-report (name) (bytes) =
+    let s = mqtt-ep-recv (ready-ep 0) bytes 0
+    in "mqtt " & name & " count=" & show (mqtt-ep-in-count (s.ms-ep)) & " acks=" & show (list-length (s.ms-out)) & " failed=" & show (mqtt-ep-failed (s.ms-ep))
+
 Section: Entry
 
   opening : [Console] Nothing =
@@ -118,4 +129,14 @@ Section: Entry
       print-line-uni ("mqtt qos2-send rel-out=" & show seven-rel-out & " rel-hdr=" & show seven-rel-hdr & " held=" & show seven-held & " done=" & show seven-done)
       print-line-uni ("mqtt qos2-outoforder refused=" & show eight-refused & " resent-type=" & show eight-resent)
       print-line-uni ("mqtt qos2-recv rec-type=" & show nine-rec & " comp-type=" & show nine-comp)
+      print-line-uni (inbound-report "in-good       " good-publish)
+      print-line-uni (inbound-report "in-qos3       " [54, 9, 0, 3, 97, 47, 98, 0, 7, 0, 1])
+      print-line-uni (inbound-report "in-topic-past " [48, 4, 0, 9, 97, 47])
+      print-line-uni (inbound-report "in-props-past " [48, 7, 0, 3, 97, 47, 98, 5, 1])
+      print-line-uni (inbound-report "in-id-zero    " [50, 9, 0, 3, 97, 47, 98, 0, 0, 0, 1])
+      print-line-uni (inbound-report "in-id-missing " [50, 5, 0, 3, 97, 47, 98])
+      print-line-uni (inbound-report "in-qos3-then-good" ([54, 9, 0, 3, 97, 47, 98, 0, 7, 0, 1] & good-publish))
+      print-line-uni (inbound-report "in-partial    " [50, 9, 0, 3])
+      print-line-uni (inbound-report "in-length-5-bytes" [48, 255, 255, 255, 255, 1])
+      print-line-uni (inbound-report "in-length-262144" [48, 128, 128, 16])
     end

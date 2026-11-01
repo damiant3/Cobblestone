@@ -1,7 +1,5 @@
 Chapter: Signal
 
- We say:
-
 Section: Types
 
   SignalConnection = record {
@@ -27,11 +25,22 @@ Section: Construction
 
 Section: Connection Management
 
+ `signal-connect` writes the table's list IN PLACE (L-ALIAS) and reuses the first disconnected slot before it appends.
+
   signal-connect : SignalTable, Text, Integer, Integer -> SignalTable
   signal-connect (tbl) (name) (emitter) (receiver) =
-    if tbl.st-count >= tbl.st-capacity then tbl
-    else let conn = SignalConnection { sc-signal-name = name, sc-emitter = emitter, sc-receiver = receiver, sc-active = True }
-    in SignalTable { st-connections = list-push (tbl.st-connections) conn, st-count = tbl.st-count + 1, st-capacity = tbl.st-capacity }
+    let conn = SignalConnection { sc-signal-name = name, sc-emitter = emitter, sc-receiver = receiver, sc-active = True }
+    in let free = sig-free-slot (tbl.st-connections) 0 (tbl.st-count)
+    in if free >= 0 then
+      SignalTable { st-connections = list-set-at (tbl.st-connections) free conn, st-count = tbl.st-count, st-capacity = tbl.st-capacity }
+    else if tbl.st-count >= tbl.st-capacity then tbl
+    else SignalTable { st-connections = list-push (tbl.st-connections) conn, st-count = tbl.st-count + 1, st-capacity = tbl.st-capacity }
+
+  sig-free-slot : List SignalConnection, Integer, Integer -> Integer
+  sig-free-slot (conns) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at conns i).sc-active then sig-free-slot conns (i + 1) n
+    else i
 
   signal-disconnect : SignalTable, Text, Integer, Integer -> SignalTable
   signal-disconnect (tbl) (name) (emitter) (receiver) =

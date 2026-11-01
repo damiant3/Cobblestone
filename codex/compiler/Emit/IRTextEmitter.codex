@@ -128,15 +128,6 @@ Section: CodexType Emission
     if is-default-int lo hi mode then "int-default"
     else "(int " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
 
- A bare reference to a generic record (e.g. `-> SortPartition`) parses as
- a RecordTy with empty type-args but fields whose types carry the free
- type variables (parameterize-walk merges the record's own param names
- with the enclosing signature's, so a field `list : List a` holds the
- function's tvar). We do NOT re-emit the fields (that caused exponential
- IR bloat on recursive types) - instead we recover the type arguments
- from the field tvars so a transpiler can emit `SortPartition<T9>`
- rather than an unparameterized generic.
-
   ir-int-member : List Integer, Integer -> Boolean
   ir-int-member (xs) (n) = ir-int-member-loop xs n 0 (list-length xs)
 
@@ -178,13 +169,6 @@ Section: CodexType Emission
     if i >= list-length ids then ""
     else " (tvar " & integer-to-text (list-at ids i) & ")" & ir-emit-tvar-args ids (i + 1)
 
- THE FOUR ATOMS THAT ALREADY EXISTED KEEP THEIR EXACT SPELLINGS. A plug
- reading this wire matches on the text, so changing "real-approx" to a
- composed form would break every plug for a combination it already
- handles. Only the two f32 modes that could not be spelled before are new
- surface, and a plug that does not know them must refuse rather than fall
- through to ErrorTy.
-
   ir-emit-real-ty : RealWidth, RealMode -> Text
   ir-emit-real-ty (w) (m) =
     if is-width-f32 w then ir-emit-real-f32-ty m
@@ -203,13 +187,6 @@ Section: CodexType Emission
      is RmDefault -> "real"
      is RmTrapping -> "real-trapping"
      is RmSaturating -> "real-saturating"
-
- An arrow's effect row was bound and discarded here until 2026-08-03, so
- a function that declared an effect lost it the moment it took a
- parameter and no consumer of this wire could see it. The row is
- OPTIONAL and trails the two type positions: `(fn p r)` still means an
- empty row and keeps its exact spelling, so a reader taking element 1 and
- element 2 is unaffected.
 
   ir-emit-row-labels : List EffectLabel -> Text
   ir-emit-row-labels (xs) =
@@ -232,18 +209,6 @@ Section: CodexType Emission
     else
       let row-head = " (row (labels" & ir-emit-row-labels (row.labels) & ") " & ir-quote (row.tail-name)
       in row-head & " " & integer-to-text (row.tail-id) & ")"
-
- `ProofTy`, `PropEqTy`, `TypeCon` and `TypeApply` fell through to the
- `otherwise` arm until 2026-08-04 and emitted the same `error` atom
- `ErrorTy` emits, so a proof type was indistinguishable from a type
- failure on this wire and a reader had to answer UNSUPPORTED on the atom
- rather than treat it as either. That is a hole on its own, and it also
- makes a real defect undiagnosable: a constructor pattern over a
- PARAMETRIC sum binds its variable at `error` while the same variable's
- use carries the real type, and whether the lowering assigned `ErrorTy`
- or a `TypeApply` this emitter had no arm for cannot be read off the
- artifact while both spell it the same way. The `otherwise` arm stays as
- a floor for a variant added later.
 
   ir-emit-type : CodexType -> Text
   ir-emit-type (ty) =
@@ -759,23 +724,6 @@ Section: IR Dead Code Elimination
     in let w = ir-dce-flood defs tbl 0 (ir-dce-add-names roots 0 (list-length roots) tbl w0)
     in __record-set m "defs" (ir-dce-filter defs (w.visited) 0 n [])
 
- This stores the filtered list back into the chapter it was given and
- hands back THE SAME record. Making it build a fresh chapter instead
- looks like the obvious correction -- a callee does not own a record its
- caller still holds -- and it is NOT a safe change: measured 2026-07-28,
- it makes `keep-proof-defs` collect from the unpruned list and every
- surviving definition gets appended back a second time by
- `ir-chapter-with-proofs`. A punctual function that survives the prune
- was emitted TWICE, at two addresses in the symbol map, and reported its
- WCET line twice. Callers that need the pre-prune list must bind it
- before calling, which is the same discipline `keep-proof-defs` above
- already follows and says so.
-
- Only an EXPLICIT budget is reported. A wcet-budget of zero means the
- author declared none and emit-wcet-check substitutes the default 256;
- that is not a claim anyone made, so a pruned punctual without a budget
- is ordinary dead code and says nothing.
-
  The walk takes two cursors rather than an index because ir-dce-filter
  preserves order, so the kept list is a subsequence of the original. That
  costs one pass and no allocation beyond the result. It assumes
@@ -806,14 +754,6 @@ Section: IR Dead Code Elimination
     else ir-dbp-loop all-defs kept (i + 1) j acc
 
 Section: IRDef Emission
-
- `unique-params` names the parameters declared `linear`. It is carried the
- whole length of the pipeline and consumed at x86 emit for noalias slots,
- and it was never printed, so linearity did not survive to this wire at
- all: `linear T` and `T` produced byte-identical IR text. It trails the
- form and is omitted when empty, so a def with no linear parameter keeps
- its exact previous spelling and a reader taking elements 1 through 7 is
- unaffected.
 
   ir-emit-unique : List Text -> Text
   ir-emit-unique (ns) =
@@ -871,15 +811,6 @@ Section: IRChapter Emission
   emit-ir-chapter (m) (meta) (type-defs) =
     emit-ir-chapter-prefix m meta type-defs & ir-emit-defs (m.defs) 0 & "))\n"
 
- `grounds` publishes the chapter's grounds table, one "slug\neffect"
- entry per grounded effect, exactly as the type checker holds it. It is
- keyed like every other form in this header rather than positional, so a
- reader that does not look it up is unaffected; `ir-quote` escapes the
- separating newline and the parser's tokenizer restores it, so the entry
- crosses the wire unchanged. Unlike `unique` it is emitted even when
- empty, matching its siblings here, and an ungrounded chapter pays ten
- bytes for `(grounds)`.
-
  The chapter header up to and including the "(defs" opener -- everything
  except the per-def list and the closing "))". emit-ir-cce (opening)
  does not call emit-ir-chapter: building the whole chapter as one value
@@ -894,16 +825,6 @@ Section: IRChapter Emission
  single def. Emission is pure, so the passes agree. emit-ir-uni still
  builds the monolith; it has no SIZE frame and no known large caller.
 
- The pieces go out through print-text, and only print-text: a payload
- newline is the CCE byte inside the Text, and print-line's appended
- terminator is the raw serial 10, which compile.ps1's byte slice would
- count against SIZE. Delegating the joiners to print-line was tried
- 2026-07-28 and corrupted exactly those bytes; the account is in
- red-workplan's outbox. So every "\n  " joiner stays inside its piece,
- the footer keeps its own newline, and the one raw linefeed after the
- payload is print-line's, exactly as the monolith's print-line emitted
- it.
-
   ir-defs-wire-size : List IRDef, Integer, Integer, Integer -> Integer
   ir-defs-wire-size (xs) (i) (len) (acc) =
     if i == len then acc
@@ -911,20 +832,6 @@ Section: IRChapter Emission
     in let n = text-length (ir-emit-def (list-at xs i))
     in let restored = __heap-restore h
     in ir-defs-wire-size xs (i + 1) len (acc + n + 3)
-
- **It has its own flag rather than riding `debug`, and that is not tidiness.**
- Wired behind `debug` first, it printed nothing at all: `IR-CCE debug` empties
- the chapter. Measured 2026-08-04 on the compiler's own source, same kernel and
- same input, `IR-CCE` runs 28 s and dies OUT OF MEMORY while `IR-CCE debug`
- finishes in 5 s announcing `SIZE:130` with zero definitions -- and it does the
- same on `seed#587` and `seed#586`, so it long predates this instrument. An
- instrument gated on the flag that destroys its own subject measures nothing,
- which is what running it against the real input is for.
-
- **Print through `print-line-uni`, never `print-text`.** `print-text` emits CCE,
- which is right for the payload and unreadable as ASCII in a raw capture: these
- three probes first shipped on `print-text` and 390 KB of trace read as an empty
- output, which cost a wrong published finding about where the emit dies.
 
   ir-trace-dce-cost : List IRDef, Integer, Integer -> [Console] Nothing
   ir-trace-dce-cost (xs) (i) (len) =

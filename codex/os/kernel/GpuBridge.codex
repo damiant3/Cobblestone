@@ -5,8 +5,6 @@ Chapter: GpuBridge
   cites Foreword chapter CCE
   grounds Device.Port
 
- We say:
-
 Section: Buffers
 
  One slab below the rasterizer's own command buffer (#BE000000), inside
@@ -95,10 +93,20 @@ Section: High-Level Operations
     in let wb = gpu-put-tensor gpu-cmd-buf (20 + na * 4) b 0 nb
     in let rlen = gpu-ring (20 + (na + nb) * 4)
     in if rlen <= 0 then None
-    else if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
+    else gpu-matmul-reply (a.rows) (b.cols)
+
+ The reply region is 10 MB: a header of 12 bytes and the result words.
+
+  gpu-reply-size : Integer = #A00000
+
+  gpu-matmul-reply : Integer, Integer -> Maybe Tensor
+  gpu-matmul-reply (rows) (cols) =
+    if peek-32 gpu-reply-buf 0 /= gpu-status-complete then None
     else let rr = peek-32 gpu-reply-buf 4
     in let rc = peek-32 gpu-reply-buf 8
-    in Just (Tensor { data = gpu-get-tensor gpu-reply-buf 12 (rr * rc) 0 [], rows = rr, cols = rc })
+    in if rr /= rows | rc /= cols then None
+    else if rows < 0 | cols < 0 | rows * cols > (gpu-reply-size - 12) / 4 then None
+    else Just (Tensor { data = gpu-get-tensor gpu-reply-buf 12 (rr * rc) 0 [], rows = rr, cols = rc })
 
   gpu-bridge-relu : GpuBridge, Tensor -> Maybe Tensor
   gpu-bridge-relu (bridge) (t) =
@@ -239,9 +247,6 @@ Section: The Rest of the Operations
       })
 
 Section: A Kernel On The Actual Device
-
- PTX is ASCII and Codex text is CCE, so the module crosses the boundary
- through `to-unicode`.
 
   gpu-put-text : Integer, Integer, Text, Integer, Integer -> Integer
   gpu-put-text (base) (off) (s) (i) (n) =
@@ -418,8 +423,6 @@ Section: Buffer Pool
     in let c = poke-32 gpu-pool-head 0 (n - 1)
     in let d = gpu-set64 gpu-pool-head 4 (gpu-get64 gpu-pool-head 4 - bytes)
     in h
-
- Frees every pooled buffer to the host; a resident server calls it on idle.
 
   gpu-buf-pool-drain : Integer -> Integer
   gpu-buf-pool-drain (freed) =

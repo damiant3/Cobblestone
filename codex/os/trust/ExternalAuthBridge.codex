@@ -63,12 +63,28 @@ Section: Authentication
  one identifies nobody and is refused here rather than stored under a key
  that is really the provider's name.
 
-  bridge-authenticate : OAuthTokens, Text -> Maybe ExternalIdentity
-  bridge-authenticate (tokens) (provider) =
+ OpenID Connect Core 1.0 section 3.1.3.7: the client checks that iss is the
+ issuer it expects, that aud names its client_id, and that exp is later than
+ now; section 2 makes exp REQUIRED. An empty expected issuer or client id
+ would check nothing, so it is refused.
+
+  bridge-authenticate : OAuthTokens, Text, Text, Text, Integer -> Maybe ExternalIdentity
+  bridge-authenticate (tokens) (provider) (issuer) (client-id) (now) =
     let decoded = jwt-decode (tokens.ot-id-token)
     in when decoded
-      is JwtOk (jwt) -> bridge-identity-of tokens provider jwt (jwt-get-sub jwt)
+      is JwtOk (jwt) ->
+        if bridge-claims-ok (jwt.jt-payload) issuer client-id now then bridge-identity-of tokens provider jwt (jwt-get-sub jwt)
+        else None
       is JwtMalformed (msg) -> None
+
+  bridge-claims-ok : JwtPayload, Text, Text, Integer -> Boolean
+  bridge-claims-ok (p) (issuer) (client-id) (now) =
+    if text-length issuer == 0 then False
+    else if text-length client-id == 0 then False
+    else if p.jp-iss /= issuer then False
+    else if p.jp-aud /= client-id then False
+    else if p.jp-exp <= 0 then False
+    else p.jp-exp > now
 
   bridge-identity-of : OAuthTokens, Text, JwtToken, Text -> Maybe ExternalIdentity
   bridge-identity-of (tokens) (provider) (jwt) (subject) =

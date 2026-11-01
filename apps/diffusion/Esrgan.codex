@@ -18,11 +18,7 @@ Chapter: Esrgan
  output; two nearest 2x upsamples each followed by a conv and leaky ReLU;
  conv_hr, leaky ReLU, conv_last. Every conv is 3x3 with padding 1.
 
- We say:
-
 Section: Weights
-
- Conv weights in f16 and biases in f32, as VaeDecoder holds them.
 
   esr-upload : PthFile, PthTensorAt -> Integer
   esr-upload (f) (t) =
@@ -58,9 +54,6 @@ Section: Network
   esr-lrelu : Act -> Act
   esr-lrelu (x) = vd-act (x.ah) (x.ac) (x.ahh) (x.aww) (esr-lrelu-into x (x.ah) 0 0.2 >= 0)
 
- One dense conv: the first c channels of cat to 32, leaky ReLU, written
- after them.
-
   esr-dense : VaeWeights, Integer, Act, Text, Integer -> Integer
   esr-dense (w) (cat) (x) (p) (c) =
     let y = vd-conv w (Act { ah = cat, ac = c, ahh = x.ahh, aww = x.aww }) p 32 3 1
@@ -92,17 +85,12 @@ Section: Network
     in let r = if c.ah == 0 then 0 - 1 else sm-lincomb (c.ah) (x.ah) (x.ah) (c.ah) 0.2 1.0 0.0 (64 * x.ahh * x.aww)
     in vd-act (c.ah) 64 (x.ahh) (x.aww) (r >= 0)
 
- The trunk from its input x, which stays alive for the skip.
-
   esr-body : VaeWeights, Act, Act, Integer, Integer -> Act
   esr-body (w) (x) (trunk) (k) (n) =
     if k >= n | x.ah == 0 then x
     else let y = esr-rrdb w x ("body." & show k)
     in let f = if x.ah == trunk.ah then True else vd-free x
     in esr-body w y trunk (k + 1) n
-
- The picture img (3 channels, values in 0 to 1) to 4 times its size; the
- caller frees the answer.
 
   esr-forward : VaeWeights, Act, Integer -> Act
   esr-forward (w) (img) (nb) =
@@ -163,7 +151,10 @@ Section: Tiles
     in let r = v / q
     in let f = real-from-int (real-to-int r)
     in let d = r - f
-    in let k = if d > 0.5 then f + 1.0 else if d < 0.0 - 0.5 then f - 1.0 else if d ~0 0.5 | d ~0 (0.0 - 0.5) then (if real-to-int f - real-to-int f / 2 * 2 == 0 then f else f + (if d > 0.0 then 1.0 else 0.0 - 1.0)) else f
+    in let k = if d > 0.5 then f + 1.0
+    else if d < 0.0 - 0.5 then f - 1.0
+    else if d ~0 0.5 | d ~0 (0.0 - 0.5) then (if real-to-int f - real-to-int f / 2 * 2 == 0 then f else f + (if d > 0.0 then 1.0 else 0.0 - 1.0))
+    else f
     in k * q
 
   esr-byte : Real -> Integer
@@ -187,9 +178,6 @@ Section: Tiles
     in if e == 0 then 0.0
     else bits-to-real (bit-or (bit-shl (bit-shru b 31) 63) (bit-or (bit-shl (e + 896) 52) (bit-shl (bit-and b #7FFFFF) 29)))
 
- The model's planar BGR output of side s at src as an RGB tile of bytes,
- through f16 first for a half-precision model.
-
   esr-to-byte : Boolean, Integer -> Integer
   esr-to-byte (half) (raw) = if half then esr-byte (esr-f32 raw) else esr-byte-f32 (esr-f32 raw)
 
@@ -203,9 +191,6 @@ Section: Tiles
 
   esr-blend : Integer, Integer, Integer -> Integer
   esr-blend (old) (new) (m) = let t = old * (255 - m) + new * m + 128 in (bit-shru t 8 + t) / 256
-
- Tile bytes (side s) into a buffer of width bw at (x, y); columns below ov
- blend with the column mask, rows below ovr with the row mask (0 for none).
 
   esr-paste : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   esr-paste (dst) (bw) (src) (sw) (sh) (x) (y) (ov) (ovr) (i) =
@@ -228,19 +213,12 @@ Section: Tiles
   esr-count : Integer, Integer, Integer -> Integer
   esr-count (n) (tile) (ov) = (n - ov + (tile - ov) - 1) / (tile - ov)
 
- The buffers one upscale reuses: stage (a tile's BGR f32), host (the
- network's output), tile (its bytes) and row (a row of tiles, every byte of
- which the row's tiles write before it is read).
-
   EsrBufs = record {
     eb-stage : Integer,
     eb-host : Integer,
     eb-tile : Integer,
     eb-row : Integer
   }
-
- One tile of side t at (x, y) of the picture through the network fwd, as
- bytes of side 4t in bufs' tile; False when it did not run.
 
   esr-tile : (Act -> Act), Boolean, Integer, Integer, Integer, Integer, Integer, EsrBufs -> Boolean
   esr-tile (fwd) (half) (rgb) (width) (x) (y) (t) (bufs) =
@@ -268,16 +246,17 @@ Section: Tiles
     else let p = esr-paste out (4 * width) (bufs.eb-row) (4 * width) (4 * t) 0 (4 * y) 0 (if y == 0 then 0 else 4 * ov) 0
     in esr-rows fwd half rgb width height xs ys (k + 1) t ov out bufs
 
- The picture of width x height RGB bytes at rgb, at least tile on each side,
- upscaled 4 times by the network fwd as Forge's upscale_with_model does it,
- its output through f16 when half; the answer's RGB bytes, or 0.
-
   esr-upscale-by : (Act -> Act), Boolean, Integer, Integer, Integer, Integer, Integer -> Integer
   esr-upscale-by (fwd) (half) (rgb) (width) (height) (tile) (ov) =
     if width < tile | height < tile | tile <= ov then 0
     else let xs = esr-starts width tile (esr-count width tile ov) 0 0 (__list-with-capacity 64)
     in let ys = esr-starts height tile (esr-count height tile ov) 0 0 (__list-with-capacity 64)
-    in esr-rows fwd half rgb width height xs ys 0 tile ov (alloc-bytes (16 * width * height * 3)) (EsrBufs { eb-stage = alloc-bytes (3 * tile * tile * 4), eb-host = alloc-bytes (48 * tile * tile * 4), eb-tile = alloc-bytes (48 * tile * tile), eb-row = alloc-bytes (48 * width * tile) })
+    in esr-rows fwd half rgb width height xs ys 0 tile ov (alloc-bytes (16 * width * height * 3)) (EsrBufs {
+      eb-stage = alloc-bytes (3 * tile * tile * 4),
+      eb-host = alloc-bytes (48 * tile * tile * 4),
+      eb-tile = alloc-bytes (48 * tile * tile),
+      eb-row = alloc-bytes (48 * width * tile)
+    })
 
   esr-upscale : VaeWeights, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   esr-upscale (w) (nb) (rgb) (width) (height) (tile) (ov) = esr-upscale-by (\x -> esr-forward w x nb) True rgb width height tile ov

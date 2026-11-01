@@ -11,8 +11,6 @@ Chapter: VaeTiling
 
  Fixed-point (scale 1000).
 
- We say:
-
 Section: Types
   TileConfig = record {
     tc-tile-size : Integer,
@@ -68,7 +66,7 @@ Section: Tile Grid Generation
     in vt-gen-tiles lat-w lat-h tile-size step rows cols row (col + 1) (list-push acc tile)
 
   vt-clamp-pos : Integer, Integer -> Integer
-  vt-clamp-pos (v) (max-v) = if v > max-v then max-v else if v < 0 then 0 else v
+  vt-clamp-pos (v) (max-v) = if v > max-v then (if max-v < 0 then 0 else max-v) else if v < 0 then 0 else v
 
 Section: Extract Tile from Latent
   vt-extract-tile : List Integer, Integer, Integer, Integer, TileSpec -> List Integer
@@ -113,28 +111,30 @@ Section: Tiled VAE Decode
     in let out-x = tile.ts-x * 8
     in let out-y = tile.ts-y * 8
     in let out-w = lat-w * 8
-    in let blend-weights = vt-compute-blend-weights tile-w tile-h (cfg.tc-overlap * 8) (cfg.tc-blend-mode)
+    in let blend-weights = vt-compute-blend-weights tile-w tile-h (cfg.tc-overlap * 8) (tile.ts-x > 0) (tile.ts-x + tile.ts-w < lat-w) (tile.ts-y > 0) (tile.ts-y + tile.ts-h < lat-h) (cfg.tc-blend-mode)
     in let new-canvas = vt-splat-tile canvas out-w (decoded.img-pixels) tile-w tile-h out-x out-y blend-weights
     in let new-weights = vt-splat-weights weights out-w tile-w tile-h out-x out-y blend-weights
     in vt-decode-tiles vae latents lat-w lat-h ch tiles cfg new-canvas new-weights (i + 1) n
 
 Section: Blend Weight Computation
-  vt-compute-blend-weights : Integer, Integer, Integer, BlendMode -> List Integer
-  vt-compute-blend-weights (w) (h) (overlap) (mode) =
-    vt-blend-loop w h overlap mode 0 0 []
+  vt-compute-blend-weights : Integer, Integer, Integer, Boolean, Boolean, Boolean, Boolean, BlendMode -> List Integer
+  vt-compute-blend-weights (w) (h) (overlap) (left) (right) (top) (bottom) (mode) =
+    vt-blend-loop w h overlap left right top bottom mode 0 0 []
 
-  vt-blend-loop : Integer, Integer, Integer, BlendMode, Integer, Integer, List Integer -> List Integer
-  vt-blend-loop (w) (h) (overlap) (mode) (y) (x) (acc) =
+  vt-blend-loop : Integer, Integer, Integer, Boolean, Boolean, Boolean, Boolean, BlendMode, Integer, Integer, List Integer -> List Integer
+  vt-blend-loop (w) (h) (overlap) (left) (right) (top) (bottom) (mode) (y) (x) (acc) =
     if y >= h then acc
-    else if x >= w then vt-blend-loop w h overlap mode (y + 1) 0 acc
-    else let wx = vt-edge-weight x w overlap mode
-    in let wy = vt-edge-weight y h overlap mode
+    else if x >= w then vt-blend-loop w h overlap left right top bottom mode (y + 1) 0 acc
+    else let wx = vt-edge-weight x w overlap left right mode
+    in let wy = vt-edge-weight y h overlap top bottom mode
     in let weight = wx * wy / 1000
-    in vt-blend-loop w h overlap mode y (x + 1) (list-push acc weight)
+    in vt-blend-loop w h overlap left right top bottom mode y (x + 1) (list-push acc weight)
 
-  vt-edge-weight : Integer, Integer, Integer, BlendMode -> Integer
-  vt-edge-weight (pos) (dim) (overlap) (mode) =
-    let dist-from-edge = vt-min-val pos (dim - 1 - pos)
+  vt-edge-weight : Integer, Integer, Integer, Boolean, Boolean, BlendMode -> Integer
+  vt-edge-weight (pos) (dim) (overlap) (taper-lo) (taper-hi) (mode) =
+    let lo = if taper-lo then pos else overlap
+    in let hi = if taper-hi then dim - 1 - pos else overlap
+    in let dist-from-edge = vt-min-val lo hi
     in if dist-from-edge >= overlap then 1000
     else if overlap <= 0 then 1000
     else when mode
@@ -167,9 +167,9 @@ Section: Canvas Operations
 
   vt-add-weighted-pixel : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
   vt-add-weighted-pixel (canvas) (ci) (r) (g) (b) (w) =
-    let canvas2 = list-set-at canvas ci (list-at canvas ci + r * w / 1000)
-    in let canvas3 = list-set-at canvas2 (ci + 1) (list-at canvas2 (ci + 1) + g * w / 1000)
-    in list-set-at canvas3 (ci + 2) (list-at canvas3 (ci + 2) + b * w / 1000)
+    let canvas2 = list-set-at canvas ci (list-at canvas ci + r * w)
+    in let canvas3 = list-set-at canvas2 (ci + 1) (list-at canvas2 (ci + 1) + g * w)
+    in list-set-at canvas3 (ci + 2) (list-at canvas3 (ci + 2) + b * w)
 
   vt-splat-weights : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
   vt-splat-weights (weights) (cw) (tw) (th) (ox) (oy) (tile-weights) =
@@ -196,7 +196,7 @@ Section: Canvas Operations
     else let ci = (y * w + x) * 3 + ch
     in let wi = y * w + x
     in let wt = list-at weights wi
-    in let val = if wt <= 0 then 0 else list-at canvas ci * 1000 / wt
+    in let val = if wt <= 0 then 0 else list-at canvas ci / wt
     in vt-norm-loop canvas weights w h ch y (x + 1) (list-push acc val)
 
 Section: Helpers

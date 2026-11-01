@@ -16,8 +16,6 @@ Chapter: EcdsaP256
  to `ec-scalar-mul`, this paragraph is the thing that was wrong, and the
  fix is a separate ladder rather than a note.
 
- We say:
-
 Section: The Curve
 
  P-256 is y^2 = x^3 - 3x + b over the prime field of order p. The
@@ -198,13 +196,6 @@ Section: The Field
 
   ec-from-mont : List Integer, EcField -> List Integer
   ec-from-mont (a) (f) = cb-mont-mul a f.ef-one f.ef-m f.ef-n f.ef-n0
-
- Every operation returns a fresh list. `cb-take` copies, and the carry
- walks then mutate only that copy, so no caller's value is ever written
- through. This matters more than it looks: `cb-sub-into` mutates its
- first argument in place, and a point formula reuses its inputs several
- times, so an operation that subtracted into a caller's coordinate would
- corrupt the next line rather than this one.
 
   ec-add-f : List Integer, List Integer, EcField -> List Integer
   ec-add-f (a) (b) (f) = ec-add-carry (cb-take a f.ef-n) b f
@@ -390,18 +381,27 @@ Section: Points
     in EcPoint { ep-x = x3, ep-y = y3, ep-z = ec-mul-f zt t.at-h f }
 
   ec-scalar-mul : List Integer, EcPoint, EcField -> EcPoint
-  ec-scalar-mul (k) (p) (f) = ec-sm-loop k p f (ec-infinity f) (cb-top-bit k)
+  ec-scalar-mul (k) (p) (f) =
+    let inf = ec-infinity f
+    in let acc = EcPoint { ep-x = for v in inf.ep-x -> v, ep-y = for v in inf.ep-y -> v, ep-z = for v in inf.ep-z -> v }
+    in let done = ec-sm-loop k p f acc (cb-top-bit k)
+    in acc
 
-  ec-sm-loop : List Integer, EcPoint, EcField, EcPoint, Integer -> EcPoint
+  ec-sm-loop : List Integer, EcPoint, EcField, EcPoint, Integer -> Integer
   ec-sm-loop (k) (p) (f) (acc) (i) =
-    if i < 0 then acc
-    else ec-sm-step k p f (ec-double acc f) i
+    if i < 0 then 0
+    else let mark = __heap-save
+    in let d = ec-double acc f
+    in let nxt = if cb-bit-at k i == 1 then ec-add-pt d p f else d
+    in let w = ec-store-limbs acc.ep-x nxt.ep-x 0 f.ef-n + ec-store-limbs acc.ep-y nxt.ep-y 0 f.ef-n + ec-store-limbs acc.ep-z nxt.ep-z 0 f.ef-n
+    in let r = __heap-restore mark
+    in ec-sm-loop k p f acc (i - 1)
 
-  ec-sm-step : List Integer, EcPoint, EcField, EcPoint, Integer -> EcPoint
-  ec-sm-step (k) (p) (f) (acc) (i) =
-    if cb-bit-at k i == 1
-    then ec-sm-loop k p f (ec-add-pt acc p f) (i - 1)
-    else ec-sm-loop k p f acc (i - 1)
+  ec-store-limbs : List Integer, List Integer, Integer, Integer -> Integer
+  ec-store-limbs (dst) (src) (i) (n) =
+    if i >= n then 0
+    else let w = list-set-at dst i (list-at src i)
+    in ec-store-limbs dst src (i + 1) n
 
  The affine x coordinate, as thirty-two big-endian bytes, which is the
  form the signature's r is compared against. This is the one inversion
@@ -439,19 +439,8 @@ Section: Key Validation
 
 Section: Verification
 
- SHA-256 answers eight thirty-two-bit WORDS and not thirty-two bytes.
- Handing the word list to something that wants a byte string produces
- output that is plausible and silently wrong, which is how a whole TLS
- key schedule once shipped in the wrong units. The conversion is
- big-endian and it happens here, once.
-
   ec-digest-bytes : List Integer -> List Integer
   ec-digest-bytes (msg) = ec-words-bytes (sha256 msg) 0 []
-
- SHA-384 answers six SIXTY-FOUR bit words where SHA-256 answers eight of
- thirty two, so the byte conversion is a different one and not a longer
- run of the same one. `Foreword chapter Rsa` already needed this shape for
- PKCS#1 and spells it `rsa-words64-bytes`.
 
   ec-digest384-bytes : List Integer -> List Integer
   ec-digest384-bytes (msg) = ec-words64-bytes (sha384 msg) 0 []

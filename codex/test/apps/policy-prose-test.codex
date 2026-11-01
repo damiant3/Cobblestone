@@ -1,25 +1,57 @@
 Chapter: PolicyProseTest
   cites Trust chapter PolicyProse
   cites Trust chapter PolicyEngine
+  cites Trust chapter NameBook
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
 
 Section: The Policy
 
   jake-policy-text : Text
-  jake-policy-text = "Jake may use the flight simulator on weekends between 10:00 and 17:00, for no more than 2 hours per session\nJake may use the chat app on weekdays between 15:00 and 17:30, for no more than 30 minutes per day\nJake may never use real flight controls under any circumstances.\nWe love you, buddy."
+  jake-policy-text = "We love you, buddy.\nWe say:\nJake is permitted to use the \"flight simulator\" on weekends between 10:00 and 17:00, for no more than 2 hours per session\nJake is permitted to use the \"chat app\" on weekdays between 15:00 and 17:30, for no more than 30 minutes per day\nJake is never permitted to use \"real flight controls\" under any circumstances."
 
 Section: Test
 
   jake-pp : ProsePolicy
-  jake-pp = compile-policy jake-policy-text
+  jake-pp = (compile-policy-checked jake-policy-text).policy
 
-  jake-lowered : Policy
-  jake-lowered = lower-policy jake-pp "jake-effective"
+  grantor-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+  jake-sk : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  grantor-pk : List Integer
+  grantor-pk = ed25519-public-key grantor-sk
+
+  jake-pk : List Integer
+  jake-pk = ed25519-public-key jake-sk
+
+  jake-hex : Text
+  jake-hex = name-book-key-hex jake-pk
+
+  book : NameBook
+  book = name-book-sign grantor-sk grantor-pk [NameEntry { name = "Jake", key = jake-pk }]
+
+  lowered-with : NameBook, List Integer -> Text
+  lowered-with (b) (g) =
+    when lower-policy jake-pp "jake-effective" b g
+      is None -> "refused"
+      is Just (p) -> "lowered " & show (list-length (p.rules)) & " rules"
+
+  ask : Text, Text, Integer, Integer -> Text
+  ask (who) (cap) (day) (minute) =
+    when lower-policy jake-pp "jake-effective" book grantor-pk
+      is None -> "refused"
+      is Just (p) -> simulate-ask p who cap day minute
 
   opening : [Console] Nothing = act
     print-line-uni (clarifier-reflect jake-pp)
-    print-line-uni (simulate-ask jake-lowered "jake" "flight simulator" 5 840)
-    print-line-uni (simulate-ask jake-lowered "jake" "flight simulator" 0 840)
-    print-line-uni (simulate-ask jake-lowered "jake" "flight simulator" 5 1080)
-    print-line-uni (simulate-ask jake-lowered "jake" "chat app" 2 960)
-    print-line-uni (simulate-ask jake-lowered "jake" "real flight controls" 5 840)
+    print-line-uni (ask jake-hex "flight simulator" 5 840)
+    print-line-uni (ask jake-hex "flight simulator" 0 840)
+    print-line-uni (ask jake-hex "flight simulator" 5 1080)
+    print-line-uni (ask jake-hex "chat app" 2 960)
+    print-line-uni (ask jake-hex "real flight controls" 5 840)
+    print-line-uni ("another agent: " & ask (name-book-key-hex grantor-pk) "flight simulator" 5 840)
+    print-line-uni ("bound book: " & lowered-with book grantor-pk)
+    print-line-uni ("book without Jake: " & lowered-with (name-book-sign grantor-sk grantor-pk [NameEntry { name = "Jill", key = jake-pk }]) grantor-pk)
+    print-line-uni ("book by another grantor: " & lowered-with book jake-pk)
+    print-line-uni ("book entry altered: " & lowered-with (NameBook { grantor = grantor-pk, entries = [NameEntry { name = "Jake", key = grantor-pk }], signature = book.signature }) grantor-pk)
   end

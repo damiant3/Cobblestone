@@ -1,9 +1,11 @@
 // Build: nvcc -O2 div-vs-host.cu -lcuda -o div-vs-host.exe (under vcvars64).
-// div-vs-host.exe <div-probe.ptx> : gpu_div_probe over operand pairs from both of the plug's
+// div-vs-host.exe <div-probe.ptx> [zero|overflow] : gpu_div_probe over operand pairs from both of the plug's
 // divide paths (both in [0, 2^31), and a negative or wide operand), q and r against host s64.
+// With zero, one divisor is 0; with overflow, one pair is INT64_MIN / -1; either must fail the launch.
 #include <cuda.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define CK(x) do { CUresult r_ = (x); if (r_ != CUDA_SUCCESS) { const char *s_; cuGetErrorString(r_, &s_); printf("%s failed: %s\n", #x, s_); exit(1); } } while (0)
 static char *slurp(const char *p) { FILE *f = fopen(p, "rb"); fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); char *b = (char *)malloc(n + 1); fread(b, 1, n, f); b[n] = 0; fclose(f); return b; }
 int main(int argc, char **argv) {
@@ -25,10 +27,16 @@ int main(int argc, char **argv) {
         if (a[i] >= 0 && a[i] < 2147483648LL && b[i] >= 0 && b[i] < 2147483648LL) fast++;
     }
     CUdeviceptr da, db, dq, dr; CK(cuMemAlloc(&da, n * 8)); CK(cuMemAlloc(&db, n * 8)); CK(cuMemAlloc(&dq, n * 8)); CK(cuMemAlloc(&dr, n * 8));
+    const char *mode = argc > 2 ? argv[2] : "";
+    if (!strcmp(mode, "zero")) b[7] = 0;
+    if (!strcmp(mode, "overflow")) { a[7] = (long long)0x8000000000000000ULL; b[7] = -1; }
     CK(cuMemcpyHtoD(da, a, n * 8)); CK(cuMemcpyHtoD(db, b, n * 8));
     CUmodule m; CUfunction f; CK(cuModuleLoadData(&m, slurp(argv[1]))); CK(cuModuleGetFunction(&f, m, "gpu_div_probe"));
     long long nn = n; void *p[] = { &da, &db, &dq, &dr, &nn };
-    CK(cuLaunchKernel(f, (unsigned)(n / 256), 1, 1, 256, 1, 1, 0, 0, p, 0)); CK(cuCtxSynchronize());
+    CK(cuLaunchKernel(f, (unsigned)(n / 256), 1, 1, 256, 1, 1, 0, 0, p, 0));
+    CUresult sync = cuCtxSynchronize();
+    if (mode[0]) { const char *s_ = ""; cuGetErrorString(sync, &s_); printf("div-probe %s: launch %s (%s)\n", mode, sync == CUDA_SUCCESS ? "SUCCEEDED" : "faulted", s_); return sync == CUDA_SUCCESS ? 1 : 0; }
+    CK(sync);
     CK(cuMemcpyDtoH(q, dq, n * 8)); CK(cuMemcpyDtoH(r, dr, n * 8));
     long long bad = 0;
     for (long long i = 0; i < n; i++) if (q[i] != a[i] / b[i] || r[i] != a[i] % b[i]) { if (bad < 5) printf("  %lld / %lld: got q %lld r %lld\n", a[i], b[i], q[i], r[i]); bad++; }

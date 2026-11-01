@@ -1,0 +1,551 @@
+Chapter: AccpFlowIr
+  cites Accp chapter AccpJson
+  cites Accp chapter AccpIr
+  cites Accp chapter AccpFlow
+
+Section: Tables
+
+  FiEnv = record {
+    rules : List FlowRule,
+    names : List Text,
+    arity : List Integer,
+    pin : List Integer,
+    dpc : List Integer,
+    ret : List Integer,
+    taken : List Boolean,
+    ua : Integer,
+    ur : Integer,
+    upc : Integer,
+    atypes : List Text,
+    amasks : List Integer,
+    state : Integer
+  }
+
+  FiAcc = record { ev : List Integer, etypes : List Text, sites : List Text, giveup : Text, cur : Text }
+
+  FiWalk = record { m : Integer, acc : FiAcc }
+
+  FlowAnalysis = record { verdict : Text, reach : List Text }
+
+  afi-ev : FiAcc, Integer, Integer, Integer -> FiAcc
+  afi-ev (a) (k) (i) (v) =
+    if v == 0 & k /= 4 then a
+    else FiAcc { ev = list-push (list-push (list-push a.ev k) i) v, etypes = a.etypes, sites = a.sites, giveup = a.giveup, cur = a.cur }
+
+  afi-give : FiAcc, Text -> FiAcc
+  afi-give (a) (why) =
+    if a.giveup /= "" then a
+    else FiAcc { ev = a.ev, etypes = a.etypes, sites = a.sites, giveup = why, cur = a.cur }
+
+  afi-alias-ev : FiAcc, Text, Integer -> FiAcc
+  afi-alias-ev (a) (ty) (v) =
+    if v == 0 then a
+    else let ts = list-push a.etypes ty
+    in FiAcc { ev = list-push (list-push (list-push a.ev 8) (list-length ts - 1)) v, etypes = ts, sites = a.sites, giveup = a.giveup, cur = a.cur }
+
+  afi-hit : FiAcc, Integer -> FiAcc
+  afi-hit (a) (bits) =
+    if bits == 0 then a
+    else FiAcc { ev = list-push (list-push (list-push a.ev 10) 0) bits, etypes = a.etypes, sites = list-push a.sites (show bits & ":" & a.cur), giveup = a.giveup, cur = a.cur }
+
+  afi-with : FiAcc, Integer -> FiWalk
+  afi-with (a) (m) = FiWalk { m = m, acc = a }
+
+  afi-bit : Integer -> Integer
+  afi-bit (k) = bit-shl 1 k
+
+  afi-or-at : List Integer, Integer -> Integer
+  afi-or-at (xs) (i) = if i >= 0 & i < list-length xs then list-at xs i else 0
+
+Section: Forms
+
+  afi-kid : Text, AccpForm, Integer -> AccpForm
+  afi-kid (s) (f) (i) = afi-kid-from s (ai-after-head s f) i
+
+  afi-kid-from : Text, Integer, Integer -> AccpForm
+  afi-kid-from (s) (at) (i) =
+    let k = ai-form s at
+    in if i == 0 | k.ok == False then k
+    else afi-kid-from s k.next (i - 1)
+
+  afi-last : Text, AccpForm -> AccpForm
+  afi-last (s) (f) = afi-last-from s (ai-form s (ai-after-head s f)) (ai-form s (ai-after-head s f))
+
+  afi-last-from : Text, AccpForm, AccpForm -> AccpForm
+  afi-last-from (s) (prev) (k) =
+    if k.ok == False then prev
+    else afi-last-from s k (ai-form s k.next)
+
+  afi-str : Text, AccpForm -> Text
+  afi-str (s) (f) = aj-decode (ai-raw s f)
+
+  afi-type-of : Text, AccpForm -> Text
+  afi-type-of (s) (f) = if ai-head s f == "name" then ai-raw s (afi-kid s f 1) else ai-raw s (afi-last s f)
+
+  afi-index : List Text, Text, Integer -> Integer
+  afi-index (xs) (n) (i) =
+    if i >= list-length xs then 0 - 1
+    else if list-at xs i == n then i
+    else afi-index xs n (i + 1)
+
+  afi-local : List Text, Text, Integer -> Integer
+  afi-local (xs) (n) (i) =
+    if i < 0 then 0 - 1
+    else if list-at xs i == n then i
+    else afi-local xs n (i - 1)
+
+Section: Labels
+
+  afi-labels : Text, Integer, Integer, List Text -> List Text
+  afi-labels (s) (i) (stop) (acc) =
+    if i >= stop then acc
+    else if aj-is s i "\"" then
+      let q = aj-string s i
+      in if q.ok then afi-labels s q.next stop acc else acc
+    else if aj-is s i "(" & aj-is s (i + 1) "l" & aj-is s (i + 2) "a" & aj-is s (i + 3) "b" & aj-is s (i + 4) "e" & aj-is s (i + 5) "l" & aj-is s (i + 6) " " then
+      let j = aj-ws s (i + 7)
+      in let q = aj-string s j
+      in if q.ok == False then afi-labels s (i + 1) stop acc
+      else afi-labels s q.next stop (list-push acc (aj-decode (substring s j (q.next - j))))
+    else afi-labels s (i + 1) stop acc
+
+  afi-nullary : Text -> Text
+  afi-nullary (n) =
+    if n == "read-line" | n == "read-line-cce" then "Console.Read"
+    else if n == "get-args" | n == "current-dir" then "Process"
+    else if n == "net-status" then "Network.Read"
+    else if n == "key-zero" | n == "key-status" then "Identity"
+    else if n == "block-sector-count" then "Device.Block"
+    else ""
+
+  afi-unmodelled : Text -> Boolean
+  afi-unmodelled (n) =
+    n == "fork" | n == "await" | n == "await-any" | n == "race" | n == "run-state"
+      | n == "process-spawn" | n == "process-spawn-priority" | n == "process-spawn-with-heap" | n == "process-spawn-on-core"
+      | n == "chan-kern-send" | n == "chan-kern-recv" | n == "chan-kern-send-block" | n == "chan-kern-recv-block" | n == "chan-text-send" | n == "chan-text-recv"
+      | n == "open-file" | n == "close-file" | n == "read-all" | n == "now" | n == "random-integer"
+
+  afi-in-place : Text -> Boolean
+  afi-in-place (n) = n == "list-push" | n == "list-snoc" | n == "list-set-at" | n == "list-insert-at" | n == "__record-set" | n == "__linked-list-push"
+
+  afi-name-labels : Text, AccpForm, Text -> List Text
+  afi-name-labels (s) (ty) (n) =
+    let ls = afi-labels s ty.start ty.next []
+    in let k = afi-nullary n
+    in if k == "" then ls else list-push ls k
+
+  afi-src-bits : List FlowRule, List Text, Integer, Integer -> Integer
+  afi-src-bits (rules) (ls) (k) (acc) =
+    if k >= list-length rules then acc
+    else afi-src-bits rules ls (k + 1) (if afi-any-src (list-at rules k) ls 0 then bit-or acc (afi-bit k) else acc)
+
+  afi-any-src : FlowRule, List Text, Integer -> Boolean
+  afi-any-src (r) (ls) (i) =
+    if i >= list-length ls then False
+    else if afl-can-read (list-at ls i) & afl-matches (r.source) (list-at ls i) "" then True
+    else afi-any-src r ls (i + 1)
+
+  afi-sink-bits : List FlowRule, List Text, Integer, Integer -> Integer
+  afi-sink-bits (rules) (ls) (k) (acc) =
+    if k >= list-length rules then acc
+    else afi-sink-bits rules ls (k + 1) (if afi-any-sink (list-at rules k) ls 0 then bit-or acc (afi-bit k) else acc)
+
+  afi-any-sink : FlowRule, List Text, Integer -> Boolean
+  afi-any-sink (r) (ls) (i) =
+    if i >= list-length ls then False
+    else if afl-can-write (list-at ls i) & afl-matches (r.sink) (list-at ls i) "" then True
+    else afi-any-sink r ls (i + 1)
+
+  afi-alias : FiEnv, Text -> Integer
+  afi-alias (env) (ty) = afi-alias-loop env ty 0 0
+
+  afi-alias-loop : FiEnv, Text, Integer, Integer -> Integer
+  afi-alias-loop (env) (ty) (i) (acc) =
+    if i >= list-length env.atypes then acc
+    else afi-alias-loop env ty (i + 1) (if list-at env.atypes i == ty then bit-or acc (list-at env.amasks i) else acc)
+
+Section: Expressions
+
+  afi-expr : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-expr (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let h = ai-head s f
+    in if acc.giveup /= "" then afi-with acc 0
+    else if h == "" | h == "int-lit" | h == "num-lit" | h == "text-lit" | h == "bool-lit" | h == "char-lit" | h == "error" then afi-with acc 0
+    else if h == "name" then afi-name env s f ln lm pc acc
+    else if h == "apply" then afi-apply env s f ln lm pc acc
+    else if h == "binary" then afi-two env s (afi-kid s f 1) (afi-kid s f 2) ln lm pc acc
+    else if h == "negate" then afi-expr env s (afi-kid s f 0) ln lm pc acc
+    else if h == "if" then afi-if env s f ln lm pc acc
+    else if h == "let" then afi-let env s f ln lm pc acc
+    else if h == "lambda" then afi-lambda env s f ln lm pc acc
+    else if h == "list-expr" then afi-seq env s (afi-kid s f 0) 0 ln lm pc acc 0
+    else if h == "record" then afi-fields env s (afi-kid s f 1) 0 ln lm pc acc 0
+    else if h == "match" then afi-match env s f ln lm pc acc
+    else if h == "act" then afi-stmts env s (afi-kid s f 0) 0 ln lm pc acc 0
+    else if h == "field-access" then afi-field env s f ln lm pc acc
+    else if h == "field-store" then afi-store env s f ln lm pc acc
+    else afi-with (afi-give acc ("unmodelled form " & h)) 0
+
+  afi-two : FiEnv, Text, AccpForm, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-two (env) (s) (a) (b) (ln) (lm) (pc) (acc) =
+    let x = afi-expr env s a ln lm pc acc
+    in let y = afi-expr env s b ln lm pc x.acc
+    in afi-with y.acc (bit-or x.m y.m)
+
+  afi-seq : FiEnv, Text, AccpForm, Integer, List Text, List Integer, Integer, FiAcc, Integer -> FiWalk
+  afi-seq (env) (s) (f) (i) (ln) (lm) (pc) (acc) (m) =
+    let k = afi-kid s f i
+    in if k.ok == False then afi-with acc m
+    else let w = afi-expr env s k ln lm pc acc
+    in afi-seq env s f (i + 1) ln lm pc w.acc (bit-or m w.m)
+
+  afi-fields : FiEnv, Text, AccpForm, Integer, List Text, List Integer, Integer, FiAcc, Integer -> FiWalk
+  afi-fields (env) (s) (f) (i) (ln) (lm) (pc) (acc) (m) =
+    let k = afi-kid s f i
+    in if k.ok == False then afi-with acc m
+    else let w = afi-expr env s (afi-kid s k 1) ln lm pc acc
+    in afi-fields env s f (i + 1) ln lm pc w.acc (bit-or m w.m)
+
+  afi-if : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-if (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let c = afi-expr env s (afi-kid s f 0) ln lm pc acc
+    in let inner = bit-or pc c.m
+    in let t = afi-expr env s (afi-kid s f 1) ln lm inner c.acc
+    in let e = afi-expr env s (afi-kid s f 2) ln lm inner t.acc
+    in afi-with e.acc (bit-or c.m (bit-or t.m e.m))
+
+  afi-let : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-let (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let v = afi-expr env s (afi-kid s f 2) ln lm pc acc
+    in afi-expr env s (afi-kid s f 3) (ln & [afi-str s (afi-kid s f 0)]) (lm & [v.m]) pc v.acc
+
+  afi-params : Text, AccpForm, Integer, Integer, List Text, List Integer -> FiFrame
+  afi-params (s) (ps) (i) (m) (ln) (lm) =
+    let k = afi-kid s ps i
+    in if k.ok == False then FiFrame { names = ln, masks = lm }
+    else afi-params s ps (i + 1) m (ln & [afi-str s (afi-kid s k 0)]) (lm & [m])
+
+  FiFrame = record { names : List Text, masks : List Integer }
+
+  afi-lambda : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-lambda (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let fr = afi-params s (afi-kid s f 0) 0 env.ua ln lm
+    in let b = afi-expr env s (afi-kid s f 1) fr.names fr.masks (bit-or pc env.upc) acc
+    in afi-with (afi-ev b.acc 6 0 b.m) b.m
+
+  afi-pat : Text, AccpForm, Integer, List Text, List Integer -> FiFrame
+  afi-pat (s) (p) (m) (ln) (lm) =
+    let h = ai-head s p
+    in if h == "var-pat" then FiFrame { names = ln & [afi-str s (afi-kid s p 0)], masks = lm & [m] }
+    else if h == "ctor-pat" then afi-pats s (afi-kid s p 1) 0 m ln lm
+    else if h == "vec-pat" then afi-pats s p 0 m ln lm
+    else FiFrame { names = ln, masks = lm }
+
+  afi-pats : Text, AccpForm, Integer, Integer, List Text, List Integer -> FiFrame
+  afi-pats (s) (ps) (i) (m) (ln) (lm) =
+    let k = afi-kid s ps i
+    in if k.ok == False then FiFrame { names = ln, masks = lm }
+    else let fr = afi-pat s k m ln lm
+    in afi-pats s ps (i + 1) m fr.names fr.masks
+
+  afi-match : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-match (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let sc = afi-expr env s (afi-kid s f 0) ln lm pc acc
+    in afi-branches env s (afi-kid s f 1) 0 ln lm (bit-or pc sc.m) sc.m sc.acc sc.m
+
+  afi-branches : FiEnv, Text, AccpForm, Integer, List Text, List Integer, Integer, Integer, FiAcc, Integer -> FiWalk
+  afi-branches (env) (s) (bs) (i) (ln) (lm) (pc) (sm) (acc) (m) =
+    let b = afi-kid s bs i
+    in if b.ok == False then afi-with acc m
+    else let fr = afi-pat s (afi-kid s b 0) sm ln lm
+    in let g = afi-expr env s (afi-kid s b 2) fr.names fr.masks pc acc
+    in let body = afi-expr env s (afi-kid s b 1) fr.names fr.masks (bit-or pc g.m) g.acc
+    in afi-branches env s bs (i + 1) ln lm (bit-or pc g.m) sm body.acc (bit-or m (bit-or g.m body.m))
+
+  afi-stmts : FiEnv, Text, AccpForm, Integer, List Text, List Integer, Integer, FiAcc, Integer -> FiWalk
+  afi-stmts (env) (s) (ss) (i) (ln) (lm) (pc) (acc) (m) =
+    let st = afi-kid s ss i
+    in if st.ok == False then afi-with acc m
+    else if ai-head s st == "do-bind" then
+      let v = afi-expr env s (afi-kid s st 2) ln lm pc acc
+      in afi-stmts env s ss (i + 1) (ln & [afi-str s (afi-kid s st 0)]) (lm & [v.m]) pc v.acc v.m
+    else if ai-head s st == "do-exec" then
+      let v = afi-expr env s (afi-kid s st 0) ln lm pc acc
+      in afi-stmts env s ss (i + 1) ln lm pc v.acc v.m
+    else afi-with (afi-give acc ("unmodelled statement " & ai-head s st)) 0
+
+  afi-field : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-field (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let r = afi-expr env s (afi-kid s f 0) ln lm pc acc
+    in afi-with r.acc (bit-or r.m (if list-length env.atypes == 0 then 0 else afi-alias env (ai-raw s (afi-kid s f 2))))
+
+  afi-store : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-store (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let r = afi-expr env s (afi-kid s f 0) ln lm pc acc
+    in let v = afi-expr env s (afi-kid s f 2) ln lm pc r.acc
+    in afi-with (afi-alias-ev v.acc (afi-type-of s (afi-kid s f 0)) (bit-or v.m pc)) (bit-or r.m v.m)
+
+Section: Names and Calls
+
+  afi-name : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-name (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let n = afi-str s (afi-kid s f 0)
+    in let li = afi-local ln n (list-length ln - 1)
+    in if li >= 0 then afi-with acc (bit-or (list-at lm li) (if list-length env.atypes == 0 then 0 else afi-alias env (ai-raw s (afi-kid s f 1))))
+    else let d = afi-index env.names n 0
+    in if d >= 0 then afi-with (afi-ev acc 4 d 0) 0
+    else if afi-unmodelled n then afi-with (afi-give acc ("unmodelled builtin " & n)) 0
+    else let ls = afi-name-labels s (afi-kid s f 1) n
+    in let src = afi-src-bits env.rules ls 0 0
+    in let a1 = afi-hit acc (bit-and (bit-or pc (bit-or env.ua env.upc)) (afi-sink-bits env.rules ls 0 0))
+    in let fun = text-starts-with (ai-raw s (afi-kid s f 1)) "(fn"
+    in afi-with (if fun then afi-ev a1 6 0 src else a1) (bit-or src (if n == "get-state" then env.state else 0))
+
+  afi-spine : Text, AccpForm, List AccpForm -> FiSpine
+  afi-spine (s) (f) (args) =
+    if ai-head s f == "apply" then afi-spine s (afi-kid s f 0) (list-push args (afi-kid s f 1))
+    else FiSpine { head = f, args = args }
+
+  FiSpine = record { head : AccpForm, args : List AccpForm }
+
+  afi-args : FiEnv, Text, List AccpForm, Integer, List Text, List Integer, Integer, FiAcc, Integer, Integer, Boolean -> FiArgs
+  afi-args (env) (s) (xs) (i) (ln) (lm) (pc) (acc) (all) (rest) (fun) =
+    if i < 0 then FiArgs { all = all, rest = rest, fun = fun, acc = acc }
+    else let a = list-at xs i
+    in let w = afi-expr env s a ln lm pc acc
+    in let isfun = ai-head s a == "lambda" | (ai-head s a == "name" & text-starts-with (ai-raw s (afi-kid s a 1)) "(fn")
+    in afi-args env s xs (i - 1) ln lm pc w.acc (bit-or all w.m) (if i == list-length xs - 1 then rest else bit-or rest w.m) (fun | isfun)
+
+  FiArgs = record { all : Integer, rest : Integer, fun : Boolean, acc : FiAcc }
+
+  afi-unknown : FiEnv, FiAcc, Integer, Integer, Integer -> FiWalk
+  afi-unknown (env) (acc) (fm) (am) (pc) =
+    afi-with (afi-ev (afi-ev acc 5 0 (bit-or am pc)) 7 0 (bit-or pc fm)) (bit-or fm (bit-or am env.ur))
+
+  afi-apply : FiEnv, Text, AccpForm, List Text, List Integer, Integer, FiAcc -> FiWalk
+  afi-apply (env) (s) (f) (ln) (lm) (pc) (acc) =
+    let sp = afi-spine s f []
+    in let as = afi-args env s sp.args (list-length sp.args - 1) ln lm pc acc 0 0 False
+    in let h = sp.head
+    in if ai-head s h /= "name" then
+      let hw = afi-expr env s h ln lm pc as.acc
+      in afi-unknown env hw.acc hw.m as.all pc
+    else let n = afi-str s (afi-kid s h 0)
+    in let li = afi-local ln n (list-length ln - 1)
+    in if li >= 0 then afi-unknown env as.acc (list-at lm li) as.all pc
+    else let d = afi-index env.names n 0
+    in if d >= 0 then afi-call env s d (list-length sp.args) as pc
+    else afi-builtin env s n h sp as pc
+
+  afi-call : FiEnv, Text, Integer, Integer, FiArgs, Integer -> FiWalk
+  afi-call (env) (s) (d) (count) (as) (pc) =
+    let k = list-at env.arity d
+    in let a1 = afi-ev (afi-ev as.acc 1 d as.all) 2 d pc
+    in let a2 = if count < k then afi-ev a1 4 d 0 else a1
+    in if count > k then afi-unknown env a2 (list-at env.ret d) as.all pc
+    else afi-with a2 (list-at env.ret d)
+
+  afi-builtin : FiEnv, Text, Text, AccpForm, FiSpine, FiArgs, Integer -> FiWalk
+  afi-builtin (env) (s) (n) (h) (sp) (as) (pc) =
+    if afi-unmodelled n then afi-with (afi-give as.acc ("unmodelled builtin " & n)) 0
+    else let ls = afi-name-labels s (afi-kid s h 1) n
+    in let a1 = afi-hit as.acc (bit-and (bit-or as.all pc) (afi-sink-bits env.rules ls 0 0))
+    in let a2 = if afi-in-place n & list-length sp.args > 0 then afi-alias-ev a1 (afi-type-of s (list-at sp.args (list-length sp.args - 1))) (bit-or as.rest pc) else a1
+    in let a3 = if n == "set-state" then afi-ev a2 9 0 (bit-or as.all pc) else a2
+    in let src = afi-src-bits env.rules ls 0 0
+    in if as.fun then
+      let u = afi-unknown env a3 as.all as.all pc
+      in afi-with u.acc (bit-or u.m src)
+    else afi-with a3 (bit-or as.all src)
+
+Section: The Fixed Point
+
+  afi-chapter-defs : Text, AccpForm, Integer -> AccpForm
+  afi-chapter-defs (s) (f) (i) =
+    let k = afi-kid s f i
+    in if k.ok == False then k
+    else if ai-head s k == "defs" then k
+    else afi-chapter-defs s f (i + 1)
+
+  afi-eff-ops : Text, AccpForm, Integer -> Boolean
+  afi-eff-ops (s) (f) (i) =
+    let k = afi-kid s f i
+    in if k.ok == False then False
+    else if ai-head s k == "eff-ops" then (afi-kid s k 0).ok
+    else afi-eff-ops s f (i + 1)
+
+  afi-def-names : Text, AccpForm, Integer, List Text, List Integer -> FiFrame
+  afi-def-names (s) (ds) (i) (ns) (ar) =
+    let k = afi-kid s ds i
+    in if k.ok == False then FiFrame { names = ns, masks = ar }
+    else afi-def-names s ds (i + 1) (ns & [afi-str s (afi-kid s k 0)]) (ar & [afi-count s (afi-kid s k 2) 0])
+
+  afi-count : Text, AccpForm, Integer -> Integer
+  afi-count (s) (f) (i) = if (afi-kid s f i).ok then afi-count s f (i + 1) else i
+
+  afi-zeros : Integer, List Integer -> List Integer
+  afi-zeros (n) (acc) = if list-length acc >= n then acc else afi-zeros n (acc & [0])
+
+  afi-falses : Integer, List Boolean -> List Boolean
+  afi-falses (n) (acc) = if list-length acc >= n then acc else afi-falses n (acc & [False])
+
+  afi-pass : FiEnv, Text, AccpForm, Integer, FiAcc -> FiAcc
+  afi-pass (env) (s) (ds) (i) (acc) =
+    let k = afi-kid s ds i
+    in if k.ok == False | acc.giveup /= "" then acc
+    else let a0 = FiAcc { ev = acc.ev, etypes = acc.etypes, sites = acc.sites, giveup = acc.giveup, cur = afi-str s (afi-kid s k 0) }
+    in let fr = afi-params s (afi-kid s k 2) 0 (list-at env.pin i) [] []
+    in let w = afi-expr env s (afi-kid s k 4) fr.names fr.masks (list-at env.dpc i) a0
+    in afi-pass env s ds (i + 1) (afi-ev w.acc 3 i w.m)
+
+  afi-ev-or : List Integer, Integer, Integer, Integer, Integer -> Integer
+  afi-ev-or (ev) (kind) (idx) (j) (acc) =
+    if j + 2 >= list-length ev then acc
+    else let hit = list-at ev j == kind & (idx < 0 | list-at ev (j + 1) == idx)
+    in afi-ev-or ev kind idx (j + 3) (if hit then bit-or acc (list-at ev (j + 2)) else acc)
+
+  afi-ev-has : List Integer, Integer, Integer, Integer -> Boolean
+  afi-ev-has (ev) (kind) (idx) (j) =
+    if j + 2 >= list-length ev then False
+    else if list-at ev j == kind & list-at ev (j + 1) == idx then True
+    else afi-ev-has ev kind idx (j + 3)
+
+  afi-new-taken : FiEnv, FiAcc, Integer, List Boolean -> List Boolean
+  afi-new-taken (env) (a) (d) (acc) =
+    if d >= list-length env.names then acc
+    else afi-new-taken env a (d + 1) (acc & [list-at env.taken d | afi-ev-has a.ev 4 d 0])
+
+  afi-new-masks : List Integer, List Integer, Integer, List Boolean, Integer, Integer, List Integer -> List Integer
+  afi-new-masks (old) (ev) (kind) (taken) (extra) (d) (acc) =
+    if d >= list-length old then acc
+    else let x = bit-or (list-at old d) (afi-ev-or ev kind d 0 0)
+    in afi-new-masks old ev kind taken extra (d + 1) (acc & [if list-at taken d then bit-or x extra else x])
+
+  afi-taken-ret : List Integer, List Boolean, Integer, Integer -> Integer
+  afi-taken-ret (ret) (taken) (d) (acc) =
+    if d >= list-length ret then acc
+    else afi-taken-ret ret taken (d + 1) (if list-at taken d then bit-or acc (list-at ret d) else acc)
+
+  afi-merge-alias : FiEnv, FiAcc, Integer, List Text, List Integer -> FiFrame
+  afi-merge-alias (env) (a) (j) (ts) (ms) =
+    if j + 2 >= list-length a.ev then FiFrame { names = ts, masks = ms }
+    else if list-at a.ev j /= 8 then afi-merge-alias env a (j + 3) ts ms
+    else let ty = list-at a.etypes (list-at a.ev (j + 1))
+    in let v = list-at a.ev (j + 2)
+    in let at = afi-index ts ty 0
+    in if at < 0 then afi-merge-alias env a (j + 3) (ts & [ty]) (ms & [v])
+    else afi-merge-alias env a (j + 3) ts (afi-or-into ms at v 0 [])
+
+  afi-or-into : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  afi-or-into (ms) (at) (v) (i) (acc) =
+    if i >= list-length ms then acc
+    else afi-or-into ms at v (i + 1) (acc & [if i == at then bit-or (list-at ms i) v else list-at ms i])
+
+  afi-merge : FiEnv, FiAcc -> FiEnv
+  afi-merge (env) (a) =
+    let taken = afi-new-taken env a 0 []
+    in let ret = afi-new-masks env.ret a.ev 3 taken 0 0 []
+    in let al = afi-merge-alias env a 0 env.atypes env.amasks
+    in FiEnv {
+      rules = env.rules,
+      names = env.names,
+      arity = env.arity,
+      pin = afi-new-masks env.pin a.ev 1 taken env.ua 0 [],
+      dpc = afi-new-masks env.dpc a.ev 2 taken env.upc 0 [],
+      ret = ret,
+      taken = taken,
+      ua = bit-or env.ua (afi-ev-or a.ev 5 (0 - 1) 0 0),
+      ur = bit-or env.ur (bit-or (afi-ev-or a.ev 6 (0 - 1) 0 0) (afi-taken-ret ret taken 0 0)),
+      upc = bit-or env.upc (afi-ev-or a.ev 7 (0 - 1) 0 0),
+      atypes = al.names,
+      amasks = al.masks,
+      state = bit-or env.state (afi-ev-or a.ev 9 (0 - 1) 0 0)
+    }
+
+  afi-same-ints : List Integer, List Integer, Integer -> Boolean
+  afi-same-ints (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else afi-same-ints a b (i + 1)
+
+  afi-same-bools : List Boolean, List Boolean, Integer -> Boolean
+  afi-same-bools (a) (b) (i) =
+    if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else afi-same-bools a b (i + 1)
+
+  afi-same : FiEnv, FiEnv -> Boolean
+  afi-same (a) (b) =
+    if a.ua /= b.ua | a.ur /= b.ur | a.upc /= b.upc | a.state /= b.state then False
+    else if afi-same-ints a.pin b.pin 0 == False then False
+    else if afi-same-ints a.dpc b.dpc 0 == False then False
+    else if afi-same-ints a.ret b.ret 0 == False then False
+    else if afi-same-ints a.amasks b.amasks 0 == False then False
+    else afi-same-bools a.taken b.taken 0
+
+  afi-fresh : Text -> FiAcc
+  afi-fresh (why) = FiAcc { ev = [], etypes = [], sites = [], giveup = why, cur = "" }
+
+  afi-iterate : FiEnv, Text, AccpForm, Integer -> FlowAnalysis
+  afi-iterate (env) (s) (ds) (fuel) =
+    let a = afi-pass env s ds 0 (afi-fresh "")
+    in if a.giveup /= "" then FlowAnalysis { verdict = "unanalysed: " & a.giveup, reach = [] }
+    else let next = afi-merge env a
+    in if afi-same env next then afi-verdict env a
+    else if fuel <= 0 then FlowAnalysis { verdict = "unanalysed: no fixed point", reach = [] }
+    else afi-iterate next s ds (fuel - 1)
+
+  afi-verdict : FiEnv, FiAcc -> FlowAnalysis
+  afi-verdict (env) (a) =
+    let reach = afi-reach env a 0 []
+    in FlowAnalysis { verdict = if list-length reach == 0 then "no path" else "path", reach = reach }
+
+  afi-reach : FiEnv, FiAcc, Integer, List Text -> List Text
+  afi-reach (env) (a) (k) (acc) =
+    if k >= list-length env.rules then acc
+    else let defs = afi-sites a.sites (afi-bit k) 0 []
+    in let r = list-at env.rules k
+    in afi-reach env a (k + 1) (if list-length defs == 0 then acc else list-push acc ("{\"source\":" & aj-quote (afl-label-text r.source.name r.source.scope) & ",\"sink\":" & aj-quote (afl-label-text r.sink.name r.sink.scope) & ",\"defs\":" & ai-json-list defs & "}"))
+
+  afi-sites : List Text, Integer, Integer, List Text -> List Text
+  afi-sites (sites) (bit) (i) (acc) =
+    if i >= list-length sites then acc
+    else let t = list-at sites i
+    in let c = afi-colon t 0
+    in let bits = afi-digits (substring t 0 c) 0 0
+    in let d = substring t (c + 1) (text-length t - c - 1)
+    in afi-sites sites bit (i + 1) (if bit-and bits bit /= 0 & afl-listed acc d 0 == False then list-push acc d else acc)
+
+  afi-colon : Text, Integer -> Integer
+  afi-colon (t) (i) = if i >= text-length t | aj-is t i ":" then i else afi-colon t (i + 1)
+
+  afi-digits : Text, Integer, Integer -> Integer
+  afi-digits (t) (i) (acc) =
+    if i >= text-length t then acc
+    else afi-digits t (i + 1) (acc * 10 + (aj-at t i - char-code-at "0" 0))
+
+  afi-rules : List Text, Integer, List FlowRule -> List FlowRule
+  afi-rules (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else afi-rules xs (i + 1) (acc & [afl-parse (list-at xs i)])
+
+  afi-rules-ok : List FlowRule, Integer -> Boolean
+  afi-rules-ok (rs) (i) = if i >= list-length rs then True else if (list-at rs i).ok == False then False else afi-rules-ok rs (i + 1)
+
+  afi-analyse : List Text, Text -> FlowAnalysis
+  afi-analyse (rule-texts) (ir) =
+    let rules = afi-rules rule-texts 0 []
+    in let ch = ai-form ir 0
+    in let ds = afi-chapter-defs ir ch 1
+    in if list-length rules == 0 | list-length rules > 30 | afi-rules-ok rules 0 == False then FlowAnalysis { verdict = "unanalysed: rules", reach = [] }
+    else if text-length ir > 262144 then FlowAnalysis { verdict = "unanalysed: IR over 262144 characters", reach = [] }
+    else if list-length (afl-raw-check rule-texts ir) > 0 then FlowAnalysis { verdict = "unanalysed: raw memory", reach = [] }
+    else if ch.ok == False | ds.ok == False then FlowAnalysis { verdict = "unanalysed: malformed IR", reach = [] }
+    else if afi-eff-ops ir ch 1 then FlowAnalysis { verdict = "unanalysed: effect operations", reach = [] }
+    else let dn = afi-def-names ir ds 0 [] []
+    in let n = list-length dn.names
+    in afi-iterate (FiEnv { rules = rules, names = dn.names, arity = dn.masks, pin = afi-zeros n [], dpc = afi-zeros n [], ret = afi-zeros n [], taken = afi-falses n [], ua = 0, ur = 0, upc = 0, atypes = [], amasks = [], state = 0 }) ir ds (4 * n * list-length rules + 4 * list-length rules + 8)
+
+  afi-json : FlowAnalysis -> Text
+  afi-json (a) = "{\"verdict\":" & aj-quote (a.verdict) & ",\"reach\":[" & text-concat-list (afl-pairs-parts a.reach 0 []) & "]}"

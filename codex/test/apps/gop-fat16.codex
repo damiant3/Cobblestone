@@ -4,13 +4,9 @@ Chapter: GopFat16Test
   cites Foreword chapter Gpt
   cites Foreword chapter Maybe
 
- Reads a GPT + FAT16 disk through the payload's own block driver, the
- way the boot path will read its stick. The image (built independently
- from the FAT and GPT specs, see the .disk sidecar) puts the ESP at LBA
+ The image, built from the FAT and GPT specs, puts the ESP at LBA
  64, a BOOTX64.EFI three directories deep, and a HELLO.TXT whose 600
- bytes span two clusters -- so a passing run proves GPT parsing, BPB
- parsing, a directory walk through subdirectories, and a FAT chain
- followed across a cluster boundary.
+ bytes span two clusters.
 
 Section: Main
 
@@ -39,10 +35,6 @@ Section: Main
     end
   end
 
- A file whose bytes cross a cluster boundary. The head comes from the
- first cluster, the final byte from the second -- a reader that ignored
- the FAT chain would return 512 bytes and a wrong tail.
-
   show-file : [Device.Port] Text
   show-file = act
     m <- gfat-mount-esp
@@ -54,10 +46,7 @@ Section: Main
   end
 
  A multi-sector command must deliver consecutive sectors. Reading LBA 0..3
- as ONE command puts the GPT header ("EFI PART") at buffer offset 512; a
- controller that skips every other sector -- as codex-vm's IDE emulation
- did until a driver first asked for count > 1 -- lands the partition-entry
- array there instead.
+ as ONE command puts the GPT header ("EFI PART") at buffer offset 512.
 
   show-bulk : [Device.Port] Text
   show-bulk = act
@@ -96,8 +85,7 @@ Section: Main
  three buffers differ from the real ESP GUID only in how far along they
  stop agreeing: the first is the genuine article, the second shares the
  opening dword and diverges at byte 4, the third agrees for fifteen bytes
- and differs in the last. A four-byte comparison accepts the second and
- the third, which is what this arm exists to refuse.
+ and differs in the last.
 
   guid-buf : Integer, Integer -> Integer
   guid-buf (breakat) (newval) =
@@ -113,12 +101,6 @@ Section: Main
     else let v = if i == breakat then newval else list-at want i
     in let w = poke-byte buf i v
     in guid-fill buf (i + 1) breakat newval want
-
- `prefix-4` is the comparison this chapter USED to make, kept as the
- calibration. Without it the arm is vacuous: two buffers that failed to
- match for some unrelated reason would also read zero, and the test would
- be green for the wrong reason. The control has to ACCEPT both
- near-misses for their rejection to mean anything.
 
   prefix-4 : Integer, Integer, List Integer -> Boolean
   prefix-4 (buf) (off) (want) =

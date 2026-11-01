@@ -1,7 +1,33 @@
 Chapter: FwdClipInterrogatorTest
   cites AI chapter ClipInterrogator
 
+Section: Fixtures
+
+  cit-join : List Integer, Integer, Text -> Text
+  cit-join (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else cit-join xs (i + 1) (acc & (if i == 0 then "" else " ") & show (list-at xs i))
+
+  cit-db : TextEmbedDB
+  cit-db = TextEmbedDB { te-embeddings = [[1000, 0], [0, 5000]], te-labels = ["cat", "dog"], te-count = 2, te-dim = 2 }
+
+  cit-fill : Integer, Rgb, List Rgb -> List Rgb
+  cit-fill (n) (c) (acc) =
+    if n <= 0 then acc
+    else cit-fill (n - 1) c (list-push acc c)
+
+  cit-small : VitConfig
+  cit-small = VitConfig { vit-image-size = 28, vit-patch-size = 14, vit-hidden-dim = 8, vit-num-heads = 1, vit-num-layers = 1, vit-embed-dim = 4 }
+
 Section: Entry
-  opening : [Console] Nothing = act
-    print-line-uni "AI/ClipInterrogator OK"
-  end
+
+  opening : [Console] Nothing =
+    let res = ci-interrogate [800, 600] cit-db 2
+    in let patches = vit-patchify (image-new 28 28 (cit-fill 784 (rgb 0 0 0) [])) cit-small
+    in act
+      print-line-uni ("l2 normalize 3000 4000: " & cit-join (ci-l2-normalize [3000, 4000]) 0 "")
+      print-line-uni ("image 800,600 against cat 1000,0 and dog 0,5000: " & format-interrogate res & ", scores " & cit-join (res.ir-scores) 0 "")
+      print-line-uni ("top 5 of 3 scores 7 9 8: " & cit-join (ci-topk-indices [7, 9, 8] 5) 0 "")
+      print-line-uni ("quick gelu at 0 1000 5000 -1000: " & cit-join (vit-quick-gelu [0, 1000, 5000, 0 - 1000]) 0 "")
+      print-line-uni ("black 28x28 in 14 patches: " & show (list-length patches) & " values, first " & show (list-at patches 0) & "; " & format-vit-config clip-vit-l14-config)
+    end

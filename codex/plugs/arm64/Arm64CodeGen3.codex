@@ -772,25 +772,6 @@ Section: Tail Call Optimization
        is _ -> False
      is _ -> False
 
- A direct call to one of these builtins at the matching arity is lowered
- inline by `a64-emit-direct-call`, and the frameless analysis
- (`a64-has-any-call`, via `a64-is-known-inline`) treats it as call-free.
- But every bitwise op also has an 8-byte runtime helper for its
- first-class use, registered by name in `func-names` at plug init, so
- the user-wins dispatch looked the helper up BEFORE reaching the inline
- arm and a direct `bit-and k 255` emitted a `bl` to it. In a frameless
- function that `bl` clobbers x30 and the argument registers, and the
- function's `ret` returned into its own loop body forever -- that is
- `codex/test/tco-bitop-loop`'s silent hang, root-caused by disassembly
- 2026-07-23, and the same shape that miscompiled the crypto leaves when
- the widened frame-elision gate was tried. Skipping the helper for an inline
- builtin at its own arity is what makes the emission agree with the
- analysis; first-class references still find the helper. This mirrors
- `rv-is-inline-here`, RISC-V's CL 9789 fix for the identical defect, and
- the sets are deliberately the same: the bit ops and the two mods, NOT
- `abs`/`negate`/`min`/`max`, so a user definition shadowing those still
- wins as it does on x86-64.
-
   a64-is-inline-2arg : Text -> Boolean
   a64-is-inline-2arg (n) =
     if n == "math-mod" then True
@@ -863,21 +844,6 @@ Section: Tail Call Optimization
      is IrRecord (n) (fields) (t) (s) -> True
      is IrFieldAccess (rec) (f) (t) (s) -> a64-has-any-call rec fname
      is otherwise -> False
-
- The gate no longer requires self-recursion: an ordinary
- call-free leaf takes the frameless path too, and the win is thousands of
- leaves that were paying a full frame for a body that cannot grow the
- stack. The two admitted shapes need different proofs and get them. A
- self-recursive function keeps the exact TCO predicate that was proven
- safe before this widening: the frameless emitter turns its tail
- self-call into a jump to the loop top, so a body with no NON-tail call
- is safe, and that is what `a64-body-has-non-tail-call` checks. A
- non-recursive leaf has no such loop, so its body must emit no call at
- all, which is the positive whitelist `a64-frameless-body-ok`. Both cap
- the local count at six, the size of the frameless register file, and
- both cap parameters at eight, because `a64-bind-params-frameless` binds
- only the first eight and a ninth would arrive as a free name and emit
- the very `bl` framelessness cannot survive.
 
   a64-can-be-frameless : IRDef -> Boolean
   a64-can-be-frameless (def) =
@@ -1344,9 +1310,9 @@ Section: Module Emission
     in let st5 = a64-emit st4 arm64-ret
     in a64-patch-insn st5 cbz-idx (arm64-cbz 0 ((ret-idx - cbz-idx) * 4))
 
-  a64-emit-module : A64State, IRChapter, List ATypeDef, List Text, Boolean, Boolean -> A64State
-  a64-emit-module (st) (chapter) (tdefs) (eff-ops) (smp) (darwin) =
-    let lifted = wh-lift-defs (chapter.defs) 0 [] [] []
+  a64-emit-module : A64State, IRChapter, List ATypeDef, List Text, Boolean, Boolean, Integer -> A64State
+  a64-emit-module (st) (chapter) (tdefs) (eff-ops) (smp) (darwin) (board) =
+    let lifted = wh-lift-defs (sc-defs (chapter.defs) 0 []) 0 [] [] []
     in let defs = lifted.defs
     in let addrs = a64-assign-effect-op-addrs eff-ops 0 (list-length eff-ops) []
     in let htb = if list-length eff-ops > 0 then a64-effect-op-table-base else 0
@@ -1362,6 +1328,7 @@ Section: Module Emission
       state-local = 0 - 1,
       smp-boot = smp,
       darwin-boot = darwin,
+      board = board,
       runtime-funcs = 0,
       boot-cap-mask = pm-opening-cap-mask defs,
       boot-fs-scope = pm-opening-fs-scope defs,
@@ -1399,9 +1366,6 @@ Section: Module Emission
  #40100000. That leaves #E0000 bytes of clearance above the table, of
  which the ceiling below spends 8 KB. It sits below a64-heap-start
  (#40202000) and below the image, so neither of those moves.
-
- The table's last slot holds the closure `resume` is bound to, so operations
- get one slot fewer.
 
   a64-effect-op-table-base : Integer = #40020000
   a64-effect-op-slots : Integer = 1024
@@ -1546,20 +1510,6 @@ Section: Effect Handler Emission
      in a64-patch-calls-loop st1 patches (i + 1)
     else
       a64-patch-calls-loop (a64-add-shadow-warning st (a64-unresolved-report (patch.target))) patches (i + 1)
-
- A block builtin with no driver behind it is REFUSED, not warned about, and
- the two answers differ in whether the build survives: `[UNSUPPORTED]` makes
- `run.ps1` exit 6. The plug emits `block-read-sector` and its siblings only
- when the program carries the driver, so an unresolved `block-` name means
- the program asked for a disk it has no way to reach.
-
- Every OTHER unresolved name is refused too, and for the same reason: the
- branch is left as emitted, so reaching it reads a stale x0 and the program
- answers whatever the register held. Measured over a full cross battery on
- both lanes before this became a refusal, 486 tests each: four names on
- arm64 and three on riscv64, none of them unresolved by design, so there is
- no allow-list. Two arm64 tests were failing with stale-register numbers and
- naming their own cause in a warning nothing read.
 
   a64-unresolved-report : Text -> Text
   a64-unresolved-report (target) =
@@ -1812,12 +1762,6 @@ Section: Stub Builtins
     in let st3 = a64-emit st2 (arm64-str a64-x9 a64-heap-reg 0)
     in let st4 = a64-emit st3 (arm64-add-imm a64-heap-reg a64-heap-reg 8)
     in A64EmitResult { state = st4, reg = r.reg }
-
- `read-line` is typed `Maybe Text`, so a lane with no stdin pump answers
- the honest EOF: a None cell, tag 1, which is what x86-64's `__read_line`
- stores at end of input. It answered an empty TEXT here until 2026-07-23,
- and an empty text read back through a `when` on Maybe decodes as
- `Just <garbage>` -- the tag word is 0, which is Just's tag.
 
   a64-emit-maybe-none : A64State -> A64EmitResult
   a64-emit-maybe-none (st) =

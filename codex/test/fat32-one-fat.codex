@@ -1,0 +1,40 @@
+Chapter: Fat32OneFat
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+
+ A FAT32 volume formatted at sector 2048 for 20480 sectors, its BPB then
+ rewritten to one FAT, so the data region begins where the second FAT was.
+ A marker sits in the first data sector at offset 400, the slot cluster 100
+ has in a FAT sector; setting cluster 100's entry must change the one FAT and
+ leave the data sector alone.
+
+Section: Helpers
+
+  u32 : Integer, Integer -> Integer
+  u32 (b) (o) = peek-byte b o + peek-byte b (o + 1) * 256 + peek-byte b (o + 2) * 65536 + peek-byte b (o + 3) * 16777216
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    fmt <- fat32-format 2048 20480 "CODEX"
+    bpb <- block-read-sector 2048
+    let p = poke-byte bpb 16 1
+    in act
+      w <- block-write-sector 2048 bpb
+      vol <- fat32-init 2048
+      print-line-uni ("format " & show fmt & " fats " & show (vol.f32-num-fats)
+        & " data at fat end=" & (if vol.f32-data-start == vol.f32-fat-start + vol.f32-fat-sectors then "yes" else "no"))
+      d <- block-read-sector (vol.f32-data-start)
+      let m = fat32-fmt-u32 d 400 287454020
+      in act
+        dw <- block-write-sector (vol.f32-data-start) d
+        s <- fat32-set-fat-entry vol 100 268435455
+        fat <- block-read-sector (vol.f32-fat-start)
+        data <- block-read-sector (vol.f32-data-start)
+        print-line-uni ("fat slot 100 " & show (u32 fat 400) & " data marker " & show (u32 data 400))
+        nxt <- fat32-next-cluster vol 100
+        print-line-uni ("next 100 " & show nxt)
+      end
+    end
+  end

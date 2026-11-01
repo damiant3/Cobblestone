@@ -92,6 +92,10 @@ $tests | ForEach-Object -ThrottleLimit $Jobs -Parallel {
     # scriptblock shadows the one splatting reads.
     $cargs = @('-Src', $t, '-Out', $cdxOut, '-Log', $logOut)
     if ($using:Kernel) { $cargs += @('-Kernel', $using:Kernel) }
+    $flagsFile = $t -replace '\.codex$', '.flags'
+    if (Test-Path -PathType Leaf $flagsFile) {
+        $cargs += @('-RawFlags', (Get-Content $flagsFile -Raw -ErrorAction SilentlyContinue).Trim())
+    }
     & pwsh -NoProfile -File $using:compileScript @cargs *> $null
     if ($LASTEXITCODE -eq 0) {
         ($using:bad).Add("$base -- COMPILED, and it must be refused ($($codes -join ' '))")

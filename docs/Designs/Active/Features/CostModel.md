@@ -447,8 +447,7 @@ unmeasured: `vec-empty` is CDX2040 unresolved, `vec-singleton` answers wrong,
 `race` is `input`: 32 bytes over 2 branches and 80 over 8, which is
 8 + 8 x (branches + 1), the count cell `emit-race-builtin` bumps and the task
 list it `__alloc`s; the forks come from the reserved pool and retain 0.
-`await-any` and the five `s-*` rows are `none`: a channel lives in the fixed
-channel table at `chan-table-base`, and `s-recv` emits its argument.
+`await-any` is `none`.
 
 Each of these allocates its output and is `input`: `text-replace` 8 + the
 output's length on both the no-match and the all-match path,
@@ -674,8 +673,7 @@ frontier in `r10`, which reads as an in-place fast path. That path is DEAD
 CODE: the prologue ends `cmp-rr r13 r10` followed by `jmp 0` at `:178`, an
 UNCONDITIONAL jump patched by `patch-jmp-at` (`:222`) to the slow path, while
 every real conditional in that file uses `jcc`, and the comparison's result is
-discarded. `__str_concat` has fresh-allocated on every call since CL 2823
-(2026-05-30, val, Bug 2), for aliasing safety. Two probes are kept as
+discarded. `__str_concat` fresh-allocates on every call, for aliasing safety. Two probes are kept as
 instruments rather than discarded: `codex/test/cost/literal-alloc` measures
 that a Text literal allocates nothing per evaluation and that hoisting it out
 of the loop is byte-identical; `codex/test/cost/str-concat-inplace` appends a

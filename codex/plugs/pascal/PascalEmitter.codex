@@ -24,13 +24,6 @@ Section: Keywords and Sanitization
     in if pas-is-keyword s 0 then s & "_v"
     else s
 
- The IR spells a record field as `name/slot`, so a field name reaches the
- emitter as `a/0` and reads as a division. riscv resolves the slot and
- needs it; this plug needs it too, because a record is a variant array here
- and a field is an index into it. A construction's field values carry the
- bare name with no slot, which is why `pas-fv-pos` matches by name and only
- an access or a store reads the slot.
-
   pas-slash-pos : Text, Integer, Integer -> Integer
   pas-slash-pos (f) (i) (len) =
     if i >= len then (-1)
@@ -102,13 +95,6 @@ Section: Arity Map
     in if e.name == name then e.arity else -1
 
 Section: Record Table
-
- A record reaches this plug twice and in two different shapes. The type defs
- carry the declared field ORDER and any bounds band; the IR carries a
- construction's field values in the order the SOURCE wrote them, measured
- 2026-08-17 through this plug (`Trio { cc = .., aa = .., bb = .. }` emitted
- its arguments cc, aa, bb). So a constructor call has to be permuted against
- the declaration, and the table below is what permutes it.
 
   PasRecField = record {
    rf-name : Text,
@@ -219,11 +205,6 @@ Section: Expression Emission
  expression that names its value, and the next free temporary -- and the
  caller decides where the statements land.
 
- The counter is threaded rather than global because the `var` block has to
- declare every temporary, and how many there are is only known AFTER the body
- is emitted. `emit-pas-def` therefore emits first and builds the declarations
- from what came back.
-
   PasHoist = record {
    hs : Text,
    hx : Text,
@@ -300,10 +281,6 @@ Section: Expression Emission
      hx = tmp,
      hn = he.hn }
 
- A store is a STATEMENT, which is the whole reason this file hoists, and the
- value it answers is the field read back rather than the stored expression:
- answering the expression would evaluate it a second time at every use.
-
  Pascal will not assign into a function result, so a target that is not
  already an l-value goes through a temporary first. Storing into a temporary
  is as visible as storing into the value it copies, because the record it
@@ -372,11 +349,6 @@ Section: Expression Emission
       hn = ha.as-next
     }
 
- The values are hoisted in SOURCE order, so whatever statements they need run
- in the order the source wrote them; only the finished expression texts are
- permuted into declaration order. Evaluation order and argument order are
- different questions and this keeps them apart.
-
   pas-order-args : List PasRecField, List IRFieldVal, List Text, Integer, List Text -> List Text
   pas-order-args (decl) (fvs) (texts) (i) (acc) =
     if i >= list-length decl then acc
@@ -394,9 +366,6 @@ Section: Expression Emission
     if i >= list-length fields then PasArgs { as-stmts = acc-s, as-texts = acc-t, as-next = n }
     else let h = pas-h ((list-at fields i).value) ctx (depth + 1) n
     in pas-h-field-vals fields (i + 1) ctx depth (h.hn) (acc-s & h.hs) (acc-t & [h.hx])
-
- A match is the same shape as a conditional and for the same reason: the old
- form nested `IfThen` per branch, so every branch of every match ran.
 
   pas-h-match : IRExpr, List IRBranch, PasCtx, Integer, Integer -> PasHoist
   pas-h-match (scrut) (branches) (ctx) (depth) (n) =
@@ -493,10 +462,6 @@ Section: Expression Emission
     else pas-pat-bind-text (list-at subs i) (path & "[" & integer-to-text (i + 1) & "]")
      & pas-sub-bind-text subs (i + 1) path
 
- An act's value is its last statement's. A bind names it; anything else needs
- a temporary, except a call to a Pascal PROCEDURE, which has no value at all
- and must be emitted as a bare statement rather than assigned.
-
   pas-h-act : List IRActStmt, Integer, PasCtx, Integer, Integer, Text, Text -> PasHoist
   pas-h-act (stmts) (i) (ctx) (depth) (n) (acc) (lastx) =
     if i >= list-length stmts then PasHoist { hs = acc, hx = lastx, hn = n }
@@ -556,11 +521,6 @@ Section: Expression Emission
  below therefore walks the WHOLE expression rather than the top-level
  let-chain, because a binding hoisted out of an operand is assigned in the
  same block as one that was already there.
-
- A name already declared as a parameter must NOT be redeclared, so the
- collection is seeded with the parameter names and only what it gathers past
- that seed reaches the var block. Rebinding a parameter then assigns the
- parameter, which is what the source means.
 
   pas-name-known : List Text, Text, Integer -> Boolean
   pas-name-known (xs) (n) (i) =
@@ -639,13 +599,6 @@ Section: Expression Emission
     else if i == list-length xs - 1 then list-at xs i
     else list-at xs i & ", " & pas-names-from xs (i + 1)
 
- The seed's LENGTH is taken before the collection runs, and that is not a
- style choice. `list-push` extends in place when the backing array has spare
- capacity and answers the same pointer, so reading `list-length seed` after
- pushing onto it reads the GROWN list and the guard can never fire. That is
- the pattern `docs/Designs/Done/Language/SAFE-MUTATION.md` marks unsafe, it
- cost a build here, and an Integer bound first cannot be mutated under you.
-
   pas-var-block : List IRParam, IRExpr, Integer -> Text
   pas-var-block (params) (body) (ntemps) =
     let seed = pas-seed-params params 0 []
@@ -710,12 +663,6 @@ Section: Apply Emission
    "negate", "print-line-uni", "process-exit", "show", "substring",
    "text-contains", "text-length", "text-to-integer", "list-push",
    "list-snoc"]
-
- The dispatch is an INDEX into the names list, so a name appended to that
- list without a branch here lands on whatever the final `else` does. That
- final `else` therefore emits an identifier no Pascal unit defines: an
- unmapped builtin must fail to compile rather than quietly emit the last
- branch's call.
 
   pas-find-builtin : List Text, Text, Integer -> Integer
   pas-find-builtin (names) (target) (i) =
@@ -817,9 +764,6 @@ Section: Chapter Emission
   emit-pascal-chapter-stream-def : IRChapter, PasCtx, Integer -> Text
   emit-pascal-chapter-stream-def (m) (v) (i) = emit-pas-def (list-at (m.defs) i) v
 
- A bounds band is honoured in the constructor because that is the one place
- every construction of that record passes through.
-
   pas-emit-ctors : List PasRec, Integer -> Text
   pas-emit-ctors (rs) (i) =
     if i >= list-length rs then ""
@@ -832,13 +776,6 @@ Section: Chapter Emission
       "function Make" & pas-sanitize (r.pr-name) & ": Variant;\n"
     else "function Make" & pas-sanitize (r.pr-name) & "(" & pas-ctor-params fs 0 & "): Variant;\n"
     in sig & "begin\n  Result := VarArrayOf([" & pas-ctor-args fs 0 & "]);\nend;\n\n"
-
- A variant value is a variant array too, tag first and the constructor's
- fields after it, so a `Variant` local can hold one and `when` can read the
- tag back. A bounded field on a CONSTRUCTOR is stored as given rather than
- clamped, which is not the record rule: measured on x86-64 2026-08-18,
- `Gauge 150` through `is Gauge (v) -> v` answers 150 where a bounded record
- field answers 100.
 
   pas-emit-vctors : List PasVCtor, Integer -> Text
   pas-emit-vctors (cs) (i) =
@@ -897,11 +834,6 @@ Section: Chapter Emission
  and cannot count a variant array's elements, which is why the count goes
  through the bounds. An empty array is bounds `[0, -1]`, which is legal and
  is what `codex_list_len` answers 0 for.
-
- An append COPIES. `list-snoc` on bare metal stores in place only when the
- backing array has spare capacity and copies otherwise, so a copy is always
- a correct answer and an unconditional in-place append is the defect
- (`codex/plugs/plugs-backlog.md` 1.7).
 
   pas-list-builtins : Text
   pas-list-builtins =

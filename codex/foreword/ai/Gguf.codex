@@ -10,8 +10,6 @@ Chapter: Gguf
 
  Magic: 0x46554747 ("GGUF"), versions 2-3.
 
- We say:
-
 Section: Constants
   gguf-magic : Integer = 1179993927
 
@@ -57,11 +55,19 @@ Section: Byte Reading
     in let b3 = bit-shl (list-at data (off + 3)) 24
     in bit-or b0 (bit-or b1 (bit-or b2 b3))
 
+ A u64 at or above 2^63 has no Integer, so it reads as -1, which every length
+ and count check refuses. A length or count is then refused when it exceeds the
+ file, because no field is longer than the bytes that exist: that bound keeps
+ every sum and product below under 2^63, where it would otherwise overflow.
+
   gguf-read-u64 : List Integer, Integer -> Integer
   gguf-read-u64 (data) (off) =
     let lo = gguf-read-u32 data off
     in let hi = gguf-read-u32 data (off + 4)
-    in lo + hi * 4294967296
+    in if hi >= 2147483648 then -1 else lo + hi * 4294967296
+
+  gguf-len-ok : List Integer, Integer -> Boolean
+  gguf-len-ok (data) (n) = n >= 0 & n <= list-length data
 
   gguf-read-i8 : List Integer, Integer -> Integer
   gguf-read-i8 (data) (off) =
@@ -71,10 +77,11 @@ Section: Byte Reading
   gguf-read-string : List Integer, Integer -> GgufString
   gguf-read-string (data) (off) =
     let len = gguf-read-u64 data off
+    in let blen = if gguf-len-ok data len then len else list-length data
     in GgufString {
-      gs-text = gguf-extract-text data (off + 8) len "",
+      gs-text = gguf-extract-text data (off + 8) blen "",
       gs-length = len,
-      gs-total-bytes = 8 + len
+      gs-total-bytes = 8 + blen
     }
 
   GgufString = record {
@@ -129,12 +136,13 @@ Section: Header
     else let magic = gguf-read-u32 data 0
     in if magic /= gguf-magic then
       GgufHeader { gh-version = 0, gh-tensor-count = 0, gh-metadata-count = 0, gh-valid = False }
-    else
-      GgufHeader {
+    else let tc = gguf-read-u64 data 8
+    in let mc = gguf-read-u64 data 16
+    in GgufHeader {
         gh-version = gguf-read-u32 data 4,
-        gh-tensor-count = gguf-read-u64 data 8,
-        gh-metadata-count = gguf-read-u64 data 16,
-        gh-valid = True
+        gh-tensor-count = tc,
+        gh-metadata-count = mc,
+        gh-valid = tc >= 0 & mc >= 0
       }
 
 Section: Metadata Walk
@@ -174,7 +182,7 @@ Section: Metadata Walk
   gguf-value-bytes : List Integer, Integer, Integer -> Integer
   gguf-value-bytes (data) (off) (vtype) =
     if vtype == gguf-vtype-string
-      then (if gguf-fits data off 8 == False then -1 else 8 + gguf-read-u64 data off)
+      then (if gguf-fits data off 8 == False then -1 else let n = gguf-read-u64 data off in if gguf-len-ok data n then 8 + n else -1)
     else if vtype == gguf-vtype-array then gguf-array-bytes data off
     else gguf-scalar-width vtype
 
@@ -183,7 +191,7 @@ Section: Metadata Walk
     if gguf-fits data off 12 == False then -1
     else let elem-type = gguf-read-u32 data off
     in let count = gguf-read-u64 data (off + 4)
-    in if count < 0 then -1
+    in if gguf-len-ok data count == False then -1
     else let w = gguf-scalar-width elem-type
     in if w >= 0 then 12 + count * w
     else if elem-type == gguf-vtype-string
@@ -200,14 +208,15 @@ Section: Metadata Walk
   gguf-array-string-bytes (data) (off) (count) (acc) =
     if count <= 0 then acc
     else if gguf-fits data (off + acc) 8 == False then -1
-    else let n = 8 + gguf-read-u64 data (off + acc)
-    in gguf-array-string-bytes data off (count - 1) (acc + n)
+    else let s = gguf-read-u64 data (off + acc)
+    in if gguf-len-ok data s == False then -1
+    else gguf-array-string-bytes data off (count - 1) (acc + 8 + s)
 
   gguf-kv-bytes : List Integer, Integer -> Integer
   gguf-kv-bytes (data) (off) =
     if gguf-fits data off 8 == False then -1
     else let key-len = gguf-read-u64 data off
-    in if key-len < 0 then -1
+    in if gguf-len-ok data key-len == False then -1
     else let vtype-off = off + 8 + key-len
     in if gguf-fits data vtype-off 4 == False then -1
     else let vtype = gguf-read-u32 data vtype-off
@@ -261,12 +270,6 @@ Section: Tensor Info
     gti-valid : Boolean
   }
 
- gti-valid is additive: a caller that ignores it reads exactly the fields main
- read before, and a refused entry answers the empty name and zero dimensions it
- would have answered for a file of zeroes. What it no longer does is trap. The
- single fits test covers the shape, the dtype and the tensor offset together,
- because ndim decides where the last two land.
-
   gguf-tensor-info-refused : GgufTensorInfo =
     GgufTensorInfo {
       gti-name = "",
@@ -317,7 +320,10 @@ Section: Tensor Info
   gguf-product : List Integer, Integer, Integer, Integer -> Integer
   gguf-product (dims) (i) (len) (acc) =
     if i >= len then acc
-    else gguf-product dims (i + 1) len (acc * list-at dims i)
+    else let d = list-at dims i
+    in if d < 0 then -1
+    else if d > 0 & acc > 1099511627776 / d then -1
+    else gguf-product dims (i + 1) len (acc * d)
 
 Section: Q8_0 Dequantization
 
@@ -386,7 +392,9 @@ Section: F32 Reading
     in let sign = bit-and (bit-shru raw 31) 1
     in let exp = bit-and (bit-shru raw 23) 255
     in let mant = bit-and raw 8388607
-    in let val = if exp == 0 then 0 else (8388608 + mant) * gguf-pow2 (exp - 127) / 8388
+    in let e = exp - 127
+    in let n = (8388608 + mant) * 1000
+    in let val = if exp == 0 then 0 else if exp == 255 | e > 52 then 9223372036854775807 else if e >= 23 then n * gguf-pow2 (e - 23) else if 23 - e >= 35 then 0 else n / gguf-pow2 (23 - e)
     in let fixed-val = if sign == 1 then -val else val
     in gguf-rf32-loop data off elements (i + 1) (list-push acc fixed-val)
 

@@ -1,0 +1,87 @@
+Chapter: ZoneDatV2
+  cites Foreword chapter Console
+  cites Works chapter GopZone
+
+Section: Fixtures
+
+  zd-rec : ZoneRec
+  zd-rec = ZoneRec { zc-minutes = 0 - 300, zc-id = 300, zc-clock = 1, zc-date = 2, zc-band = 5 }
+
+  zd-machine : Text, Boolean -> ZoneMachine
+  zd-machine (name) (local) = ZoneMachine { zm-name = name, zm-rtc-local = local }
+
+  zd-buf : Integer -> Integer
+  zd-buf (fill) =
+    let b = alloc-zeroed zone-buf-bytes 64
+    in let f = zd-fill b 0 fill
+    in b
+
+  zd-fill : Integer, Integer, Integer -> Integer
+  zd-fill (b) (i) (v) =
+    if i >= zone-buf-bytes then 0
+    else let w = poke-byte b i v
+    in zd-fill b (i + 1) v
+
+  zd-legacy8 : Integer
+  zd-legacy8 =
+    let b = zd-buf 0
+    in let a = poke-byte b 0 zone-magic0
+    in let c = poke-byte b 1 zone-magic1
+    in let d = poke-byte b 2 zone-magic2
+    in let e = poke-byte b 3 zone-magic3
+    in let f = poke-byte b 4 (3 + zone-bias)
+    in b
+
+Section: Rendering
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+  rec-text : ZoneRec -> Text
+  rec-text (r) = show (r.zc-minutes) & " " & show (r.zc-id) & " " & show (r.zc-clock) & " " & show (r.zc-date) & " " & show (r.zc-band)
+
+  zm-text : ZoneMachine -> Text
+  zm-text (zm) = "[" & zm.zm-name & "] " & yn (zm.zm-rtc-local)
+
+  packed : ZoneMachine -> Text
+  packed (zm) =
+    let b = zd-buf 255
+    in let len = zone-pack b zd-rec zm
+    in show len & " " & rec-text (zone-rec-of b len) & " " & zm-text (zone-machine-of b len)
+
+  short-by-one : Integer
+  short-by-one =
+    let b = zd-buf 255
+    in let len = zone-pack b zd-rec (zd-machine "Europe/London" True)
+    in len - 1
+
+  truncated : Text
+  truncated =
+    let b = zd-buf 255
+    in let len = zone-pack b zd-rec (zd-machine "Europe/London" True)
+    in zm-text (zone-machine-of b (len - 1))
+
+  legacy16 : Text
+  legacy16 =
+    let b = zd-buf 255
+    in let len = zone-pack b zd-rec (zd-machine "Europe/London" True)
+    in let v = poke-byte b zone-ver-off 0
+    in rec-text (zone-rec-of b zone2-len) & " " & zm-text (zone-machine-of b len)
+
+  long-name : Text
+  long-name = "Abcdefghij/Abcdefghij/Abcdefghij/Abcdefghij/Abcdefghij/Abcdefghij"
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("local london   : " & packed (zd-machine "Europe/London" True))
+    print-line-uni ("utc new york   : " & packed (zd-machine "America/New_York" False))
+    print-line-uni ("no name        : " & packed zone-machine-default)
+    print-line-uni ("name too long  : " & show (text-length long-name) & " " & packed (zd-machine long-name True))
+    print-line-uni ("non-ascii name : " & packed (zd-machine ("Europe/Z" & char-to-text (code-to-char (from-unicode 252)) & "rich") True))
+    print-line-uni ("cut name       : " & show short-by-one & " " & truncated)
+    print-line-uni ("v1 8 bytes     : " & rec-text (zone-rec-of zd-legacy8 8) & " " & zm-text (zone-machine-of zd-legacy8 8) & " " & show (zone-hours-at zd-legacy8 8))
+    print-line-uni ("v1 16 bytes    : " & legacy16)
+    print-line-uni ("bad magic      : " & rec-text (zone-rec-of (zd-buf 0) 80) & " " & zm-text (zone-machine-of (zd-buf 0) 80))
+    print-line-uni ("hours save     : " & rec-text (zone-hours-rec (0 - 5)))
+  end

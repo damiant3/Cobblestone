@@ -16,8 +16,6 @@ Chapter: SafeTensors
 
  Data offsets are relative to the first byte after the header.
 
- We say:
-
 Section: Constants
   st-dtype-f32 : Integer = 0
   st-dtype-f16 : Integer = 1
@@ -83,7 +81,7 @@ Section: Byte Reading
   st-read-u64 (data) (off) =
     let lo = st-read-u32 data off
     in let hi = st-read-u32 data (off + 4)
-    in lo + hi * 4294967296
+    in if hi >= 2147483648 then -1 else lo + hi * 4294967296
 
 Section: Header Parsing
   st-parse-file : List Integer -> SafeTensorFile
@@ -97,7 +95,15 @@ Section: Header Parsing
         st-valid = False
       }
     else let hlen = st-read-u64 data 0
-    in let data-off = 8 + hlen
+    in if hlen < 0 | hlen > list-length data - 8 then
+      SafeTensorFile {
+        st-header-len = 0,
+        st-data-offset = 0,
+        st-tensors = [],
+        st-tensor-count = 0,
+        st-valid = False
+      }
+    else let data-off = 8 + hlen
     in let header-text = st-extract-text data 8 hlen ""
     in let parsed = json-parse header-text
     in when parsed
@@ -161,7 +167,8 @@ Section: Header In Memory
 
   st-parse-header-at : Integer, Integer -> SafeTensorFile
   st-parse-header-at (addr) (hlen) =
-    let rev = st-ascii-to-cce cce-to-unicode-table 0 (st-minus-ones 0 (__list-with-capacity 128))
+    if hlen < 0 | hlen > 1125899906842624 then SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = [], st-tensor-count = 0, st-valid = False }
+    else let rev = st-ascii-to-cce cce-to-unicode-table 0 (st-minus-ones 0 (__list-with-capacity 128))
     in let text = raw-bytes-to-text (st-header-codes addr 0 hlen rev (__list-with-capacity (hlen + 1)))
     in let parsed = json-parse text
     in when parsed
@@ -248,10 +255,20 @@ Section: Offset Parsing
 
   st-json-to-int : JsonValue -> Integer
   st-json-to-int (v) =
-    when v
-      is JsonInt (n) -> n
-      is JsonNum (n) -> json-num-to-int n
+    let n = when v
+      is JsonInt (k) -> k
+      is JsonNum (k) -> json-num-to-int k
       is otherwise -> 0
+    in st-offset-bound n
+
+ A u64 at or above 2^63 reads as -1. An offset outside 0..2^50 becomes 2^50 + 1,
+ past the end of any file a List can hold, so st-can-read refuses it and the
+ sum with the data offset stays far from 2^63, where it would overflow. A
+ negative offset must not survive: added to the data offset it lands inside
+ the header.
+
+  st-offset-bound : Integer -> Integer
+  st-offset-bound (n) = if n < 0 | n > 1125899906842624 then 1125899906842625 else n
 
 Section: Text Extraction
   st-extract-text : List Integer, Integer, Integer, Text -> Text
@@ -302,7 +319,7 @@ Section: Tensor Loading (F32)
     else let frac = 8388608 + mant
     in let val = frac * 1000 / 8388608
     in let e = exp - 127
-    in let shifted = if e >= 0 then val * st-pow2 e else val / st-pow2 (-e)
+    in let shifted = if exp == 255 | e > 52 then 9223372036854775807 else if e >= 0 then val * st-pow2 e else if e < -62 then 0 else val / st-pow2 (-e)
     in if sign == 1 then -shifted else shifted
 
 Section: Tensor Loading (F16)
@@ -363,7 +380,7 @@ Section: Tensor Loading (BF16)
     else let frac = 128 + mant
     in let val = frac * 1000 / 128
     in let e = exp - 127
-    in let shifted = if e >= 0 then val * st-pow2 e else val / st-pow2 (-e)
+    in let shifted = if exp == 255 | e > 52 then 9223372036854775807 else if e >= 0 then val * st-pow2 e else if e < -62 then 0 else val / st-pow2 (-e)
     in if sign == 1 then -shifted else shifted
 
 Section: Tensor Loading (FP8)

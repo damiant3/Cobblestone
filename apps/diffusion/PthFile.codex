@@ -15,8 +15,6 @@ Chapter: PthFile
  Only the opcodes and the three globals such a pickle uses are read; any
  other refuses the file.
 
- We say:
-
 Section: Values
 
   PVal =
@@ -105,9 +103,6 @@ Section: Bytes
 
   pth-text : Integer, Integer, Integer, List Integer -> Text
   pth-text (a) (off) (n) (rev) = raw-bytes-to-text (st-header-codes a off (off + n) rev (__list-with-capacity (n + 1)))
-
- The file's size: the bridge refuses a read past the end, so the first offset
- that does not read is found by doubling from 1 MiB, then halving.
 
   pth-has : Text, Integer -> Boolean
   pth-has (path) (off) = pth-read path off 1 /= 0
@@ -199,8 +194,6 @@ Section: The Pickle
     if i + 1 >= stop then acc
     else pth-set-pairs st (i + 2) stop (list-push acc (PEntry { en-key = pth-key (list-at st i), en-val = list-at st (i + 1) }))
 
- A dict with the stack's items from i to stop set, key then value.
-
   pth-dict-set : PVal, List PVal, Integer, Integer -> PVal
   pth-dict-set (d) (st) (i) (stop) =
     let old = pth-entries-of d
@@ -242,7 +235,13 @@ Section: The Pickle
     is otherwise -> PErr "a persistent id that is not a tuple"
 
   pth-tensor-of : List PVal, PthStorage -> PVal
-  pth-tensor-of (xs) (s) = PTensor (PthTensor { pt-key = s.ps-key, pt-dtype = s.ps-dtype, pt-offset = pth-int (list-at xs 1), pt-shape = pth-int-tuple (list-at xs 2), pt-stride = pth-int-tuple (list-at xs 3) })
+  pth-tensor-of (xs) (s) = PTensor (PthTensor {
+    pt-key = s.ps-key,
+    pt-dtype = s.ps-dtype,
+    pt-offset = pth-int (list-at xs 1),
+    pt-shape = pth-int-tuple (list-at xs 2),
+    pt-stride = pth-int-tuple (list-at xs 3)
+  })
 
   pth-rebuild : List PVal -> PVal
   pth-rebuild (xs) =
@@ -274,9 +273,6 @@ Section: The Pickle
   pth-s32 : Integer -> Integer
   pth-s32 (v) = if v >= 2147483648 then v - 4294967296 else v
 
- One opcode's effect: the stack written in place, the next position and
- depth, an error text, or done when STOP leaves the answer on top.
-
   PthStep = record {
     sx-pos : Integer,
     sx-sp : Integer,
@@ -289,8 +285,6 @@ Section: The Pickle
 
   pth-bad : Text -> PthStep
   pth-bad (why) = PthStep { sx-pos = 0, sx-sp = 0, sx-err = why, sx-done = False }
-
- v replaces the stack from depth sp, and the step moves to pos.
 
   pth-put-top : List PVal, Integer, Integer, PVal -> PthStep
   pth-put-top (st) (sp) (pos) (v) =
@@ -359,9 +353,6 @@ Section: The Pickle
     else if op == 115 then pth-put-top st (sp - 3) (pos + 1) (pth-dict-set (list-at st (sp - 3)) st (sp - 2) sp)
     else pth-bad ("pickle opcode " & show op & " at " & show pos & " is not read")
 
- The machine over the pickle's n bytes at a; the answer is the value STOP
- leaves, or PErr.
-
   pth-vm : Integer, Integer, Integer, List PVal, Integer, List PVal, List Integer -> PVal
   pth-vm (a) (pos) (n) (st) (sp) (memo) (rev) =
     if pos >= n then PErr "the pickle ends without STOP"
@@ -417,7 +408,14 @@ Section: The State Dict
     let k = pth-entry zs (prefix & "data/" & t.pt-key) 0
     in let data = if k < 0 then 0 - 1 else pth-data-at path (list-at zs k)
     in let w = st-dtype-width (t.pt-dtype)
-    in PthTensorAt { pa-name = name, pa-dtype = t.pt-dtype, pa-shape = t.pt-shape, pa-count = pth-count (t.pt-shape) 0 1, pa-file-off = (if data < 0 | w <= 0 then 0 - 1 else data + t.pt-offset * w), pa-contiguous = list-length (t.pt-shape) == list-length (t.pt-stride) & pth-contiguous (t.pt-shape) (t.pt-stride) (list-length (t.pt-shape) - 1) 1 }
+    in PthTensorAt {
+      pa-name = name,
+      pa-dtype = t.pt-dtype,
+      pa-shape = t.pt-shape,
+      pa-count = pth-count (t.pt-shape) 0 1,
+      pa-file-off = (if data < 0 | w <= 0 then 0 - 1 else data + t.pt-offset * w),
+      pa-contiguous = list-length (t.pt-shape) == list-length (t.pt-stride) & pth-contiguous (t.pt-shape) (t.pt-stride) (list-length (t.pt-shape) - 1) 1
+    }
 
   pth-fail : Text, Text -> PthFile
   pth-fail (path) (why) = PthFile { pf-ok = False, pf-why = why, pf-path = path, pf-tensors = [] }
@@ -436,14 +434,15 @@ Section: The State Dict
     in let top = pth-vm pk 0 (z.ze-size) (pth-fill cap (__list-with-capacity (cap + 1))) 0 (pth-fill cap (__list-with-capacity (cap + 1))) rev
     in when top
       is PErr (why) -> pth-fail path why
-      is otherwise -> PthFile { pf-ok = True, pf-why = "", pf-path = path, pf-tensors = pth-place path zs (substring (z.ze-name) 0 (text-length (z.ze-name) - 8)) (pth-state top) 0 (__list-with-capacity 1024) }
+      is otherwise -> PthFile {
+        pf-ok = True,
+        pf-why = "",
+        pf-path = path,
+        pf-tensors = pth-place path zs (substring (z.ze-name) 0 (text-length (z.ze-name) - 8)) (pth-state top) 0 (__list-with-capacity 1024)
+      }
 
   pth-find : PthFile, Text, Integer -> Integer
   pth-find (f) (name) (i) = if i >= list-length (f.pf-tensors) then 0 - 1 else if (list-at (f.pf-tensors) i).pa-name == name then i else pth-find f name (i + 1)
-
- A tensor's elements into the device buffer h at dst-off as dst-dt; the
- bytes the bridge wrote, or 0 - 1 for a tensor that is not contiguous or
- has no place in the file.
 
   pth-upload : PthFile, PthTensorAt, Integer, Integer, Integer -> Integer
   pth-upload (f) (t) (h) (dst-off) (dst-dt) =

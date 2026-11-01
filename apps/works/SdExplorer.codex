@@ -4,8 +4,6 @@ Chapter: SdExplorer
   cites Foreword chapter Maybe
   cites Encode chapter Json
 
- We say:
-
 Section: Response Helpers
 
   respond-json : Text -> [Console] Integer
@@ -91,14 +89,15 @@ Section: Request Parsing
   parse-int : Text, Integer -> Integer
   parse-int (s) (default-val) =
     if text-length s == 0 then default-val
-    else parse-int-loop s 0 0
+    else let v = parse-int-loop s 0 0
+    in if v < 0 then default-val else v
 
   parse-int-loop : Text, Integer, Integer -> Integer
   parse-int-loop (s) (i) (acc) =
     if i >= text-length s then acc
     else let c = to-unicode (char-code (char-at s i))
     in if c >= 48 then
-      if c <= 57 then parse-int-loop s (i + 1) (acc * 10 + c - 48)
+      if c <= 57 then (if acc > 99999999999 then -1 else parse-int-loop s (i + 1) (acc * 10 + c - 48))
       else acc
     else acc
 
@@ -221,11 +220,21 @@ Section: Cache Key
     else if c == 43 then sanitize-loop s (i + 1) len (acc & "p")
     else if c >= 48 then
       if c <= 57 then sanitize-loop s (i + 1) len (acc & char-to-text (char-at s i))
-      else if c >= 65 then
-        if c <= 122 then sanitize-loop s (i + 1) len (acc & char-to-text (char-at s i))
-        else sanitize-loop s (i + 1) len acc
+      else if (c >= 65 & c <= 90) | (c >= 97 & c <= 122) then sanitize-loop s (i + 1) len (acc & char-to-text (char-at s i))
       else sanitize-loop s (i + 1) len acc
     else sanitize-loop s (i + 1) len acc
+
+ The host's cache route serves /cache/<12 lowercase hex>/<[A-Za-z0-9_.+-]+>.png
+ and nothing else (apps/explorer/run-designers-demo.ps1).
+
+  is-prompt-hash : Text -> Boolean
+  is-prompt-hash (s) = text-length s == 12 & is-hex-from s 0
+
+  is-hex-from : Text, Integer -> Boolean
+  is-hex-from (s) (i) =
+    if i >= text-length s then True
+    else let c = to-unicode (char-code (char-at s i))
+    in if (c >= 48 & c <= 57) | (c >= 97 & c <= 102) then is-hex-from s (i + 1) else False
 
   make-cache-key : Text, Text, Integer, Integer, Text, Integer -> Text
   make-cache-key (model-short) (sampler) (steps) (cfg) (lora-short) (seed) =
@@ -333,7 +342,11 @@ Section: Cache Key Handler
     in let ph = extract-query-param line "prompt_hash"
     in let ls2 = if text-length ls == 0 then "none" else ls
     in let fname = make-cache-key ms sa st cf ls2 se
-    in act
+    in if is-prompt-hash ph == False then act
+      pm1 <- respond-error "prompt_hash must be 12 lowercase hex digits"
+      state
+    end
+    else act
       pm0 <- respond-json ("{\"file\":" & jstr fname & ",\"cache_url\":" & jstr ("/cache/" & ph & "/" & fname) & "}")
       state
     end

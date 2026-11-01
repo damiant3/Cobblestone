@@ -1,31 +1,7 @@
 Chapter: Lz4Hostile
   cites Compress chapter Lz4
 
- Track D item 19, the Lz4 half. Every read in the decompressor was a bare
- list-at, which traps out of range, so a literal count, a match offset or a
- match length off the stream decided where a read landed and a hostile one
- halted the machine. The existing test is a round trip through our own
- compressor, which can only produce well-formed streams, so nothing in the
- tree had ever handed this decoder a byte it did not write itself.
-
- Reached, behind a hash: archive-expand (apps/works/FactArchive.codex:177)
- decompresses and then compares fa-hash-bytes against the base record's
- digest, so a truncated answer is refused by the caller. That is why every
- guard here CLAMPS -- stops and returns what was decoded -- rather than
- growing a refusal channel the caller already has.
-
- Rows 1 to 4 are the positive controls: real streams from lz4-compress,
- which must round trip exactly as before. Rows 5 to 8 are the hostile
- streams. Rows 5, 6 and 7 kill the guest without the guards; row 8 does not
- crash unguarded and is the discriminator, because the old safe-src clamped
- a negative source to index 0 and FABRICATED bytes that were never in the
- stream.
-
 Section: Helpers
-
- Every row computes inside the print statement rather than in a let above the
- act block, so a row that dies names itself by the rows that printed before
- it. gguf-hostile paid for this lesson.
 
   list-equal : List Integer, List Integer, Integer, Integer -> Boolean
   list-equal (a) (b) (i) (len) =
@@ -45,38 +21,55 @@ Section: Helpers
     if i >= n then acc
     else make-repeated val n (i + 1) (list-push acc val)
 
- A hostile row reports the LENGTH it decoded and the first byte, which is
- what separates "stopped where it should" from "invented bytes".
-
   show-decode : List Integer, Text -> Text
   show-decode (input) (label) =
     let out = lz4-decompress input
     in label & " len=" & show (list-length out) & " first=" & (if list-length out == 0 then "none" else show (list-at out 0))
 
+ Rows 9 and 10 are the output-cap layer. Row 9 is a seeded single-byte mutation
+ sweep over a stream this encoder wrote: every byte position is flipped in turn
+ and decoded under a cap, and every decode must stop bounded. Row 10 decodes a
+ stream under a cap far below its output and requires the cap to have limited it;
+ one Lz4 match with a long extra-length run would otherwise replicate far more
+ output than its input.
+
+  mutate-copy : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mutate-copy (xs) (pos) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else mutate-copy xs pos val (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) val else list-at xs i))
+
+  sweep-mut : List Integer, Integer, Integer, Integer, Integer -> Integer
+  sweep-mut (base) (n) (pos) (cap) (bad) =
+    if pos >= n then bad
+    else let m = mutate-copy base pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in let d = lz4-decompress-capped m cap
+    in let ok = list-length d < 100000
+    in sweep-mut base n (pos + 1) cap (if ok then bad else bad + 1)
+
+  show-sweep : List Integer, Text -> Text
+  show-sweep (base) (label) =
+    label & " all-bounded=" & (if sweep-mut base (list-length base) 0 2000 0 == 0 then "True" else "False")
+
+  show-cap : List Integer, Integer, Text -> Text
+  show-cap (input) (cap) (label) =
+    label & " capped=" & (if list-length (lz4-decompress-capped input cap) < list-length (lz4-decompress input) then "True" else "False")
+
 Section: Hostile Streams
 
  Row 5. Token F0 asks for a 15+ byte literal run and the extra-length byte
- says 20, so the run is 35 bytes long against a 2-byte stream. Unguarded,
- lz4-copy-literals reads input[2] and the guest dies. Guarded, the literal
- copy stops at the end of the input and the offset read that follows does
- not fit either, so nothing is decoded.
+ says 20, so the run is 35 bytes long against a 2-byte stream.
 
   lit-past-end : List Integer = [240, 20]
 
- Row 6. The offset is a two-byte field and the old guard only asked whether
- its FIRST byte was inside the stream. Here after-lit is exactly len-1, so
- the old test passed and the read of after-lit+1 went off the end.
+ Row 6. The offset is a two-byte field.
 
   offset-straddles-end : List Integer = [16, 65, 0]
 
- Row 7. A back-reference with offset 0. Unguarded, src is list-length acc
- and list-at acc (list-length acc) is out of range by exactly one.
+ Row 7. A back-reference with offset 0.
 
   offset-zero : List Integer = [16, 65, 0, 0]
 
- Row 8. A back-reference reaching 5 bytes behind a 1-byte output. This one
- never trapped: safe-src clamped the negative source to 0 and the decoder
- answered five copies of a byte the stream never encoded.
+ Row 8. A back-reference reaching 5 bytes behind a 1-byte output.
 
   offset-before-start : List Integer = [16, 65, 5, 0]
 
@@ -91,6 +84,8 @@ Section: Body
     print-line-uni (show-decode offset-straddles-end "6-offset-straddles-end")
     print-line-uni (show-decode offset-zero "7-offset-zero")
     print-line-uni (show-decode offset-before-start "8-offset-before-start")
+    print-line-uni (show-sweep (lz4-compress (make-repeated 42 100 0 [])) "9-mutation-sweep")
+    print-line-uni (show-cap (lz4-compress (make-repeated 42 2000 0 [])) 50 "10-output-cap")
   end
 
 Page 1

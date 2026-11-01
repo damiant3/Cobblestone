@@ -13,8 +13,6 @@ Chapter: DynThresh
  tensors are f32 and torch.quantile interpolates in f32; the references
  here round to f32, the sums run in f64.
 
- We say:
-
 Section: Settings
 
  Modes index DynThresh.Modes. sep is Separate Feature Channels, zero the
@@ -86,10 +84,6 @@ Section: References
   dt-lerp : Real, Real, Real -> Real
   dt-lerp (a) (b) (w) = dt-f32 (if w < 0.5 then a + w * (b - a) else b - (b - a) * (1.0 - w))
 
- host holds the stats (c * 6: mimic mean, CFG mean, mimic max |x - mean|,
- mimic sum of squares, CFG max |x - mean|, CFG sum of squares) and at 24
- the rank values (group * 2, then * 2 + 1).
-
   dt-max4 : Integer, Integer -> Real
   dt-max4 (host) (k) =
     let a = dt-get64 host k
@@ -125,9 +119,6 @@ Section: Guide
   dt-free : List Integer, Integer -> Integer
   dt-free (hs) (i) = if i >= list-length hs then 0 else let z = un-free 0 (list-at hs i) in dt-free hs (i + 1)
 
- dynthresh of the device predictions dc and du (4 x hw each) at the CFG
- scale cfg and step 999 - t, into out.
-
   dt-guide : Integer, Integer, Integer, Integer, Real, Real, DtSet -> Boolean
   dt-guide (dc) (du) (out) (hw) (cfg) (step) (st) =
     let n = 4 * hw
@@ -149,12 +140,14 @@ Section: Guide
     in let ok = if mim == 0 | cfgt == 0 | stats == 0 | qv == 0 | refs == 0 then False
        else if dt-run "kernel_dt_targets" n [gpu-arg-buf dc 0, gpu-arg-buf du 0, gpu-arg-buf mim 0, gpu-arg-buf cfgt 0, gpu-arg-u64 n, gpu-arg-u64 (real-to-bits ms), gpu-arg-u64 (real-to-bits cs)] == False then False
        else if dt-run "kernel_dt_stats" 4 [gpu-arg-buf mim 0, gpu-arg-buf cfgt 0, gpu-arg-buf stats 0, gpu-arg-u64 hw] == False then False
-       else if (if rank then dt-run "kernel_dt_rank" n [gpu-arg-buf cfgt 0, gpu-arg-buf stats 0, gpu-arg-buf qv 0, gpu-arg-u64 hw, gpu-arg-u64 (if st.dt-sep then 1 else 0), gpu-arg-u64 k0, gpu-arg-u64 k1] else True) == False then False
+       else if (if rank then dt-run "kernel_dt_rank" n [gpu-arg-buf cfgt 0, gpu-arg-buf stats 0, gpu-arg-buf qv 0, gpu-arg-u64 hw,
+         gpu-arg-u64 (if st.dt-sep then 1 else 0), gpu-arg-u64 k0, gpu-arg-u64 k1] else True) == False then False
        else if gpu-buf-read stats 0 (24 * 8) host == False then False
        else if (if rank then gpu-buf-read qv 0 (8 * 8) (host + 24 * 8) else True) == False then False
        else if dt-put64 hr (dt-refs host st hw (pos - real-from-int k0) k0 0 []) 0 /= 12 then False
        else if gpu-buf-write refs 0 (12 * 8) hr == False then False
-       else dt-run "kernel_dt_apply" n [gpu-arg-buf cfgt 0, gpu-arg-buf out 0, gpu-arg-buf refs 0, gpu-arg-u64 hw, gpu-arg-u64 (if st.dt-zero then 1 else 0), gpu-arg-u64 (if st.dt-std then 1 else 0), gpu-arg-u64 (real-to-bits (st.dt-phi))]
+       else dt-run "kernel_dt_apply" n [gpu-arg-buf cfgt 0, gpu-arg-buf out 0, gpu-arg-buf refs 0, gpu-arg-u64 hw,
+         gpu-arg-u64 (if st.dt-zero then 1 else 0), gpu-arg-u64 (if st.dt-std then 1 else 0), gpu-arg-u64 (real-to-bits (st.dt-phi))]
     in let back = __heap-restore mark
     in let f = dt-free [mim, cfgt, stats, qv, refs] 0
     in ok

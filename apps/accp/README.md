@@ -86,12 +86,12 @@ below. HTTP is not implemented.
 | op | fields | answer |
 |---|---|---|
 | `describe` | optional string `id` | module/host identities, ambient set, ceilings |
-| `check` | `source`, optional `id`, `limits` | diagnostics or entry row and `outside_ambient` |
+| `check` | `source`, optional `id`, `limits`, `prose` | diagnostics or entry row and `outside_ambient`; with `prose: true`, the CDX1101 to CDX1110 Codex Prose Language warnings of `We say:` blocks as `prose_findings` |
 | `run` | `source`, optional `input`, `id`, `limits` | buffered stdout, exact output bytes in `stdout_base64`, output hash |
 | `lens` | `source`, `plug: "wasm"`, optional `id`, `limits` | WAT text |
 
 Sources must be complete compilation units. The optional `library` field
-selects `none` (default), `math`, `physics`, or `experiment`; physics includes
+selects `none` (default), `math`, `physics`, `experiment`, or `exact` (integers past 64 bits and exact decimals, `AccpExact.codex` over `Foreword chapter BigInt`); physics includes
 math, and experiment includes physics. The
 build bundles the selected Codex chapters and their dependencies. No arbitrary
 library resolver or compiler flags are exposed. The fixed request mode is
@@ -102,7 +102,8 @@ optionally wrapped in a concrete effect row.
 
 Pure computation and buffered `Console` are ambient. Directional Console
 labels are supported. Other effects are reported by `check` and refused by
-`run` and `lens`. Any `lease` field is refused as unsupported. The WASM
+`run` and `lens` unless a `run` presents a lease the instance admits (Instance
+binding below). The WASM
 inspector independently permits only correctly typed `fd_read`/`fd_write`
 imports. Execution receives finite stdin and captured stdout/stderr, no
 directory, environment or network grant. Unsupported target builtins trap.
@@ -124,6 +125,127 @@ first touched, so the conduit job ceiling is 4 GiB; the reservation is not
 charged against the commit limit. Each completed request
 restores the conduit heap checkpoint. Stderr reports both checkpoint and
 request allocation bytes, conduit RSS and execution-job peak commit.
+
+## Instance binding
+
+`-Requester <key> -Grantors <key,key,...> -Identity <key>` bind the instance to
+one requester (`AccpRequesterAuth.md` section 2): every key is an Ed25519 public
+key as 64 lowercase hex digits, the requester is the only principal on the
+conduit's stdin, the grantors are the keys whose leases it will trust, and the
+identity is the instance's own key, which a lease's audience must name.
+`-MaxLeaseSeconds` (default 3600, at most 86400) bounds a lease's lifetime.
+The service refuses to start on a malformed key, a key listed twice, a requester
+inside the grantor set, or an identity equal to the requester or a grantor.
+`describe` and every fact carry `binding`: the transport (`stdio`), the
+requester and identity keys, `grantors_sha256` (SHA-256 of the sorted keys
+joined by commas, ASCII), the grantor count and the lifetime bound; `binding`
+is `null` when the instance is unbound.
+
+A `run` whose row leaves the ambient set may carry `lease`: lowercase hex of
+`encode-grant-body` (`Trust chapter GrantSeal`), a sealed `GrantMsg`. The
+conduit decodes it with `decode-grant-checked`, reads the host's clock through
+the `now` bridge, and admits only when `ag-refusal` (`AccpGrant.codex`) finds no
+failing check of `AccpRequesterAuth.md` section 4: the instance is bound, the
+grantor is trusted, the signature verifies, the grant is not self-granted, its
+holder is the requester and its audience this instance's identity, its window is
+current and no longer than `-MaxLeaseSeconds`, `scope.path` equals
+`capability.scope`, every flow rule parses, it carries no gates or conditions, every
+non-ambient label is covered (name, direction and scope, `AccpLease.codex`),
+and its policy hash names the policy the instance holds, and that policy still
+allows every non-ambient label now (`ag-admit`, check 5). `-Policy <file>` is the
+grantor's prose (`Trust chapter PolicyProse`, at most 64 KiB) and
+`-NameBook <file>` the grantor's signed book as lowercase hex
+(`name-book-encode`); the conduit lowers the prose through the book, which must
+be the lease grantor's, and evaluates each label with `eval-policy` at the host's
+local week-minute (Monday 00:00 is 0). `binding.policy_sha256` is the SHA-256 of
+the policy file's bytes, so changing the policy revokes every lease drawn
+against it. A grant with a quota ("for no more than 1 hour per day") is counted by the host: `-UsageLedger <file>` is an append-only JSON-lines file of `{grantor, holder, rule, period_key, ms}`, read at start, so a restart keeps the count, and keyed by grant rather than lease, so a fresh lease does not reset it (`period_key` is the local date for `per day`, `lease:<id>` otherwise). The conduit refuses at or past the quota and refuses any quota on an instance with no ledger; the host caps the run's execution at what remains and charges its measured milliseconds after it. A grant that needs a human approval is refused until the approval check exists. A refusal names the first failing check; the response and the fact's
+`grant.lease` carry the lease's id, grantor, holder and policy hash. A lease on any op but `run`, or on a run that needs no
+lease, is refused.
+
+A lease's `flow-rules` forbid flows (`AccpInformationFlow.md`, rung 0). A rule
+is `SOURCE -> SINK`, each end an effect name and an optional JSON-quoted scope:
+`FileSystem.Read "/patient/" -> Network.Write "api.example"`. An end with no
+scope matches every scope. A rule that does not parse, or whose two ends are
+both `Console`, refuses the lease at admission. An admitted lease whose row
+holds both ends of a rule (names and scopes overlapping, the source label able
+to read and the sink label able to write, `AccpFlow.codex`) is refused with
+`stage: flow` and `flow: [{"source": ..., "sink": ...}]` naming every pair;
+the fact records `flow`. Rung 1 then runs both IR flow analyses: `analysis`
+is the first (`AccpFlowIr.codex`): `verdict` is `path`, `no path` or
+`unanalysed: <reason>`, and `reach` names each forbidden pair a path joins
+with the defs holding its sink; `analysis_second` is the second
+(`AccpFlowCheck.codex`) as one text, `no path`, `path: <rule indices>` or
+`unanalysed: <reason>`. When both say `no path` the run is admitted and its
+answer carries both fields; any other pair keeps the `stage: flow` refusal
+with both (`AccpInformationFlow.md` section 8 item 2). A rule-text refusal
+and a row/scope mismatch are refused without the analyses. The fact records
+both fields.
+
+Under any flow rule, a program whose IR names a raw-memory builtin (rung 0b:
+`afl-raw-memory` in `AccpFlow.codex`, every builtin that reads or writes an
+address it is given or moves the allocator) is refused with `stage: flow`,
+`needs: ["no raw memory under a flow rule"]` and `raw: [...]` naming each
+builtin found; the fact records `raw`. An IR string that does not end refuses
+as `unscannable IR`. `raw-memory-census.ps1`, run by `build.ps1`, refuses a
+bundle whose compiler table holds a builtin on neither that list nor the
+reviewed `raw-memory-census.json`.
+
+## Request binding
+
+`-RequestBinding -Grantors <key,...> -Identity <key>` (no `-Requester`; not with
+`-Mcp`) binds each request instead of the instance (`AccpRequesterAuth.md`
+section 2, rung B). `describe` reports `binding.transport` `request` and an
+empty requester. Every `check`, `run` and `lens` then carries:
+
+- `requester`: an Ed25519 public key, 64 lowercase hex digits; neither a grantor
+  key nor the identity key;
+- `nonce`: 64 lowercase hex digits;
+- `issued_at`: Unix seconds as a JSON number, within 60 seconds of the host clock;
+- `signature`: 128 lowercase hex digits, Ed25519 by `requester` over the SHA-256
+  of the 17 bytes `codex-request-v1` and a zero, followed by the request's
+  canonical encoding: the object without `signature`, keys in ascending
+  code-point order at every level, no whitespace outside strings, every other
+  value byte for byte as the conduit receives it (ASCII, each character above
+  U+007F written `\uXXXX` in lowercase hex, which is what the host's wire makes of it).
+
+The host refuses a nonce it has seen in the last 121 seconds (4096 at most held),
+so a restart inside that window forgets them. A run whose row leaves the ambient
+set must also use a nonce from `{"op":"challenge"}`, which answers
+`{"status":"ok","nonce":...,"expires_in":60}` (unsigned, 256 outstanding at
+most); the conduit spends it at admission and refuses one it never issued, so a
+restart cannot be replayed into. Refusals are `stage: authentication` (format,
+clock, key, signature, a seen nonce) or `stage: admission` (a nonce that is not
+an unspent challenge). The response and the fact's `grant.requester` carry the
+authenticated key, and every lease check runs against it as the holder. On any
+other instance the four fields and `challenge` are refused, and `describe` and
+`challenge` are never signed.
+
+## Policy questions
+
+`{"op":"policy","question":...}` answers a question about the held policy
+(`AccpDecidablePolicy.md` rung 3) without compiling or running anything. The
+instance must hold `-Policy` and `-NameBook`, and the book's grantor must be one
+of `-Grantors`; the policy is lowered through that book exactly as a lease's
+admission lowers it (`ag-policy-from`).
+
+- `"question":"can-allow","label":"Network.Read"`: can any context reach the
+  label, its direction read from the suffix as admission reads it;
+- `"question":"widens","policy":"<prose>"`: does the proposed policy, lowered
+  through the held book, allow any context the held policy refuses;
+- `"question":"dead-rules"`: the held rules that decide no context, each as
+  `position:name`.
+
+An answer is `{"status":"ok","question":...,"holds":...,"witness":...,
+"min_trust":...,"evaluations":...,"policy_sha256":...}` (`dead` in place of
+`holds` and `witness` for dead-rules). The witness is a context `eval-policy`
+allowed: `capability`, `direction`, `trust_score`, `current_time` (the policy's
+week-minute), `agent_id`, `scope`; a field the policy never names holds a
+stand-in such as `~unnamed-agent~`. `min_trust` is beside it because the
+verifier's trust gate is not part of `eval-policy`. A question needing more
+than 200,000 evaluations, an unbound instance, no held policy, an untrusted or
+undecodable book, or a policy that does not lower is `status: refused`,
+`stage: policy`. Under request binding the op is signed like `check`.
 
 ## Journal and recovery
 
@@ -159,6 +281,8 @@ the response before hashing: whitespace and property order are part of the
 recorded bytes. The journal alone cannot reconstruct stdout, WAT or the full
 compiler diagnostics; retain the response when those payloads are needed.
 
+`apps/accp/verify-fact.ps1 -Journal <file> [-Response <line> | -ResponseBase64 <_meta.accp_response_base64>]` performs this recipe outside the service: every fact hashes its record, the chain links from 64 zeroes, and a retained response hashes to its record's `response_sha256`. It prints `VERIFIED` or `REFUSED:` with the first mismatch and exits 1. Run it on a closed journal; the service holds its journal open while it runs.
+
 Normal shutdown removes the session's temporary native images and program
 files. Hard parent termination kills the processes but can leave the temporary
 directory named in the startup stderr line. The focused cancellation test
@@ -186,8 +310,23 @@ there is still one resident Codex process. Each configured client instance
 reserves the hosted runtime's 3 GiB arena described above and commits only
 the chunks it touches.
 
-The four tools are `codex_run`, `codex_check`, `codex_lens` and
-`codex_describe`. The language card is the resource `codex://accp/language`.
+`codex_run` also takes `lease`, the same hex sealed grant the L2 wire carries (Instance binding above); a refusal is a tool error whose `reason` names the failed check. The five tools are `codex_run`, `codex_check`, `codex_lens`,
+`codex_describe` and `codex_clarify`. `codex_clarify` takes English `text`
+(at most 16384 characters) and an optional `register` and answers in the
+conduit itself, with no compile, no execution and no journal record
+(`AccpClarify.codex` over `OS chapter Clarifier`): the SOLID sentences, each
+flagged word with its kind, sentence and question, referent questions
+first, and `next_question`. The scan is lexical: fixed word and phrase lists per question kind (referent,
+domain, cardinality, threshold, temporal, modality, connective), the first
+mention of a `the X` noun phrase as a referent, except a fixed list of
+referents every reader knows (`the sun`), and a Technical register
+detected from code-like tokens. `it`, `its`, `they`, `them`, `their` and `theirs` are bound, not flagged,
+when the sentence before (or, when that sentence holds no candidate, the one
+before it) holds exactly one candidate, a determiner or pronoun, whose noun
+(after any adjective) agrees in number; `he`, `him`, `his`, `she`, `her` and
+`hers` are bound when that window holds exactly one capitalised name. The `/clarify` skill (`.claude/skills/clarify`) calls `codex_clarify`.
+A session still opens its journal file (in the bundle directory unless
+`-Journal` names another) even when it only clarifies. The language card is the resource `codex://accp/language`.
 `codex://accp/science` documents the numerical library API, domains, units,
 precision limitations and complete examples. Read the science card before use.
 Server instructions and tool descriptions explain computation and failure
@@ -210,7 +349,7 @@ command = "C:/Program Files/PowerShell/7/pwsh.exe"
 args = ["-NoProfile", "-File", "D:/Projects/Cobblestone-red-main/apps/accp/serve.ps1", "-Mcp"]
 startup_timeout_sec = 30
 tool_timeout_sec = 30
-enabled_tools = ["codex_run", "codex_check", "codex_lens", "codex_describe"]
+enabled_tools = ["codex_run", "codex_check", "codex_lens", "codex_describe", "codex_clarify"]
 default_tools_approval_mode = "approve"
 ```
 

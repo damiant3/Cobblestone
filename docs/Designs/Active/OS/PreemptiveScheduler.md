@@ -204,7 +204,7 @@ and `apps`:
 - waits, from the builtins: `GopXhci` (164 and 54 ms), `IdeaServer`'s
   `current-day`, `MicInput`'s settle (219 ms);
 - raw tick counts with no time meaning: the displays (the Monitor's
-  `dk-mon-tick-cell`, `IdtInspector`, `PerfMonitor`, `DiagnosticShell`),
+  `dk-mon-tick-cell`, `IdtInspector`, `DiagnosticShell`),
   `LoadTest`'s elapsed ticks, and entropy (`IdentityManager`, `GopText`,
   `GopWizard`);
 - tests whose guard deadlines are tick counts, ended early by a kill or an exit:

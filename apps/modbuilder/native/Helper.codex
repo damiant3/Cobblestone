@@ -104,7 +104,7 @@ Chapter: ModBuilder Native Helper
   mb-token (h) =
    let p = mb-alloc 32
    in let result = mb-call (h.random) 0 p 32 2 0 0 0 0
-   in if result /= 0 then fail "Windows random generator refused"
+   in if result /= 0 then ""
    else let xs = mb-token-loop p 0 [] in mb-join xs 0 (list-length xs)
 
   mb-owner : Text = "Cobblestone ModBuilder native helper v1\n"
@@ -253,7 +253,7 @@ Chapter: ModBuilder Native Helper
    in let request = mb-from-ascii buf header-size
    in let lines = text-split request "\n"
    in let request-origin = mb-header lines "origin" 1
-   in let authenticated = mb-header lines "x-bridge-token" 1 == token
+   in let authenticated = token /= "" & mb-header lines "x-bridge-token" 1 == token
    in if request-origin /= "" & request-origin /= origin then mb-respond h socket "403 Forbidden" origin "{\"ok\":false,\"err\":\"Origin refused\"}"
    else if text-starts-with request "OPTIONS " then mb-respond h socket "200 OK" origin "{}"
    else if text-starts-with request "GET /health " then mb-respond h socket "200 OK" origin (mb-health authenticated game)
@@ -328,7 +328,12 @@ Chapter: ModBuilder Native Helper
     in print-line-uni "SETUP REFUSED: native stop signal unavailable"
    else let selected = mb-default-selection h game
    in let token = mb-token h
-   in let return-url = mb-from-ascii (peek-qword 1054752 0) (peek-qword 1054760 0)
+   in if token == "" then
+    let closed = mb-call (h.closesocket) server 0 0 0 0 0 0 0
+    in let closed2 = mb-call (h.close) stop 0 0 0 0 0 0 0
+    in let shown = if testing then 0 else mb-dialog h "Windows could not generate the pairing token. Setup stopped without changing your game." 48
+    in print-line-uni "SETUP REFUSED: random generator unavailable"
+   else let return-url = mb-from-ascii (peek-qword 1054752 0) (peek-qword 1054760 0)
    in let url = return-url & "#bridge=" & token & "&bridgeUrl=http%3A%2F%2F127.0.0.1%3A" & show mb-port
    in let launch-requested = return-url /= "" & (testing == False | text-contains command " --test-launch")
    in let launched = if launch-requested then mb-open-page h url else 0

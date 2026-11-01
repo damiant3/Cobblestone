@@ -1,0 +1,39 @@
+Chapter: FwdModelRegistryTest
+  cites AI chapter ModelRegistry
+
+Section: Fixtures
+
+  mrt-meta : Text -> StTensorMeta
+  mrt-meta (n) = StTensorMeta { stm-name = n, stm-dtype = 0, stm-shape = [1], stm-ndim = 1, stm-offset-start = 0, stm-offset-end = 4 }
+
+  mrt-file : List Text -> SafeTensorFile
+  mrt-file (names) = SafeTensorFile { st-header-len = 0, st-data-offset = 0, st-tensors = mrt-metas names 0 [], st-tensor-count = list-length names, st-valid = True }
+
+  mrt-metas : List Text, Integer, List StTensorMeta -> List StTensorMeta
+  mrt-metas (ns) (i) (acc) =
+    if i >= list-length ns then acc
+    else mrt-metas ns (i + 1) (list-push acc (mrt-meta (list-at ns i)))
+
+  mrt-kind : List Text -> Text
+  mrt-kind (names) = model-type-name (detect-model-type (mrt-file names))
+
+  mrt-entry : Text, ModelType -> ModelEntry
+  mrt-entry (name) (t) = ModelEntry { me-name = name, me-path = "/m/" & name, me-type = t, me-format = "safetensors", me-tensor-count = 1, me-file-size = 10 }
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let cat = catalog-add (catalog-add (catalog-add catalog-new (mrt-entry "sd15-pruned" ModelSD15)) (mrt-entry "sd15" ModelSD15)) (mrt-entry "xl" ModelSDXL)
+    in let bad = model-entry-from-file [1, 2, 3] "bad" "/m/bad"
+    in act
+      print-line-uni ("detect: " & mrt-kind ["model.diffusion_model.input_blocks.0.weight"] & "; " & mrt-kind ["model.diffusion_model.x", "conditioner.embedders.0"] & "; " & mrt-kind ["lora_unet_down.lora_down.weight"] & "; " & mrt-kind ["encoder.conv_in.weight", "decoder.conv_out.weight"] & "; " & mrt-kind ["text_model.encoder.layers.0.mlp"] & "; " & mrt-kind ["triplane_proj.w"])
+      print-line-uni ("flux names: " & mrt-kind ["double_blocks.0.img_attn.qkv.weight"] & "; no tensors: " & mrt-kind [] & "; encoder only: " & mrt-kind ["encoder.conv_in.weight"])
+      print-line-uni ("catalog: " & show (cat.mc-count) & " models, SD 1.5 " & show (list-length (catalog-find-by-type cat ModelSD15)) & ", FLUX " & show (list-length (catalog-find-by-type cat ModelFlux)))
+      print-line-uni ("find sd15: " & (when catalog-find-by-name cat "sd15"
+        is Just (e) -> e.me-name
+        is None -> "none") & "; find nope: " & (when catalog-find-by-name cat "nope"
+        is Just (e) -> e.me-name
+        is None -> "none"))
+      print-line-uni ("from 3 junk bytes: " & model-type-name (bad.me-type) & ", size " & show (bad.me-file-size) & ", format " & bad.me-format)
+      print-line-uni (format-model-entry (mrt-entry "xl" ModelSDXL))
+    end

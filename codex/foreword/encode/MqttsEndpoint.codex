@@ -3,34 +3,22 @@ Chapter: MqttsEndpoint
   cites Encode chapter TlsEndpoint
   cites Encode chapter Mqtt
 
- mqtts:// is MQTT carried as TLS application data. This chapter is the
- composition and nothing else: the MQTT session machine decides what to
- send and when to retransmit, the TLS endpoint decides how bytes are
- protected, and neither had to learn about the other.
+ mqtts:// is MQTT carried as TLS application data.
 
- THE TWO LAYERS DO NOT AGREE ABOUT BOUNDARIES, and that is the whole of
- the work here. MQTT is a byte stream carrying self-delimiting packets: a
- fixed header, then a variable-length remaining-length field, then the
- body. TLS is a record protocol. Nothing relates the two, so one record
- can carry three packets, and one packet can arrive across two records
- with its length field split down the middle.
-
- The MQTT drain already answers this correctly -- it parses what it can
- and reports `ms-consumed`, leaving a trailing partial packet unread --
- so the composition's one job is to believe that number. The read offset
- advances by what MQTT CONSUMED, never to the end of the buffer, and the
- tail is presented again with the next record's bytes appended after it.
- Advancing to the end instead loses exactly the packets that straddle a
- record, which are the ones no single-record test produces.
-
- We say:
+ THE TWO LAYERS DO NOT AGREE ABOUT BOUNDARIES. MQTT is a byte stream
+ carrying self-delimiting packets: a fixed header, then a variable-length
+ remaining-length field, then the body. TLS is a record protocol. Nothing
+ relates the two, so one record can carry three packets, and one packet
+ can arrive across two records with its length field split down the
+ middle.
 
 Section: Types
 
   MqttsEp = record {
     xm-mqtt : MqttEp,
     xm-tls : TlsEp,
-    xm-read : Integer
+    xm-read : Integer,
+    xm-anon : Boolean
   }
 
   MqttsStep = record {
@@ -40,12 +28,17 @@ Section: Types
 
 Section: Construction
 
- The TLS endpoint handed in is expected to have completed its handshake;
- this chapter drives no handshake, on the division of labour that keeps
- the MQTT machine free of crypto.
-
   mqtts-ep-new : MqttEp, TlsEp -> MqttsEp
-  mqtts-ep-new (m) (t) = MqttsEp { xm-mqtt = m, xm-tls = t, xm-read = 0 }
+  mqtts-ep-new (m) (t) = MqttsEp { xm-mqtt = m, xm-tls = t, xm-read = 0, xm-anon = False }
+
+ SAFE BY DEFAULT (Damian, 2026-11-01): an endpoint carries nothing, either way, while its TLS peer is
+ unauthenticated, unless it was made by the constructor that names the unauthenticated mode.
+
+  mqtts-ep-new-unauthenticated : MqttEp, TlsEp -> MqttsEp
+  mqtts-ep-new-unauthenticated (m) (t) = MqttsEp { xm-mqtt = m, xm-tls = t, xm-read = 0, xm-anon = True }
+
+  mqtts-ep-carries : MqttsEp -> Boolean
+  mqtts-ep-carries (ep) = if ep.xm-anon then True else tls-ep-authenticated (ep.xm-tls)
 
   mqtts-ep-idle : MqttsEp -> MqttsStep
   mqtts-ep-idle (ep) = MqttsStep { xms-ep = ep, xms-out = [] }
@@ -60,27 +53,32 @@ Section: Sending
 
   mqtts-ep-connect : MqttsEp, MqttConnectConfig -> MqttsStep
   mqtts-ep-connect (ep) (cfg) =
-    let ms = mqtt-ep-connect (ep.xm-mqtt) cfg
+    if mqtts-ep-carries ep == False then mqtts-ep-idle ep
+    else let ms = mqtt-ep-connect (ep.xm-mqtt) cfg
     in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
 
   mqtts-ep-subscribe : MqttsEp, Text, MqttQos -> MqttsStep
   mqtts-ep-subscribe (ep) (topic) (qos) =
-    let ms = mqtt-ep-subscribe (ep.xm-mqtt) topic qos
+    if mqtts-ep-carries ep == False then mqtts-ep-idle ep
+    else let ms = mqtt-ep-subscribe (ep.xm-mqtt) topic qos
     in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
 
   mqtts-ep-publish : MqttsEp, Text, List Integer, MqttQos, Integer -> MqttsStep
   mqtts-ep-publish (ep) (topic) (payload) (qos) (now) =
-    let ms = mqtt-ep-publish (ep.xm-mqtt) topic payload qos now
+    if mqtts-ep-carries ep == False then mqtts-ep-idle ep
+    else let ms = mqtt-ep-publish (ep.xm-mqtt) topic payload qos now
     in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
 
   mqtts-ep-tick : MqttsEp, Integer -> MqttsStep
   mqtts-ep-tick (ep) (now) =
-    let ms = mqtt-ep-tick (ep.xm-mqtt) now
+    if mqtts-ep-carries ep == False then mqtts-ep-idle ep
+    else let ms = mqtt-ep-tick (ep.xm-mqtt) now
     in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
 
   mqtts-ep-ping : MqttsEp -> MqttsStep
   mqtts-ep-ping (ep) =
-    let ms = mqtt-ep-ping (ep.xm-mqtt)
+    if mqtts-ep-carries ep == False then mqtts-ep-idle ep
+    else let ms = mqtt-ep-ping (ep.xm-mqtt)
     in mqtts-seal-all (__record-set ep "xm-mqtt" (ms.ms-ep)) (ms.ms-out) 0 []
 
 Section: Receiving
@@ -91,9 +89,10 @@ Section: Receiving
     in let buf = tls-ep-app-in (st.tes-ep)
     in let n = list-length buf
     in if n <= ep.xm-read then mqtts-ep-idle (__record-set ep "xm-tls" (st.tes-ep))
-    else let stream = mqtts-slice buf (ep.xm-read) n []
+    else if mqtts-ep-carries ep == False then mqtts-ep-idle (__record-set ep "xm-tls" (st.tes-ep))
+    else let stream = if ep.xm-read == 0 then buf else mqtts-slice buf (ep.xm-read) n []
     in let ms = mqtt-ep-recv (ep.xm-mqtt) stream now
-    in let ep2 = __record-set (__record-set (__record-set ep "xm-tls" (st.tes-ep)) "xm-mqtt" (ms.ms-ep)) "xm-read" ((ep.xm-read) + (ms.ms-consumed))
+    in let ep2 = __record-set (__record-set (__record-set ep "xm-tls" (tls-ep-app-drain (st.tes-ep) ((ep.xm-read) + (ms.ms-consumed)))) "xm-mqtt" (ms.ms-ep)) "xm-read" 0
     in mqtts-seal-all ep2 (ms.ms-out) 0 []
 
   mqtts-slice : List Integer, Integer, Integer, List Integer -> List Integer

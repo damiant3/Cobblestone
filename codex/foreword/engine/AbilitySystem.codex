@@ -2,8 +2,6 @@ Chapter: AbilitySystem
   cites Engine chapter GameplayTags
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Attributes
 
   AttributeSet = record {
@@ -96,12 +94,34 @@ Section: Active Effects
   aes-apply (aes) (attrs) (fx) =
     when fx.ge-duration
       is Instant -> aes
-      is Durational (dur) ->
-        let ae = ActiveEffect { ae-effect = fx, ae-remaining = dur, ae-stacks = 1 }
-        in ActiveEffects { aes-list = list-push (aes.aes-list) ae, aes-count = aes.aes-count + 1 }
-      is Infinite ->
-        let ae = ActiveEffect { ae-effect = fx, ae-remaining = -1, ae-stacks = 1 }
-        in ActiveEffects { aes-list = list-push (aes.aes-list) ae, aes-count = aes.aes-count + 1 }
+      is Durational (dur) -> aes-stack aes fx dur
+      is Infinite -> aes-stack aes fx (0 - 1)
+
+  aes-stack : ActiveEffects, GameplayEffect, Integer -> ActiveEffects
+  aes-stack (aes) (fx) (remaining) =
+    let at = aes-find (aes.aes-list) (fx.ge-name) 0 (aes.aes-count)
+    in let fresh = ActiveEffect { ae-effect = fx, ae-remaining = remaining, ae-stacks = 1 }
+    in let append = ActiveEffects { aes-list = list-push (aes.aes-list) fresh, aes-count = aes.aes-count + 1 }
+    in if at < 0 then append
+    else let old = list-at (aes.aes-list) at
+    in when fx.ge-stacking
+      is StackNone -> append
+      is StackRefresh -> aes-replace aes at (ActiveEffect { ae-effect = fx, ae-remaining = remaining, ae-stacks = old.ae-stacks })
+      is StackCount (most) -> aes-replace aes at (ActiveEffect { ae-effect = fx, ae-remaining = remaining, ae-stacks = if old.ae-stacks >= most then most else old.ae-stacks + 1 })
+
+  aes-find : List ActiveEffect, Text, Integer, Integer -> Integer
+  aes-find (effects) (name) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at effects i).ae-effect.ge-name == name then i
+    else aes-find effects name (i + 1) n
+
+  aes-replace : ActiveEffects, Integer, ActiveEffect -> ActiveEffects
+  aes-replace (aes) (at) (ae) = ActiveEffects { aes-list = aes-replace-loop (aes.aes-list) at ae 0 (aes.aes-count) [], aes-count = aes.aes-count }
+
+  aes-replace-loop : List ActiveEffect, Integer, ActiveEffect, Integer, Integer, List ActiveEffect -> List ActiveEffect
+  aes-replace-loop (effects) (at) (ae) (i) (n) (acc) =
+    if i >= n then acc
+    else aes-replace-loop effects at ae (i + 1) n (list-push acc (if i == at then ae else list-at effects i))
 
   aes-tick : ActiveEffects, Integer -> ActiveEffects
   aes-tick (aes) (dt) = gas-tick-loop (aes.aes-list) dt 0 (aes.aes-count) (ActiveEffects { aes-list = [], aes-count = 0 })
@@ -110,7 +130,7 @@ Section: Active Effects
   gas-tick-loop (effects) (dt) (i) (n) (acc) =
     if i >= n then acc
     else let ae = list-at effects i
-    in if ae.ae-remaining == -1 then ActiveEffects { aes-list = list-push (acc.aes-list) ae, aes-count = acc.aes-count + 1 }
+    in if ae.ae-remaining == -1 then gas-tick-loop effects dt (i + 1) n (ActiveEffects { aes-list = list-push (acc.aes-list) ae, aes-count = acc.aes-count + 1 })
     else let new-rem = ae.ae-remaining - dt
     in if new-rem <= 0 then gas-tick-loop effects dt (i + 1) n acc
     else let updated = ActiveEffect { ae-effect = ae.ae-effect, ae-remaining = new-rem, ae-stacks = ae.ae-stacks }

@@ -9,10 +9,7 @@ Chapter: TlsCertTest
 
  The signed content is checked against bytes built independently, outside
  Codex, straight from the spec text: 64 spaces, the ASCII context string,
- one zero, then the transcript hash. A round-trip test cannot catch a wrong
- context string or a CCE-encoded one, because the signer and the verifier
- make the same mistake and agree with each other. That is exactly how the
- TLS key schedule shipped every label in CCE.
+ one zero, then the transcript hash.
 
  The keypair is RFC 8032 section 7.1 TEST 2 -- published, not minted here.
 
@@ -86,9 +83,6 @@ Section: Helpers
 Section: The Signed Content
 
   r-content-len : Text = "cv content-len=" & show (list-length (tls-cv-content True v-transcript))
-
- The decisive structural line: our content is byte-for-byte what the spec
- says, including an ASCII context string.
 
   r-content-exact : Text =
     "cv content-matches-spec=" & yn (beq (tls-cv-content True v-transcript) v-expected-content)
@@ -167,6 +161,39 @@ Section: Certificate Message
 
   r-empty : Text = "cert rej-empty=" & yn (parse-rejects [])
 
+  r-context : Text = "cert rej-context=" & yn (parse-rejects ([1, 7] & tlsc-slice cert-msg 1 (list-length cert-msg - 1)))
+
+  entry-ext-msg : List Integer =
+    tls-cert-wrap (tls-u24 (list-length v-cert) & v-cert & [#00, #04, #00, #05, #00, #00])
+
+  r-entry-ext : Text = "cert rej-entry-ext=" & yn (parse-rejects entry-ext-msg)
+
+  r-rewrapped : Text = "cert rewrapped-ok=" & yn (parse-ok (tls-cert-wrap (tls-u24 (list-length v-cert) & v-cert & [#00, #00])))
+
+ Seeded single-byte mutation sweeps over the Certificate message and the
+ CertificateVerify: every byte is flipped and run through tls-cert-parse and
+ tls-cv-verify, each of which must return and never read past the message.
+
+  tc-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tc-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else tc-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  tc-cert-sweep : Integer, Integer, Integer -> Integer
+  tc-cert-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else let m = tc-mutate cert-msg pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in tc-cert-sweep (pos + 1) n (acc + (when tls-cert-parse m is None -> 0 is Just (cs) -> list-length cs))
+
+  tc-cv-sweep : Integer, Integer, Integer -> Integer
+  tc-cv-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else let m = tc-mutate server-cv pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in tc-cv-sweep (pos + 1) n (acc + (if cv-check True m v-transcript then 1 else 0))
+
+  r-cert-sweep : Text = "cert-sweep completed=" & yn (tc-cert-sweep 0 (list-length cert-msg) 0 >= 0)
+  r-cv-sweep : Text = "cv-sweep completed=" & yn (tc-cv-sweep 0 (list-length server-cv) 0 >= 0)
+
 Section: signature_algorithms
 
   r-sigalgs : Text = "ext sigalgs-len=" & show (list-length tls-ext-sig-algs)
@@ -194,7 +221,12 @@ Section: Entry
     print-line-uni r-roundtrip
     print-line-uni r-bad-len
     print-line-uni r-empty
+    print-line-uni r-context
+    print-line-uni r-entry-ext
+    print-line-uni r-rewrapped
     print-line-uni r-sigalgs
     print-line-uni r-sigalgs-type
     print-line-uni r-sigalgs-schemes
+    print-line-uni r-cert-sweep
+    print-line-uni r-cv-sweep
   end

@@ -2,9 +2,8 @@ Chapter: BrowserSdxlLoad
   cites Diffusion chapter BrowserSdxl
   cites Diffusion chapter BrowserLora
 
- We say:
-
-  bsl-uploaded : Text, List BoundTensor, Text, Integer, List Text, List Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer), (List Text, List Integer -> Integer), (Text -> Integer), Text -> Integer
+  bsl-uploaded : Text, List BoundTensor, Text, Integer, List Text, List Integer, (BoundTensor, Integer, (Text -> Integer) -> Integer),
+      (List Text, List Integer -> Integer), (Text -> Integer), Text -> Integer
   bsl-uploaded (file) (ts) (prefix) (i) (ns) (hs) (patch) (ready) (refuse) (result) =
     if text-contains result "\"ok\":true" == False then bcl-refuse hs refuse ("SDXL tensor upload failed: " & result)
     else bsl-upload file ts prefix (i + 1) ns hs patch ready refuse
@@ -27,15 +26,26 @@ Chapter: BrowserSdxlLoad
   bsl-ready (code) (l) (g) (un) (uh) (ready) (vn) (vh) =
     let state = alloc-bytes 4
     in let idle = poke-32 state 0 0
-    in ready (BrowserSdxlModel { bs-code = code, bs-l = l.bcl-weights, bs-g = g.bcl-weights, bs-unet = BuWeights { bu-names = un, bu-handles = uh }, bs-vae = BvWeights { bw-names = vn, bw-handles = vh }, bs-handles = l.bcl-handles & g.bcl-handles & uh & vh, bs-state = state })
+    in ready (BrowserSdxlModel {
+      bs-code = code,
+      bs-l = l.bcl-weights,
+      bs-g = g.bcl-weights,
+      bs-unet = BuWeights { bu-names = un, bu-handles = uh },
+      bs-vae = BvWeights { bw-names = vn, bw-handles = vh },
+      bs-handles = l.bcl-handles & g.bcl-handles & uh & vh,
+      bs-state = state
+    })
 
-  bsl-unet : Text, Text, List PartBinding, BrowserClipLoaded, BrowserClipLoaded, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), List Text, List Integer -> Integer
+  bsl-unet : Text, Text, List PartBinding, BrowserClipLoaded, BrowserClipLoaded, (BoundTensor, Integer, (Text -> Integer) -> Integer),
+      (BrowserSdxlModel -> Integer), (Text -> Integer), List Text, List Integer -> Integer
   bsl-unet (file) (code) (parts) (l) (g) (patch) (ready) (refuse) (un) (uh) =
-    bsl-upload file (bl-vae (bl-part parts 0 "vae") 0 []) "first_stage_model." 0 [] [] patch (\vn vh -> bsl-ready code l g un uh ready vn vh) (\why -> (let a = browser-clip-close l in let b = browser-clip-close g in let c = bcl-free uh 0 in refuse why))
+    bsl-upload file (bl-vae (bl-part parts 0 "vae") 0 []) "first_stage_model." 0 [] [] patch (\vn vh ->
+      bsl-ready code l g un uh ready vn vh) (\why -> (let a = browser-clip-close l in let b = browser-clip-close g in let c = bcl-free uh 0 in refuse why))
 
   bsl-g : Text, Text, List PartBinding, BrowserClipLoaded, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), BrowserClipLoaded -> Integer
   bsl-g (file) (code) (parts) (l) (patch) (ready) (refuse) (g) =
-    bsl-upload file (bl-part parts 0 "unet") "model.diffusion_model." 0 [] [] patch (\un uh -> bsl-unet file code parts l g patch ready refuse un uh) (\why -> (let a = browser-clip-close l in let b = browser-clip-close g in refuse why))
+    bsl-upload file (bl-part parts 0 "unet") "model.diffusion_model." 0 [] [] patch (\un uh ->
+      bsl-unet file code parts l g patch ready refuse un uh) (\why -> (let a = browser-clip-close l in let b = browser-clip-close g in refuse why))
 
   bsl-l : Text, Text, Text, List PartBinding, (BoundTensor, Integer, (Text -> Integer) -> Integer), (BrowserSdxlModel -> Integer), (Text -> Integer), BrowserClipLoaded -> Integer
   bsl-l (file) (code) (extra) (parts) (patch) (ready) (refuse) (l) =

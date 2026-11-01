@@ -30,8 +30,6 @@ Chapter: SwinIR
  in Forge (spandrel reports no half support); here a linear or conv reads
  its input cast to f16 against f16 weights and accumulates in f32.
 
- We say:
-
 Section: Weights
 
  The weights a model's predicate half names are f16, each on a device
@@ -95,21 +93,51 @@ Section: Weights
     if i >= list-length (f.pf-tensors) then s
     else let t = list-at (f.pf-tensors) i
     in if skip (t.pa-name) then sw-load-loop half skip f (i + 1) s
-    else if sw-own half f t then (let h = sw-upload (half t) f t in sw-load-loop half skip f (i + 1) (SwLoad { sl-names = list-push (s.sl-names) (t.pa-name), sl-hs = list-push (s.sl-hs) h, sl-failed = s.sl-failed + (if h == 0 then 1 else 0), sl-pnames = s.sl-pnames, sl-poffs = s.sl-poffs, sl-pts = s.sl-pts, sl-bytes = s.sl-bytes }))
-    else sw-load-loop half skip f (i + 1) (SwLoad { sl-names = s.sl-names, sl-hs = s.sl-hs, sl-failed = s.sl-failed, sl-pnames = list-push (s.sl-pnames) (t.pa-name), sl-poffs = list-push (s.sl-poffs) (s.sl-bytes), sl-pts = list-push (s.sl-pts) i, sl-bytes = s.sl-bytes + (t.pa-count * 4 + 255) / 256 * 256 })
+    else if sw-own half f t then
+      (let h = sw-upload (half t) f t
+      in sw-load-loop half skip f (i + 1) (SwLoad {
+        sl-names = list-push (s.sl-names) (t.pa-name),
+        sl-hs = list-push (s.sl-hs) h,
+        sl-failed = s.sl-failed + (if h == 0 then 1 else 0),
+        sl-pnames = s.sl-pnames,
+        sl-poffs = s.sl-poffs,
+        sl-pts = s.sl-pts,
+        sl-bytes = s.sl-bytes
+      }))
+    else sw-load-loop half skip f (i + 1) (SwLoad {
+      sl-names = s.sl-names,
+      sl-hs = s.sl-hs,
+      sl-failed = s.sl-failed,
+      sl-pnames = list-push (s.sl-pnames) (t.pa-name),
+      sl-poffs = list-push (s.sl-poffs) (s.sl-bytes),
+      sl-pts = list-push (s.sl-pts) i,
+      sl-bytes = s.sl-bytes + (t.pa-count * 4 + 255) / 256 * 256
+    })
 
   sw-load : (PthTensorAt -> Boolean), (Text -> Boolean), PthFile -> SwWeights
   sw-load (half) (skip) (f) =
     let n = list-length (f.pf-tensors) + 1
-    in let s = sw-load-loop half skip f 0 (SwLoad { sl-names = __list-with-capacity n, sl-hs = __list-with-capacity n, sl-failed = 0, sl-pnames = __list-with-capacity n, sl-poffs = __list-with-capacity n, sl-pts = __list-with-capacity n, sl-bytes = 0 })
+    in let s = sw-load-loop half skip f 0 (SwLoad {
+      sl-names = __list-with-capacity n,
+      sl-hs = __list-with-capacity n,
+      sl-failed = 0,
+      sl-pnames = __list-with-capacity n,
+      sl-poffs = __list-with-capacity n,
+      sl-pts = __list-with-capacity n,
+      sl-bytes = 0
+    })
     in let pack = if s.sl-bytes > 0 then gpu-buf-alloc (s.sl-bytes) else 0
     in let bad = if s.sl-bytes > 0 & pack == 0 then 1 else if pack == 0 then 0 else sw-pack-up f pack (s.sl-pts) (s.sl-poffs) 0 0
-    in SwWeights { sw-vae = VaeWeights { vw-prefix = "", vw-index = name-index (s.sl-names), vw-handles = s.sl-hs, vw-failed = s.sl-failed }, sw-pack = pack, sw-pidx = name-index (s.sl-pnames), sw-poffs = s.sl-poffs, sw-failed = s.sl-failed + bad }
+    in SwWeights {
+      sw-vae = VaeWeights { vw-prefix = "", vw-index = name-index (s.sl-names), vw-handles = s.sl-hs, vw-failed = s.sl-failed },
+      sw-pack = pack,
+      sw-pidx = name-index (s.sl-pnames),
+      sw-poffs = s.sl-poffs,
+      sw-failed = s.sl-failed + bad
+    }
 
   sw-unload : SwWeights -> Integer
   sw-unload (w) = vae-free (w.sw-vae) 0 0 + (if sw-free (w.sw-pack) then 0 else 1)
-
- SwinIR's convolution and linear weights are f16.
 
   sw-f16 : PthTensorAt -> Boolean
   sw-f16 (t) = list-length (t.pa-shape) == 4 | (list-length (t.pa-shape) == 2 & text-ends-with (t.pa-name) ".weight")
@@ -175,9 +203,6 @@ Section: Weights
 
 Section: Tokens
 
- Each operation answers a fresh buffer, or 0 when an allocation or a launch
- was refused, and frees its temporaries.
-
   sw-free : Integer -> Boolean
   sw-free (h) = if h == 0 then True else gpu-buf-free h
 
@@ -195,9 +220,6 @@ Section: Tokens
     in let f = sw-free st & sw-free part
     in sw-keep y ok
 
- y = x W^T + b over mm rows of kk, through kernel-linear-fast when kk is a
- multiple of 8, else kernel-linear-wmma.
-
   sw-linear : SwWeights, Integer, Integer, Integer, Integer, Text -> Integer
   sw-linear (w) (x) (mm) (kk) (nn) (p) =
     let xh = gpu-buf-alloc (mm * kk * 2)
@@ -205,15 +227,14 @@ Section: Tokens
     in let wt = sw-arg w (p & ".weight")
     in let b = sw-arg w (p & ".bias")
     in let fast = kk - kk / 8 * 8 == 0
-    in let g = if fast then GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 } else GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
+    in let g = if fast then GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 40960 }
+    else GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }
     in let ok = if x == 0 | xh == 0 | y == 0 | sw-has w (p & ".weight") == False | sw-has w (p & ".bias") == False then False
        else if vd-glue "kernel_cast_f16" (mm * kk) [vd-buf x, vd-buf xh, vd-int (mm * kk)] < 0 then False
        else if fast then gm-launch gm-slot-gemm gemm-ptx "kernel_linear_fast" g [vd-buf xh, wt, b, vd-buf y, vd-int mm, vd-int nn, vd-int kk, vd-int 0, vd-int 0] >= 0
        else gm-launch gm-slot-gemm gemm-ptx "kernel_linear_wmma" g [vd-buf xh, wt, b, vd-buf y, vd-int mm, vd-int nn, vd-int kk, vd-int 0] >= 0
     in let f = sw-free xh
     in sw-keep y ok
-
- a + b into a; a, or 0 with a freed.
 
   sw-add : Integer, Integer, Integer -> Integer
   sw-add (a) (b) (n) =
@@ -229,10 +250,28 @@ Section: Tokens
     in let o = gpu-buf-alloc (hh * ww * dim * 4)
     in let g = GpuGrid { gx = (hh / 8) * (ww / 8), gy = heads, gz = 1, bx = 64, by = 1, bz = 1, shared = (64 * hd + 64 * 65) * 4 }
     in let ok = if o == 0 | qkv == 0 | sw-has w (p & ".relative_position_bias_table") == False then False
-       else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_window_attention" g [vd-buf qkv, vd-buf o, sw-arg w (p & ".relative_position_bias_table"), vd-int hh, vd-int ww, vd-int 8, vd-int 8, vd-int shift, vd-int shift, vd-int heads, vd-int hd, vd-int (nz-f32-bits (1.0 / real-sqrt (real-from-int hd))), vd-int (3 * dim), vd-int 0, vd-int dim, vd-int (2 * dim), vd-int dim, vd-int 0, vd-int 64] >= 0
+       else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_window_attention" g [
+         vd-buf qkv,
+         vd-buf o,
+         sw-arg w (p & ".relative_position_bias_table"),
+         vd-int hh,
+         vd-int ww,
+         vd-int 8,
+         vd-int 8,
+         vd-int shift,
+         vd-int shift,
+         vd-int heads,
+         vd-int hd,
+         vd-int (nz-f32-bits (1.0 / real-sqrt (real-from-int hd))),
+         vd-int (3 * dim),
+         vd-int 0,
+         vd-int dim,
+         vd-int (2 * dim),
+         vd-int dim,
+         vd-int 0,
+         vd-int 64
+       ] >= 0
     in sw-keep o ok
-
- One Swin block over the tokens x (hh x ww of them), leaving x alive.
 
   sw-block : SwWeights, SwinCfg, Integer, Integer, Integer, Integer, Integer, Text -> Integer
   sw-block (w) (c) (x) (hh) (ww) (heads) (shift) (p) =
@@ -254,8 +293,6 @@ Section: Tokens
     in let y = sw-add o x1 (l * d)
     in let f6 = sw-free x1
     in y
-
- A group's blocks, freeing each intermediate but the group's input keep.
 
   sw-blocks : SwWeights, SwinCfg, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   sw-blocks (w) (c) (x) (keep) (hh) (ww) (heads) (shift) (i) (k) (n) =
@@ -294,9 +331,6 @@ Section: Maps
     in let b = vd-then (sw-lrelu (sw-conv w a (p & ".2") (dim / 4) 1 0) 0.2) a
     in vd-then (sw-conv w b (p & ".4") dim 3 1) b
 
- A residual group: the blocks, the conv over their map, plus the input x,
- which stays alive.
-
   sw-group : SwWeights, SwinCfg, Integer, Integer, Integer, Integer, Integer -> Integer
   sw-group (w) (c) (x) (hh) (ww) (shift) (i) =
     let g = sw-blocks w c x x hh ww (list-at (c.sc-heads) i) shift i 0 (list-at (c.sc-depths) i)
@@ -314,8 +348,6 @@ Section: Maps
     else let y = sw-group w c x hh ww shift i
     in let f = sw-free x
     in sw-layers w c y hh ww shift (i + 1)
-
- The mean by channel, times sign, as three f32.
 
   sw-mean : Real -> Integer
   sw-mean (sign) =
@@ -339,10 +371,6 @@ Section: Maps
     in let y = sw-lrelu (sw-conv w u p 64 3 1) 0.2
     in let g = if u.ah == x.ah then True else vd-free u
     in y
-
- The picture img (3 x h x w, BGR in 0 to 1, h and w multiples of 8, the
- buffer overwritten) to 4 times its size; shift is the odd blocks' roll,
- window / 2 for the model as trained. The caller frees the answer.
 
   swin-forward : SwWeights, SwinCfg, Act, Integer -> Act
   swin-forward (w) (c) (img) (shift) =
@@ -409,7 +437,9 @@ Section: Tiles
     in let staged = if img == 0 then False else gpu-buf-write img 0 (3 * t * t * 4) (esr-bgr-in (r.sr-rgb) (r.sr-width) x y t (r.sr-host) 0)
     in let out = if staged then swin-forward (r.sr-w) (r.sr-c) (vd-act img 3 t t True) (r.sr-shift) else vd-act 0 3 t t False
     in let n = 48 * t * t
-    in let ok = if out.ah == 0 then False else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_tile_add" (vd-grid n) [vd-buf (r.sr-res), vd-buf (r.sr-wts), vd-buf (out.ah), vd-int (4 * r.sr-height), vd-int (4 * r.sr-width), vd-int (4 * x), vd-int (4 * y), vd-int (4 * t), vd-int n] >= 0
+    in let ok = if out.ah == 0 then False
+    else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_tile_add" (vd-grid n) [vd-buf (r.sr-res), vd-buf (r.sr-wts), vd-buf (out.ah),
+      vd-int (4 * r.sr-height), vd-int (4 * r.sr-width), vd-int (4 * x), vd-int (4 * y), vd-int (4 * t), vd-int n] >= 0
     in let f = vd-free out & sw-free img
     in ok
 
@@ -424,8 +454,6 @@ Section: Tiles
     if k >= list-length ys then True
     else if sw-row r xs (list-at ys k) 0 == False then False
     else sw-rows r xs ys (k + 1)
-
- Planar BGR f32 of hw pixels at src as RGB bytes at dst.
 
   sw-rgb-out : Integer, Integer, Integer, Integer -> Integer
   sw-rgb-out (src) (hw) (dst) (i) =
@@ -447,17 +475,27 @@ Section: Tiles
     else let n = 48 * width * height
     in let res = gpu-buf-alloc (n * 4)
     in let wts = gpu-buf-alloc (n * 4)
-    in let z = if res == 0 | wts == 0 then False else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_fill_zero" (vd-grid n) [vd-buf res, vd-int n] >= 0 & gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_fill_zero" (vd-grid n) [vd-buf wts, vd-int n] >= 0
-    in let r = SwinRun { sr-w = w, sr-c = c, sr-rgb = rgb, sr-width = width, sr-height = height, sr-tile = tile, sr-host = alloc-bytes (3 * tile * tile * 4), sr-res = res, sr-wts = wts, sr-shift = shift }
+    in let z = if res == 0 | wts == 0 then False
+    else gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_fill_zero" (vd-grid n) [vd-buf res, vd-int n] >= 0
+      & gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_fill_zero" (vd-grid n) [vd-buf wts, vd-int n] >= 0
+    in let r = SwinRun {
+      sr-w = w,
+      sr-c = c,
+      sr-rgb = rgb,
+      sr-width = width,
+      sr-height = height,
+      sr-tile = tile,
+      sr-host = alloc-bytes (3 * tile * tile * 4),
+      sr-res = res,
+      sr-wts = wts,
+      sr-shift = shift
+    }
     in let ran = z & sw-rows r (sw-starts width tile (tile - ov) 0 (__list-with-capacity 64)) (sw-starts height tile (tile - ov) 0 (__list-with-capacity 64)) 0
     in let dv = ran & gm-launch gm-slot-upscale upscale-kernels-ptx "kernel_tile_divide" (vd-grid n) [vd-buf res, vd-buf wts, vd-int n] >= 0
     in let host = if dv then alloc-bytes (n * 4) else 0
     in let got = dv & gpu-buf-read res 0 (n * 4) host
     in let f = sw-free res & sw-free wts
     in if got then sw-rgb-out host (16 * width * height) (alloc-bytes n) 0 else 0
-
- The checkpoint f (a SwinIR the chapter runs) loaded, the picture upscaled
- at tile and overlap ov with the trained roll, and the weights freed.
 
   swin-upscale-file : PthFile, Integer, Integer, Integer, Integer, Integer -> Integer
   swin-upscale-file (f) (rgb) (width) (height) (tile) (ov) =

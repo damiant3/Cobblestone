@@ -77,13 +77,9 @@ Section: Memory Address Map
 
  The profiler and allocation-trace SAMPLE BUFFERS live in the free
  low-memory band above the AP idle stacks and below the EBDA
- ([0x60000, 0x9FC00)). They were originally placed at 36160 and
- 560464, where the profiler buffer sat inside the PML4 page and grew
- across the live PDPT and PDs -- enabling the profiler destroyed the
- page tables after ~88 samples -- and the trace buffer grew across the
- EBDA and VGA text memory. Control cells (enabled/cursor) are 8-byte
- slots and stay in the metadata band; only the buffers needed moving.
- codex-vm's -trace-file reader mirrors the trace addresses.
+ ([0x60000, 0x9FC00)), clear of the page tables, the EBDA and VGA text
+ memory. Control cells (enabled/cursor) are 8-byte slots in the metadata
+ band. codex-vm's -trace-file reader mirrors the trace addresses.
 
   prof-max-samples : Integer = 8192
   prof-buf-addr : Integer = 393216
@@ -93,23 +89,14 @@ Section: Memory Address Map
   trace-max-entries : Integer = 12000
   serial-ring-buf-addr : Integer = 15728640
 
- A hosted build cannot keep the runtime cells where bare metal keeps them,
- and the two systems refuse them for DIFFERENT reasons -- which matters,
- because assuming one wall explains both is how the Linux half of this note
- came to be false.
-
  Windows refuses a fixed VirtualAlloc below MM_LOWEST_USER_ADDRESS with error
  87, measured at 0x7000 and 0x8D40, and that wall is real and binding: the
  Windows band has to move (hosted-win-cell-base).
 
- LINUX IS NOT CONSTRAINED BY mmap_min_addr HERE AND THIS NOTE USED TO SAY IT
- WAS. mmap_min_addr governs mmap() from userspace; our cells arrive as a fixed
- PT_LOAD placed by the kernel's ELF loader, which is a different path.
- Measured 2026-08-29: with vm.mmap_min_addr raised to 262144, well above this
- base, the binary still runs and still prints its oracle byte for byte. So this
- value is not a wall we are clearing on Linux. It is kept because it is BELOW
- bare-metal-load-addr, which is the property that actually earns it: the band
- cannot collide with the text however large the program grows.
+ LINUX IS NOT CONSTRAINED BY mmap_min_addr HERE. mmap_min_addr governs mmap()
+ from userspace; our cells arrive as a fixed PT_LOAD placed by the kernel's ELF
+ loader, which is a different path (measured 2026-08-29 with vm.mmap_min_addr
+ raised to 262144).
 
  128 KB answers three constraints and two of them are somebody else's. It is
  above both walls with margin, so a kernel set stricter than the default 65536
@@ -121,22 +108,7 @@ Section: Memory Address Map
  through their no-base SIB form, and under 2^31 where li still picks mov-ri32,
  so every one of these instructions keeps the length it already had.
 
- WHAT IS RELOCATED IS THE SET A HOSTED PROGRAM REACHES, not every cell in this
- section. The bare-metal-only tables stay where they are: proc-table, chan,
- identity, the IDT and the AP trampoline are addressed by COMPUTED expressions
- (`proc-table-base + i * proc-entry-size`) and inside instruction blobs as well
- as by `li`, so a mechanical relocation of the `li` sites alone would leave one
- table at two addresses. Hosted mode runs none of those paths. If a later stage
- needs one, it moves with its computed sites in the same change or not at all.
-
   hosted-cell-base : Integer = 131072
-
- The hosted print staging pair. Bare metal stages a print at the heap top and
- blits the whole thing through one doorbell; hosted stages it exactly the same
- way and leaves through write(2) instead, which is why the CCE conversion above
- the sink is shared rather than written twice. Both cells are ABSOLUTE and must
- not go through st-cell: they carry the base already and exist only in a hosted
- build, so relocating them a second time would put them out past the band.
 
   hosted-print-base-addr : Integer = hosted-cell-base + 40960
   hosted-print-cursor-addr : Integer = hosted-cell-base + 40968
@@ -148,10 +120,6 @@ Section: Memory Address Map
   linux-sys-exit-group : Integer = 231
   linux-stdout-fd : Integer = 1
   linux-stdin-fd : Integer = 0
-
- The byte a hosted read stages through. It is a cell rather than the heap
- frontier because the frontier is the buffer being filled, and a syscall
- writing into it would land on the next byte the loop is about to store.
 
   hosted-read-byte-addr : Integer = hosted-cell-base + 40992
 
@@ -186,15 +154,8 @@ Section: Memory Address Map
  bytes of padding. The whole of it is two qwords, so it is built in a register
  and stored twice rather than assembled byte by byte.
 
- It is a cell rather than the heap frontier for the same reason
- `hosted-read-byte-addr` is: the frontier is a buffer a caller may be filling.
-
   hosted-sockaddr-addr : Integer = hosted-cell-base + 41024
   hosted-sockopt-addr : Integer = hosted-cell-base + 41040
-
- `host-socket` takes an operation selector because a builtin costs eight
- hand-edited files and eight names would cost eight of them. These are the
- selector's values, and a caller spells the same numbers.
 
   sock-op-socket : Integer = 0
   sock-op-bind : Integer = 1
@@ -216,14 +177,6 @@ Section: Memory Address Map
  the lookup table is six 8-byte thunks, and the address table follows it -- so
  the first IAT slot sits 88 bytes into .idata, and the loader writes the
  resolved addresses there.
-
- ReadFile is what makes a hosted Windows build able to READ. Without it the
- target was output-only: the three readers all lowered to the bare-metal serial
- path, which polls a UART through port I/O and stages through watchdog cells at
- 28744, and 0x7000 is in the band Windows will not map. A program that only
- printed ran correctly; one that read a single byte died at 0xC0000005 on its
- first read, which is why the compiler could never be a Windows binary while
- every printing arm passed.
 
  VirtualAlloc is imported because the runtime cells sit BELOW any ImageBase the
  loader will accept, so a Windows build cannot map them with a section and has
@@ -279,13 +232,8 @@ Section: Memory Address Map
   hosted-win-page-readwrite : Integer = 4
   hosted-cell-span : Integer = 65536
   hosted-heap-span : Integer = 3221225472
- THE ARENA IS THE SAME SIZE AS EVERY OTHER TARGET'S AND THAT IS LOAD-BEARING.
- It was 1 GB while Linux and bare metal took 3, which is invisible to any
- program that does not reserve a deck and fatal to the one that does: the
- compiler reserves its phase decks before it prints anything, walked off the
- end of a 1 GB commit, and died at 0xC0000005 with no output at all. A user
- program printing and allocating a few megabytes never reached it, so every
- hosted arm passed over the top of it.
+ THE ARENA IS THE SAME SIZE AS EVERY OTHER TARGET'S AND THAT IS LOAD-BEARING:
+ the compiler reserves its phase decks before it prints anything.
 
   hosted-win-heap-span : Integer = 3221225472
  0x70000000 AND NOT 0x50000000, WHICH IS WHERE IT SAT UNTIL ws2_32 ARRIVED.
@@ -347,22 +295,13 @@ Section: Memory Address Map
  The page an application processor begins executing in. A start-up IPI's
  vector field names a 4 KB page below 1 MB, and the processor enters it in
  REAL MODE with CS:IP = vector:0000 -- so this is a page of 16-bit code, not
- a cell holding a 64-bit address, which is what it used to be. See
- ap-tramp-blob.
+ a cell holding a 64-bit address.
 
   ap-trampoline-addr : Integer = ap-sipi-vector * 4096
   ap-core-count-addr : Integer = 4088
   ap-ready-count-addr : Integer = 4080
   ap-stack-table-addr : Integer = 3840
   smp-max-cores : Integer = 16
-
- How many processes an application processor has claimed and run. Only a
- core whose id is non-zero adds to this cell, and the boot processor's id
- is always zero, so no path the BSP can take reaches it and no host code
- writes it. That is the whole reason it exists: a count above zero is
- evidence that a core other than the boot processor took a process out of
- the table and executed it, and that is the one thing a test of this
- cannot take on trust. Read by codex/test/smp-dispatch.codex.
 
  Cell 36200, and not a tidier address: 36152 is a permanent booby trap (a
  legacy codex-vm output-ring position) and 36160 / 36168 / 36176 are
@@ -373,16 +312,10 @@ Section: Memory Address Map
 
  The UEFI system table pointer, snapshotted before we destroy it.
 
- A UEFI stub hands the kernel its system table by leaving the pointer at
- GPA 0x8000, and every uefi-* helper used to read that address directly.
- 0x8000 is also where emit-build-process-page-tables puts the PML4, and
- emit-start loads CR3 with it. So by the time any helper ran, the pointer
- it read was page-table entry zero -- it dereferenced that as a system
- table and called through it, which is an invalid opcode fault at a low
- address, on every boot, in every mode. It cannot ever have worked.
-
- emit-start copies [0x8000] here BEFORE emit-process-setup overwrites it,
- and the helpers read this cell instead. On a boot with no UEFI stub the
+ A UEFI stub leaves the system table pointer at GPA 0x8000, which is also
+ where emit-build-process-page-tables puts the PML4. emit-start copies
+ [0x8000] here BEFORE emit-process-setup overwrites it, and the helpers read
+ this cell instead. On a boot with no UEFI stub the
  snapshot is zero and every helper returns -1 rather than calling into the
  page tables. A helper that cannot reach firmware must say so, not jump
  into it.
@@ -391,36 +324,16 @@ Section: Memory Address Map
  load-bearing rather than an optimisation. cdx-to-pe.ps1 writes the pointer
  to BOTH 0x8000 and this cell before it jumps, because a stub that calls
  opening directly never runs emit-start at all. Under -EntryStart emit-start
- DOES run, and an unconditional copy then overwrote a correct pointer with
- whatever 0x8000 held by then: measured 2026-08-09, this cell read 0 and
- 0x8000 read 0x9023, a page-table entry. Every uefi-* helper therefore
- dereferenced null on the one path that boots the compiler from a stick,
- which is why A5 could not read or write its volume on metal.
+ DOES run, and an unconditional copy would overwrite a correct pointer with
+ whatever 0x8000 holds by then.
 
- Same shape as the serial-ring prefill (serial-primed-magic): a later stage
- must not clobber what an earlier stage deliberately primed. A non-zero cell
- means somebody already knows the answer.
+ emit-build-process-page-tables puts the PML4 at 0x8000 and a PML4 is a full
+ 4 KB, so it owns 0x8000 through 0x8FFF. Building the tables zeroes the page,
+ so anything written there BEFORE emit-process-setup is destroyed.
 
- IT LIVED AT 36208 UNTIL 2026-08-09 AND THAT ADDRESS IS INSIDE THE PAGE
- TABLES. emit-build-process-page-tables puts the PML4 at 0x8000 and a PML4 is
- a full 4 KB, so it owns 0x8000 through 0x8FFF -- and 36208 is 0x8D70, entry
- 430 of that table. Building the tables zeroes the page, so anything written
- to this cell BEFORE emit-process-setup is destroyed.
-
- That is survivable for the rest of the 36xxx band, which is why nothing
- caught it: ap-dispatch-count, spawn-affinity and fs-elevated are all written
- at runtime, long after the tables exist, and they occupy PML4 entries no
- canonical address reaches. This cell is the one exception, because the UEFI
- stub primes it before jumping, and that write is the one the page tables eat.
- The spawn-affinity REST VALUE was the second exception (COMPILER-49,
- 2026-09-02): emit-process-setup stored its -1 into 36224 twelve instructions
- before emit-build-process-page-tables zeroed the page, so a program's first
- spawn read 0 and pinned to the BSP. Any cell in 0x8000..0x9FFF that must hold
- a value at rest is written AFTER the tables are built.
-
- Measured under -EntryStart: cell read 0 and 0x8000 read 0x9023, a PML4 entry
- pointing at the PDPT. Every uefi-* helper then dereferenced null, which is
- why the compiler could neither read nor write its own boot volume on a board.
+ The rest of the 36xxx band occupies PML4 entries no canonical address
+ reaches. Any cell in 0x8000..0x9FFF that must hold a value at rest is written
+ AFTER the tables are built.
 
  30704 is below the tables, between serial-primed-magic and chan-table-base,
  and was confirmed unclaimed in tools/codex-vm.c, apps/works and
@@ -438,31 +351,10 @@ Section: Memory Address Map
 
   uefi-imghandle-addr : Integer = 30712
 
- Timer interrupts taken by a core whose id is not zero. Only the interrupt
- handler writes it, and only when the core it is running on is not the boot
- processor, so a value above zero is evidence that an application processor
- was preempted -- that a core other than the BSP took a scheduling clock
- tick and could be forced off whatever it was running. Read by
- codex/test/smp-preempt.codex.
-
- A count of finished work would prove nothing here, exactly as it proved
- nothing for AP dispatch: one core can finish the work, and a core that is
- never preempted still completes a process that yields. The claim is about
- who was interrupted, so the evidence has to be about who was interrupted.
-
  Cell 36216, the next free slot above uefi-systab. Grep tools/codex-vm.c
  before claiming any cell in this band.
 
   ap-preempt-count-addr : Integer = 36216
-
- The core a spawn pins its child to, handed from process-spawn-on-core to
- process-spawn through one cell. process-spawn reads it into the child's
- affinity field and resets the cell to -1 (any core) for the next spawn, so
- process-spawn-on-core needs no copy of the ninety-line spawn body. The cell
- holds -1 at rest, so an ordinary process-spawn pins to no core. This carries
- the same single-writer assumption the slot finder above it already makes --
- the finder reads and claims a slot without a lock -- so two cores spawning at
- the same instant is out of scope here as it is there.
 
  Cell 36224, the next free slot above ap-preempt-count. Grep tools/codex-vm.c
  before claiming any cell in this band.
@@ -489,24 +381,11 @@ Section: Memory Address Map
 
   fs-elevated-addr : Integer = 36232
 
- The count is incremented on every vector that is not a timer, and the
- second cell holds the last such vector, so a test can name the line it
- programmed and check that line answered. The timer vectors do not touch
- either cell, which is what keeps the host's own periodic tick out of
- the evidence.
-
  Cells 36240 and 36248, the next free slots above fs-elevated. Grep
  tools/codex-vm.c before claiming any cell in this band.
 
   devint-count-addr : Integer = 36240
   devint-last-vec-addr : Integer = 36248
-
- The next core id to hand out. An application processor no longer arrives
- with its id in a register put there by the host -- it starts in real mode
- knowing nothing -- so it takes one for itself with a locked exchange-add
- on this cell as the last act of the trampoline. The boot processor seeds
- it with 1 before the start-up IPI, so ids run 1, 2, 3 ... and the boot
- processor keeps 0.
 
  A dense counter rather than the local APIC id, deliberately. The id is
  used to index the AP stack table, the per-core idle stacks, the per-core
@@ -530,39 +409,10 @@ Section: Memory Address Map
  exists for, and taking the obvious next slot would have landed a compiler cell
  inside the card's ring pointers.
 
- The guard page base is PUBLISHED rather than recomputed by its readers.
- `emit-demand-unmap` derives it once from the reported RAM size and stores it
- here; `build` (`Core/PhaseAllocator.codex`) reads it to decide whether a deck
- reservation would leap the page. Two places deriving the same geometry from
- `demand-stack-reserve-pages` is how they drift apart, and a `build` that
- believed the page were higher than it is would let the reservation through.
-
   guard-page-base-addr : Integer = 36320
 
- 36328 IS THE NIC'S, NOT OURS. `net-driver-poll-cell`
- (`codex/os/net/NetDriver.codex:96`) has held it since the poll interval was
- measured rather than assumed; `net-driver-calibrate` writes it with `poke-32`
- at :70 and `net-driver-poll-interval` reads it at :170. This chapter claimed
- the same cell for `deck-ceiling-addr` on 2026-08-27 and the claim carried the
- words "verified unclaimed against codex-vm.c and net-driver-cb", which is
- exactly as wide as it sounds and no wider: `net-driver-cb` is a BLOCK based at
- 36264 declaring offsets 0 and 8, so asking where that block ends answers a
- question about the block and says nothing about a separate scalar the same
- chapter declares sixty lines further down. Both halves of the collision are
- real. `build` writes eight bytes here on every reservation and does it whether
- or not the guard flag is set, so the compiler would silently overwrite the
- measured poll interval with the low half of a deck address, and every bound in
- NetworkStack is denominated in those ticks. In the other direction a
- calibration write drops a small number into the ceiling, every frontier clears
- it, and an armed guard raises `!EXC=06` on the next allocation. The cell the
- newcomer takes is the one that moves.
-
- The check that finds this shape is a MAP of the band rather than a probe of
- one address: enumerate every literal in [36240, 36420] across all `.codex` and
- `tools/codex-vm.c`, and confirm the known-taken cells appear before believing
- that a candidate does not (L-COUNT, and the negative-result half of
- `check-your-own-instrument`). Run that way, 36336 and 36344 are clear and
- 36352 appears only as an unrelated `add-ri` displacement at :1611.
+ 36328 IS THE NIC'S, NOT OURS: `net-driver-poll-cell` (Os chapter
+ NetDriver), a scalar declared apart from the `net-driver-cb` block.
 
   deck-ceiling-addr : Integer = 36336
   deck-reservation-top-addr : Integer = 36344
@@ -649,10 +499,6 @@ Section: Memory Address Map
   icr-init-all-but-self : Integer = 804096
   icr-sipi-all-but-self : Integer = 804352 + ap-sipi-vector
   icr-wake-all-but-self : Integer = 802864
-
- How long the BSP waits for the APs to check in. The wait is bounded: a
- core that never answers must not cost us the boot, so the BSP gives up
- and carries on single-core rather than spinning forever.
 
   smp-init-delay-cycles : Integer = 100000
   smp-sipi-delay-cycles : Integer = 10000
@@ -812,47 +658,14 @@ Section: I/O Port Constants
 
 Section: Process Table Layout
 
- Which core is running this process. Whoever claims the slot stamps its
- own core id here, so a core can always recover its own identity by
- asking the process it is standing in -- which is the only per-core
- identity the kernel has, and the only one it needs. Offset 8 was free.
-
   proc-core-offset : Integer = 8
   proc-affinity-offset : Integer = 16
 
- The network scope: the authority a process is permitted to reach, the
- twin of proc-scope-offset's filesystem path prefix. It lives in the
- reserved gap [24, 56) below the capability word, written by the boot
- grant for proc 0, copied into a child at spawn, and read back by
- process-get-network-scope for the fetch chokepoint to check a runtime
- URL's authority against. Console has no such cell on purpose -- a
- console channel is fixed at compile time by the builtin name and is
- never a runtime value, so there is nothing at runtime to check it
- against.
-
   proc-net-scope-offset : Integer = 24
-
- The exit status. Written by the unary process-exit before it joins the
- nullary exit path, and by __proc_entry from the closure's return value
- when a child terminates by returning, so a dead slot always carries a
- defined status; spawn initializes it to zero. Delivered to a waiter by
- the exit wake loop (into the waiter's saved RAX) and read directly by
- process-wait's already-dead and self-rescue paths. Offset 32 is the
- next free slot in the reserved gap [24, 56).
 
   proc-exit-status-offset : Integer = 32
 
- The process's network arena pool head (codex/os/net/NetCompact), read and
- written by address from Codex. Spawn zeroes it, because a slot's region is
- reused by the next process spawned into it and a head left by the previous
- owner points into memory that owner no longer holds.
-
   proc-net-pool-offset : Integer = 40
-
- The head of the process's chain of `try` frames, 0 when no `try` is active.
- It is per process because a `fail` unwinds onto the stack the frame names,
- and a stack belongs to one process. Offset 48 is the last free slot in the
- reserved gap [24, 56); spawn zeroes it.
 
   try-frame-head-offset : Integer = 48
   proc-cap-offset : Integer = 56
@@ -1114,49 +927,6 @@ Section: Exception Stack Dump
 
 Section: Exception Frame Walk
 
- The frame chain, walked exactly, printed as F[n]= lines. The S[] dump
- above cannot distinguish a return address from a saved register or a
- stale slot, so the host filters it by asking which values resolve to a
- symbol, and any integer that lands inside a function's byte range
- passes. This walk answers the same question without guessing: every
- address it prints is the return slot of a frame reached by following
- the chain, so a value that fails to resolve is evidence the chain
- broke rather than noise to be dropped.
-
- It walks RBP because RBP is trustworthy here. emit-prologue pushes RBP
- and sets it to RSP for every standard-tier function, and
- omit-frame-pointer is initialized False with nothing in the tree
- setting it True. The frameless minimal-leaf tier never touches RBP at
- all, which makes a frameless activation MISSING from the chain rather
- than corrupting it: its caller's RBP is still what RBP holds, so the
- walk resumes correctly one frame out, and RIP already names the
- function that faulted. A fault between push rbp and mov rbp,rsp has
- the same shape and the same harmless outcome. If omit-frame-pointer is
- ever turned on, this walk degrades to skipping those frames, not to
- printing wrong ones.
-
- Four of the five exits keep a walk inside a fault handler from itself
- faulting: a zero link, a misaligned link, a link whose frame would
- reach past the top of RAM, and a link that does not strictly increase.
- The last is the one that matters, because the stack grows down, so a
- chain that fails to climb is a corrupted or self-referential frame and
- would otherwise spin until the depth budget ran out. A nested fault
- here would be a double fault and then a triple fault, which is a dead
- machine and an empty serial log, so these are load-bearing rather than
- decorative. The fifth exit, a zero return address, is not a safety
- check but the ordinary end of the chain at the outermost frame; it is
- tested before anything is printed so the terminator does not appear as
- a frame whose address resolves to nothing.
-
- One limit worth stating because it looks like a bug when first seen.
- The handler switches RSP to the top of RAM, which is also where the
- boot stack lives, so it pushes over the shallowest frames of whatever
- faulted. A fault raised directly out of opening therefore has its one
- frame trampled before the walk can read it. Faults that happen a few
- calls down, which is every fault worth debugging, sit far below
- anything the handler touches. codex/test/exc-deep-frames.codex is the
- sample that exercises a real chain for this reason.
-
   emit-exc-frame-walk : CodegenState -> CodegenState
   emit-exc-frame-walk (st) =
     let st0 = st-append-code st (mov-load reg-rbx reg-rbp 0)
@@ -1219,12 +989,6 @@ Section: Serial Drain Delay
     in patch-jcc-at st5 jnz-pos (st5.code-len)
 
 Section: Watchdog Timer Check
-
- Emitted into the timer ISR when the target is bare-metal. Compares R10
- (live heap pointer) and saved-RIP at [rsp+40] to snapshots stored at
- wd-last-heap-addr / wd-last-rip-addr. If either moved (RIP delta > 4 KB
- window), snapshot and reset the stale-tick counter. If neither moved,
- increment stale-tick and compare to threshold; panic if exceeded.
 
   emit-watchdog-ring-write : CodegenState -> CodegenState
   emit-watchdog-ring-write (st) =
@@ -1326,12 +1090,7 @@ Section: Page Fault Handler
  RAX to 14 as its last act, because the dump reports the vector from
  live RAX and this handler has already spent that register: the
  error-code test leaves it holding the present bit, and the range
- tests leave it holding CR2 shifted down by 21. Without the restore
- every page fault reaching the dump announces itself as vector 00 or
- 01, and the host report then names it a divide error and suppresses
- CR2, which it shows for vector 14 alone. That is the one field a
- page fault is worth reading, and it was suppressed by the report's
- own correctness check. The mapped entry
+ tests leave it holding CR2 shifted down by 21. The mapped entry
  carries NX (bit 63) because everything above the code boundary was NX
  in the boot mapping and demand pages must match. Each mapping
  increments the touched-page counter, the honest physical-consumption
@@ -1351,11 +1110,6 @@ Section: Page Fault Handler
  the arm below would never run. Placing it after the range tests leaves a guard
  that works only on small-RAM configurations, which is the configuration nobody
  runs.
-
- It routes to __out_of_memory rather than to the dump because the dump prints
- from the current stack, and the case this exists to catch is the stack having
- just been written over. __out_of_memory reloads RSP from ram-size-addr before
- printing, so it survives that.
 
  The stack case is not symmetric: a stack that grows DOWN into the guard page
  cannot take a #PF at all, because the CPU cannot deliver the fault frame onto
@@ -1564,14 +1318,6 @@ Section: Page Fault Handler
     in let g6 = st-append-code g5 (li reg-rax 0)
     in st-append-code g6 (mov-store reg-rcx reg-rax 0)
 
- Spawn-stack pre-touch. A spawned process carves its stack from the
- parent's heap frontier, inside the demand range; the child's first
- push must not fault, so the parent touches every 2 MB page the stack
- spans before the child runs. The touch points unroll at emit time
- from the stack size, so growing proc-spawn-stack-size past 2 MB
- cannot silently skip the middle pages. Expects RSI = stack top;
- clobbers RAX.
-
   emit-spawn-stack-pretouch : CodegenState -> CodegenState
   emit-spawn-stack-pretouch (st) =
     emit-spawn-pretouch-at st 8
@@ -1588,23 +1334,6 @@ Section: Page Fault Handler
     in emit-spawn-pretouch-at s3 (off + 2097152)
 
 Section: Which Process Is Running
-
- The running process is a function of the stack pointer. It is not
- stored anywhere.
-
- Every spawned process runs on a stack inside its own slot-indexed
- region -- active pool base + slot * spawn-slot-region-size -- so the
- slot index is recoverable from a stack address by arithmetic alone:
- subtract the pool base, and the region shift is the slot. An address
- outside the pool belongs to proc 0, the program the machine booted.
- UEFI v4 owns a disjoint pool; native boot uses spawn-pool-base.
-
- emit-load-current-proc reads it from the live RSP. emit-slot-from-addr
- takes an address already in the destination register -- the interrupt
- handler needs the INTERRUPTED stack pointer, off the interrupt frame,
- not the one it is running the handler on.
-
- Clobbers the destination register and nothing else.
 
   emit-load-current-proc : CodegenState, Integer -> CodegenState
   emit-load-current-proc (st) (dest) =
@@ -1630,26 +1359,6 @@ Section: Which Process Is Running
 
 Section: Common Interrupt Handler
 
- Preemption claims first and publishes second, for the reason set out over
- process-yield in X86_64ProcessHelpers: a process a core is standing in
- must never be advertised as READY, or an application processor will claim
- it and both cores will run it. So the interrupted process is left RUNNING
- across the scan, and is marked READY only once a replacement has actually
- been won with a CMPXCHG. Losing that race is not an error -- it means
- another core took the candidate -- and the handler simply keeps running
- what it interrupted for another tick.
-
- The publish is itself a CMPXCHG, RUNNING -> READY, and not a plain store.
- The scan sits below the max-ticks check, which may have already marked
- this process a ZOMBIE; a plain store would resurrect it.
-
- A trap worth naming, because it cost a hang: RCX holds &proc[current] for
- the context save, and then the STARVE CHECK CLOBBERS IT (sv1 loads the
- starve counter into RCX). Anything below that point which wants
- &proc[current] must rebuild it from RDI, which does survive -- the
- original code reloaded it for exactly this reason, and reusing the stale
- RCX writes the state word to whatever the starve counter happened to be.
-
  Two clocks arrive here, not one. Vector 32 is the PIT, which is delivered
  to the boot processor alone; vector 48 is an application processor's own
  local APIC timer. They run the same scheduling path -- the path was always
@@ -1661,44 +1370,6 @@ Section: Common Interrupt Handler
  tick-based wait converts it with `pit-input-hz` and `pit-count`, and an AP's
  tick is not a unit of that clock. The add stays LOCKED because codex-vm also advances the
  cell from the host while core 0 is halted.
-
- A core with no work parks on its own idle stack in __idle_dispatch with
- its timer armed, so a tick can arrive while it is standing on no process.
- emit-slot-from-addr answers slot 0 for any address outside the spawn pool,
- and an idle stack is one such address -- so the handler would take the
- idle core for proc 0 and preempt the booted program out from under the
- boot processor. The guard is a band check on the interrupted stack pointer
- before any process is touched: an RSP inside [ap-stacks-base, ap-stacks-base
- + smp-max-cores * ap-stack-size) belongs to an idle stack, so the handler
- acknowledges the clock and returns without scheduling. Proc 0's own boot
- stack is far above this band, so a genuine tick on proc 0 is unaffected.
-
- A second guard, and it closes a real deadlock. A process exiting runs
- process-exit ON ITS OWN STACK: it marks its slot FREE and then walks a wake
- loop marking every waiter that blocked on it READY. It is still executing,
- with interrupts on, so a timer tick can land between the FREE store and the
- end of the wake loop. Without a guard the handler derives the running slot
- from the interrupted stack pointer -- the exiting process -- saves its
- context, fails to publish it (the RUNNING->READY cmpxchg does not match a
- FREE slot) and switches to a replacement, ABANDONING the wake loop. Any
- waiter it had not yet reached is never woken and blocks forever. This is a
- lost-wakeup deadlock that showed as a rare hang of a parent waiting on many
- children, and it is timing-sensitive enough that adding a
- single host thread hid it. So: if the running slot is already FREE, the
- process is mid-exit and there is nothing to preempt -- acknowledge the clock
- and return, and let it finish its wake loop.
-
- A third guard, in the candidate scans themselves: slot 0 is the booted
- program, it owns the boot stack and the main heap, and only the boot
- processor may run it. __idle_dispatch already refuses it to an application
- processor by starting each core's scan at its own id, but the preempt scan
- walks every slot from 0 for every core -- so an AP whose current process is
- preemptible could preempt-CLAIM slot 0 the moment proc 0 goes READY (a
- parent woken by a child's exit) and strand it RUNNING-but-frozen on a core
- that is not its own. Both scans (priority-preference and starvation-relief)
- therefore skip slot 0 when the claiming core's id is not zero, so a
- non-zero core never selects proc 0 as a preemption target and proc 0 stays
- the boot processor's to schedule.
 
   emit-common-interrupt-handler : CodegenState -> CodegenState
   emit-common-interrupt-handler (st) =
@@ -2168,19 +1839,7 @@ Section: Interrupt Setup
 
   ist-stack-size : Integer = 2048
 
- Each core reads its task register back with str, after loading it, and
- stores what the CPU actually accepted here -- eight bytes per core, just
- above the TSS array. A descriptor the processor rejects and one it takes
- are indistinguishable from the outside, and a core whose TR is zero has
- no emergency stack and will still vanish on a double fault. This is what
- lets a test assert the thing that matters rather than the thing that was
- written down. Read by codex/test/smp-tss.codex.
-
   ap-tr-report-addr : Integer = 79872
-
- The single emergency stack the UEFI runtime-init path installs. That path
- builds its own one-TSS GDT at the same base and is single-core, so it
- keeps the old arrangement; the two never coexist.
 
   df-ist-stack-top : Integer = 83968
 
@@ -2415,20 +2074,9 @@ Section: Interrupt Setup
 
 Section: Runtime Init Builtin
 
- The Option A boot stub keeps the firmware GDT, never installs an IDT,
- and jumps straight to opening. On that path there are no ticks, no
- keyboard interrupts, no exception dumps, and no syscalls. The
- runtime-init builtin lets the payload install the same runtime spine
- the normal boot path gets inside emit-start: a GDT with code at
- selector 8 (the selector every IDT entry references), a CS reload
- through a far return, the TSS with the double-fault emergency stack,
- the IDT, the syscall MSRs, and the PIC/PIT/keyboard setup ending in
- sti. The compiler source never calls runtime-init, so the helper's
- presence cannot perturb the self-host fixed point. The scheduler and
- profiler cells the timer ISR reads every tick are zeroed before sti:
- firmware leaves arbitrary bytes in low memory, and a garbage process
- table would send the preemption path through a wild context restore.
- The far-return sequence is hand-emitted as fixed-width bytes (a
+ The scheduler and profiler cells the timer ISR reads every tick are zeroed
+ before sti: firmware leaves arbitrary bytes in low memory. The far-return
+ sequence is hand-emitted as fixed-width bytes (a
  10-byte mov rax imm64, push, retfq) so the return vaddr is a fixed
  13 bytes past the measurement point regardless of immediate width.
 
@@ -2561,18 +2209,6 @@ Section: SMP Initialization
     let st1 = st-append-code st (li reg-rdi (lapic-base + reg-offset))
     in st-append-code st1 (mov-load reg-rax reg-rdi 0)
 
- A wake to every other core, so a processor parked on `hlt` in
- __idle_dispatch rises to rescan the moment work is published rather than
- waiting out its next timer tick. It is a fixed-delivery inter-processor
- interrupt on the timer vector with the "all excluding self" shorthand, so
- a woken core takes it exactly as it takes its own timer -- and the
- idle-stack guard in the common handler drops it without touching a
- process, which is all a parked core needs before it falls through to its
- scan. A core that is not parked takes one harmless spurious tick. Sent
- after a process is published READY (spawn) and after a waiter is unblocked
- (exit). Clobbers RDI and RAX, like emit-lapic-write; call it where both
- are dead.
-
   emit-wake-ipi : CodegenState -> CodegenState
   emit-wake-ipi (st) =
     let st1 = emit-lapic-write st lapic-icr-hi-reg 0
@@ -2586,12 +2222,6 @@ Section: SMP Initialization
  and it never delivers another -- a core preempted exactly once and never
  again, which looks like a scheduler that simply stopped.
 
- The vector is still on the stack where the per-vector stub pushed it: the
- handler has pushed four registers over it and nothing else, so it sits at
- [rsp+32] on both the switching and the non-switching path. RDI and RAX are
- dead at both call sites; RSI is not, and is not touched here, because the
- switching path is on its way to __process_resume with the process in it.
-
   emit-timer-eoi : CodegenState -> CodegenState
   emit-timer-eoi (st) =
     let st2 = st-append-code st (cmp-ri reg-rax lapic-timer-vector)
@@ -2603,20 +2233,6 @@ Section: SMP Initialization
     in let st6 = patch-jcc-at st5 pic-pos (st5.code-len)
     in let st7 = emit-out-byte st6 32 32
     in patch-jmp-at st7 done-pos (st7.code-len)
-
- RCX already holds the address of the running process here. RAX and RDX are
- dead; RDI holds the slot index and the scan below still needs it.
-
- Evidence that a device interrupt was taken, written at the point in
- __interrupt_common where the vector has been established as neither the
- PIT's nor the local timer's. RAX holds the vector and the comparisons
- below still need it, so it is left alone; RCX, RDX, RSI and RDI were all
- pushed on entry and are free scratch here.
-
- The count is incremented with a locked add because more than one core
- reaches this path. The last-vector store is a plain one: two device
- interrupts racing to record different vectors is not a case worth a lock,
- and a test that programs one line reads back that line.
 
  This is the whole cost of the mechanism -- five instructions on a path
  that runs only for device interrupts. The timer vectors branch away
@@ -2812,9 +2428,7 @@ Section: SMP Initialization
  tramp-enable-long-mode in X86_64IO, and the two that look like padding
  are not. OSFXSR is what makes SSE legal: without it the first packed
  instruction in the first process an application processor resumes is an
- invalid-opcode fault, which is what this omission actually produced --
- the cores checked in, armed their timers, and then died one at a time on
- real work while the check-in count still read three. NXE is what makes
+ invalid-opcode fault. NXE is what makes
  bit 63 of a page-table entry mean "no execute" instead of "reserved", and
  the runtime tables set it above the code boundary, so without NXE the
  first instruction executed after paging comes on is a reserved-bit page
@@ -2851,35 +2465,9 @@ Section: SMP Initialization
     in let st3 = st-append-code st2 (mov-store reg-rdi reg-rax 0)
     in emit-smp-write-stacks st3 (i + 1)
 
- The boot processor copies the real-mode trampoline into the page the
- start-up vector names, seeds the core-id counter, publishes the per-core
- stack table, sends INIT and two start-up IPIs, and then waits for every
- application processor to count itself in. Each AP comes up in real mode
- inside the trampoline, climbs to long mode, takes a core id, claims its
- stack from the table by that index, loads the runtime GDT, the runtime
- IDT and its own task register -- it starts on a GDT of the trampoline's
- own making, which carries no TSS, and a core with no task register cannot
- be handed a fault -- adds itself to the ready count with a locked add,
- and goes to look for work.
-
- It goes to __idle_dispatch -- the same place the boot processor goes when
- it runs out of work -- with its core id already in R15, which is where
- that routine expects it. From there an application processor is not a
- special case: it claims a READY process out of the table and runs it,
- exactly as core 0 does. The only asymmetry is that it may not claim slot
- 0, because slot 0 is the program the machine booted.
-
- It is already standing on its own idle stack here, so it has nothing to
- get off before it starts scanning. That is not true of a core arriving
- from process-exit or process-wait, and that is the whole reason
- __idle_dispatch switches stacks before it does anything else.
-
  The wait spins on pause rather than halting. A halted processor is woken
  by an interrupt, and nothing here sends one -- the APs report in by
- writing memory, which wakes nobody. The loop used to halt, and only ever
- came back because codex-vm reached in from the host and rewrote the
- BSP's instruction pointer to shove it past the loop. It no longer does,
- so the loop has to be able to make progress on its own.
+ writing memory, which wakes nobody.
 
   emit-smp-init : CodegenState -> CodegenState
   emit-smp-init (st) =
@@ -3011,8 +2599,7 @@ Section: Process Management
 
  The device directory maps the gigabyte above RAM identity, present and
  read-write, with NX set on every entry -- nothing up there is code -- and
- with PCD set, which is the bit that matters and was missing until
- 2026-08-02.
+ with PCD set, which is the bit that matters.
 
  The flag words are 131 (0x83) and 147 (0x93): bit 0 present, bit 1
  writable, bit 7 the 2 MB page-size bit, and in 147 additionally bit 4,
@@ -3023,18 +2610,6 @@ Section: Process Management
  device registers whose value changes underneath the processor, and on a
  UEFI boot the linear framebuffer, which a display controller scans out of
  memory independently of our caches.
-
- Both failures were observed on the ASUS TUF before the bit was set. The
- framebuffer at 0xC0000000 -- the first address in this directory --
- rendered with rows missing and stale content persisting, while the
- geometry the payload computed was measured correct and identical to a bed
- that renders it perfectly. A cached MMIO mapping is also a mechanism by
- which a driver polling a status register reads a value that cannot
- change.
-
- No emulator we own can observe either one: codex-vm's framebuffer is host
- RAM read coherently, and WHP traps MMIO regardless of the cache
- attributes the guest asked for.
 
   emit-fill-device-pd : CodegenState, Integer -> CodegenState
   emit-fill-device-pd (st) (pml4-addr) =
@@ -3109,34 +2684,6 @@ Section: Process Management
     in let st8 = st-append-code st6 (li reg-rax heap-base)
     in let st10 = st-append-code st8 (li reg-rdi (entry-addr + 48))
     in st-append-code st10 (mov-store reg-rdi reg-rax 0)
-
- Proc 0 starts RUNNING, because it is running.
-
- Pinned by codex/test/proc-state-running.codex.
-
- Proc 0's affinity is the boot processor, and the field used to say the
- opposite. It held -1, which in every other slot means "any core", while
- three separate guards elsewhere made sure no other core could ever have
- it: __idle_dispatch starts each core's scan at its own id and wraps to 1,
- so an application processor never reaches slot 0; and both preemption
- scans skip slot 0 outright when the claiming core is not the boot
- processor. So the declared policy and the enforced policy disagreed, and
- the register recorded the declaration -- proc-0 migration was written
- down as permitted-but-unproven when it was in fact forbidden in three
- places and could not happen.
-
- It is forbidden for a reason, and the reason is the boot stack. Slot 0
- owns the stack the machine booted on and the main heap; the guards were
- added deliberately, each with its own account of the corruption it
- prevents. The field now says what the machine does, which costs nothing
- -- on the boot processor the affinity test compares 0 against core 0 and
- passes exactly as the -1 wildcard did, and on every other core slot 0 was
- already unreachable -- and it removes a value that reads as a licence
- nothing honours.
-
- Pinned by codex/test/smp-proc0-pinned.codex, which reads the core stamp
- out of slot 0 after a multi-core run and requires it to still be the boot
- processor, with the application processors demonstrably busy at the time.
 
   emit-process-setup : CodegenState -> CodegenState
   emit-process-setup (st) =
@@ -3381,17 +2928,6 @@ Section: MSR and Syscall
  when the port in RDI falls inside it; every other port -- the PCI
  config pair at 0xCF8/0xCFC, and every byte-width driver port -- runs
  the check-free path, so the drivers are untouched.
-
- Gating the builtin wholesale was the obvious move and it is wrong:
- the drivers live in effect-exempt quires (Kernel, Dev, Os, Net,
- Boards), so they touch ports without declaring Device.Port and their
- programs never earn cap-device. xhci-discover-test, nic-ping and
- vga-terminal-demo declare only [Console] and drive real hardware.
- A blanket port gate denies all three. Ranging the check on the GPU
- window is what lets the gate exist at all.
-
- RDI (port) and RSI (value) are preserved: the guard reads the cap
- word through RAX, which both port helpers overwrite afterwards.
 
   gpu-port-lo : Integer = 1024
   gpu-port-hi : Integer = 1047
@@ -3821,10 +3357,6 @@ Section: MSR and Syscall
 
   ata-control-port : Integer = 1014
 
- Every port below is reached through the ACTIVE drive's base rather than through
- the primary channel's literal address, and the drive is selected with the
- active select byte rather than a hardcoded master.
-
   emit-ata-port : CodegenState, Integer -> CodegenState
   emit-ata-port (st) (off) =
     let st1 = st-append-code st (li reg-rdx ata-active-base-addr)
@@ -4032,12 +3564,6 @@ Section: MSR and Syscall
     in let st-r8 = emit-ata-spin-delay st-r7 100
     in let st-r9 = emit-ata-wait-bsy-clear-bounded st-r8
     in emit-ata-detect-identify st-r9
-
- Detect the ACTIVE drive and record ITS sector count. The count is zeroed first,
- so a position with nothing behind it reports zero rather than inheriting the
- last drive's geometry. That inheritance is what made block-sector-count answer
- drive 0's size for every drive, and dm-exec-install would have written a GPT
- sized for the source onto the target.
 
   emit-ata-detect-identify : CodegenState -> CodegenState
   emit-ata-detect-identify (st-in) =

@@ -2,24 +2,6 @@ Chapter: CoapParseTest
   cites Encode chapter Coap
   cites Foreword chapter Maybe
 
- The round trip is the first assertion: a packet this chapter built is a
- packet this chapter can read back, field for field, including a Block2
- option carrying block 2 / more / szx 6 and a real payload. The builder
- and the parser are written against RFC 7252 separately, so agreeing is
- evidence.
-
- The refusals are the rest, and they matter more. A parser that cannot
- fail is not a parser -- it is a function that returns something. Each
- case below is a message-format error the RFC names, and each answers
- None rather than a half-filled record: a packet shorter than the header,
- a version of 2, a token length of 9, an option whose value runs past the
- end of the datagram, a payload marker with nothing behind it, and a
- reserved option-delta nibble of 15.
-
- The empty-payload case is the one to keep. An empty payload is spelled
- by omitting the marker, so a bare 0xFF is a lie about length -- the
- shape of a truncation attack.
-
 Section: Helpers
 
   bytes-eq : List Integer, List Integer -> Boolean
@@ -109,10 +91,38 @@ Section: The Refusals
   check-reserved-nibble : Integer
   check-reserved-nibble = refused (coap-parse [64, 69, 18, 52, 240, 1])
 
+  check-empty-ack : Integer
+  check-empty-ack = 1 - refused (coap-parse (coap-ack 4660))
+
+  check-empty-with-token : Integer
+  check-empty-with-token = refused (coap-parse [97, 0, 18, 52, 9])
+
+  check-empty-with-payload : Integer
+  check-empty-with-payload = refused (coap-parse [96, 0, 18, 52, 255, 1])
+
+Section: Mutation Sweep
+
+ A seeded single-byte mutation sweep over the valid sample: every byte is
+ flipped and run through coap-parse, which must return (a message or None)
+ and never read past the packet. check-sweep is 1 when the sweep completes.
+
+  cp-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cp-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else cp-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  cp-sweep : Integer, Integer, Integer -> Integer
+  cp-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else cp-sweep (pos + 1) n (acc + (when coap-parse (cp-mutate sample pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []) is None -> 0 is Just (m) -> 1))
+
+  check-sweep : Integer = flag (cp-sweep 0 (list-length sample) 0 >= 0)
+
 Section: Body
 
   opening : Integer =
    check-round-trip
+   + check-sweep
    + check-block-decode
    + check-absent-option
    + check-reserved-szx
@@ -122,3 +132,6 @@ Section: Body
    + check-runaway-option
    + check-empty-payload
    + check-reserved-nibble
+   + check-empty-ack
+   + check-empty-with-token
+   + check-empty-with-payload

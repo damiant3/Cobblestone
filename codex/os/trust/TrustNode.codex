@@ -1,12 +1,11 @@
 Chapter: TrustNode
   cites Trust chapter TrustTransport
   cites Trust chapter AgentProtocol
+  cites Trust chapter GrantSeal
   cites Trust chapter TrustLattice
   cites Trust chapter PolicyEngine
   cites Foreword chapter Sha256
   cites Foreword chapter Maybe
-
- We say:
 
 Section: Node State
   TrustPeer = record {
@@ -165,16 +164,24 @@ Section: Receiving
 Section: Policy Evaluation
   node-eval-msg : TrustNode, AgentMessage, TrustSession, Integer -> PolicyDecision
   node-eval-msg (node) (msg) (sess) (current-time) =
-    let cap-name = node-msg-capability msg
+    if node-grant-unsealed msg then
+      pe-decision False "grant-seal" "grant signature does not verify"
+    else let cap-name = node-msg-capability msg
     in let dir = node-msg-direction msg
     in let ctx = PolicyContext {
       capability = cap-name,
       direction = __narrow dir,
       trust-score = __narrow (trust-peer-score sess),
       current-time = current-time,
-      agent-id = node-peer-key-hex (sess.peer-key)
+      agent-id = node-peer-key-hex (sess.peer-key),
+      scope = node-msg-scope msg
     }
     in eval-policy (node.policy) ctx
+
+  node-grant-unsealed : AgentMessage -> Boolean
+  node-grant-unsealed (msg) = when msg
+    is MsgGrant (g) -> grant-verify g == False
+    is otherwise -> False
 
   node-msg-capability : AgentMessage -> Text
   node-msg-capability (msg) = when msg
@@ -195,6 +202,13 @@ Section: Policy Evaluation
     is MsgLocateReply (l) -> "locate-reply"
     is MsgAnnounceRequest (a) -> "announce-request"
     is MsgAnnounceReply (a) -> "announce-reply"
+
+  node-msg-scope : AgentMessage -> Text
+  node-msg-scope (msg) = when msg
+    is MsgPropose (p) -> (p.capability).scope
+    is MsgGrant (g) -> (g.capability).scope
+    is MsgHandoff (h) -> (h.capability).scope
+    is otherwise -> ""
 
   node-msg-direction : AgentMessage -> Integer
   node-msg-direction (msg) = when msg

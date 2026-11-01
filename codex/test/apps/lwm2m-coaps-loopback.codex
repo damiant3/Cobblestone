@@ -8,17 +8,6 @@ Chapter: Lwm2mCoapsLoopbackTest
   cites Encode chapter X509Chain
   cites Foreword chapter Maybe
 
- The LwM2M registration lifecycle over coaps://: an authenticated DTLS
- handshake between two of our endpoints, then Register, Update and
- Deregister carried as application data, with no network and no server
- process.
-
- The whole exchange runs in one let-chain, and every arm takes the state
- the arm before it produced. A record update writes through the caller's
- pointer (L-ALIAS), so a value read at print time is the FINAL value, not
- the value at the step that named it: each sequence number below is bound
- to an Integer at the step that produced it, for that reason.
-
    1. Register sealed, opened by the server, and what comes back out
       parses as CoAP addressing /rd. A composition that forwarded
       plaintext, or one that mangled the datagram, fails here.
@@ -167,6 +156,49 @@ Section: Helpers
         let ps = coap-find-options (m.cm-options) coap-opt-uri-path
         in if list-length ps == 0 then [] else list-at ps 0
 
+Section: An Unauthenticated Session
+
+ A client with no anchors completes the handshake unauthenticated. Each pair is built fresh, so no arm shares an
+ endpoint record with another (L-ALIAS).
+
+  AnonPair = record { ap-c : DtlsEp, ap-s : DtlsEp }
+
+  anon-feed : DtlsEp, List (List Integer), Integer, Integer -> DtlsEpStep
+  anon-feed (ep) (recs) (i) (t) =
+    let st = dtls-ep-recv ep (list-at recs i) t
+    in if i + 1 >= list-length recs then st else anon-feed (st.es-ep) recs (i + 1) (t + 1)
+
+  anon-pair : Integer -> AnonPair
+  anon-pair (k) =
+    let sv = dtls-ep-with-cert (dtls-ep-new True s-priv s-random cookie-secret client-addr) [leaf-cert] leaf-priv leaf-pub
+    in let a1 = dtls-ep-client (dtls-ep-new False c-priv c-random [] []) k
+    in let a2 = dtls-ep-recv sv (list-at (a1.es-out) 0) 10
+    in let a3 = dtls-ep-recv (a1.es-ep) (list-at (a2.es-out) 0) 20
+    in let a4 = dtls-ep-recv (a2.es-ep) (list-at (a3.es-out) 0) 30
+    in let a8 = anon-feed (a3.es-ep) (a4.es-out) 0 40
+    in let a9 = dtls-ep-recv (a4.es-ep) (list-at (a8.es-out) 0) 50
+    in AnonPair { ap-c = a8.es-ep, ap-s = a9.es-ep }
+
+ anon-registered: the client's Register over pair p reaches the server, whose 2.01 Created is handed back to the
+ client's endpoint; with to-default the endpoint is switched to the default constructor's mode after its Register.
+
+  anon-registered : AnonPair, Boolean -> Text
+  anon-registered (p) (to-default) =
+    let rg = lwm2m-coaps-register (lwm2m-coaps-new-unauthenticated (lwm2m-client-new reg resources) (p.ap-c))
+    in let sv = dtls-ep-recv-app (p.ap-s) (list-at (rg.xls-out) 0)
+    in let loc = [CoapOption { number = coap-opt-location-path, value = [114, 100] }, CoapOption { number = coap-opt-location-path, value = [55, 52] }]
+    in let ss = dtls-ep-send-app (sv.es-ep) (coap-build-response CoapAcknowledgement coap-201-created (mid-of (dtls-ep-app-in (sv.es-ep))) [] loc [])
+    in let cl = if to-default then __record-set (rg.xls-ep) "xl-anon" False else rg.xls-ep
+    in show (lwm2m-coaps-registered ((lwm2m-coaps-recv cl (list-at (ss.es-out) 0)).xls-ep))
+
+  anon-row : Text =
+    let p1 = anon-pair 0
+    in let p2 = anon-pair 0
+    in "lwm2m-coaps unauthenticated done=" & show (dtls-ep-done (p1.ap-c)) & " authenticated=" & show (dtls-ep-authenticated (p1.ap-c))
+      & " default-register-out=" & show (list-length ((lwm2m-coaps-register (lwm2m-coaps-new (lwm2m-client-new reg resources) (p1.ap-c))).xls-out))
+      & " named-register-out=" & show (list-length ((lwm2m-coaps-register (lwm2m-coaps-new-unauthenticated (lwm2m-client-new reg resources) (p2.ap-c))).xls-out))
+      & " registered-after-created named=" & anon-registered (anon-pair 0) False & " default=" & anon-registered (anon-pair 0) True
+
 Section: Entry
 
   opening : [Console] Nothing =
@@ -179,11 +211,13 @@ Section: Entry
     in let d3 = list-at (st3.es-out) 0
     in let st4 = dtls-ep-recv (st2.es-ep) d3 30
     in let d-sh = list-at (st4.es-out) 0
-    in let d-cert = list-at (st4.es-out) 1
-    in let d-cv = list-at (st4.es-out) 2
-    in let d-fin = list-at (st4.es-out) 3
+    in let d-ee = list-at (st4.es-out) 1
+    in let d-cert = list-at (st4.es-out) 2
+    in let d-cv = list-at (st4.es-out) 3
+    in let d-fin = list-at (st4.es-out) 4
     in let st5 = dtls-ep-recv (st3.es-ep) d-sh 40
-    in let st6 = dtls-ep-recv (st5.es-ep) d-cert 41
+    in let st5e = dtls-ep-recv (st5.es-ep) d-ee 41
+    in let st6 = dtls-ep-recv (st5e.es-ep) d-cert 41
     in let st7 = dtls-ep-recv (st6.es-ep) d-cv 42
     in let st8 = dtls-ep-recv (st7.es-ep) d-fin 43
     in let d-cfin = list-at (st8.es-out) 0
@@ -232,4 +266,5 @@ Section: Entry
       print-line-uni ("lwm2m-coaps deregister out=" & show dr-out & " to-rd=" & show dr-seg & " gone=" & show gone)
       print-line-uni ("lwm2m-coaps seq reg=" & show seq1 & " upd=" & show seq2 & " dereg=" & show seq3)
       print-line-uni ("lwm2m-coaps authenticated=" & show auth)
+      print-line-uni anon-row
     end

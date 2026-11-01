@@ -1,13 +1,13 @@
 Chapter: TrustTransport
   cites Trust chapter AgentProtocol
+  cites Trust chapter GrantSeal
   cites Net chapter TcpTransport
   cites Trust chapter Handshake
   cites Net chapter MessageFraming
   cites Trust chapter TrustLattice
   cites Foreword chapter Sha256
   cites Foreword chapter MathLib (int-widen)
-
- We say:
+  cites Foreword chapter Maybe
 
 Section: Session State
   TrustSession = record {
@@ -290,10 +290,6 @@ Section: Agent Message Serialization
   encode-propose-body (p) =
     frame-encode-bytes (p.id) & frame-encode-bytes (p.from.public-key) & frame-encode-bytes (p.to.public-key) & encode-capability (p.capability) & frame-le64 (p.expires) & frame-encode-bytes (p.signature)
 
-  encode-grant-body : GrantMsg -> List Integer
-  encode-grant-body (g) =
-    frame-encode-bytes (g.id) & frame-encode-bytes (g.proposal) & frame-encode-bytes (g.from.public-key) & encode-capability (g.capability) & encode-scope (g.scope) & frame-le64 (g.expires) & frame-encode-bytes (g.signature)
-
   encode-deny-body : DenyMsg -> List Integer
   encode-deny-body (d) =
     frame-encode-bytes (d.id) & frame-encode-bytes (d.proposal) & frame-encode-bytes (d.from.public-key) & encode-denial-reason (d.reason) & frame-encode-bytes (d.signature)
@@ -355,12 +351,6 @@ Section: Agent Message Serialization
     frame-encode-bytes (a.from.public-key) & frame-le32 (a.accepted)
 
 Section: Sub-Encoders
-  encode-capability : Capability -> List Integer
-  encode-capability (c) = frame-encode-text (c.name) & [int-widen (c.direction)] & frame-encode-text (c.scope)
-
-  encode-scope : Scope -> List Integer
-  encode-scope (s) = [int-widen (s.direction)] & frame-encode-text (s.path) & frame-le32 (s.duration)
-
   encode-denial-reason : DenialReason -> List Integer
   encode-denial-reason (r) = when r
     is InsufficientTrust -> [0]
@@ -435,17 +425,6 @@ Section: Agent Message Deserialization
     else if t == tag-announce-reply then True
     else False
 
-  amsg-bytes-equal : List Integer, List Integer -> Boolean
-  amsg-bytes-equal (a) (b) =
-    if list-length a /= list-length b then False
-    else amsg-be-loop a b 0 (list-length a)
-
-  amsg-be-loop : List Integer, List Integer, Integer, Integer -> Boolean
-  amsg-be-loop (a) (b) (i) (n) =
-    if i >= n then True
-    else if list-at a i /= list-at b i then False
-    else amsg-be-loop a b (i + 1) n
-
   decode-agent-msg : Integer, List Integer -> AgentMessage
   decode-agent-msg (tag) (body) =
     if tag == tag-propose then MsgPropose (decode-propose-body body)
@@ -481,26 +460,6 @@ Section: Agent Message Deserialization
       capability = cr.cap,
       context = [],
       expires = expires,
-      signature = r4.value
-    }
-
-  decode-grant-body : List Integer -> GrantMsg
-  decode-grant-body (bs) =
-    let r1 = frame-decode-bytes bs 0
-    in let r2 = frame-decode-bytes bs (r1.next-offset)
-    in let r3 = frame-decode-bytes bs (r2.next-offset)
-    in let cr = decode-capability bs (r3.next-offset)
-    in let sr = decode-scope bs (cr.next-offset)
-    in let expires = frame-read-le64 bs (sr.next-offset)
-    in let r4 = frame-decode-bytes bs (sr.next-offset + 8)
-    in GrantMsg {
-      id = r1.value,
-      proposal = r2.value,
-      from = AgentIdentity { public-key = r3.value },
-      capability = cr.cap,
-      scope = sr.scope,
-      expires = expires,
-      conditions = [],
       signature = r4.value
     }
 
@@ -688,36 +647,6 @@ Section: Agent Message Deserialization
     }
 
 Section: Sub-Decoders
-  CapDecodeResult = record {
-    cap : Capability,
-    next-offset : Integer between 0 and 4294967295
-  }
-
-  decode-capability : List Integer, Integer -> CapDecodeResult
-  decode-capability (bs) (off) =
-    let nr = frame-decode-text bs off
-    in let dir = frame-byte-at bs (nr.next-offset)
-    in let sr = frame-decode-text bs (nr.next-offset + 1)
-    in CapDecodeResult {
-      cap = Capability { name = nr.value, direction = __narrow dir, scope = sr.value },
-      next-offset = sr.next-offset
-    }
-
-  ScopeDecodeResult = record {
-    scope : Scope,
-    next-offset : Integer between 0 and 4294967295
-  }
-
-  decode-scope : List Integer, Integer -> ScopeDecodeResult
-  decode-scope (bs) (off) =
-    let dir = frame-byte-at bs off
-    in let pr = frame-decode-text bs (off + 1)
-    in let dur = frame-read-le32 bs (pr.next-offset)
-    in ScopeDecodeResult {
-      scope = Scope { direction = __narrow dir, path = pr.value, duration = __narrow dur },
-      next-offset = __narrow (pr.next-offset + 4)
-    }
-
   DenialDecodeResult = record {
     reason : DenialReason,
     next-offset : Integer between 0 and 4294967295

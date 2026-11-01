@@ -1,8 +1,7 @@
 # Games -- open capabilities
 
 App-domain backlog. The shape and priority order for the platform live in
-`docs/PM/CurrentPlan.md`; the platform-wide register was deleted 2026-07-23
-and is not coming back. Anything that is this application's own behaviour
+`docs/PM/CurrentPlan.md`; there is no platform-wide register. Anything that is this application's own behaviour
 lives here.
 
 The rules are the same ones: an entry says what is still missing and
@@ -32,8 +31,7 @@ game whose module fails to build is a parity finding for the wasm plug lane.
 **OPEN: `apps/landing/build.ps1`'s staleness guard cannot fail after a
 sync.** It refuses `fishtank.wasm` only when the module's `LastWriteTime` is
 older than `FishTankWasm.codex`'s, and `p4 sync -f` rewrites both, so a
-tracked module weeks behind its source passes (it shipped 33,678 bytes against
-head's 36,563 until main 30043). The globe WGSL (`build.ps1:380`) and
+tracked module weeks behind its source passes. The globe WGSL (`build.ps1:380`) and
 `starmap.wasm` (`:430`) carry the same guard; `spark.wasm` (`:409`) and
 `safari-page.wasm` (`:188`) are copied with none. A guard that can fail compares content: rebuild to
 scratch and compare bytes, or run the module's grader
@@ -78,7 +76,7 @@ Each row is a rule a `*-verify.mjs` or a test names by id.
 | GAME-56 | **Pinochle's auction has no "pass with help"** | pagat's pinmain.html names the call only as a pass that "can be used to convey extra information to your partner" and gives the information no meaning, so the table offers a bid, a jump and a plain pass, and no seat signals (root, 2026-09-29). |
 | GAME-55 | **Risk is played in primitive actions, each answered by the engine** | The whole game is one Integer list (`Risk.codex`, "The State Layout"); placing, trading, attacking, moving in, fortifying and ending are each allowed or refused by `rk-legal`. The engine's players are a policy, `rk-ai`, choosing one such action, and `risk-step` is those choices applied one at a time; `rk-verify.mjs` grades the actions against an oracle written from the rules text, in lockstep, with the legal set at each position. A Risk arm counts only once a sabotage has turned it red (L-CONSTRUCT). |
 | GAME-54 | **Monopoly is played in primitive actions, each answered by the engine** | The whole game is one Integer list (`Monopoly.codex`, "The State Layout"); every action a player may take, throw to lift a mortgage, is allowed or refused by `mono-legal`, and whose choice it is by `mono-actor`. The engine's players are a policy, `mono-ai`, choosing one such action, and `mono-step` is those choices applied one at a time; `mo-verify.mjs` grades the actions against an oracle written from the rules text, in lockstep, with the whole legal set at each position. |
-| GAME-42 | **An oracle is independent only where it differs** | A grader's rule model must not reuse the engine's reading of a rule (`sp-verify` once shared the engine's ace-high `c % 13`), and an arm must not reach its subject through the function under test. |
+| GAME-42 | **An oracle is independent only where it differs** | A grader's rule model must not reuse the engine's reading of a rule (an ace-high `c % 13` copied from the engine agrees with the engine's defect), and an arm must not reach its subject through the function under test. |
 | GAME-40 | **A page is graded by running it, and an opponent by how often it moves** | `apps/games/page-verify.mjs` runs a page's module script against a stub browser and requires it to finish and build its gallery; `node --check` only parses. A human-play arm requires the opponent to move at least a quarter as often as the human, because "more than none" passed a backgammon side that moved four times in 81. |
 | GAME-30 | **A Risk game that hits the turn cap has no winner** | `risk-make-result` reports the winner slot, which is -1 when the 400-turn cap ends the game with several players alive; naming the first survivor there would be a bail that answers (L-BAILVALUE). |
 | GAME-29 | **Risk deals from its seed** | `risk-init` shuffles the 42 territories with `mix-bits` of the seed and deals them round the table, one army each, so the opening varies with the seed and the counts differ by at most one; the card deck is shuffled the same way. |
@@ -92,3 +90,7 @@ Each row is a rule a `*-verify.mjs` or a test names by id.
 | GAME-9 | **The Magic simulator's two fixes, as ruled** | `apply-screw-fix` fires at zero gems in hand and `apply-flood-fix` at three or more (`screw-fix-fires`, `flood-fix-fires`); the first card in hand leaves on a discard or a pitch (`drop-first-card`); each fires at most once per turn per player. `tools/sim-test.ps1` counts both. |
 | GAME-3 | **Spider has a solver and a player** | `solve-spider` is a depth-first search in the greedy scorer's move order (budget 100000 nodes, depth 1000); it undoes moves after seeing what they turn up, so it only answers whether a deal can be won, and `classic-games-oracle` calls it. `run-spider-game` plays forward on `sp-suggest-move`'s move, which reads face-up cards only (`sp-verify.mjs` twins positions with swapped face-down cards), dealing when no unseen position is left, for at most 1500 turns. |
 | GAME-8 | **Monopoly seats trade for colour groups, and offer seat 0 its part** | A seat holding all but one unmortgaged deed of a colour asks the holder, before throwing: a swap completing both groups, else cash at twice the printed price with 150 kept back (`mono-trade-want`, `mono-trade-give`, `mono-trade`). When the holder is seat 0, the page's person, the seat OFFERS instead (phase 2) and the turn waits for accept or decline; a deed is asked for once a turn. `mo-verify.mjs` checks every trade against Rule 12 and plays the offers in lockstep. |
+
+## Test coverage
+
+74 of 143 library chapters are reached by no computing test. `pwsh build/coverage-census.ps1 -Tree apps/games -List` names them (2026-10-26). Open: a computing test for each, or a deletion.

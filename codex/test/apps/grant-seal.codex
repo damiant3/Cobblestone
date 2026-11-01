@@ -1,0 +1,131 @@
+Chapter: GrantSealTest
+  cites Trust chapter GrantSeal
+  cites Trust chapter TrustTransport
+  cites Trust chapter AgentProtocol
+  cites Net chapter MessageFraming
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+Section: Fixtures
+
+ The two secrets are RFC 8032 section 7.1 TEST 1 and TEST 2, so the first
+ public key printed must read d75a9801...f707511a.
+
+  grantor-secret : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  holder-secret : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  zero-key : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+  policy-a : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+
+  policy-b : List Integer = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33]
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  grant-of : List Integer, List Integer, List Integer, Text, Integer, Integer, List Integer, List Text, List Text -> GrantMsg
+  grant-of (holder) (grantor) (audience) (scope) (not-before) (expires) (policy) (flows) (gates) = GrantMsg {
+    id = [7, 1],
+    proposal = [],
+    from = AgentIdentity { public-key = holder },
+    grantor = AgentIdentity { public-key = grantor },
+    audience = AgentIdentity { public-key = audience },
+    capability = Capability { name = "FileSystem.Write", direction = 1, scope = scope },
+    scope = Scope { direction = 1, path = scope, duration = 0 },
+    not-before = not-before,
+    expires = expires,
+    policy-sha256 = policy,
+    flow-rules = flows,
+    gates = gates,
+    conditions = [],
+    signature = []
+  }
+
+  signed-as : GrantMsg, List Integer -> GrantMsg
+  signed-as (g) (sig) = GrantMsg {
+    id = g.id,
+    proposal = g.proposal,
+    from = g.from,
+    grantor = g.grantor,
+    audience = g.audience,
+    capability = g.capability,
+    scope = g.scope,
+    not-before = g.not-before,
+    expires = g.expires,
+    policy-sha256 = g.policy-sha256,
+    flow-rules = g.flow-rules,
+    gates = g.gates,
+    conditions = g.conditions,
+    signature = sig
+  }
+
+  conditioned : GrantMsg -> GrantMsg
+  conditioned (g) = GrantMsg {
+    id = g.id,
+    proposal = g.proposal,
+    from = g.from,
+    grantor = g.grantor,
+    audience = g.audience,
+    capability = g.capability,
+    scope = g.scope,
+    not-before = g.not-before,
+    expires = g.expires,
+    policy-sha256 = g.policy-sha256,
+    flow-rules = g.flow-rules,
+    gates = g.gates,
+    conditions = [[1]],
+    signature = g.signature
+  }
+
+  checked : List Integer -> Text
+  checked (bs) = when decode-grant-checked bs
+    is Just (g) -> "just"
+    is None -> "none"
+
+  arm : Text, GrantMsg -> [Console] Nothing
+  arm (label) (g) = print-line-uni (label & " verifies " & yn (grant-verify g))
+
+  drop-last : List Integer -> List Integer
+  drop-last (bs) = frame-slice bs 0 (list-length bs - 1)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let gk = ed25519-public-key grantor-secret
+    in let hk = ed25519-public-key holder-secret
+    in let base = grant-of hk gk hk "/jake/homework/" 1000 4600 policy-a [] []
+    in let sealed = grant-seal base grantor-secret
+    in let sig = sealed.signature
+    in let body = encode-grant-body sealed
+    in let decoded = decode-agent-msg-checked tag-grant body
+    in let flowed = grant-seal (grant-of hk gk hk "/jake/homework/" 1000 4600 policy-a ["Console.Read -> Network", "x"] []) grantor-secret
+    in let flowed-back = decode-grant-body (encode-grant-body flowed)
+    in act
+      print-line-uni ("grantor key " & bytes-to-hex gk)
+      print-line-uni ("digest " & bytes-to-hex (grant-digest base))
+      print-line-uni ("signature bytes " & show (list-length sig))
+      arm "sealed" sealed
+      print-line-uni ("round trip canonical " & yn decoded.valid)
+      when decoded.message
+        is MsgGrant (g) -> arm "decoded" g
+        is otherwise -> print-line-uni "decoded is not a grant"
+      print-line-uni ("truncated canonical " & yn (decode-agent-msg-checked tag-grant (drop-last body)).valid)
+      print-line-uni ("checked whole " & checked body & ", short " & checked (drop-last body) & ", trailing " & checked (body & [0]))
+      print-line-uni ("flow rules back " & show (list-length flowed-back.flow-rules) & " " & list-at flowed-back.flow-rules 0)
+      arm "flowed decoded" flowed-back
+      arm "holder swapped" (signed-as (grant-of gk gk hk "/jake/homework/" 1000 4600 policy-a [] []) sig)
+      arm "audience swapped" (signed-as (grant-of hk gk gk "/jake/homework/" 1000 4600 policy-a [] []) sig)
+      arm "scope widened" (signed-as (grant-of hk gk hk "/" 1000 4600 policy-a [] []) sig)
+      arm "not-before moved" (signed-as (grant-of hk gk hk "/jake/homework/" 999 4600 policy-a [] []) sig)
+      arm "expires moved" (signed-as (grant-of hk gk hk "/jake/homework/" 1000 4601 policy-a [] []) sig)
+      arm "policy changed" (signed-as (grant-of hk gk hk "/jake/homework/" 1000 4600 policy-b [] []) sig)
+      arm "flow rule added" (signed-as (grant-of hk gk hk "/jake/homework/" 1000 4600 policy-a ["x"] []) sig)
+      arm "gate added" (signed-as (grant-of hk gk hk "/jake/homework/" 1000 4600 policy-a [] ["x"]) sig)
+      arm "condition added" (conditioned sealed)
+      arm "grantor swapped" (signed-as (grant-of hk hk hk "/jake/homework/" 1000 4600 policy-a [] []) sig)
+      arm "sealed by holder" (grant-seal base holder-secret)
+      arm "zero key" (signed-as (grant-of hk zero-key hk "/jake/homework/" 1000 4600 policy-a [] []) (zero-key & zero-key))
+  end
+
+Page 1

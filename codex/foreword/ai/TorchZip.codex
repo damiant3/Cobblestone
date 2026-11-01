@@ -16,12 +16,10 @@ Chapter: TorchZip
  below 4 GiB; both are refused by name otherwise.
 
  The pickle is read by a closed machine: the 21 opcodes and 4 GLOBALs every
- checkpoint the engine reads uses (docs/Designs/Active/Apps/MusicGen.md), and a
+ checkpoint the engine reads uses, and a
  REDUCE may only rebuild a tensor or make an empty OrderedDict. Anything else
  is refused by name, because a pickle is a program and this reader runs none.
  A tensor must be contiguous (row-major strides).
-
- We say:
 
 Section: Values
 
@@ -70,10 +68,6 @@ Section: Bytes
 
 Section: Zip Directory
 
- The end record is searched backwards through tail, which starts at file
- offset tail-at; the answer is the directory's file offset and size, or -1
- and the refusal.
-
   tz-eocd-at : List Integer, Integer -> Integer
   tz-eocd-at (d) (i) =
     if i < 0 then 0 - 1
@@ -101,7 +95,8 @@ Section: Zip Directory
 
   tz-data-at : List Integer, Integer -> Integer
   tz-data-at (lh) (local) =
-    if tz-u32 lh 0 /= 67324752 then 0 - 1
+    if list-length lh < 30 then 0 - 1
+    else if tz-u32 lh 0 /= 67324752 then 0 - 1
     else local + 30 + tz-u16 lh 26 + tz-u16 lh 28
 
 Section: Pickle Machine
@@ -136,12 +131,17 @@ Section: Pickle Machine
   tz-slice : List TzVal, Integer, Integer, List TzVal -> List TzVal
   tz-slice (xs) (i) (stop) (acc) = if i >= stop then acc else tz-slice xs (i + 1) stop (acc & [list-at xs i])
 
-  tz-memo-put : TzState, Integer -> TzState
-  tz-memo-put (s) (k) =
-    let v = tz-top s 0
+ The pickler numbers its memo from 0 in the order it stores, so a key past the
+ memo's length is refused rather than growing the memo to it.
+
+  tz-memo-put : TzState, Integer, Integer -> TzState
+  tz-memo-put (s) (k) (p) =
+    if s.tz-sp < 1 then tz-fail s "a memo put with an empty stack refused"
+    else if k > list-length (s.tz-memo) then tz-fail s ("memo key " & show k & " out of order refused")
+    else let v = tz-top s 0
     in let m = tz-memo-grow (s.tz-memo) k
     in let m2 = list-set-at m k v
-    in TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = m2, tz-pos = s.tz-pos, tz-err = "", tz-done = False }
+    in TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = m2, tz-pos = p, tz-err = "", tz-done = False }
 
   tz-memo-grow : List TzVal, Integer -> List TzVal
   tz-memo-grow (m) (k) = if list-length m > k then m else tz-memo-grow (list-push m TzMark) k
@@ -158,9 +158,24 @@ Section: Pickle Machine
     else if s.tz-pos >= list-length d then tz-fail s "the pickle ends before STOP"
     else tz-run d (tz-step d s (list-at d (s.tz-pos)) (s.tz-pos + 1))
 
+  tz-arg-width : Integer -> Integer
+  tz-arg-width (op) = if op == 74 | op == 88 | op == 114 then 4 else if op == 77 then 2 else if op == 75 | op == 113 | op == 104 then 1 else 0
+
+  tz-depth : Integer -> Integer
+  tz-depth (op) = if op == 82 | op == 134 then 2 else if op == 135 then 3 else if op == 81 | op == 133 then 1 else 0
+
+  tz-memo-get : TzState, Integer, Integer -> TzState
+  tz-memo-get (s) (k) (p) =
+    if k >= list-length (s.tz-memo) then tz-fail s ("memo key " & show k & " unset refused")
+    else when list-at (s.tz-memo) k
+     is TzMark -> tz-fail s ("memo key " & show k & " unset refused")
+     is otherwise -> tz-push s (list-at (s.tz-memo) k) p
+
   tz-step : List Integer, TzState, Integer, Integer -> TzState
   tz-step (d) (s) (op) (p) =
-    if op == 128 then tz-at s (p + 1)
+    if p + tz-arg-width op > list-length d then tz-fail s ("opcode 0x" & tz-hex op & " cut off by the end of the pickle")
+    else if s.tz-sp < tz-depth op then tz-fail s ("opcode 0x" & tz-hex op & " on a stack of " & show (s.tz-sp) & " refused")
+    else if op == 128 then tz-at s (p + 1)
     else if op == 46 then TzState { tz-stack = s.tz-stack, tz-sp = s.tz-sp, tz-memo = s.tz-memo, tz-pos = p, tz-err = "", tz-done = True }
     else if op == 99 then tz-global d s p
     else if op == 82 then tz-reduce s p
@@ -178,9 +193,9 @@ Section: Pickle Machine
     else if op == 77 then tz-push s (TzInt (tz-u16 d p)) (p + 2)
     else if op == 88 then tz-push s (TzText (st-extract-text d (p + 4) (tz-u32 d p) "")) (p + 4 + tz-u32 d p)
     else if op == 137 then tz-push s (TzBool False) p
-    else if op == 113 then tz-at (tz-memo-put s (list-at d p)) (p + 1)
-    else if op == 114 then tz-at (tz-memo-put s (tz-u32 d p)) (p + 4)
-    else if op == 104 then tz-push s (list-at (s.tz-memo) (list-at d p)) (p + 1)
+    else if op == 113 then tz-memo-put s (list-at d p) (p + 1)
+    else if op == 114 then tz-memo-put s (tz-u32 d p) (p + 4)
+    else if op == 104 then tz-memo-get s (list-at d p) (p + 1)
     else tz-fail s ("opcode 0x" & tz-hex op & " refused")
 
   tz-global : List Integer, TzState, Integer -> TzState
@@ -282,17 +297,33 @@ Section: The Checkpoint
     else if list-at size i > 1 & list-at stride i /= want then False
     else tz-contiguous size stride (i - 1) (want * list-at size i)
 
-  tz-numel : List Integer, Integer, Integer -> Integer
-  tz-numel (size) (i) (acc) = if i >= list-length size then acc else tz-numel size (i + 1) (acc * list-at size i)
+ 2^40 elements is past any checkpoint below the 4 GiB the zip reader takes, and
+ keeps every product of sizes and every byte offset inside a signed 64-bit
+ Integer. The bound counts a size of 0 as 1, because tz-contiguous multiplies
+ the sizes after a zero. A size past it, or a negative one, answers -1.
+
+  tz-numel : List Integer -> Integer
+  tz-numel (size) = if tz-bounded size 0 1 then tz-product size 0 1 else 0 - 1
+
+  tz-bounded : List Integer, Integer, Integer -> Boolean
+  tz-bounded (size) (i) (acc) =
+    if i >= list-length size then True
+    else let x = list-at size i
+    in if x < 0 then False
+    else if x > 1 & acc > 1099511627776 / x then False
+    else tz-bounded size (i + 1) (if x > 1 then acc * x else acc)
+
+  tz-product : List Integer, Integer, Integer -> Integer
+  tz-product (size) (i) (acc) = if i >= list-length size then acc else tz-product size (i + 1) (acc * list-at size i)
+
+  tz-nonneg : List Integer, Integer -> Boolean
+  tz-nonneg (xs) (i) = if i >= list-length xs then True else if list-at xs i < 0 then False else tz-nonneg xs (i + 1)
 
   tz-storage-at : List Text, List Integer, Text, Integer -> Integer
   tz-storage-at (names) (starts) (key) (i) =
     if i >= list-length names then 0 - 1
     else if text-ends-with (list-at names i) ("/data/" & key) then list-at starts i
     else tz-storage-at names starts key (i + 1)
-
- The tensors of the pickle's top dict, their storages found by key among the
- zip entries (names, and each entry's data offset from tz-data-at).
 
   tz-tensors : List TzVal, Integer, List Text, List Integer, List StTensorMeta, Text -> TorchZip
   tz-tensors (pairs) (i) (names) (starts) (acc) (why) =
@@ -314,9 +345,11 @@ Section: The Checkpoint
   tz-meta (pairs) (i) (names) (starts) (acc) (name) (dt) (key) (off) (size) (stride) =
     let w = tz-width dt
     in let base = tz-storage-at names starts key 0
-    in let n = tz-numel size 0 1
+    in let n = tz-numel size
     in if w == 0 then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' has a storage type outside the allowlist")
     else if base < 0 then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' names storage " & key & ", which is not in the zip")
+    else if list-length stride /= list-length size then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' has " & show (list-length size) & " sizes and " & show (list-length stride) & " strides")
+    else if n < 0 | off < 0 | off > 1099511627776 | tz-nonneg stride 0 == False then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' has a negative or oversized shape, stride or offset")
     else if tz-contiguous size stride (list-length size - 1) 1 == False then tz-tensors pairs (i + 1) names starts acc ("'" & name & "' is not contiguous")
     else tz-tensors pairs (i + 1) names starts (list-snoc acc (StTensorMeta { stm-name = name, stm-dtype = dt, stm-shape = size, stm-ndim = list-length size, stm-offset-start = base + off * w, stm-offset-end = base + (off + n) * w })) ""
 

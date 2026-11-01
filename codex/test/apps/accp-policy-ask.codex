@@ -1,0 +1,80 @@
+Chapter: AccpPolicyAskTest
+  cites Accp chapter AccpPolicyAsk
+  cites Accp chapter AccpGrant
+  cites Trust chapter NameBook
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+ The grantor secret is RFC 8032 section 7.1 TEST 1, the agent TEST 2 and the
+ untrusted signer TEST 3.
+
+  grantor-secret : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  agent-secret : List Integer = [76, 205, 8, 155, 40, 255, 150, 218, 157, 182, 195, 70, 236, 17, 78, 15, 91, 138, 49, 159, 53, 171, 166, 36, 218, 140, 246, 237, 79, 184, 166, 251]
+
+  other-secret : List Integer = [197, 170, 141, 244, 63, 159, 131, 123, 237, 183, 68, 47, 49, 220, 183, 177, 102, 211, 133, 53, 7, 111, 9, 75, 133, 206, 58, 46, 11, 68, 88, 247]
+
+  identity-key : List Integer = [212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212, 212]
+
+  book-by : List Integer -> Text
+  book-by (secret) = ag-hex (name-book-encode (name-book-sign secret (ed25519-public-key secret) [NameEntry { name = "Jake's agent", key = ed25519-public-key agent-secret }]))
+
+  book : Text
+  book = book-by grantor-secret
+
+  held-hash : Text
+  held-hash = "ab"
+
+  bound : AccpBinding
+  bound = AccpBinding {
+    bound = True,
+    requester = ag-hex (ed25519-public-key agent-secret),
+    identity = ag-hex identity-key,
+    grantors = ag-hex (ed25519-public-key grantor-secret),
+    max-seconds = 900,
+    policy-sha256 = held-hash
+  }
+
+  read-only : Text
+  read-only = "We say:\n\"Jake's agent\" is permitted to use Network.Read."
+
+  read-write : Text
+  read-write = "We say:\n\"Jake's agent\" is permitted to use Network.Read.\n\"Jake's agent\" is permitted to use Network.Write."
+
+  shadowed : Text
+  shadowed = "We say:\n\"Jake's agent\" is permitted to use Network.Read.\n\"Jake's agent\" is never permitted to use Network.Read."
+
+  can-allow : Text -> Text
+  can-allow (label) = "{\"op\":\"policy\",\"question\":\"can-allow\",\"label\":" & aj-quote label & "}"
+
+  widens : Text -> Text
+  widens (text) = "{\"op\":\"policy\",\"question\":\"widens\",\"policy\":" & aj-quote text & "}"
+
+  dead : Text
+  dead = "{\"op\":\"policy\",\"question\":\"dead-rules\"}"
+
+  ask : Text, Text, AccpBinding, Text, Text -> Text
+  ask (label) (line) (b) (text) (bk) = label & ": " & apq-ask line b text bk
+
+  opening : [Console] Nothing = act
+    print-line-uni ("agent key: " & ag-hex (ed25519-public-key agent-secret))
+    print-line-uni (ask "can-allow Network.Read" (can-allow "Network.Read") bound read-only book)
+    print-line-uni (ask "can-allow Network.Write" (can-allow "Network.Write") bound read-only book)
+    print-line-uni (ask "can-allow FileSystem.Read" (can-allow "FileSystem.Read") bound read-only book)
+    print-line-uni (ask "widens to Network.Write" (widens read-write) bound read-only book)
+    print-line-uni (ask "widens by the same policy" (widens read-only) bound read-only book)
+    print-line-uni (ask "narrowing does not widen" (widens read-only) bound read-write book)
+    print-line-uni (ask "widens by a policy that does not lower" (widens "We say:\nJake may do anything.") bound read-only book)
+    print-line-uni (ask "dead rules, shadowed grant" dead bound shadowed book)
+    print-line-uni (ask "dead rules, none" dead bound read-write book)
+    print-line-uni (ask "unbound" dead ag-unbound read-only book)
+    print-line-uni (ask "no policy held" dead bound "" book)
+    print-line-uni (ask "book signed by an untrusted key" dead bound read-only (book-by other-secret))
+    print-line-uni (ask "book that does not decode" dead bound read-only "00")
+    print-line-uni (ask "held text that does not lower" dead bound "We say:\nJake may do anything." book)
+    print-line-uni (ask "held text that reads but names a subject the book does not hold" dead bound "We say:\n\"Bob\" is permitted to use Network.Read." book)
+  end
+
+Page 1

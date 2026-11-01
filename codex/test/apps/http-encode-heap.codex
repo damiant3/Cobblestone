@@ -1,0 +1,63 @@
+Chapter: HttpEncodeHeapTest
+
+  cites Works chapter Http
+  cites Foreword chapter Console
+
+Section: Fixtures
+
+ The reference is the encoder before the single reserved list: the body pushed to UTF-8, then six pieces joined.
+
+  reference : HttpResponse -> List Integer
+  reference (resp) =
+    let body-bytes = http-text-to-utf8 (resp.body)
+    in let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
+    in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
+    in let h2 = http-text-to-ascii ("Content-Length: " & show (list-length body-bytes)) & [13, 10]
+    in let h3 = http-text-to-ascii "Connection: close" & [13, 10]
+    in status-line & h1 & h2 & h3 & [13, 10] & body-bytes
+
+  repeat : Text, Integer, Text -> Text
+  repeat (s) (n) (acc) = if n <= 0 then acc else repeat s (n - 1) (acc & s)
+
+  resp : Text -> HttpResponse
+  resp (body) = HttpResponse { status = "200 OK", content-type = "text/plain", body = body }
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+  identical : Text -> Boolean
+  identical (body) = same (http-encode (resp body)) (reference (resp body)) 0
+
+  cost : Text -> Integer
+  cost (body) =
+    let r = resp body
+    in let a = __heap-save
+    in let out = http-encode r
+    in let b = __heap-save
+    in (b - a) + list-length out - list-length out
+
+  reference-cost : Text -> Integer
+  reference-cost (body) =
+    let r = resp body
+    in let a = __heap-save
+    in let out = reference r
+    in let b = __heap-save
+    in (b - a) + list-length out - list-length out
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    let ascii = repeat "abcdefghij" 100 ""
+    in let mixed = repeat "café € " 120 ""
+    in act
+      print-line-uni ("the response bytes are unchanged for an empty, an ASCII and a multi-byte body: " & show (identical "" & identical ascii & identical mixed))
+      print-line-uni ("and the comparison refuses a body one character off: " & show (same (http-encode (resp ascii)) (reference (resp (ascii & "x"))) 0 == False))
+      print-line-uni ("a 1,000-byte response costs less than 1.4 copies of itself as a list, where it cost more than two: " & show (cost ascii < 14 * (list-length (reference (resp ascii))) * 8 / 10 & reference-cost ascii > 2 * 8 * list-length (reference (resp ascii))))
+    end
+  end
+
+Page 1

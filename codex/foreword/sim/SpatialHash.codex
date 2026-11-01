@@ -1,7 +1,5 @@
 Chapter: SpatialHash
 
- We say:
-
 Section: Types
 
   SpatialEntry = record {
@@ -45,11 +43,14 @@ Section: Hashing
 
   sh-cell-key : SpatialHash, Integer, Integer -> Integer
   sh-cell-key (sh) (x) (y) =
-    let cx = x / sh.sh-cell-size
-    in let cy = y / sh.sh-cell-size
+    let cx = sh-floor-div x (sh.sh-cell-size)
+    in let cy = sh-floor-div y (sh.sh-cell-size)
     in let raw = cx * 73856093 + cy * 19349663
-    in let positive = if raw < 0 then 0 - raw else raw
-    in positive - (positive / sh.sh-table-size) * sh.sh-table-size
+    in let m = raw - (raw / sh.sh-table-size) * sh.sh-table-size
+    in if m < 0 then m + sh.sh-table-size else m
+
+  sh-floor-div : Integer, Integer -> Integer
+  sh-floor-div (a) (b) = if a < 0 then 0 - ((0 - a + b - 1) / b) else a / b
 
 Section: Insert
 
@@ -58,7 +59,8 @@ Section: Insert
     let key = sh-cell-key sh x y
     in let entry = SpatialEntry { she-id = id, she-x = x, she-y = y }
     in let cells = sh-insert-into-cells (sh.sh-cells) key entry 0 (sh.sh-cell-count)
-    in __record-set sh "sh-cells" (cells.result)
+    in let grown = if cells.found then sh.sh-cell-count else sh.sh-cell-count + 1
+    in __record-set (__record-set sh "sh-cells" (cells.result)) "sh-cell-count" grown
 
   ShInsertResult = record {
     result : List SpatialCell,
@@ -90,12 +92,12 @@ Section: Query
 
   spatial-hash-query : SpatialHash, Integer, Integer -> List SpatialEntry
   spatial-hash-query (sh) (x) (y) =
-    sh-query-neighbors sh x y (0 - 1) 2 []
+    sh-query-neighbors sh x y (0 - 1) 1 []
 
   sh-query-neighbors : SpatialHash, Integer, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry
   sh-query-neighbors (sh) (x) (y) (dx) (max-dx) (acc) =
     if dx > max-dx then acc
-    else let acc2 = sh-query-column sh x y dx (0 - 1) 2 acc
+    else let acc2 = sh-query-column sh x y dx (0 - 1) 1 acc
     in sh-query-neighbors sh x y (dx + 1) max-dx acc2
 
   sh-query-column : SpatialHash, Integer, Integer, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry

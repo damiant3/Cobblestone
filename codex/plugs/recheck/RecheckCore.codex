@@ -27,15 +27,6 @@ Section: Verdicts
 
 Section: Walk State
 
- `rw-improved` and `rw-1w` are the vacuity instrument, and they exist because
- an abstention count cannot tell "checking improved" apart from "checking
- stopped asking". A spine substitution turns an undecided comparison into a
- decided one; `rw-improved` counts those, and `rw-1w` counts the subset where
- every variable the substitution supplied had exactly ONE witness, which makes
- the comparison tautological in that direction. Both are printed on the stage
- line so a fallen abstention count cannot be read as a capability gain it did
- not buy.
-
   RcWalk = record {
    rw-findings : List RcFinding,
    rw-fuel : Integer,
@@ -95,20 +86,6 @@ Section: Three Valued Type Comparison
   rc-bool-cmp : Boolean -> TyCmp
   rc-bool-cmp (b) = if b then TyEq else TyNeq
 
- Overflow mode is deliberately absent from every comparison here. Two
- integer types with the same band are the same type whatever their modes,
- published as `docs/DevelopersGuide.md` "Overflow mode is not part of type
- identity" and measured against the compiler in both directions at a
- parameter and inside a type argument. A band is a claim about which values
- a slot holds; a mode is a claim about what happens at an operation, and the
- operation is governed by the declared type at the site performing it. The
- comparison here decides admission, so only the band can bear on it.
-
- `rc-uw-int` therefore cannot answer "ov-mode" any more and an integer pair
- can no longer be undecided at all. Its integer arm answers "other", which
- the design records as a bucket that measures zero, so a pair arriving there
- shows up rather than being absorbed.
-
   rc-rw-eq : RealWidth, RealWidth -> Boolean
   rc-rw-eq (a) (b) =
     when a
@@ -134,18 +111,6 @@ Section: Three Valued Type Comparison
      is TypeCon (n) -> True
      is TypeApply (f) (a) -> True
      is otherwise -> False
-
- ErrorTy, ProofTy, PropEqTy, TypeCon and TypeApply all answer one label
- because ir-emit-type emits the single atom `error` for all five, so the
- wire cannot distinguish them and neither can this. Splitting them here
- would invent a distinction the artifact does not carry.
-
- NoExpectTy is the exception and gets its own label, because the wire DOES
- carry it: ir-emit-type spells it `noexpect`, which is the whole point of
- main 20316 splitting it out of ErrorTy. It is opaque for the same reason
- the others are -- nothing is known about the type -- but reporting it as
- `error-atom` would throw away a distinction the artifact does carry, which
- is the mirror of the mistake the paragraph above warns against.
 
   rc-ty-opaque-kind : CodexType -> Text
   rc-ty-opaque-kind (t) =
@@ -232,44 +197,15 @@ Section: Three Valued Type Comparison
 
 Section: Substitution
 
- `docs/DevelopersGuide.md` "Type Variables" publishes the rule this
- implements: a signature binds the type variables it mentions, and at a
- call every occurrence of one variable is fixed to the same type.
-
- The wire makes this a LOCAL question at each application, which is worth
- knowing before reading the code. A curried call is nested applies, and
- the compiler records each apply's result type with the substitution so far
- already applied. `(n, t)` for `n : Integer` and `t : Text` emits
-
    (apply (apply (name "MkTup2" (fn (tvar 2) (fn (tvar 3) (Tup2 (tvar 2) (tvar 3)))))
                  n (fn (tvar 3) (Tup2 int-default (tvar 3))))
           t (Tup2 int-default text))
-
- so the inner node already carries tvar 2 as int-default. Nothing has to be
- threaded between nodes: match THIS node's parameter against THIS node's
- argument, apply the result to the declared return, and compare. A variable
- used inconsistently in one signature therefore arrives at the second apply
- as a CONCRETE type that disagrees, which the ordinary comparison catches.
-
- A binding is one variable id to one type. The list is per application and
- dies with it.
-
- `tvb-n` counts the WITNESSES that agreed on this binding, and it is what the
- vacuity instrument reads. One witness fixes the variable from a single
- source, so a comparison the substitution then decides is tautological in
- that direction; two agreeing witnesses is a constraint that could have
- conflicted and did not.
 
   RcTvBind = record {
    tvb-id : Integer,
    tvb-ty : CodexType,
    tvb-n : Integer
   }
-
- Three answers, and the third is not a failure: RcSubUnknown means the pair
- could not be matched (an opaque argument, or fuel), and the caller must
- abstain rather than guess. RcSubConflict means one variable was required
- to be two types, which is a real disagreement.
 
   RcSubst =
     | RcSubOk (List RcTvBind)
@@ -297,10 +233,6 @@ Section: Substitution
       is TyUnknown -> RcSubUnknown
     else RcSubOk (list-push bs (RcTvBind { tvb-id = id, tvb-ty = ty, tvb-n = 1 }))
 
- A second witness that AGREES is recorded rather than discarded, because the
- difference between one witness and two is the whole of what `rw-1w`
- measures.
-
   rc-tvb-witness : List RcTvBind, Integer, Integer, Integer, List RcTvBind -> List RcTvBind
   rc-tvb-witness (bs) (id) (i) (len) (acc) =
     if i >= len then acc
@@ -318,11 +250,6 @@ Section: Substitution
     if i >= len then 0
     else let b = list-at bs i
     in if b.tvb-id == id then b.tvb-n else rc-tvb-witnesses bs id (i + 1) len
-
- The fewest witnesses standing behind any variable this type mentions AND the
- map binds. Zero means the map supplies nothing to this type, so nothing was
- improved. One means every variable it supplied was fixed from a single
- source.
 
   rc-min-witness : CodexType, List RcTvBind, Integer, Integer -> Integer
   rc-min-witness (ty) (bs) (acc) (fuel) =
@@ -348,13 +275,6 @@ Section: Substitution
   rc-min-with (acc) (n) =
     if n <= 0 then acc else if acc <= 0 then n else if n < acc then n else acc
 
- Match walks the PATTERN (the callee's declared type, which may carry
- variables) against the CONCRETE type recorded for the argument. It is
- one-way on purpose: a variable on the pattern side binds, and anything
- else must agree structurally. An opaque type on the concrete side answers
- Unknown, never a binding, because binding a variable to `error` would
- manufacture agreement out of a type the wire cannot express.
-
   rc-match : CodexType, CodexType, List RcTvBind, Integer -> RcSubst
   rc-match (pat) (con) (bs) (fuel) =
     if fuel <= 0 then RcSubUnknown
@@ -372,21 +292,9 @@ Section: Substitution
      is RecordTy (n1) (a1) (f1) -> rc-match-nominal pat con bs fuel
      is otherwise -> rc-match-leaf pat con bs
 
- A pattern with no variable under it decides nothing about the map, so it
- only has to AGREE. Disagreement here is the caller's business, not the
- substitution's, so it answers Ok and lets the ordinary comparison report.
-
   rc-match-leaf : CodexType, CodexType, List RcTvBind -> RcSubst
   rc-match-leaf (pat) (con) (bs) =
     if rc-ty-opaque pat | rc-ty-opaque con then RcSubUnknown else RcSubOk bs
-
- A sub-pair that cannot be matched contributes NO binding, and the walk
- carries on with the ones that can. Abandoning the whole pair on the first
- opaque side discards information sitting beside it: a lambda argument typed
- `(fn (tvar 23) (sum "Tree"))` against a declared `(fn (tvar 23) (tvar 24))`
- has an undecidable parameter pair and a perfectly good return pair, and the
- return is what fixes tvar 24. Fewer witnesses is never a wrong witness, and
- a conflict still short-circuits, so this loses no strictness.
 
   rc-match-soft : RcSubst, List RcTvBind -> RcSubst
   rc-match-soft (s) (bs) =
@@ -420,11 +328,6 @@ Section: Substitution
      is RcSubOk (bs2) -> rc-match-args xs ys bs2 (i + 1) len fuel
      is RcSubConflict -> RcSubConflict
      is RcSubUnknown -> RcSubUnknown
-
- Applying the map. A variable the map does not bind stays a variable, so
- the comparison that follows still answers TyUnknown for it and the verdict
- is still an abstention. That is deliberate: a partial substitution must
- not read as a total one.
 
  BOTH early exits are load-bearing and neither is an optimisation in the
  ornamental sense. This runs at every application node in the payload, and
@@ -518,26 +421,6 @@ Section: Assignability
        is otherwise -> TyNeq
      is otherwise -> rc-ty-eq-known from to
 
- The type-argument arms compare by EQUALITY, not by fitting, because
- `docs/DevelopersGuide.md` "Variance of type arguments" publishes the rule
- as INVARIANT. The element of a List and of a LinkedList is a type argument
- under that rule and is why those two arms do not recurse through
- rc-ty-fits. The guide is the authority here, not this file: a reader who
- thinks these should widen should change the guide first.
-
- Diagnostic only, and it decides no verdict: does an undecided pair owe its
- undecidedness to a type argument that differs by a widening?
-
- It is kept although invariance now DECIDES that pair, because that is the
- measurement proving the rule reaches every widening rather than the one
- site it was aimed at. A widening in a type argument makes the comparison
- TyNeq, TyNeq dominates in rc-cmp-both, and a decided pair never reaches
- this classifier -- so a nonzero `-variance` count after the rule is
- published means a widening survives on some path the change did not cover,
- and is a finding. It is not reachable only through the thing it measures:
- the fun arm below still walks parameters through rc-ty-fits, which stays
- covariant.
-
   rc-nw-widens : CodexType, CodexType -> Boolean
   rc-nw-widens (x) (y) =
     when rc-ty-eq x y
@@ -597,13 +480,6 @@ Section: Assignability
 
   rc-has-nominal-widening : CodexType, CodexType -> Boolean
   rc-has-nominal-widening (a) (b) = rc-nominal-widening a b 32
-
- Also diagnostic only, and it decides no verdict: why did this pair come
- back undecided? It walks the same shapes rc-ty-fits walks and names the
- first reason it reaches. `other` and `no-arm` are deliberate buckets
- rather than a default that flatters the classifier: if either is large,
- this function is not explaining the population and the number must not
- be quoted as though it were.
 
   rc-unknown-why : CodexType, CodexType, Integer -> Text
   rc-unknown-why (a) (b) (fuel) =

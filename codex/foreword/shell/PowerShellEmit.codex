@@ -4,8 +4,6 @@ Chapter: PowerShellEmit
   cites Foreword chapter Maybe
   cites Foreword chapter StringUtils
 
- We say:
-
 Section: Top Level
 
   emit-powershell : ShellScript -> Text
@@ -70,7 +68,7 @@ Section: Parameters
     else ps-quote (list-at choices i) & "," & emit-ps-choices choices (i + 1)
 
   emit-ps-param-type : ShellParamType -> Text
-  emit-ps-param-type (ty) = when ty is SptString -> "[string]" is SptInt -> "[int]" is SptSwitch -> "[switch]" is SptBool -> "[bool]" is SptPath -> "[string]" is SptStringArray -> "[string[]]" is SptLong -> "[long]"
+  emit-ps-param-type (ty) = when ty is SptString -> "[string]" is SptInt -> "[int]" is SptSwitch -> "[switch]" is SptBool -> "[bool]" is SptPath -> "[string]" is SptStringArray -> "[string[]]" is SptLong -> "[long]" is SptUntyped -> "" is SptByteArray -> "[byte[]]" is SptHashtable -> "[hashtable]"
 
 Section: Colour
 
@@ -243,6 +241,14 @@ Section: Commands -- Shell State and Process Capture
         let ps = emit-ps-fn-params params 0 (list-length params)
         in let b = emit-ps-cmds body (indent + 1) 0 (list-length body)
         in pad & "function " & name & "(" & ps & ") {\n" & b & pad & "}"
+      is ScBlockCall (name) (args) (body) ->
+        let head = if list-length args == 0 then name else name & " " & emit-ps-args args 0
+        in pad & head & " {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScFunctionBlock (name) (body) ->
+        pad & "function " & name & " {\n" & emit-ps-cmds body (indent + 1) 0 (list-length body) & pad & "}"
+      is ScIfLine (cond) (then-cmds) (else-cmds) ->
+        let ep = if list-length else-cmds == 0 then "" else " else { " & emit-ps-inline-cmds else-cmds 0 & " }"
+        in pad & "if (" & emit-ps-expr cond & ") { " & emit-ps-inline-cmds then-cmds 0 & " }" & ep
       is otherwise -> pad & "# <unknown-cmd>"
 
   emit-ps-stages : List ShellStage, Integer -> Text
@@ -325,15 +331,14 @@ Section: Expressions -- Access and Method
  A static call and a static property are parenthesised because either can
  land in COMMAND-ARGUMENT position, where PowerShell will not accept a bare
  `[Type]::Member`: `Join-Path [System.IO.Path]::GetTempPath() $x` is a parse
- error. Every earlier use sat in an assignment or inside a method call's own
- parentheses, so the defect was invisible until a path was built from a
- temporary directory.
+ error.
 
   emit-ps-expr-access : ShellExpr -> Text
   emit-ps-expr-access (e) =
     when e
       is SeFileExists (path) -> "(Test-Path -PathType Leaf " & emit-ps-expr path & ")"
       is SeDirExists (path) -> "(Test-Path -PathType Container " & emit-ps-expr path & ")"
+      is SePathExists (path) -> "(Test-Path " & emit-ps-expr path & ")"
       is SeFileSize (path) -> "(Get-Item " & emit-ps-expr path & ").Length"
       is SeSubstring (s) (start) (len) -> emit-ps-expr s & ".Substring(" & show start & ", " & show len & ")"
       is SeTextLength (s) -> emit-ps-expr s & ".Length"
@@ -359,6 +364,7 @@ Section: Expressions -- Portable Builtins
       is SeFormatTime (t) (fmt) -> emit-ps-expr t & ".ToString(" & ps-quote fmt & ")"
       is SeElapsedSeconds (t) -> "[int]((Get-Date) - " & emit-ps-expr t & ").TotalSeconds"
       is SeLastExit -> "$LASTEXITCODE"
+      is SePostIncrement (name) -> "$" & name & "++"
       is SeTailJoin (path) (n) (sep) ->
         "(Get-Content -Path " & emit-ps-expr path & " -Tail " & show n & ") -join " & emit-ps-expr sep
       is SeErrorText -> "$_"
@@ -427,10 +433,7 @@ Section: Helpers
  A literal is emitted SINGLE-quoted. PowerShell does not interpolate inside
  single quotes and the only escape is a doubled quote, so a literal
  containing a dollar or a backtick cannot become a variable reference and a
- literal containing a double quote cannot terminate its own string. This
- emitted `$inject = "<link rel="stylesheet" ...>"` while it used double
- quotes with no escaping at all, which is a parse error, and it had gone
- unnoticed because no literal in the tree had carried a quote before.
+ literal containing a double quote cannot terminate its own string.
 
   ps-quote : Text -> Text
   ps-quote (s) = "'" & text-replace s "'" "''" & "'"
@@ -455,14 +458,6 @@ Section: Helpers
     else if c == ")" then (if depth == 1 then i else ps-paren-close s (i + 1) (depth - 1) 0)
     else ps-paren-close s (i + 1) depth 0
 
- SeText is the DOUBLE-quoted counterpart, and it exists because the single
- quoting above is what forced authors to ScRaw. A message like
- "MISSING: $Stage0 - not there" needs the dollar to interpolate, ps-quote
- refuses it by design, and there was no other node -- so the author wrote a
- SeRaw containing a hand-escaped PowerShell string. Measured 2026-08-16: 346
- of the tree's escaped quotes lived inside SeRaw expression payloads for
- exactly this reason.
-
  Inside double quotes PowerShell's escape character is the BACKTICK, not the
  backslash. The backtick is doubled first and the quote escaped second; the
  other order would escape the backtick this function had just inserted. The
@@ -477,10 +472,11 @@ Section: Helpers
     else if i == list-length args - 1 then emit-ps-expr (list-at args i)
     else emit-ps-expr (list-at args i) & " " & emit-ps-args args (i + 1)
 
- A command's arguments are separated by spaces and a method's by commas.
- Sharing one helper between them was invisible while every method call in
- the tree took nought or one argument, and produced
- `WriteAllText($a ($b) $c)` on the first that took three.
+  emit-ps-inline-cmds : List ShellCmd, Integer -> Text
+  emit-ps-inline-cmds (cmds) (i) =
+    if i >= list-length cmds then ""
+    else if i == list-length cmds - 1 then emit-ps-cmd (list-at cmds i) 0
+    else emit-ps-cmd (list-at cmds i) 0 & "; " & emit-ps-inline-cmds cmds (i + 1)
 
   emit-ps-call-args : List ShellExpr, Integer -> Text
   emit-ps-call-args (args) (i) =

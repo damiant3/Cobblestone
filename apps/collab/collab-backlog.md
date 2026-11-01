@@ -1,7 +1,7 @@
 # Collab -- open capabilities
 
 App-domain backlog. The shape and priority order for the platform live in
-`docs/PM/CurrentPlan.md`; there is no platform-wide register any more.
+`docs/PM/CurrentPlan.md`; there is no platform-wide register.
 Anything that is this application's own behaviour lives here.
 
 The rules are the standing ones: an entry says what is still missing and
@@ -17,3 +17,7 @@ is still real is never quietly dropped.
   (`CollabTypes.codex:147`); the same file already used `List MeetingRoom`
   correctly at 117 and 123. The annotation is fixed; what is missing is the
   call from a view. Found by CDX3008.
+
+## Test coverage
+
+7 of 7 library chapters are reached by no computing test. `pwsh build/coverage-census.ps1 -Tree apps/collab -List` names them (2026-10-26). Open: a computing test for each, or a deletion.

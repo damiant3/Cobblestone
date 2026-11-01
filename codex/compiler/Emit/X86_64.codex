@@ -13,7 +13,7 @@ Chapter: X86-64 Code Generator
   cites Codex chapter OffsetTable (offset-table-empty, offset-table-lookup, offset-table-set)
   cites Codex chapter CodexType Helpers (peel-fun-return, strip-fun-args)
   cites Codex chapter SkipListText (replicate-int, skip-list-text-from-list, skip-list-text-has, skip-list-text-rank-of)
-  cites Codex chapter Type Environment (TypeBinding)
+  cites Codex chapter Type Environment (TypeBinding, env-lookup-in)
 
 Section: Function Emission
   emit-sub-rsp-imm32 : Integer -> List Integer
@@ -341,32 +341,6 @@ Section: Function Emission
     else let st1 = if used < 4 then nop-push-2 st (base + 5) else st
     in if used < 3 then nop-push-2 st1 (base + 3) else st1
 
- Minimal emission, two tiers. A function that needs at most four
- register locals (no spills) and whose every construct emits through
- an alloc-free path pays almost none of the frame ceremony: it pushes
- exactly the callee-saved registers it will use, binds its
- parameters, and runs -- no frame pointer, no frame-size placeholder,
- no NOP padding, and an epilogue of matching pops plus ret. A pure
- leaf (no call instructions at all) also skips the stack guard,
- which is sound because a call-free function cannot grow the stack
- past its own fixed pushes -- tail self-recursion is a jmp. A
- near-leaf (calls present, still spill-free) keeps the guard: the
- guard chain through recursive calls is exactly what detects
- heap-stack collision. Call sites in near-leaves are restricted to
- the two alloc-free argument paths, and TCO temps are pre-allocated
- only when some tail site is not fully direct. Eligibility is a
- whitelist mirror of the alloc-free emission paths: literals, bound
- names, integer arithmetic and ordered comparisons (staged operands
- allocate nothing), destination-driven if, one local per let and per
- short-circuit operator, and tail self-calls whose shuffle plan is
- fully direct so the TCO temps are never allocated. Anything else --
- applies, ctor references, text or structural equality, matches,
- records, effects -- disqualifies. Names must be distinct binders so
- the name-based pre-scan and the slot-based site emission agree. If
- emission ever allocates past the prediction, spills, or appends a
- call patch, the function is reported as a CDX error rather than
- emitted silently wrong: the gates go red instead of the binary.
-
   leaf-name-index : List Text, Text, Integer -> Integer
   leaf-name-index (xs) (n) (i) =
     if i == list-length xs then 0 - 1
@@ -523,15 +497,6 @@ Section: Function Emission
       tco-count-complex st args param-locals (i + 1) acc
     else tco-count-complex st args param-locals (i + 1) (acc + 1)
 
- The identity comprehension is load-bearing and must not be removed.
- temps arrives as st.tco.temp-locals, a field of the caller's long-lived
- state, and __list_snoc extends its argument in place whenever that
- argument is the topmost allocation. Growing the caller's list would hand
- the next tail call in the same function the spill slots this one just
- took. The comprehension builds its accumulator from an empty literal of
- its own, so what tco-grow-temps pushes onto is linearly owned by
- construction rather than by allocation order.
-
   tco-ensure-temps : CodegenState, List Integer, Integer -> TcoAllocResult
   tco-ensure-temps (st) (temps) (needed) =
     if list-length temps >= needed then TcoAllocResult { alloc-state = st, alloc-locals = temps }
@@ -550,19 +515,6 @@ Section: Function Emission
     in let st-c = eval-complex-tail-args (ensured.alloc-state) args (ensured.alloc-locals) param-locals 0 0
     in let st-d = emit-direct-tail-moves st-c args param-locals order 0
     in copy-complex-temps st-d args (ensured.alloc-locals) param-locals 0 0
-
- The one complex argument is evaluated before any parameter is
- written, so its value has to survive the direct moves that follow.
- Two things can destroy it. It can sit in a register that IS one of
- the parameters, which tco-result-conflicts answers. Or it can sit in
- a load-local scratch register -- and every direct argument that
- reads a spilled local takes one, from a rotation of three, so the
- third such load hands the register straight back while the value is
- still live.
-
- A value in a temp register is still safe -- the direct shapes write
- only their target parameter and a scratch -- so the staging store
- and reload is paid only where it is load-bearing.
 
   tco-scratch-member : Integer, Integer -> Boolean
   tco-scratch-member (r) (i) =
@@ -586,15 +538,6 @@ Section: Function Emission
     else if leaf-direct-tail-arg (list-at args i) binders (list-at pnames i)
          then leaf-tail-args-direct args binders pnames (i + 1)
     else False
-
- A let binds its body through emit-let, which emits that body via
- emit-expr (value position) rather than the target-threading
- emit-to-local. When the body is an if, the value-mode emitter parks
- the comparison's left operand and the if's result in two anonymous
- locals that the plain let count does not see. leaf-walk charges those
- two so the minimal-leaf local prediction stays accurate and a shape
- that overflows the four register locals is routed to the standard
- emitter instead of mispredicting.
 
   leaf-body-is-if : IRExpr -> Boolean
   leaf-body-is-if (e) =
@@ -642,17 +585,6 @@ Section: Function Emission
         else leaf-call st e ty binders fname pnames lets
       else leaf-call st e ty binders fname pnames lets
      is otherwise -> 0 - 1
-
- A call site is alloc-free in exactly two shapes: one argument (the
- argument is emitted straight into RDI through the destination-driven
- path, so any eligible expression works there), or two to four
- arguments that are all names bound to register locals (the
- emit-args-to-regs path: bare moves). The root must be a plain global
- function applied at exactly its arity -- not a local closure, not a
- builtin (builtin emitters park in locals), not an effect operation,
- not deck-record, not a constructor (those miss the arity table), and
- not a call whose result is a function (the partial-application path
- allocates a closure).
 
   leaf-apply-root : IRExpr -> Text
   leaf-apply-root (e) =
@@ -850,16 +782,6 @@ Section: Function Emission
     if i == n then acc
     else take-arg-regs n (i + 1) (list-push acc (list-at arg-regs i))
 
- A pure leaf owes no callee-saved save, so its locals can live in
- caller-saved argument registers: no push/pop, and each parameter binds
- to the register it arrives in (an identity store the emitter drops).
- Restricted to one or two parameters whose locals are exactly the
- parameters (no let-locals, no spill): the chosen registers RDI/RSI
- dodge the RAX/RDX that idiv/imul clobber, the R8/R9/R15 binary staging
- slots, the heap R10, and R11 -- so no body construct can alias a local.
- The temp rotation carves these out (active-temp-regs). Wider partitions
- (more params, let-locals) are a later increment.
-
   leaf-arg-reg-ok : IRDef, LeafProfile -> Boolean
   leaf-arg-reg-ok (def) (prof) =
     let np = list-length (def.params)
@@ -911,22 +833,6 @@ Section: Function Emission
     in let st6g = emit-return-guard st5 def
     in let st7 = if use-arg-regs then st6g else emit-minimal-pops st6g nlocals
     in MinimalAttempt { ma-state = st-append-code st7 x86-ret, ma-mispredict = mispredict }
-
- leaf-profile is a heuristic, and a heuristic is allowed to be wrong. It
- sizes the minimal frame before the body is emitted, so it has to predict
- the emitter's own temp use; it has twice guessed low (an argument
- permutation needs a staging temp, and a nested argument expression needs
- more than one temp per complex argument), and each time the emitter
- overran the frame the profile had promised.
-
- That overrun used to be a codegen halt, which made a wrong guess reject
- valid Codex. Emission is cheap and rare here, so the mispredict is now a
- retry: the minimal bytes are abandoned where they lie, the offset entry
- is re-pointed past them, and the definition is emitted again through the
- standard path. Every future under-count is a missed optimization rather
- than a refusal to compile. Do not restore the error -- teaching the
- profile to count permutations and depth is worth doing on top of this,
- never instead of it.
 
   emit-function : CodegenState, IRDef -> CodegenState
   emit-function (st) (def) =
@@ -1004,16 +910,6 @@ Section: Function Emission
     else st-add-deferred-patch st7 (make-i32-patch (frame-patch-pos + 3) frame-size)
     in nop-unused-pushes st8 func-start used (st7.omit-frame-pointer)
 
- Bounded signatures, stage B. A
- bounded parameter is a refined position enforced Eiffel-style at the
- callee entry: each bounded parameter is range-checked in the
- prologue, on the register it arrives in, before the body runs. An
- out-of-range argument traps (UD2) - the same trap a bounded field
- store emits. The guards run before bind-params, while arg-regs still
- hold the incoming arguments (the prologue's callee-saved pushes do
- not touch them). Only OvError bounds narrower than the full i64
- range are guarded; a plain Integer parameter costs nothing.
-
   emit-param-guards : CodegenState, List IRParam, Integer -> CodegenState
   emit-param-guards (st) (params) (i) =
     if i >= list-length params then st
@@ -1034,21 +930,9 @@ Section: Function Emission
        is otherwise -> st
      is otherwise -> st
 
- A range trap: cmp against the upper bound and trap if greater, then
- against the lower bound and trap if less. The same two conditional
- traps a bounded field store uses (emit-error-checked-store), minus
- the store - a parameter or return value stays a full register, so
- only its range is checked, not its storage width.
-
   emit-range-trap : CodegenState, Integer, Integer, Integer -> CodegenState
   emit-range-trap (st) (reg) (lo) (hi) =
     emit-error-bound-trap (emit-error-bound-trap st reg hi 14) reg lo 13
-
- The postcondition: a bounded return is range-checked on the result
- register before the epilogue, unless the body statically proves the
- result within the bound (value-fits-field, the emit prover's
- interval elision - the same one a bounded field store uses, giving
- the exact static/dynamic correspondence at the single return site).
 
   emit-return-guard : CodegenState, IRDef -> CodegenState
   emit-return-guard (st) (def) =
@@ -1109,20 +993,6 @@ Section: Function Emission
     else when ty
      is FunTy (p) (row) (r) -> is-proof-return r
      is otherwise -> False
-
- The proof definitions are therefore put BACK into the pruned chapter,
- here, on the way to the emitter. Rooting them in the prune instead would
- have been wrong: the flood would follow what a proof body references and
- resurrect all of it, growing every binary that carries a proof. This
- restores the definitions without reaching anything through them, and
- emit-all-defs still writes no code for one.
-
- The proof list is collected from the WHOLE chapter and it must be
- collected BEFORE the prune runs, which is why this is two functions and
- the caller holds the intermediate. Reading the whole chapter afterwards
- gets the pruned defs back instead: the prune sets the field with
- __record-set, so the chapter the caller still has a name for is the
- pruned one, and the proofs are already gone from it.
 
   keep-proof-defs : List IRDef, List IRDef, Integer -> List IRDef
   keep-proof-defs (acc) (all) (i) =
@@ -1210,19 +1080,6 @@ Section: Function Emission
       in st-add-warning st2 cdx-rt-wcet-exceeded ex-msg (def.span)
     else st2
 
- Only an EXPLICIT budget is reported. A wcet-budget of zero means the
- author declared none and emit-wcet-check substitutes the default 256;
- that is nobody's claim, so a pruned punctual without a budget is
- ordinary dead code and says nothing.
-
- This runs INSIDE the emit deck extent, and that placement is the whole
- correctness of it rather than a convenience. Raised from the caller, in
- the window between the frontend's phase-compact and emit-build's own
- reservation, the bag's allocation lands on top of live bivy values,
- because a compact leaves deck-pos and the bivy frontier equal. The emit
- deck is reserved above them, so a warning raised here cannot collide.
- The account is in opening.codex at compile-to-cdx-with-exit-mode.
-
   emit-wcet-unchecked : CodegenState, List IRDef, Integer -> CodegenState
   emit-wcet-unchecked (st) (ds) (i) =
     if i >= list-length ds then st
@@ -1249,16 +1106,6 @@ Section: Local Variable Management
       name = name,
       slot = __narrow slot
      }] & (st.locals))
-
- add-local prepends and lookup-local takes the first match, so a lexical
- scope is exactly a PREFIX of st.locals: entering one adds bindings to
- the front, leaving one drops them again. Nothing popped before, so a
- binding introduced inside a let body or a match arm kept shadowing the
- outer binding of the same name for the rest of the function, and the
- stale slot still held the inner value - a silent miscompile.
- restore-locals reverts only the locals field: code, next-local,
- peak-local, spill-count and the patch tables are threaded forward, as
- they must be.
 
   restore-locals : CodegenState, List LocalBinding -> CodegenState
   restore-locals (st) (saved) =
@@ -1648,13 +1495,6 @@ Section: Expression Emission
     in let st1 = emit-handle-one-clause st c
     in emit-handle-clauses st1 clauses (i + 1)
 
- `op-name` is added AFTER the body ON PURPOSE and must survive: the
- handled expression reads the handler slot through it, and a multi-op
- handler needs every earlier op still bound when its body runs. So the
- restore goes BETWEEN the two. Each clause's saved prefix already carries
- the op-names of the clauses before it, which is what keeps multi-op and
- nested handlers working.
-
   emit-handle-one-clause : CodegenState, IRHandleClause -> CodegenState
   emit-handle-one-clause (st) (clause) =
     let clause-locals = st.locals
@@ -1677,7 +1517,9 @@ Section: Expression Emission
     in let result = emit-expr (st-set-tail-pos st7 False) (clause.body)
     in let st8 = store-local (result.state) (op-loc.reg) (result.reg)
     in let st9 = emit-store-to-handler-table st8 (clause.op-name) (result.reg)
-    in add-local (restore-locals st9 clause-locals) (clause.op-name) (op-loc.reg)
+    in let thunked = list-length (clause.params) == 1 & list-at (clause.params) 0 == clause-thunk-param
+    in if thunked then restore-locals st9 clause-locals
+    else add-local (restore-locals st9 clause-locals) (clause.op-name) (op-loc.reg)
 
   emit-store-to-handler-table : CodegenState, Text, Integer -> CodegenState
   emit-store-to-handler-table (st0) (op-name) (val-reg) =
@@ -1769,8 +1611,6 @@ Section: Expression Emission
   patch-lea-at (st) (lea-pos) (target-pos) =
     st-add-deferred-patch (fc-flush st) (make-i32-patch (lea-pos + 3) (target-pos - (lea-pos + 7)))
 
- Pops the frame RSP points at. RAX is preserved: it carries the `try`'s value.
-
   emit-try-pop-frame : CodegenState -> CodegenState
   emit-try-pop-frame (st) =
     let st1 = emit-try-head-addr st
@@ -1780,11 +1620,6 @@ Section: Expression Emission
   emit-try-take-message (st) (msg-loc) =
     let st1 = st-append-code (fc-flush st) (mov-load reg-rax reg-rsp 96)
     in store-local (emit-try-pop-frame st1) msg-loc reg-rax
-
- With no frame the message is printed and the program stops. With one, the
- deck is put back first: when the frame was built outside every deck and the
- unwind leaves from inside one, R10 is the deck cursor, so it is written back
- to the deck before R10 returns to the bivy.
 
   emit-fail-raise : CodegenState, Integer -> CodegenState
   emit-fail-raise (st) (msg-reg) =
@@ -1834,10 +1669,6 @@ Section: Expression Emission
       let r = emit-expr (st-set-tail-pos st False) e
       in if i == len - 1 then r
       else emit-try-body-stmts (r.state) stmts (i + 1) len
-
- The body is the sharp one. It re-runs from `retry-pos` on every attempt,
- so its slot holds whichever attempt failed last -- there is no single
- value a later reader could correctly be given.
 
   emit-try : CodegenState, Integer, List IRActStmt, List IRActStmt, List IRActStmt -> EmitResult
   emit-try (st) (max) (body) (fb) (fail) =
@@ -1896,14 +1727,6 @@ Section: Expression Emission
     in let st18 = if tail.has-jmp then patch-jmp-at st17 (tail.jmp-pos) end-pos else st17
     in EmitResult { state = st18, reg = reg-rax }
 
- The RAX eviction below is load-bearing and must not be dropped as redundant.
- This writes RAX with a hardcoded mov-ri64 BEFORE it calls alloc-temp, and
- alloc-temp only evicts the register it hands out -- so without the eviction the
- field cache goes on claiming that some earlier field access is still live in
- RAX, which this instruction has just destroyed. A later read of that same field
- in the same expression then hits the stale entry and uses RAX, which now holds
- the address of this string literal.
-
   emit-text-lit : CodegenState, Text -> EmitResult
   emit-text-lit (st) (value) =
     let len = text-length value
@@ -1954,10 +1777,8 @@ Section: Expression Emission
  bit 63 for an f64. The value is already in a general register as raw bits at
  this point, so the flip is an xor there and never reaches an xmm.
 
- This used to emit `0 - x` as `subsd`, which is wrong twice. It is the DOUBLE
- subtract whatever the width, so an f32 was negated as though its bit pattern
- were an f64; and `0 - x` is not negation even at the right width, because
- IEEE 754 says 0 - (+0) is +0 while the negation of +0 is -0.
+ `0 - x` is not negation: IEEE 754 says 0 - (+0) is +0 while the negation of
+ +0 is -0.
 
   emit-negate : CodegenState, IRExpr -> EmitResult
   emit-negate (st) (operand) =
@@ -1977,21 +1798,6 @@ Section: Expression Emission
     state = st-append-code st1 (neg-r (rd.reg)),
     reg = rd.reg
   }
-
- The unit wrapper is stripped first, the same strip and for the same
- reason as `emit-eq-op` and `emit-ord-comparison`. Without it a unit
- type misses the arm its inner type is entitled to and falls to the
- `otherwise` arm, which is `__itoa` -- so `show` prints the machine
- representation rather than the value. Measured on the seed before this
- change, against an unwrapped control on every row:
-
- unit Text     "abcd"  ->  1132612              the pointer, as decimal
- unit Boolean  True    ->  1                    the raw tag
- unit Real     2.5     ->  4612811918334230528  0x4004000000000000
-
- `unit Integer` was already correct, which is exactly what made this
- cheap to miss: the one row anybody would spot-check is the one row
- where `otherwise` is the right destination.
 
   emit-show-builtin : CodegenState, List IRExpr -> EmitResult
   emit-show-builtin (st) (args) =
@@ -2038,12 +1844,7 @@ Section: Expression Emission
  the whole reason it needed a width. It maps an IEEE bit pattern to a
  monotonic signed ordinal so that a ULP distance is a subtraction, and it
  does that by broadcasting the sign with `sar 63`. An f32 sits zero-extended
- in the low half, so its sign lives at bit 31, `sar 63` always read zero,
- and every single-precision value was treated as positive.
-
- Measured 2026-07-28, before the fix: `-0.0` and `+0.0` as `Real
- approximate` compared UNEQUAL under both `~` and `~0`, and the identical
- f64 pair compared equal. Anything straddling zero was wrong the same way.
+ in the low half, so its sign lives at bit 31.
 
  Shifting the pattern up by 32 puts the single's sign where the transform
  expects it; shifting the ordinal back down afterwards restores ULP units,
@@ -2149,12 +1950,6 @@ Section: Expression Emission
  register beyond one scratch, which matters because these sequences are
  emitted inline at every arithmetic site.
 
- The scratch is a second temp, and it is only ever touched AFTER both
- operands have been moved into xmm0 and xmm1. That ordering is the whole
- safety argument: `alloc-temp` rotates a six-register pool and can hand back
- a register an operand still lives in, so a scratch used before the operands
- are consumed would destroy one of them.
-
  THE FOUR CONSTANTS BELOW ARE THE WHOLE WIDTH DIFFERENCE, and each is
  derived rather than chosen. `0xF2` prefixes a scalar DOUBLE SSE op and
  `0xF3` a scalar SINGLE one. A double is sign(1) exponent(11) mantissa(52),
@@ -2225,12 +2020,6 @@ Section: Expression Emission
  less is `FFEFFFFFFFFFFFFF`, the most negative. The sign is carried for free
  because the decrement never reaches the sign bit.
 
- A NaN answers zero, which is what this emitter already did and is not part
- of what was broken. It is kept deliberately rather than revisited: the
- documented contract for this mode is about the range, the existing
- `nan-safe` assertion depends on the zero, and choosing a different NaN
- answer is a language decision rather than a repair.
-
   emit-real-saturating-arith : CodegenState, Integer, Integer, Integer, Boolean -> EmitResult
   emit-real-saturating-arith (st) (l-reg) (r-reg) (sse-op) (f32) =
     let rd = alloc-temp st
@@ -2283,11 +2072,7 @@ Section: Expression Emission
  A float compare is not an integer compare, and the condition codes are not
  the integer ones. `ucomisd` and `ucomiss` report their result in CF and ZF
  exactly as an UNSIGNED compare does, so the Real path takes above/below and
- never less/greater. Taking less/greater is what the four ordering operators
- did for the life of the backend: they were emitted as a SIGNED integer
- compare of the two IEEE-754 bit patterns, which is right for two
- non-negatives and right for mixed signs, because a double's sign bit lands
- where the integer sign bit lands, and reversed for two negatives.
+ never less/greater.
 
  `<` and `<=` are emitted as the REVERSED `>` and `>=` rather than as below
  and below-or-equal. Both orderings answer the same for ordered operands; they
@@ -2302,20 +2087,6 @@ Section: Expression Emission
      is IrGtEq -> emit-fp-comparison st cc-ae l-reg r-reg cmp-insn
      is IrLt -> emit-fp-comparison st cc-a r-reg l-reg cmp-insn
      is otherwise -> emit-fp-comparison st cc-ae r-reg l-reg cmp-insn
-
- A Text or character operand is REFUSED here rather than emitted, and the
- checker refusing it first is what makes this a guard rather than the fix.
- On Text the two registers hold ADDRESSES, so `cmp` answers in allocation
- order: two separately built copies of "a" compared unequal, and one of them
- was less than the other. That is wrong on every input, with no fault and no
- other diagnostic, which is the same shape as the integer comparator on
- Reals that CDX9010 exists to stop.
-
- The reason to keep a guard behind a checker refusal at all is CDX9010's own
- history: the refusal covers the operator the author wrote, and the guard
- covers a future dispatch path that reaches the comparator some other way.
- That is exactly how `unit Real` was caught after the checker had been
- taught about Real.
 
   emit-ord-comparison : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-ord-comparison (st) (op) (l-reg) (r-reg) (operand-ty) =
@@ -2540,7 +2311,8 @@ Section: Expression Emission
     else if is-builtin (st.builtin-names) name then emit-name-nonlocal st name ty
     else if lookup-x86-arity (st.user-arities) name >= 0 then emit-name-nonlocal st name ty
     else let eoa = find-effect-op-addr (st.effect-op-addrs) name 0 (list-length (st.effect-op-addrs))
-    in if eoa >= 0 then emit-load-from-handler-table (eo-note-read st name) eoa
+    in if eoa >= 0 then (if ty-is-nullary ty | find-effect-op-nullary (st.effect-op-addrs) name 0 then emit-effect-op-call (eo-note-read st name) eoa [IrIntLit 0 synthetic-span]
+      else emit-load-from-handler-table (eo-note-read st name) eoa)
     else emit-name-nonlocal st name ty
 
   find-effect-op-addr : List EffectOpAddr, Text, Integer, Integer -> Integer
@@ -2549,6 +2321,13 @@ Section: Expression Emission
     else let a = list-at addrs i
     in if a.name == name then a.addr
     else find-effect-op-addr addrs name (i + 1) len
+
+  find-effect-op-nullary : List EffectOpAddr, Text, Integer -> Boolean
+  find-effect-op-nullary (addrs) (name) (i) =
+    if i >= list-length addrs then False
+    else let a = list-at addrs i
+    in if a.name == name then a.nullary
+    else find-effect-op-nullary addrs name (i + 1)
 
   emit-load-from-handler-table : CodegenState, Integer -> EmitResult
   emit-load-from-handler-table (st0) (addr) =
@@ -2622,15 +2401,6 @@ Section: Expression Emission
      is IrRecord (n) (fs) (t) (s) -> True
      is IrList (es) (t) (s) -> True
      is otherwise -> False
-
- The range environment is saved and restored exactly like the locals
- beside it, and for the same reason: the binding is in scope for the body
- and for nothing after it. The value's range is proved in the OUTER
- environment (`saved-range`), because that is where the value is
- evaluated -- binding first and then proving would let a shadowing let see
- itself. This is what carries a bound from where it is proved to where it
- is used, so a narrow-store or a return guard inside the body can elide a
- check the checker had already discharged.
 
   emit-let : CodegenState, Text, IRExpr, IRExpr -> EmitResult
   emit-let (st) (name) (value) (body) =
@@ -2814,31 +2584,6 @@ Section: Expression Emission
         else emit-binary-or-standard st op left right ty
        is otherwise -> emit-binary-or-standard st op left right ty
 
- Staged binary emission. The standard path parks both operands in
- alloc-locals, which are anonymous and never released: each binary
- node permanently consumes local slots, and past four slots every
- later binding in the function cascades to stack spills. The staged
- path stages the operands through R8 and R9 instead -- the two
- registers the allocator never assigns -- and parks at most one
- value, transiently, on the machine stack. A simple operand (a
- literal, or a name bound to a local) is materialized directly into
- its staging register after the complex sibling has been evaluated;
- materialization is a single li or mov that cannot trap or observe
- anything, so the reorder is semantically invisible. When both
- operands are complex the left result is pushed, the right is
- evaluated, captured into R9 before the pop so a right result that
- happens to sit in R8 (a load-local scratch return) is not clobbered,
- and the left popped into R8. The (R8, R9) pair then feeds
- emit-binary-op, which is the same consumer the standard path hands
- its load-local scratch registers to: every op sequence consumes its
- operand registers in its first instructions, and the helper-call ops
- move to RDI/RSI before calling, so nothing requires R8/R9 to survive
- a call. The staged path allocates no locals -- next-local,
- spill-count, and the frame are untouched by binary expressions.
- With omit-frame-pointer the transient push would shift the
- RSP-relative spill offsets read inside the right operand's emission,
- so that mode keeps the standard path.
-
   emit-binary-or-standard : CodegenState, IRBinaryOp, IRExpr, IRExpr, CodexType -> EmitResult
   emit-binary-or-standard (st) (op) (left) (right) (ty) =
     if st.omit-frame-pointer then emit-binary-standard st op left right ty
@@ -2984,15 +2729,6 @@ Section: Expression Emission
      is IrEq | IrNotEq -> is-fusable-int-comparison st op left
      is otherwise -> False
 
- The mirror of the reg-left fold. Here the complex operand is on the
- left, so its result lands in the destination and the op need not be
- commutative: add/sub/mul of left with the register-local right become
- OP l.reg, right-reg, with left in the dest. The guard is stricter than
- reg-left because left may be an IrName bound to a local (a - b with
- both local), in which case l.reg is a live callee-saved register the
- standard path must not clobber -- is-temp-reg restricts the fold to
- the dead-temp case, where l.reg holds a complex result.
-
   emit-reg-right-inplace : CodegenState, IRBinaryOp, Integer, Integer, CodexType -> EmitResult
   emit-reg-right-inplace (st) (op) (l-reg) (right-reg) (lty) =
     let st2 = st-append-code (fc-evict-reg st l-reg) (inplace-int-op op l-reg right-reg lty)
@@ -3042,19 +2778,6 @@ Section: Expression Emission
      is IrMulInt -> imul-rr dest src & int-trap-after lty
      is IrSubInt -> sub-rr dest src & int-trap-after lty
      is otherwise -> add-rr dest src & int-trap-after lty
-
- On the reg-left path the right operand is always complex (a literal
- or register-local right is handled earlier in emit-binary), so its
- result rides in a dead temp register, while left-reg is a
- callee-saved local the op only reads. For a commutative integer op
- the dead temp can be the destination directly: OP r.reg, left-reg
- computes right OP n, which equals n OP right, with the result already
- in r.reg. That drops the mov rd, l-reg the standard emit-binary-op
- prepends -- and, when r.reg is the function's return register, the
- trailing move too (fact's n * fact(n-1): 3 insns to 1). The
- next-temp bump mirrors emit-binary-staged's in-place add/mul: the
- returned r.reg must be retained past the rotation. Non-commutative
- and non-integer ops keep the emit-binary-op path.
 
   emit-binary-reg-left : CodegenState, IRBinaryOp, IRExpr, Integer, CodexType, IRExpr -> EmitResult
   emit-binary-reg-left (st) (op) (left) (left-reg) (ty) (right) =
@@ -3108,14 +2831,6 @@ Section: Expression Emission
       in let r-load = load-local (l-load.state) (r-loc.reg)
       in let operand-ty = ir-expr-type left
       in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty ty
-
- The destination temp must avoid r-reg: the register ops write rd
- before reading r-reg (mov rd, l-reg destroys a colliding right
- operand, and rd + rd doubles the left). Colliding with l-reg is
- harmless -- the mov becomes a self-move. A call result rides in
- a rotation register, so any caller whose right operand contains a
- call can collide; geometry-test's perimeter accumulator caught
- this when emit-binary-reg-left passed a register local as l-reg.
 
   is-int-vector : CodexType -> Boolean
   is-int-vector (ty) =
@@ -3262,17 +2977,6 @@ Section: Expression Emission
       reg = reg-rax
      }
 
- Integer exponentiation is that helper, square-and-multiply, base in RDI and
- exponent in RSI.
-
- A floating operand is REFUSED rather than emitted. There is no
- floating-point exponentiation routine in the runtime, and handing two
- IEEE-754 bit patterns to an integer square-and-multiply computes nothing at
- all -- the same shape as the integer comparator on Reals that `CDX9010`
- exists to stop, and the same shape as `unit Real` arithmetic reaching the
- integer adder. Silently degrading is what this project's virtues forbid, so
- the build halts and says what to do instead.
-
   emit-pow-op : CodegenState, Integer, Integer, CodexType -> EmitResult
   emit-pow-op (st) (l-reg) (r-reg) (operand-ty) =
     when strip-unit-ty (resolve-to-sum-with-defs st operand-ty)
@@ -3295,14 +2999,6 @@ Section: Expression Emission
 
   eq-empty-type-args : List CodexType
   eq-empty-type-args = []
-
- That is not a hypothetical. Measured 2026-07-28 against seed 55D4240B
- with `Name = unit Text`: `Name "abcd" == Name "abcd"` answered False --
- two identical literals, no append involved, no diagnostic. The controls
- are what make it precise: plain Text equality is correct in both
- directions, and `unit Integer` equality is correct in both directions,
- because Integer equality IS the word compare this arm falls back to and
- the missing strip costs it nothing. It costs Text everything.
 
   eq-rec-fuel : Integer = 64
 
@@ -3339,24 +3035,6 @@ Section: Expression Emission
   eq-sum-is-recursive (st) (sn) (cs) =
     eq-ctors-reach st cs sn [sn] eq-rec-fuel 0 (list-length cs)
 
- A field at the sum's own type is compared by CALLING a synthesised helper
- rather than by inlining another field compare, because inlining is what has
- no correct bound: any depth limit compares only part of the value. The
- helper's own `==` on that field reaches this same arm and emits a call to
- itself, so the recursion happens at RUNTIME where the data terminates it.
- `eq-helper-defs` below builds one helper per recursive sum the program
- actually compares, and X86_64Chapter appends them to the definition list.
-
- The name is deck-recorded, and that is load-bearing rather than tidy.
- emit-call-to stores the TARGET NAME in cp-targets, which emit-all-defs
- carries across a per-function __heap-restore; every other caller hands it
- a string LITERAL, which lives in the constant pool and cannot be reclaimed.
- This is the first COMPUTED target, so without the deck the concatenation
- is allocated on the per-function bivy, freed the moment the function is
- done, and the patch pass reads a name out of reclaimed heap. Measured
- 2026-08-27: it surfaced as `CDX2040: Unresolved call to` followed by
- mojibake, and with the helper emitted as well it crashed the compiler.
-
   eq-helper-name : Text -> Text
   eq-helper-name (sn) = deck-record ("__eq_" & sn)
 
@@ -3384,11 +3062,6 @@ Section: Expression Emission
   eq-key-args (as) (i) (n) =
     if i >= n then ""
     else (if i == 0 then "" else ",") & eq-key-of (list-at as i) & eq-key-args as (i + 1) n
-
- The instantiated name is CONCATENATED, so it must be deck-recorded for the
- same reason the bare name above is: emit-call-to keeps the target name in
- cp-targets across a per-function __heap-restore, and a bivy allocation is
- reclaimed before the patch pass reads it.
 
   eq-helper-name-inst : Text, List CodexType -> Text
   eq-helper-name-inst (sn) (actuals) =
@@ -3479,19 +3152,6 @@ Section: Expression Emission
     in let r-tag = alloc-temp st1
     in let st2 = st-append-code (r-tag.state) (mov-load (r-tag.reg) r-reg 0)
     in emit-comparison st2 cc-e (l-tag.reg) (r-tag.reg) int-ty-default
-
- A type parameter reaches here as a `ConstructedTy` carrying its NAME and no
- arguments, not as a `TypeVar`, so matching only `TypeVar` substitutes
- nothing for the one case this function exists to serve. It is a silent
- no-op: the field keeps the parameter's own type, `emit-eq-op` finds no arm
- for it and falls through to `emit-comparison`, and a word compare on two
- heap pointers is a POINTER comparison. Measured 2026-09-01 by tracing
- `emit-eq-op`, which reported `ty=Ctor:Pair[Text]` against
- `resolved=Sum:Pair[Ctor:a]`: the instantiation is on the SITE type, while
- resolution answers the declaration's own formal parameters. So the formals
- and the actuals arrive from different places and the substitution is a zip
- of the two, keyed by NAME. The `TypeVar` arm is kept because nothing has
- shown it is dead.
 
   subst-formal-name : CodexType -> Text
   subst-formal-name (ty) =
@@ -3598,18 +3258,6 @@ Section: Expression Emission
 
 Section: Recursive Structural Equality Helpers
 
- A helper is an ordinary two-parameter definition emitted through
- emit-all-defs, so it inherits the standard frame, and the SysV argument
- registers it binds are the same rdi and rsi emit-helper-call-2-regs loads.
- That is why no calling-convention code appears here.
-
- A field declared at a TYPE PARAMETER is compared by POINTER, which is what
- the inlining path already does when the comparison site carries no type
- arguments to substitute, and what the wasm plug does. It is not exact
- structural equality for a generic recursive sum instantiated at Text; that
- shape refused to compile at all before this, so it is a new answer rather
- than a changed one.
-
   EqHelperReq = record {
    eq-sum-name : Text,
    eq-sum-ty : CodexType,
@@ -3624,10 +3272,6 @@ Section: Recursive Structural Equality Helpers
      is RecordTy (n) (as) (fs) -> as
      is otherwise -> eq-empty-type-args
 
- The key is the INSTANTIATED name. Keyed on the bare sum name, Box Text and
- Box Integer share one helper and the first instantiation to arrive decides
- how both compare their field, which compares an Integer with __str_eq.
-
   eq-req-name : EqHelperReq -> Text
   eq-req-name (req) =
     if eq-req-is-dict req then eqd-helper-name (req.eq-sum-name) else eq-helper-name-inst (req.eq-sum-name) (req.eq-sum-actuals)
@@ -3637,23 +3281,6 @@ Section: Recursive Structural Equality Helpers
     if i >= list-length xs then False
     else if eq-req-name (list-at xs i) == n then True
     else eq-req-has xs n (i + 1)
-
- A comparison at a NON-recursive sum still descends: emit-sum-fields-eq calls
- emit-eq-op again on each field, so a non-recursive sum holding a recursive
- one reaches the helper arm too and needs that helper synthesised. Following
- only the eq SITES misses it, and the miss is a call to a function nobody
- emitted. A req is pushed and the walk stops, because eq-close-reqs descends
- that req's own constructors; the descent terminates because eq-req-has
- refuses a duplicate. The fuel is the same bound eq-sum-is-recursive carries
- and exists for a malformed type graph, not for this walk.
-
- CARRYING ACTUALS DEMANDS A HELPER AS MUCH AS RECURSION DOES, and the two are
- one predicate because lower-eq-dispatch calls the INSTANTIATED name for every
- sum with arguments, recursive or not. Minting only for the recursive ones left
- that call dangling: measured 2026-09-08 on codex/test/eq-generic-fields, four
- CDX2040 on x86-64 and the same four as [UNSUPPORTED] on arm64, from main 23574
- widening the desugarer's __eq_<T> to every sum and so making the existence
- probe succeed where it used to decline.
 
   eq-needs-inst-helper : CodegenState, Text, List SumCtor, List CodexType -> Boolean
   eq-needs-inst-helper (st) (sn) (cs) (actuals) =
@@ -3788,12 +3415,6 @@ Section: Recursive Structural Equality Helpers
     if i >= list-length ds then acc
     else eq-collect-defs st ds (i + 1) (eq-collect-expr st ((list-at ds i).body) acc)
 
- The closure is a worklist and not a recursion: a helper's own body compares
- the fields of its constructors, and a field at ANOTHER recursive sum needs
- that sum's helper too. Indexing forward over a list that grows as it is
- walked visits every entry appended by an earlier one, and eq-req-has keeps
- it finite by refusing a duplicate, so mutual recursion terminates.
-
   eq-close-reqs : CodegenState, List EqHelperReq, Integer -> List EqHelperReq
   eq-close-reqs (st) (reqs) (i) =
     if i >= list-length reqs then reqs
@@ -3831,16 +3452,6 @@ Section: Recursive Structural Equality Helpers
     in if i + 1 >= n then one
     else
       deck-record (IrBinary IrAnd one (eq-helper-field-conj st fs (i + 1) n) BooleanTy synthetic-span)
-
- A DICTIONARY-TAKING HELPER `__eqd_<T>` (docs/Designs/Active/Compiler/
- GenericEquality.md) is the helper for T instantiated at SLOTS: type variables
- at the top of the id range, which no checker id reaches, one per type
- parameter. The helper takes one dictionary per slot, `__eqdict<i>`, and a
- field at slot i is compared by calling it. Only the canonical instantiation,
- slots 0..k-1 in order, is minted; a call at other actuals passes their
- dictionaries. A field whose type holds a slot below another constructor
- cannot be compared without building a closure, which a helper minted after
- lambda lifting must not do, so the checker refuses such a type.
 
   eqd-slot-base : Integer
   eqd-slot-base = 4294967040
@@ -3902,9 +3513,6 @@ Section: Recursive Structural Equality Helpers
     if eq-req-is-dict req == False then []
     else
       for a in (req.eq-sum-actuals) -> eq-ir-name (deck-record ("__eqdict" & show (eqd-slot-index a))) (eqd-dict-ty a)
-
- The type a slot-free operand is compared at, as a dictionary: the desugarer's
- primitive wrappers, or the helper `emit-eq-op` would call for it.
 
   eqd-concrete-dict : CodegenState, CodexType -> IRExpr
   eqd-concrete-dict (st) (t) =
@@ -4029,9 +3637,6 @@ Section: Recursive Structural Equality Helpers
     in let acc2 = if eqd-mentions-slot a eq-rec-fuel then acc else eq-note-site st a acc (fuel - 1)
     in eqd-note-args st as (i + 1) acc2 fuel
 
- The operand type of a `__eqd_<T>` reference, whatever its dictionary
- parameters: the parameter of the last arrow before `Boolean`.
-
   eqd-operand-ty : CodexType, Integer -> CodexType
   eqd-operand-ty (ty) (fuel) =
     if fuel <= 0 then ErrorTy
@@ -4121,12 +3726,6 @@ Section: Recursive Structural Equality Helpers
  rather than bounded inlining is the same argument the sum helper makes, and
  here it also keeps the cost linear: a version that dropped the head of each
  list per step would allocate a whole list per element on a heap with no GC.
-
- The element pair goes through `eq-helper-field-eq`, so the element decides how
- it is compared exactly as a field does: a sum reaches its own instantiated
- helper, a nested list reaches this same pair minted at the inner type, and
- Text reaches the backend's own arm. That is why the element type is in the
- NAME: one copy per element type, each with the right compare.
 
   eq-list-elem-of : CodexType -> CodexType
   eq-list-elem-of (ty) =
@@ -4347,10 +3946,6 @@ Section: Recursive Structural Equality Helpers
  than emitting a compare that is wrong for a quarter of the operand plane.
  The type is a parameter and not an inference: a caller that cannot say what it
  is comparing has no business reaching the integer path.
-
- It answers True for records, lists and sums on purpose. `emit-eq-op`'s
- fallthrough compares those by POINTER and means to; only the float case is a
- wrong answer rather than a different question.
 
   cmp-answers-operand : CodegenState, CodexType -> Boolean
   cmp-answers-operand (st) (ty) =

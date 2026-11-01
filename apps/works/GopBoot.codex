@@ -7,6 +7,7 @@ Chapter: GopBoot
   cites Works chapter GopXhci
   cites Works chapter GopUsbKbd
   cites Works chapter GopUsbMouse
+  cites Works chapter GopUsbPad
   cites Works chapter GopDisk
   cites Works chapter GopFat16
   cites Works chapter GopMedium
@@ -22,19 +23,6 @@ Chapter: GopBoot
   cites Kernel chapter BitmapFont
   cites Foreword chapter Fat16
   cites Foreword chapter Maybe
-
- A3/B1.1: an interactive menu on the Option A boot path. The stub hands us
- the GOP framebuffer through the magic-gated handoff block at 0x1F000, or
- through the older cells at 0x8000 when no block is published,
- sets up the heap, and jumps here after ExitBootServices. Firmware is gone;
- ConOut is dead. The first act is runtime-init (H1a): it installs the GDT,
- IDT, TSS, syscall MSRs, and the PIC/PIT/keyboard setup, so from that
- point the tick counter runs and every keystroke arrives by IRQ in the
- kernel key-buffer cell (GopKey). We draw a menu with the CBF bitmap font
- and drive it from that cell. Up/Down move the selection, Enter chooses.
- First interactive UI rendered entirely by a Codex program post-EBS.
-
- We say:
 
 Section: Framebuffer Handoff
   col-bg : Integer = 1710638
@@ -177,12 +165,6 @@ Section: Loop
     in let msg = gop-draw-text base stride h font (menu-left w scale + 16 * scale) (msg-y h scale) ("Selected: " & menu-label sel) col-green scale 0
     in sel
 
- Enter on the last two items leaves the loop for good: the machine
- reads the sleep type or the reset register out of its own firmware's
- tables and powers itself off or restarts. Every other key round-trips
- through menu-next, which returns the new selection, keeping menu-loop
- a direct self-tail-call so the compiler's TCO turns it into a jump.
-
   menu-step : Integer, Integer, Integer, Integer, CbfFont, UsbMouse, Integer, Integer, Integer, Integer, Integer, Boolean -> Integer
   menu-step (base) (w) (h) (stride) (font) (mouse) (cs) (sel) (sc) (mv) (hover) (clicked) =
     let s1 = menu-next base w h stride font sel sc
@@ -195,41 +177,28 @@ Section: Loop
     in let cu = if mv == 1 then cursor-update cs base stride h w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else 0
     in s2
 
-  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
- THE HOVER IS UNGATED BECAUSE THE CLICK IS A LATCH. Both used to be read only
- on an iteration that consumed a report (`mv == 1`). `mouse-take-click` answers
- a press that was latched on an EARLIER report, so leaving `hover` gated would
- take that press on an iteration where the row under the pointer reads as -1
- and drop it -- turning a lost click into a differently lost click. The
- published position is valid whether or not a report arrived this time round,
- so the row is computed from it directly and the no-mouse case is what the
- guard is for.
+  menu-loop : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
 
-  menu-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (sel) (web) = act
+  menu-loop (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (cs) (sel) (web) = act
     sc <- kbd-take kbd
     let mv = mouse-pump mouse w h
     in let hover = if mouse.um-ok then menu-row-at w h (ui-scale w) (mouse-x mouse) (mouse-y mouse) else -1
     in let clicked = mouse-take-click mouse
     in let tgt = if clicked & hover >= 0 then hover else sel
     in let fire = sc == 28 | (clicked & hover >= 0)
-    in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse cs web
+    in if fire & tgt == menu-power-off then power-off base w h stride font kbd mouse pad cs web
     else if fire & tgt == menu-restart then do-restart base w h stride font kbd
-    else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse cs web
-    else if fire & tgt == menu-devcon then menu-dev base w h stride font kbd mouse cs web
-    else menu-loop base w h stride font kbd mouse cs (menu-step base w h stride font mouse cs sel sc mv hover clicked) web
+    else if fire & tgt == menu-desktop then menu-desk base w h stride font kbd mouse pad cs web
+    else if fire & tgt == menu-devcon then menu-dev base w h stride font kbd mouse pad cs web
+    else menu-loop base w h stride font kbd mouse pad cs (menu-step base w h stride font mouse cs sel sc mv hover clicked) web
   end
 
- THE WEB SERVICE IS THREADED, NOT TAKEN HERE. `gopweb-hold` holds a port,
- and `menu-desk` is re-entered every time the Desktop row is chosen, so
- taking one here would hold a second service on the same port on the
- second visit. `boot-flow` already has the one `opening` created.
-
-  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
-  menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
-    dk <- desk-run base w h stride font kbd mouse web
+  menu-desk : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  menu-desk (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (cs) (web) = act
+    dk <- desk-run base w h stride font kbd mouse pad web
     d2 <- draw-menu base w h stride font menu-desktop
     let iv = poke-32 cs 0 0
-    in menu-loop base w h stride font kbd mouse cs menu-desktop web
+    in menu-loop base w h stride font kbd mouse pad cs menu-desktop web
   end
 
  The Dev Console runs as a spawned process because on one core the boot
@@ -252,19 +221,19 @@ Section: Loop
     end
   end
 
-  menu-dev : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
-  menu-dev (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
+  menu-dev : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  menu-dev (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (cs) (web) = act
     let e = ugc-enable base w h stride
     in act
       pid <- process-spawn-with-heap (\x -> dev-child x) dev-heap-bytes
       let a = poke-32 ugc-block 36 pid
       in let b = poke-32 ugc-block 40 (process-status pid)
-      in dev-pump base w h stride font kbd mouse cs web pid
+      in dev-pump base w h stride font kbd mouse pad cs web pid
     end
   end
 
-  dev-pump : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
-  dev-pump (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) (pid) = act
+  dev-pump : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  dev-pump (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (cs) (web) (pid) = act
     let mark = __heap-save
     in let sc = kbd-take kbd
     in let f = if sc > 0 then ugc-key-feed sc else 0
@@ -273,25 +242,17 @@ Section: Loop
     in let r = __heap-restore mark
     in if process-status pid > 0 then act
       y <- process-yield
-      dev-pump base w h stride font kbd mouse cs web pid
+      dev-pump base w h stride font kbd mouse pad cs web pid
     end
     else act
       let off = ugc-disable 0
       in act
         d <- draw-menu base w h stride font menu-devcon
         let iv = poke-32 cs 0 0
-        in menu-loop base w h stride font kbd mouse cs menu-devcon web
+        in menu-loop base w h stride font kbd mouse pad cs menu-devcon web
       end
     end
   end
-
- If the firmware published no usable _S5_ the request is refused, and
- saying so on the screen is more use than a machine that silently stays
- on. acpi-poweroff only returns in that case.
-
- Reset never refuses -- 0xCF9 exists on every PC chipset -- so unlike
- power-off there is no fall-through message to draw: the tail call
- into acpi-reset either reboots the machine or spins.
 
   do-restart : Integer, Integer, Integer, Integer, CbfFont, UsbKbd -> [Device.Port, Identity] Integer
   do-restart (base) (w) (h) (stride) (font) (kbd) = act
@@ -305,8 +266,8 @@ Section: Loop
     end
   end
 
-  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
-  power-off (base) (w) (h) (stride) (font) (kbd) (mouse) (cs) (web) = act
+  power-off : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  power-off (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (cs) (web) = act
     let scale = ui-scale w
     in let a = acpi-boot 0
     in act
@@ -316,7 +277,7 @@ Section: Loop
       r <- acpi-poweroff a
       f <- gop-draw-text base stride h font (menu-left w scale + 16 * scale) (msg-y h scale + 20 * scale) "This firmware published no usable _S5_ sleep state." col-item scale 0
       let iv = poke-32 cs 0 0
-      in menu-loop base w h stride font kbd mouse cs menu-power-off web
+      in menu-loop base w h stride font kbd mouse pad cs menu-power-off web
     end
   end
 
@@ -572,13 +533,13 @@ Section: xHCI Truth
 
 Section: Entry
 
-  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
-  run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) (web) = act
+  run-menu : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer -> [Console, Device.Port, Device.Block, FileSystem, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  run-menu (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (web) = act
     let cs = alloc-zeroed 2048 64
     in let wp = mouse-warp mouse (w / 2) (h / 2)
     in act
       d0 <- draw-menu base w h stride font 0
-      menu-loop base w h stride font kbd mouse cs 0 web
+      menu-loop base w h stride font kbd mouse pad cs 0 web
     end
   end
 
@@ -618,14 +579,15 @@ Section: Entry
           let t3 = boot-trace base stride h font 3 ("medium kind=" & show med & "  stage: wizard...")
           in let kbd = att.ua-kbd
           in let mouse = att.ua-mouse
-          in boot-screens base w h stride font kbd mouse web
+          in let pad = att.ua-pad
+          in boot-screens base w h stride font kbd mouse pad web
         end
       end
     end
   end
 
-  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, Integer -> [Console, Device.Port, Device.Block, FileSystem, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
-  boot-screens (base) (w) (h) (stride) (font) (kbd) (mouse) (web) =
+  boot-screens : Integer, Integer, Integer, Integer, CbfFont, UsbKbd, UsbMouse, UsbPad, Integer -> [Console, Device.Port, Device.Block, FileSystem, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent] Integer
+  boot-screens (base) (w) (h) (stride) (font) (kbd) (mouse) (pad) (web) =
     let ctx = WzCtx {
       wz-base = base,
       wz-w = w,
@@ -641,7 +603,7 @@ Section: Entry
       dk <- disks-screen ctx
       xs <- xhci-screen ctx
       wk <- wake-screen ctx
-      run-menu base w h stride font kbd mouse web
+      run-menu base w h stride font kbd mouse pad web
     end
 
   opening : [Console, Device.Port, Device.Block, FileSystem, Device.Mmio, Gpu.Compute, Gpu.Memory, Identity, Audio, Concurrent, Capability, Network.Read, Network.Write] Integer

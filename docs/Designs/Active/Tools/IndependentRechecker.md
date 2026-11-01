@@ -71,11 +71,9 @@ most.
 
 ## 4. Input: what the artifact already carries (Phase 0, re-measured 2026-08-03)
 
-**The 2026-08-02 version of this section was wrong in the direction that
-sounded safer, on the two claims the lane exists to audit.** It said
-`ir-emit-type` is a closed match over every `CodexType` variant and that
-linear ownership and effect rows are both sufficient to re-check from IR
-text. Measured against main, `ir-emit-type`
+**`ir-emit-type` is not a closed match over every `CodexType` variant, and
+linear ownership and effect rows are not both re-checkable from IR text.**
+`ir-emit-type`
 (`codex/compiler/Emit/IRTextEmitter.codex`) ends in `is otherwise ->
 "error"`, and two of the five rows are false.
 

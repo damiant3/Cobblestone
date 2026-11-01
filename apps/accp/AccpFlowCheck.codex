@@ -1,0 +1,702 @@
+Chapter: AccpFlowCheck
+  cites Foreword chapter Maybe
+  cites Accp chapter AccpFlow
+
+ The IR text format is the compiler's (`Emit/IRTextEmitter.codex`): an
+ S-expression per node, strings quoted with `\"` and `\\` escaped, `apply`
+ binary and curried, and an effect row printed inside the `fn` type of the
+ name it labels as `(label "Name" "scope")`.
+
+ Dependency masks: bit r (r below 20) is rule r's source tag, bit 20 the
+ program-counter label the caller supplies, bit 21 + i parameter i (at most
+ 40), so one mask is one 64-bit Integer.
+
+Section: Parsing
+
+  AfcNode = record {
+   kind : Integer,
+   text : Text,
+   kids : List AfcNode,
+   lo : Integer,
+   hi : Integer
+  }
+
+  AfcParse = record {
+   node : AfcNode,
+   next : Integer,
+   ok : Boolean
+  }
+
+  afc-blank : AfcNode
+  afc-blank = AfcNode { kind = 3, text = "", kids = [], lo = 0, hi = 0 }
+
+  afc-fail : Integer -> AfcParse
+  afc-fail (i) = AfcParse { node = afc-blank, next = i, ok = False }
+
+  afc-blank-char : Integer -> Boolean
+  afc-blank-char (c) = c == char-code-at " " 0 | c == char-code-at "\n" 0
+
+  afc-skip : Text, Integer -> Integer
+  afc-skip (t) (i) =
+    if i >= text-length t then i
+    else if afc-blank-char (char-code-at t i) then afc-skip t (i + 1)
+    else i
+
+  afc-string-end : Text, Integer -> Integer
+  afc-string-end (t) (i) =
+    if i >= text-length t then -1
+    else let c = char-code-at t i
+    in if c == char-code-at "\"" 0 then i
+    else if c == char-code-at "\\" 0 then afc-string-end t (i + 2)
+    else afc-string-end t (i + 1)
+
+  afc-symbol-end : Text, Integer -> Integer
+  afc-symbol-end (t) (i) =
+    if i >= text-length t then i
+    else let c = char-code-at t i
+    in if afc-blank-char c | c == char-code-at "(" 0 | c == char-code-at ")" 0 then i
+    else afc-symbol-end t (i + 1)
+
+  afc-parse : Text, Integer, Integer -> AfcParse
+  afc-parse (t) (i0) (depth) =
+    let i = afc-skip t i0
+    in if i >= text-length t | depth > 4000 then afc-fail i
+    else let c = char-code-at t i
+    in if c == char-code-at "(" 0 then afc-parse-kids t (i + 1) i depth []
+    else if c == char-code-at "\"" 0 then afc-parse-string t i
+    else if c == char-code-at ")" 0 then afc-fail i
+    else let e = afc-symbol-end t i
+    in AfcParse { node = AfcNode { kind = 2, text = substring t i (e - i), kids = [], lo = i, hi = e }, next = e, ok = True }
+
+  afc-parse-string : Text, Integer -> AfcParse
+  afc-parse-string (t) (i) =
+    let e = afc-string-end t (i + 1)
+    in if e < 0 then afc-fail i
+    else AfcParse { node = AfcNode { kind = 1, text = substring t (i + 1) (e - i - 1), kids = [], lo = i, hi = e + 1 }, next = e + 1, ok = True }
+
+  afc-parse-kids : Text, Integer, Integer, Integer, List AfcNode -> AfcParse
+  afc-parse-kids (t) (i0) (start) (depth) (acc) =
+    let i = afc-skip t i0
+    in if i >= text-length t then afc-fail i
+    else if char-code-at t i == char-code-at ")" 0 then
+      AfcParse { node = AfcNode { kind = 0, text = "", kids = acc, lo = start, hi = i + 1 }, next = i + 1, ok = True }
+    else let k = afc-parse t i (depth + 1)
+    in if k.ok == False then k
+    else afc-parse-kids t (k.next) start depth (list-push acc (k.node))
+
+Section: Node Access
+
+  afc-head : AfcNode -> Text
+  afc-head (n) = if n.kind /= 0 | list-length (n.kids) == 0 then "" else (list-at (n.kids) 0).text
+
+  afc-kid : AfcNode, Integer -> AfcNode
+  afc-kid (n) (i) = if i < list-length (n.kids) then list-at (n.kids) i else afc-blank
+
+  afc-last : AfcNode -> AfcNode
+  afc-last (n) = afc-kid n (list-length (n.kids) - 1)
+
+  afc-find : AfcNode, Text, Integer -> AfcNode
+  afc-find (n) (head) (i) =
+    if i >= list-length (n.kids) then afc-blank
+    else if afc-head (list-at (n.kids) i) == head then list-at (n.kids) i
+    else afc-find n head (i + 1)
+
+  afc-labels : AfcNode, List Text -> List Text
+  afc-labels (n) (acc) =
+    if n.kind /= 0 then acc
+    else if afc-head n == "label" then list-push acc ((afc-kid n 1).text & "|" & (afc-kid n 2).text)
+    else afc-labels-kids n 0 acc
+
+  afc-labels-kids : AfcNode, Integer, List Text -> List Text
+  afc-labels-kids (n) (i) (acc) =
+    if i >= list-length (n.kids) then acc
+    else afc-labels-kids n (i + 1) (afc-labels (list-at (n.kids) i) acc)
+
+  afc-strings : AfcNode, List Text -> List Text
+  afc-strings (n) (acc) =
+    if n.kind == 1 then list-push acc (n.text)
+    else if n.kind /= 0 then acc
+    else afc-strings-kids n 0 acc
+
+  afc-strings-kids : AfcNode, Integer, List Text -> List Text
+  afc-strings-kids (n) (i) (acc) =
+    if i >= list-length (n.kids) then acc
+    else afc-strings-kids n (i + 1) (afc-strings (list-at (n.kids) i) acc)
+
+  afc-index : List Text, Text, Integer -> Integer
+  afc-index (xs) (x) (i) =
+    if i >= list-length xs then -1
+    else if list-at xs i == x then i
+    else afc-index xs x (i + 1)
+
+Section: Labels and Rules
+
+  AfcRule = record {
+   src : Text,
+   src-scope : Text,
+   sink : Text,
+   sink-scope : Text
+  }
+
+  afc-covers : Text, Text -> Boolean
+  afc-covers (a) (b) =
+    a == b | (text-length b > text-length a & substring b 0 (text-length a) == a & substring b (text-length a) 1 == ".")
+
+  afc-names-overlap : Text, Text -> Boolean
+  afc-names-overlap (a) (b) = afc-covers a b | afc-covers b a
+
+  afc-scopes-overlap : Text, Text -> Boolean
+  afc-scopes-overlap (a) (b) =
+    a == "" | b == "" | afc-covers-prefix a b | afc-covers-prefix b a
+
+  afc-covers-prefix : Text, Text -> Boolean
+  afc-covers-prefix (a) (b) = text-length b >= text-length a & substring b 0 (text-length a) == a
+
+  afc-label-name : Text -> Text
+  afc-label-name (l) = substring l 0 (afc-bar l 0)
+
+  afc-label-scope : Text -> Text
+  afc-label-scope (l) = let b = afc-bar l 0 in if b >= text-length l then "" else substring l (b + 1) (text-length l - b - 1)
+
+  afc-bar : Text, Integer -> Integer
+  afc-bar (t) (i) = if i >= text-length t | substring t i 1 == "|" then i else afc-bar t (i + 1)
+
+  afc-bare-label : Text -> Text
+  afc-bare-label (n) =
+    if n == "net-status" then "Network.Read|"
+    else if n == "read-line" | n == "read-line-cce" then "Console.Read|"
+    else if n == "get-args" | n == "current-dir" then "Process|"
+    else if n == "block-sector-count" then "Device.Block|"
+    else if n == "key-zero" | n == "key-status" then "Identity|"
+    else ""
+
+  afc-mask-for : List AfcRule, List Text, Boolean, Integer, Integer -> Integer
+  afc-mask-for (rules) (labels) (source) (r) (acc) =
+    if r >= list-length rules then acc
+    else let rule = list-at rules r
+    in let hit = afc-any-label labels (if source then rule.src else rule.sink) (if source then rule.src-scope else rule.sink-scope) 0
+    in afc-mask-for rules labels source (r + 1) (if hit then bit-or acc (bit-shl 1 r) else acc)
+
+  afc-any-label : List Text, Text, Text, Integer -> Boolean
+  afc-any-label (labels) (name) (scope) (i) =
+    if i >= list-length labels then False
+    else let l = list-at labels i
+    in if afc-names-overlap (afc-label-name l) name & afc-scopes-overlap (afc-label-scope l) scope then True
+    else afc-any-label labels name scope (i + 1)
+
+  afc-parse-rule : Text -> AfcRule
+  afc-parse-rule (s) =
+    let r = afl-parse s
+    in if r.ok == False then AfcRule { src = "", src-scope = "", sink = "", sink-scope = "" }
+    else AfcRule { src = r.source.name, src-scope = r.source.scope, sink = r.sink.name, sink-scope = r.sink.scope }
+
+  afc-rules-ok : List AfcRule, Integer -> Boolean
+  afc-rules-ok (rs) (i) = if i >= list-length rs then True else if (list-at rs i).src == "" | (list-at rs i).sink == "" then False else afc-rules-ok rs (i + 1)
+
+Section: Analysis State
+
+ Cells of `g` (8 bytes each): 0 changed, 16 tags of source builtins taken as
+ values, 24 rules whose sink builtin is taken as a value, 32 refusal reason
+ (0 none), 40 the def being analysed, 48 the rule count, 56 store keys in
+ use, 64 store effects in use. The store holds tags only, keyed by a type's
+ text or `@state` for the global cell; a write that depends on a def's
+ parameters or caller is kept as that def's store effect and re-applied,
+ substituted, at every call of the def. 256 keys and 1024 effects.
+
+  AfcUnit = record {
+   text : Text,
+   rules : List AfcRule,
+   names : List Text,
+   arity : List Integer,
+   params : List (List Text),
+   bodies : List AfcNode,
+   res : List Integer,
+   reach : List Integer,
+   taken : List Boolean,
+   store-keys : List Text,
+   store-masks : List Integer,
+   eff-def : List Integer,
+   eff-key : List Text,
+   eff-mask : List Integer,
+   eff-ops : List Text,
+   g : Integer
+  }
+
+  afc-pc : Integer
+  afc-pc = 1048576
+
+  afc-tag-bits : Integer
+  afc-tag-bits = 1048575
+
+  afc-param-bit : Integer -> Integer
+  afc-param-bit (i) = bit-shl 1 (21 + i)
+
+  afc-joined-params : Integer
+  afc-joined-params = bit-and (bit-not 0) (bit-not 2097151)
+
+  afc-get : AfcUnit, Integer -> Integer
+  afc-get (u) (off) = peek-qword (u.g) off
+
+  afc-or-cell : AfcUnit, Integer, Integer -> Integer
+  afc-or-cell (u) (off) (m) =
+    let old = peek-qword (u.g) off
+    in let nw = bit-or old m
+    in if nw == old then 0
+    else let w = poke-qword (u.g) off nw
+    in poke-qword (u.g) 0 1
+
+  afc-refuse : AfcUnit, Integer -> Integer
+  afc-refuse (u) (why) = if peek-qword (u.g) 32 == 0 then poke-qword (u.g) 32 why else 0
+
+  afc-or-list : AfcUnit, List Integer, Integer, Integer -> Integer
+  afc-or-list (u) (xs) (i) (m) =
+    let old = list-at xs i
+    in let nw = bit-or old m
+    in if nw == old then 0
+    else let w = list-set-at xs i nw
+    in poke-qword (u.g) 0 1
+
+  afc-reach-add : AfcUnit, Integer, Integer -> Integer
+  afc-reach-add (u) (r) (m) = afc-or-list u (u.reach) (peek-qword (u.g) 40 * peek-qword (u.g) 48 + r) m
+
+  afc-key-at : List Text, Text, Integer, Integer -> Integer
+  afc-key-at (xs) (k) (i) (n) = if i >= n then -1 else if list-at xs i == k then i else afc-key-at xs k (i + 1) n
+
+  afc-store-of : AfcUnit, Text -> Integer
+  afc-store-of (u) (key) =
+    let i = afc-key-at (u.store-keys) key 0 (peek-qword (u.g) 56)
+    in if i < 0 then 0 else list-at (u.store-masks) i
+
+  afc-store-or : AfcUnit, Text, Integer -> Integer
+  afc-store-or (u) (key) (m) =
+    let n = peek-qword (u.g) 56
+    in let i = afc-key-at (u.store-keys) key 0 n
+    in if i >= 0 then afc-or-list u (u.store-masks) i m
+    else if n >= 256 then afc-refuse u 6
+    else let w1 = list-set-at (u.store-keys) n key
+    in let w2 = poke-qword (u.g) 56 (n + 1)
+    in afc-or-list u (u.store-masks) n m
+
+  afc-eff-at : AfcUnit, Integer, Text, Integer, Integer -> Integer
+  afc-eff-at (u) (d) (key) (i) (n) =
+    if i >= n then -1
+    else if list-at (u.eff-def) i == d & list-at (u.eff-key) i == key then i
+    else afc-eff-at u d key (i + 1) n
+
+  afc-eff-or : AfcUnit, Integer, Text, Integer -> Integer
+  afc-eff-or (u) (d) (key) (m) =
+    let n = peek-qword (u.g) 64
+    in let i = afc-eff-at u d key 0 n
+    in if i >= 0 then afc-or-list u (u.eff-mask) i m
+    else if n >= 1024 then afc-refuse u 6
+    else let w1 = list-set-at (u.eff-def) n d
+    in let w2 = list-set-at (u.eff-key) n key
+    in let w3 = poke-qword (u.g) 64 (n + 1)
+    in afc-or-list u (u.eff-mask) n m
+
+  afc-write : AfcUnit, Text, Integer -> Integer
+  afc-write (u) (key) (m) =
+    let t = bit-and m afc-tag-bits
+    in let w = (if t == 0 then 0 else afc-store-or u key t)
+    in let rest = bit-and m (bit-not afc-tag-bits)
+    in if rest == 0 then 0 else afc-eff-or u (peek-qword (u.g) 40) key rest
+
+  afc-effects-known : AfcUnit, Integer, List Integer, Integer, Integer -> Integer
+  afc-effects-known (u) (d) (args) (pc) (i) =
+    if i >= peek-qword (u.g) 64 then 0
+    else let w = (if list-at (u.eff-def) i == d then afc-write u (list-at (u.eff-key) i) (afc-subst-known (list-at (u.eff-mask) i) args pc 0 0) else 0)
+    in afc-effects-known u d args pc (i + 1)
+
+  afc-effects-unknown : AfcUnit, Integer, Integer, Integer, Integer -> Integer
+  afc-effects-unknown (u) (d) (a) (p) (i) =
+    if i >= peek-qword (u.g) 64 then 0
+    else let w = (if list-at (u.eff-def) i == d then afc-write u (list-at (u.eff-key) i) (afc-subst (list-at (u.eff-mask) i) a p) else 0)
+    in afc-effects-unknown u d a p (i + 1)
+
+  afc-type-text : AfcUnit, AfcNode -> Text
+  afc-type-text (u) (ty) = if ty.hi > ty.lo then substring (u.text) (ty.lo) (ty.hi - ty.lo) else ""
+
+  afc-take : AfcUnit, Integer -> Integer
+  afc-take (u) (d) =
+    if list-at (u.taken) d then 0
+    else let w = list-set-at (u.taken) d True
+    in poke-qword (u.g) 0 1
+
+Section: Substitution
+
+  afc-subst : Integer, Integer, Integer -> Integer
+  afc-subst (m) (args) (pc) =
+    let c = bit-and m afc-tag-bits
+    in let a = if bit-and m afc-joined-params /= 0 then bit-or c args else c
+    in if bit-and m afc-pc /= 0 then bit-or a pc else a
+
+  afc-subst-known : Integer, List Integer, Integer, Integer, Integer -> Integer
+  afc-subst-known (m) (args) (pc) (i) (acc) =
+    if i >= list-length args then (if bit-and m afc-pc /= 0 then bit-or acc pc else acc)
+    else afc-subst-known m args pc (i + 1) (if bit-and m (afc-param-bit i) /= 0 then bit-or acc (list-at args i) else acc)
+
+Section: Expressions
+
+  AfcEnv = record {
+   names : List Text,
+   masks : List Integer
+  }
+
+  afc-env-find : AfcEnv, Text, Integer -> Integer
+  afc-env-find (env) (x) (i) =
+    if i < 0 then -1
+    else if list-at (env.names) i == x then i
+    else afc-env-find env x (i - 1)
+
+  afc-bind : AfcEnv, Text, Integer -> AfcEnv
+  afc-bind (env) (x) (m) = AfcEnv { names = env.names & [x], masks = env.masks & [m] }
+
+  afc-raw : Text -> Boolean
+  afc-raw (n) =
+    afc-covers-prefix "peek-" n | afc-covers-prefix "poke-" n | afc-covers-prefix "__buf-" n | afc-covers-prefix "buf-" n
+    | afc-covers-prefix "__deck" n | afc-covers-prefix "atomic-" n | afc-covers-prefix "device-" n
+    | n == "__heap-restore" | n == "__cover-arm" | n == "mmio-read" | n == "mmio-write" | n == "poke-mmio"
+
+  afc-eval : AfcUnit, AfcEnv, Integer, AfcNode -> Integer
+  afc-eval (u) (env) (pc) (n) =
+    let h = afc-head n
+    in if n.kind /= 0 then 0
+    else if h == "int-lit" | h == "num-lit" | h == "text-lit" | h == "bool-lit" | h == "char-lit" | h == "error" then 0
+    else if h == "name" then afc-eval-name u env pc n
+    else if h == "binary" then bit-or (afc-eval u env pc (afc-kid n 2)) (afc-eval u env pc (afc-kid n 3))
+    else if h == "negate" then afc-eval u env pc (afc-kid n 1)
+    else if h == "if" then afc-eval-if u env pc n
+    else if h == "let" then afc-eval-let u env pc n
+    else if h == "apply" then afc-eval-apply u env pc n [] n
+    else if h == "list-expr" then afc-eval-joined u env pc (afc-kid n 1) 1 0
+    else if h == "record" then afc-eval-fields u env pc (afc-kid n 2) 1 0
+    else if h == "field-access" then bit-or (afc-eval u env pc (afc-kid n 1)) (afc-store-of u (afc-type-text u (afc-kid n 3)))
+    else if h == "field-store" then afc-eval-field-store u env pc n
+    else if h == "match" then afc-eval-match u env pc n
+    else if h == "act" then afc-eval-stmts u env pc (afc-kid n 1) 1 0
+    else let w = afc-refuse u 2
+    in 0
+
+  afc-eval-joined : AfcUnit, AfcEnv, Integer, AfcNode, Integer, Integer -> Integer
+  afc-eval-joined (u) (env) (pc) (n) (i) (acc) =
+    if i >= list-length (n.kids) then acc
+    else afc-eval-joined u env pc n (i + 1) (bit-or acc (afc-eval u env pc (list-at (n.kids) i)))
+
+  afc-eval-fields : AfcUnit, AfcEnv, Integer, AfcNode, Integer, Integer -> Integer
+  afc-eval-fields (u) (env) (pc) (n) (i) (acc) =
+    if i >= list-length (n.kids) then acc
+    else afc-eval-fields u env pc n (i + 1) (bit-or acc (afc-eval u env pc (afc-kid (list-at (n.kids) i) 2)))
+
+  afc-eval-if : AfcUnit, AfcEnv, Integer, AfcNode -> Integer
+  afc-eval-if (u) (env) (pc) (n) =
+    let c = afc-eval u env pc (afc-kid n 1)
+    in let pc2 = bit-or pc c
+    in bit-or c (bit-or (afc-eval u env pc2 (afc-kid n 2)) (afc-eval u env pc2 (afc-kid n 3)))
+
+  afc-eval-let : AfcUnit, AfcEnv, Integer, AfcNode -> Integer
+  afc-eval-let (u) (env) (pc) (n) =
+    let v = afc-eval u env pc (afc-kid n 3)
+    in afc-eval u (afc-bind env ((afc-kid n 1).text) v) pc (afc-kid n 4)
+
+  afc-eval-stmts : AfcUnit, AfcEnv, Integer, AfcNode, Integer, Integer -> Integer
+  afc-eval-stmts (u) (env) (pc) (n) (i) (last) =
+    if i >= list-length (n.kids) then last
+    else let s = list-at (n.kids) i
+    in if afc-head s == "do-bind" then
+      (let v = afc-eval u env pc (afc-kid s 3) in afc-eval-stmts u (afc-bind env ((afc-kid s 1).text) v) pc n (i + 1) v)
+    else afc-eval-stmts u env pc n (i + 1) (afc-eval u env pc (afc-kid s 1))
+
+  afc-eval-field-store : AfcUnit, AfcEnv, Integer, AfcNode -> Integer
+  afc-eval-field-store (u) (env) (pc) (n) =
+    let r = afc-eval u env pc (afc-kid n 1)
+    in let v = afc-eval u env pc (afc-kid n 3)
+    in let w = afc-write u (afc-node-type u (afc-kid n 1)) (bit-or v pc)
+    in bit-or r v
+
+  afc-node-type : AfcUnit, AfcNode -> Text
+  afc-node-type (u) (n) =
+    let h = afc-head n
+    in if h == "name" then afc-type-text u (afc-kid n 2)
+    else if h == "int-lit" | h == "text-lit" | h == "bool-lit" | h == "char-lit" | h == "num-lit" then ""
+    else afc-type-text u (afc-last n)
+
+  afc-eval-match : AfcUnit, AfcEnv, Integer, AfcNode -> Integer
+  afc-eval-match (u) (env) (pc) (n) =
+    let s = afc-eval u env pc (afc-kid n 1)
+    in afc-eval-branches u env (bit-or pc s) (afc-kid n 2) 1 s s
+
+  afc-eval-branches : AfcUnit, AfcEnv, Integer, AfcNode, Integer, Integer, Integer -> Integer
+  afc-eval-branches (u) (env) (pc) (bs) (i) (s) (acc) =
+    if i >= list-length (bs.kids) then acc
+    else let b = list-at (bs.kids) i
+    in let env2 = afc-bind-pattern env (afc-kid b 1) s
+    in let g = afc-eval u env2 pc (afc-kid b 3)
+    in let body = afc-eval u env2 (bit-or pc g) (afc-kid b 2)
+    in afc-eval-branches u env (bit-or pc g) bs (i + 1) s (bit-or acc (bit-or g body))
+
+  afc-bind-pattern : AfcEnv, AfcNode, Integer -> AfcEnv
+  afc-bind-pattern (env) (p) (s) =
+    let h = afc-head p
+    in if h == "var-pat" then afc-bind env ((afc-kid p 1).text) s
+    else if h == "ctor-pat" then afc-bind-subs env (afc-kid p 2) 1 s
+    else if h == "vec-pat" then afc-bind-subs env p 1 s
+    else env
+
+  afc-bind-subs : AfcEnv, AfcNode, Integer, Integer -> AfcEnv
+  afc-bind-subs (env) (subs) (i) (s) =
+    if i >= list-length (subs.kids) then env
+    else afc-bind-subs (afc-bind-pattern env (list-at (subs.kids) i) s) subs (i + 1) s
+
+Section: Names and Calls
+
+  afc-eval-name : AfcUnit, AfcEnv, Integer, AfcNode -> Integer
+  afc-eval-name (u) (env) (pc) (n) =
+    let x = (afc-kid n 1).text
+    in let li = afc-env-find env x (list-length (env.names) - 1)
+    in if li >= 0 then bit-or (list-at (env.masks) li) (afc-store-of u (afc-type-text u (afc-kid n 2)))
+    else let d = afc-index (u.names) x 0
+    in if d >= 0 then
+      (if list-at (u.arity) d == 0 then afc-call-known u d [] pc else let w = afc-take u d in 0)
+    else afc-builtin-value u x n pc
+
+  afc-builtin-value : AfcUnit, Text, AfcNode, Integer -> Integer
+  afc-builtin-value (u) (x) (n) (pc) =
+    if afc-raw x then (let w = afc-refuse u 3 in 0)
+    else if afc-index (u.eff-ops) x 0 >= 0 then (let w = afc-refuse u 4 in 0)
+    else if x == "get-state" then afc-store-of u "@state"
+    else let labels = afc-labels (afc-kid n 2) (if afc-bare-label x == "" then [] else [afc-bare-label x])
+    in let src = afc-mask-for (u.rules) labels True 0 0
+    in let sink = afc-mask-for (u.rules) labels False 0 0
+    in let ty = afc-kid n 2
+    in if afc-head ty == "fn" then
+      (let w1 = afc-or-cell u 16 src in let w2 = afc-or-cell u 24 sink in 0)
+    else src
+
+  afc-eval-apply : AfcUnit, AfcEnv, Integer, AfcNode, List Integer, AfcNode -> Integer
+  afc-eval-apply (u) (env) (pc) (n) (args) (top) =
+    if afc-head n == "apply" then
+      afc-eval-apply u env pc (afc-kid n 1) ((afc-eval u env pc (afc-kid n 2)) :: args) top
+    else if afc-head n == "name" then afc-apply-name u env pc n args top
+    else afc-call-unknown u (afc-eval u env pc n) (afc-union args 0 0) pc
+
+  afc-union : List Integer, Integer, Integer -> Integer
+  afc-union (xs) (i) (acc) = if i >= list-length xs then acc else afc-union xs (i + 1) (bit-or acc (list-at xs i))
+
+  afc-first : List Integer, Integer, Integer, List Integer -> List Integer
+  afc-first (xs) (k) (i) (acc) = if i >= k | i >= list-length xs then acc else afc-first xs k (i + 1) (list-push acc (list-at xs i))
+
+  afc-from : List Integer, Integer, List Integer -> List Integer
+  afc-from (xs) (i) (acc) = if i >= list-length xs then acc else afc-from xs (i + 1) (list-push acc (list-at xs i))
+
+  afc-apply-name : AfcUnit, AfcEnv, Integer, AfcNode, List Integer, AfcNode -> Integer
+  afc-apply-name (u) (env) (pc) (n) (args) (top) =
+    let x = (afc-kid n 1).text
+    in let joined = afc-union args 0 0
+    in let li = afc-env-find env x (list-length (env.names) - 1)
+    in if li >= 0 then afc-call-unknown u (list-at (env.masks) li) joined pc
+    else let d = afc-index (u.names) x 0
+    in if d >= 0 then afc-apply-def u d args pc
+    else afc-apply-builtin u x n args joined pc top
+
+  afc-apply-def : AfcUnit, Integer, List Integer, Integer -> Integer
+  afc-apply-def (u) (d) (args) (pc) =
+    let k = list-at (u.arity) d
+    in if list-length args == k then afc-call-known u d args pc
+    else if list-length args < k then (let w = afc-take u d in afc-union args 0 0)
+    else let r = afc-call-known u d (afc-first args k 0 []) pc
+    in afc-call-unknown u r (afc-union (afc-from args k []) 0 0) pc
+
+  afc-call-known : AfcUnit, Integer, List Integer, Integer -> Integer
+  afc-call-known (u) (d) (args) (pc) =
+    let w = afc-reach-known u d args pc 0
+    in let we = afc-effects-known u d args pc 0
+    in afc-subst-known (list-at (u.res) d) args pc 0 (bit-and (list-at (u.res) d) afc-tag-bits)
+
+  afc-reach-known : AfcUnit, Integer, List Integer, Integer, Integer -> Integer
+  afc-reach-known (u) (d) (args) (pc) (r) =
+    if r >= list-length (u.rules) then 0
+    else let m = list-at (u.reach) (d * list-length (u.rules) + r)
+    in let w = afc-reach-add u r (afc-subst-known m args pc 0 (bit-and m afc-tag-bits))
+    in afc-reach-known u d args pc (r + 1)
+
+  afc-call-unknown : AfcUnit, Integer, Integer, Integer -> Integer
+  afc-call-unknown (u) (fv) (args) (pc) =
+    let a = bit-or fv args
+    in let p = bit-or pc fv
+    in let w = afc-sink-values u a p 0
+    in afc-unknown-defs u a p 0 (bit-or (bit-or a (afc-get u 16)) 0)
+
+  afc-sink-values : AfcUnit, Integer, Integer, Integer -> Integer
+  afc-sink-values (u) (a) (p) (r) =
+    if r >= list-length (u.rules) then 0
+    else let w = (if bit-and (afc-get u 24) (bit-shl 1 r) /= 0 then afc-reach-add u r (bit-or a p) else 0)
+    in afc-sink-values u a p (r + 1)
+
+  afc-unknown-defs : AfcUnit, Integer, Integer, Integer, Integer -> Integer
+  afc-unknown-defs (u) (a) (p) (d) (acc) =
+    if d >= list-length (u.names) then acc
+    else if list-at (u.taken) d == False then afc-unknown-defs u a p (d + 1) acc
+    else let w = afc-reach-unknown u d a p 0
+    in let we = afc-effects-unknown u d a p 0
+    in afc-unknown-defs u a p (d + 1) (bit-or acc (afc-subst (list-at (u.res) d) a p))
+
+  afc-reach-unknown : AfcUnit, Integer, Integer, Integer, Integer -> Integer
+  afc-reach-unknown (u) (d) (a) (p) (r) =
+    if r >= list-length (u.rules) then 0
+    else let w = afc-reach-add u r (afc-subst (list-at (u.reach) (d * list-length (u.rules) + r)) a p)
+    in afc-reach-unknown u d a p (r + 1)
+
+  afc-apply-builtin : AfcUnit, Text, AfcNode, List Integer, Integer, Integer, AfcNode -> Integer
+  afc-apply-builtin (u) (x) (n) (args) (joined) (pc) (top) =
+    if afc-raw x then (let w = afc-refuse u 3 in 0)
+    else if afc-index (u.eff-ops) x 0 >= 0 then (let w = afc-refuse u 4 in 0)
+    else if x == "set-state" then (let w = afc-write u "@state" (bit-or joined pc) in 0)
+    else if x == "get-state" then afc-store-of u "@state"
+    else if x == "list-push" | x == "list-set-at" | x == "__record-set" | x == "list-insert-at" then afc-in-place u args joined pc top
+    else let labels = afc-labels (afc-kid n 2) (if afc-bare-label x == "" then [] else [afc-bare-label x])
+    in let src = afc-mask-for (u.rules) labels True 0 0
+    in let sink = afc-mask-for (u.rules) labels False 0 0
+    in let w = afc-sink-call u sink (bit-or joined pc) 0
+    in bit-or joined src
+
+  afc-sink-call : AfcUnit, Integer, Integer, Integer -> Integer
+  afc-sink-call (u) (sink) (m) (r) =
+    if r >= list-length (u.rules) then 0
+    else let w = (if bit-and sink (bit-shl 1 r) /= 0 then afc-reach-add u r m else 0)
+    in afc-sink-call u sink m (r + 1)
+
+  afc-in-place : AfcUnit, List Integer, Integer, Integer, AfcNode -> Integer
+  afc-in-place (u) (args) (joined) (pc) (top) =
+    let target = afc-apply-target top
+    in let w = afc-write u (afc-node-type u target) (bit-or joined pc)
+    in joined
+
+  afc-apply-target : AfcNode -> AfcNode
+  afc-apply-target (n) =
+    if afc-head n == "apply" & afc-head (afc-kid n 1) == "apply" then afc-apply-target (afc-kid n 1)
+    else afc-kid n 2
+
+Section: Fixed Point
+
+  afc-def-pass : AfcUnit, Integer -> Integer
+  afc-def-pass (u) (d) =
+    let w0 = poke-qword (u.g) 40 d
+    in let ps = list-at (u.params) d
+    in let env = afc-param-env ps 0 (AfcEnv { names = [], masks = [] })
+    in let m = afc-eval u env afc-pc (list-at (u.bodies) d)
+    in afc-or-list u (u.res) d m
+
+  afc-param-env : List Text, Integer, AfcEnv -> AfcEnv
+  afc-param-env (ps) (i) (env) =
+    if i >= list-length ps then env
+    else afc-param-env ps (i + 1) (afc-bind env (list-at ps i) (afc-param-bit i))
+
+  afc-pass : AfcUnit, Integer -> Integer
+  afc-pass (u) (d) =
+    if d >= list-length (u.names) then 0
+    else let w = afc-def-pass u d
+    in afc-pass u (d + 1)
+
+  afc-iterate : AfcUnit, Integer -> Integer
+  afc-iterate (u) (fuel) =
+    if fuel <= 0 then (let w = afc-refuse u 5 in 0)
+    else let w0 = poke-qword (u.g) 0 0
+    in let w1 = afc-pass u 0
+    in if peek-qword (u.g) 32 /= 0 then 0
+    else if peek-qword (u.g) 0 == 0 then 0
+    else afc-iterate u (fuel - 1)
+
+Section: Unit
+
+  AfcDefs = record {
+   names : List Text,
+   arity : List Integer,
+   params : List (List Text),
+   bodies : List AfcNode,
+   ok : Boolean
+  }
+
+  afc-collect : AfcNode, Integer, AfcDefs -> AfcDefs
+  afc-collect (defs) (i) (acc) =
+    if i >= list-length (defs.kids) then acc
+    else let d = list-at (defs.kids) i
+    in if afc-head d /= "def" then afc-collect defs (i + 1) acc
+    else let ps = afc-param-names (afc-kid d 3) 1 []
+    in if list-length ps > 40 then AfcDefs { names = acc.names, arity = acc.arity, params = acc.params, bodies = acc.bodies, ok = False }
+    else afc-collect defs (i + 1) (AfcDefs {
+      names = list-push (acc.names) ((afc-kid d 1).text),
+      arity = list-push (acc.arity) (list-length ps),
+      params = list-push (acc.params) ps,
+      bodies = list-push (acc.bodies) (afc-kid d 5),
+      ok = acc.ok
+    })
+
+  afc-param-names : AfcNode, Integer, List Text -> List Text
+  afc-param-names (ps) (i) (acc) =
+    if i >= list-length (ps.kids) then acc
+    else afc-param-names ps (i + 1) (list-push acc ((afc-kid (list-at (ps.kids) i) 1).text))
+
+  afc-zeros : Integer, List Integer -> List Integer
+  afc-zeros (n) (acc) = if n <= 0 then acc else afc-zeros (n - 1) (list-push acc 0)
+
+  afc-falses : Integer, List Boolean -> List Boolean
+  afc-falses (n) (acc) = if n <= 0 then acc else afc-falses (n - 1) (list-push acc False)
+
+  afc-rules : List Text, Integer, List AfcRule -> List AfcRule
+  afc-rules (xs) (i) (acc) = if i >= list-length xs then acc else afc-rules xs (i + 1) (list-push acc (afc-parse-rule (list-at xs i)))
+
+  afc-why : Integer -> Text
+  afc-why (c) =
+    when c
+      is 1 -> "unanalysed: the IR does not parse"
+      is 2 -> "unanalysed: a form the analysis does not model"
+      is 3 -> "unanalysed: raw memory"
+      is 4 -> "unanalysed: an effect operation"
+      is 5 -> "unanalysed: no fixed point within the pass bound"
+      is 6 -> "unanalysed: more than 40 parameters or 20 rules"
+      is 7 -> "unanalysed: no opening"
+      is 8 -> "unanalysed: a flow rule does not parse"
+      is otherwise -> "unanalysed"
+
+  afc-check : List Text, Text -> Text
+  afc-check (rule-texts) (ir) =
+    let rules = afc-rules rule-texts 0 []
+    in let p = afc-parse ir 0 0
+    in if p.ok == False then afc-why 1
+    else if list-length rules > 20 then afc-why 6
+    else if afc-rules-ok rules 0 == False then afc-why 8
+    else let defs = afc-collect (afc-find (p.node) "defs" 0) 0 (AfcDefs { names = [], arity = [], params = [], bodies = [], ok = True })
+    in if defs.ok == False then afc-why 6
+    else let entry = afc-index (defs.names) "opening" 0
+    in if entry < 0 then afc-why 7
+    else let g = alloc-bytes 128
+    in let z = afc-clear g 0
+    in let w = poke-qword g 48 (list-length rules)
+    in let nd = list-length (defs.names)
+    in let u = AfcUnit {
+      text = ir, rules = rules, names = defs.names, arity = defs.arity, params = defs.params, bodies = defs.bodies,
+      res = afc-zeros nd [], reach = afc-zeros (nd * list-length rules) [], taken = afc-falses nd [],
+      store-keys = afc-blanks 256 [], store-masks = afc-zeros 256 [],
+      eff-def = afc-minus 1024 [], eff-key = afc-blanks 1024 [], eff-mask = afc-zeros 1024 [],
+      eff-ops = afc-strings (afc-find (p.node) "eff-ops" 0) [], g = g
+    }
+    in let it = afc-iterate u (4 * nd * (list-length rules + 1) + 4 * list-length rules + 16)
+    in if peek-qword g 32 /= 0 then afc-why (peek-qword g 32)
+    else afc-verdict u entry 0 ""
+
+  afc-clear : Integer, Integer -> Integer
+  afc-clear (g) (i) = if i >= 16 then 0 else let w = poke-qword g (i * 8) 0 in afc-clear g (i + 1)
+
+  afc-blanks : Integer, List Text -> List Text
+  afc-blanks (n) (acc) = if n <= 0 then acc else afc-blanks (n - 1) (list-push acc "")
+
+  afc-minus : Integer, List Integer -> List Integer
+  afc-minus (n) (acc) = if n <= 0 then acc else afc-minus (n - 1) (list-push acc -1)
+
+  afc-verdict : AfcUnit, Integer, Integer, Text -> Text
+  afc-verdict (u) (entry) (r) (acc) =
+    if r >= list-length (u.rules) then (if acc == "" then "no path" else "path:" & acc)
+    else let m = list-at (u.reach) (entry * list-length (u.rules) + r)
+    in afc-verdict u entry (r + 1) (if bit-and m (bit-shl 1 r) /= 0 then acc & " " & show r else acc)
+
+Page 1

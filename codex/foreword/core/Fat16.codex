@@ -5,8 +5,6 @@ Chapter: Fat16
   cites Foreword chapter Gpt
   cites Foreword chapter VirtioBlk
 
- We say:
-
 Section: Types
 
   Fat16Volume = record {
@@ -47,14 +45,6 @@ Section: BPB Parsing
     fat16-parse-bpb part-start buf
   end
 
- A boot record that does not parse is an unusable volume, not a fault.
- With no disk attached the block device hands back a sector of zeroes, and
- bytes-per-sector reads 0 -- the very number the root-directory size is
- divided by, two lines down. Dividing there takes the machine out with
- !EXC=00, so the sector must be refused before the arithmetic, not after
- it: nothing downstream gets the chance to notice a bad volume if reaching
- the volume is what crashed.
-
   fat16-zero-volume : Integer -> Fat16Volume
   fat16-zero-volume (part-start) =
     Fat16Volume {
@@ -77,26 +67,44 @@ Section: BPB Parsing
  specification caps a FAT16 volume at 65524 data clusters; past that the
  format is FAT32 and not what this BPB claims. So a count above the format's
  own maximum is refused down to that maximum, which is what makes
- `fat16-chain-fuel` a bound rather than a number the image chooses.
+ `fat16-chain-fuel` a bound rather than a number the image chooses. The count
+ is also capped at the FAT's own slots, fat-sz * bps / 2 less the two reserved
+ entries: a data region larger than the FAT can map would otherwise admit
+ clusters whose slot lies past the FAT, in the second copy or the root
+ directory, and a FAT write there corrupts them. A bytes-per-sector other than
+ 512 is refused outright: block-read-sector reads one 512-byte sector into a
+ 512-byte buffer, and the slot offsets and the bytes copied a sector are taken
+ in the BPB's sectors, so 4096 read 3584 bytes past every buffer. The
+ specification forbids a reserved-sector count of 0, which puts the FAT on the
+ BPB sector, and a FAT count of 0, which puts it on the root directory or the
+ data region; both answer the zero volume, in Fat32 too. So does a volume
+ whose reserved sectors, FATs and root directory run past its own total: the
+ root walkers are bounded by the entry count alone.
 
   fat16-parse-bpb : Integer, Integer -> Fat16Volume
   fat16-parse-bpb (part-start) (buf) =
     let bps = fat16-read-u16 buf 11
     in let spc = peek-byte buf 13
-    in if bps == 0 then fat16-zero-volume part-start
+    in if bps /= 512 then fat16-zero-volume part-start
     else if spc == 0 then fat16-zero-volume part-start
     else let reserved = fat16-read-u16 buf 14
     in let nfats = peek-byte buf 16
-    in let root-cnt = fat16-read-u16 buf 17
+    in if reserved == 0 then fat16-zero-volume part-start
+    else if nfats == 0 then fat16-zero-volume part-start
+    else let root-cnt = fat16-read-u16 buf 17
     in let fat-sz = fat16-read-u16 buf 22
     in let fat-start = part-start + reserved
     in let root-dir-sectors = (root-cnt * 32 + bps - 1) / bps
     in let root-start = fat-start + nfats * fat-sz
     in let data-start = root-start + root-dir-sectors
     in let total = fat16-total-sectors buf
-    in let data-sectors = total - (data-start - part-start)
+    in if data-start - part-start > total then fat16-zero-volume part-start
+    else let data-sectors = total - (data-start - part-start)
     in let raw-clusters = if data-sectors <= 0 then 0 else data-sectors / spc
-    in let clusters = if raw-clusters > 65524 then 65524 else raw-clusters
+    in let fat-slots = fat-sz * bps / 2
+    in let fat-cap = if fat-slots < 2 then 0 else fat-slots - 2
+    in let capped = if raw-clusters > fat-cap then fat-cap else raw-clusters
+    in let clusters = if capped > 65524 then 65524 else capped
     in Fat16Volume {
       vol-part-start = part-start,
       vol-bytes-per-sector = bps,
@@ -478,26 +486,9 @@ Section: Writing A Directory Entry
     else let w = poke-byte buf (off + i) (fat16-name-byte s i)
     in fat16-poke-run buf off s (i + 1) n
 
- A name whose base exceeds eight characters or whose extension exceeds three
- cannot be spelled in an 8.3 directory entry. fat16-poke-run copies exactly
- eight and three and pads the rest, so writing one used to SUCCEED and
- silently store a different name: measured 2026-08-28, `fat16-write-file
- "foreword/BBB.codex"` answered True, `fat16-read-text` of that same path
- answered None, and the bytes came back only under "foreword/BBB.COD". A name
- that does not survive fat16-short-form unchanged gets a long-name run and an
- 8.3 alias instead, so the two agree again. What is still refused is a name no
- run can hold either: longer than the format's 255 characters, or carrying a
- character that does not survive the CCE round trip.
-
   fat16-name-fits-83 : Text -> Boolean
   fat16-name-fits-83 (name) =
     text-length (fat16-base-of name) <= 8 & text-length (fat16-ext-of name) <= 3
-
- The 8.3 form is what fat16-poke-83 will actually store, reassembled. A name
- equal to its own 8.3 form needs no run and is written exactly as it was
- before long names existed, which is what keeps every short-named volume and
- every existing fixture byte-identical. Anything else -- too long for either
- field, or merely lowercase -- needs one.
 
   fat16-short-form : Text -> Text
   fat16-short-form (name) =
@@ -561,7 +552,8 @@ Section: Writing A Directory Entry
 
   fat16-root-sector-count : Fat16Volume -> Integer
   fat16-root-sector-count (vol) =
-    ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1)
+    if (vol.vol-bytes-per-sector) == 0 then 0
+    else ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1)
       / (vol.vol-bytes-per-sector)
 
 Section: Growing A Directory
@@ -585,9 +577,17 @@ Section: Growing A Directory
     if c < 2 then True else fat16-is-end c
 
   fat16-last-cluster-of : Fat16Volume, Integer -> [Device.Block] Integer
-  fat16-last-cluster-of (vol) (cluster) = act
+  fat16-last-cluster-of (vol) (cluster) = fat16-last-cluster-walk vol cluster cluster 1 0
+
+ A cycle answers 0, which no chain ends at, so the growth refuses it.
+
+  fat16-last-cluster-walk : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
+  fat16-last-cluster-walk (vol) (cluster) (saved) (power) (steps) = act
     next <- fat16-next-cluster vol cluster
-    if fat16-dir-chain-ends-at next then cluster else fat16-last-cluster-of vol next
+    if fat16-dir-chain-ends-at next then cluster
+    else if next == saved then 0
+    else if steps + 1 == power then fat16-last-cluster-walk vol next next (power * 2) 0
+    else fat16-last-cluster-walk vol next saved power (steps + 1)
   end
 
   fat16-grow-dir-at : Fat16Volume, Integer -> [Device.Block] Integer
@@ -620,23 +620,6 @@ Section: Growing A Directory
 
 Section: Creating A File
 
- A name that is already taken is REPLACED, not committed a second time.
- Until this was written, writing a file twice did exactly what
- fat16-mkdir-if-free exists a hundred lines below to prevent for
- directories: fat16-find-free-slot answers the first FREE slot and knows
- nothing about names, so the second write claimed a fresh cluster chain
- and committed a second entry under the same name. Two entries, one name,
- and every reader takes whichever it meets first -- which is the OLD one,
- because the old entry sits in a lower slot than the free one found after
- it.
-
- So the write reported True, the bytes were really written, the clusters
- were really consumed, and the file still read back with its previous
- contents. That is worse than a refusal and worse than a no-op: it is a
- silent leak that also looks like success. It was found because a test
- asserted a REFUSED write left the old bytes in place -- which it does,
- and so does an admitted one, so the assertion could not fail.
-
   fat16-create-file : Fat16Volume, Text, Fat16Source -> [Device.Block] Boolean
   fat16-create-file (vol) (name) (bytes) =
     if fat16-scope-admits name == False then False
@@ -648,11 +631,6 @@ Section: Creating A File
       fat16-create-or-replace vol name bytes found
     end
 
- The existing entry is looked up by the name the caller gave, which may be a
- long one, and its SLOT is then found by the 8.3 name that lookup answered
- with. Two scans, and the second is exact: de-name is the short entry's own
- name, which is unique in its directory by construction.
-
   fat16-create-or-replace : Fat16Volume, Text, Fat16Source, Maybe Fat16DirEntry -> [Device.Block] Boolean
   fat16-create-or-replace (vol) (name) (bytes) (found) = when found
     is Just (e) -> fat16-replace-in-root vol name bytes e
@@ -663,12 +641,6 @@ Section: Creating A File
     slot <- fat16-find-name-slot vol (e.de-name)
     fat16-replace-at-slot vol name bytes slot (e.de-cluster)
   end
-
- A replacement erases the old entry outright rather than writing over it,
- because the new name may need a different number of records than the old one
- did and a run is located by adjacency. The erased slots are free the instant
- they are marked, so the run finder below usually places the new entry in the
- same place.
 
   fat16-replace-at-slot : Fat16Volume, Text, Fat16Source, Integer, Integer -> [Device.Block] Boolean
   fat16-replace-at-slot (vol) (name) (bytes) (slot) (old) =
@@ -698,12 +670,6 @@ Section: Creating A File
       fat16-create-at-run vol name short bytes slot
     end
 
- An alias is searched for rather than derived, because uniqueness is a fact
- about the directory and not about the name. A name needing no run keeps its
- own spelling and no search happens at all. An empty answer means the search
- ran out of numbers, and it is a refusal: there is no alias left to write
- under, and writing a duplicate would be the failure this is here to avoid.
-
   fat16-pick-alias-root : Fat16Volume, Text, Integer -> [Device.Block] Text
   fat16-pick-alias-root (vol) (name) (n) =
     if fat16-needs-long name == False then name
@@ -729,18 +695,13 @@ Section: Creating A File
  link BEFORE clearing the current one, because clearing first would lose
  the pointer to the rest of the chain and leak everything behind it.
 
- A cluster below 2 is not a chain -- 0 means "no clusters" on an empty
- file and 1 is reserved -- so it terminates rather than trying to free a
- reserved FAT entry.
-
   fat16-free-chain : Fat16Volume, Integer -> [Device.Block] Integer
   fat16-free-chain (vol) (cluster) =
     fat16-free-chain-walk vol cluster cluster 1 0
 
   fat16-free-chain-walk : Fat16Volume, Integer, Integer, Integer, Integer -> [Device.Block] Integer
   fat16-free-chain-walk (vol) (cluster) (saved) (power) (steps) =
-    if cluster < 2 then 0
-    else if fat16-is-end cluster then 0
+    if fat16-cluster-ok vol cluster == False then 0
     else fat16-free-chain-from vol cluster (fat16-next-cluster vol cluster) saved power steps
 
   fat16-free-chain-from : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
@@ -791,6 +752,7 @@ Section: Creating A File
   fat16-find-name-slot-walk : Fat16Volume, Integer, Text, Integer, Integer, Integer -> [Device.Block] Integer
   fat16-find-name-slot-walk (vol) (cluster) (name) (saved) (power) (steps) =
     if fat16-is-end cluster then 0 - 1
+    else if fat16-cluster-ok vol cluster == False then 0 - 1
     else act
       found <- fat16-name-slot-dir-sectors vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster)
       fat16-name-slot-or-next vol cluster name found saved power steps
@@ -829,10 +791,6 @@ Section: Creating A File
     else when fat16-walk-path vol parts 0 (n - 1)
       is None -> False
       is Just (dir) -> fat16-create-in-dir-entry vol dir (list-at parts (n - 1)) bytes
-
- A parent that resolves but is a FILE is refused. Without this test the entry
- would be written into whatever data cluster the file's contents occupy, which
- corrupts the file and produces a directory entry no walk will ever find.
 
   fat16-create-in-dir-entry : Fat16Volume, Fat16DirEntry, Text, Fat16Source -> [Device.Block] Boolean
   fat16-create-in-dir-entry (vol) (dir) (leaf) (bytes) =
@@ -903,7 +861,10 @@ Section: Creating A File
 
   fat16-commit-entry : Fat16Volume, Text, Text, Fat16Source, Integer, Integer, Integer -> [Device.Block] Boolean
   fat16-commit-entry (vol) (name) (short) (bytes) (slot) (first) (ok) =
-    if ok == 0 then False
+    if ok == 0 then act
+      f <- fat16-free-chain vol first
+      False
+    end
     else act
       r <- fat16-write-run vol name short slot (fat16-records-for name)
       fat16-commit-short-if short bytes slot first (fat16-records-for name) r
@@ -1041,16 +1002,6 @@ Section: Creating A Directory
     in let d2 = fat16-poke-dot-entry buf 32 2 parent
     in block-write-sector (fat16-cluster-sector vol cluster) buf
 
- The dot entries cannot go through fat16-poke-dir-entry, and this is the kind
- of thing that is obvious only once. That function writes an 8.3 name via
- fat16-base-of, which splits on the FIRST dot and keeps what is before it --
- so "." yields an empty base and an empty extension, and the entry lands as
- eleven spaces. The directory would be created, it would look fine in a
- listing, and nothing would ever climb out of it, because .. would not be
- there under any name a walker looks for. So the two dot names are poked as
- literal bytes (46 is '.'), space-padded to 11, and the rest of the entry is
- laid out exactly as fat16-poke-dir-entry lays it out.
-
   fat16-poke-dot-entry : Integer, Integer, Integer, Integer -> Integer
   fat16-poke-dot-entry (buf) (off) (dots) (cluster) =
     let n = fat16-poke-dot-name buf off dots
@@ -1116,13 +1067,6 @@ Section: Directory Reading
     in let trimmed-ext = fat16-trim-spaces ext
     in if text-length trimmed-ext == 0 then trimmed-base
     else trimmed-base & "." & trimmed-ext
-
- Bytes on disk are ASCII (FAT short names are the OEM character set, and
- a file's bytes are whatever wrote them). `code-to-char` maps a CCE code
- to a character, so it must be fed the CCE code for the byte, not the
- byte: `from-unicode` performs that mapping. Passing the raw byte made
- every name compare unequal to any Codex string literal -- an on-disk
- "EFI" never matched "EFI".
 
   fat16-extract-chars : Integer, Integer, Integer, Text -> Text
   fat16-extract-chars (buf) (off) (n) (acc) =
@@ -1234,16 +1178,6 @@ Section: The Long Name Record
     in if u == 0 then k
     else if u == 65535 then k
     else fat16-lfn-units-used buf off (k + 1)
-
- A unit this build cannot spell is refused rather than substituted, in both
- directions, and the two refusals are separate because the two conversions
- fail differently. `from-unicode` answers -1 for a unit outside CCE's three
- tiers, so a decode can test the answer. `to-unicode` answers 65533 for a CCE
- code with no Unicode, which is a legitimate code unit and cannot be told from
- a real one, so an encode has to convert BACK and compare: a character that
- does not survive the round trip would be stored as U+FFFD and read as a
- different name, which is the write-read disagreement 8.3 truncation already
- produced once.
 
   fat16-lfn-units-decodable : Integer, Integer, Integer, Integer -> Boolean
   fat16-lfn-units-decodable (buf) (off) (k) (n) =
@@ -1448,12 +1382,6 @@ Section: The Short Alias
     in if el <= 0 then stem & tag
     else stem & tag & "." & fat16-alias-chars name es (es + el) ""
 
- The checksum a run carries is over the eleven bytes fat16-poke-83 is going to
- write, so the write side computes it from the text rather than from a buffer
- nothing has poked yet. fat16-name-byte answering a space past the end of its
- argument is what makes the two agree: it is the same padding poke-run lays
- down.
-
   fat16-short-checksum-of : Text -> Integer
   fat16-short-checksum-of (short) =
     fat16-name-checksum-step (fat16-base-of short) (fat16-ext-of short) 0 0
@@ -1491,11 +1419,6 @@ Section: Finding A Run Of Free Slots
       Fat16Run { rn-found = True, rn-at = i + 1 - need, rn-streak = need }
     else fat16-run-in-sector buf (i + 1) n need (streak + 1)
 
- A run that began in an earlier sector answers a NEGATIVE slot index, and the
- address arithmetic below is what makes that the right answer rather than a
- special case: sector times 512 plus a negative offset lands in the previous
- sector, which is where the run really starts.
-
   fat16-find-run-in-root : Fat16Volume, Integer -> [Device.Block] Integer
   fat16-find-run-in-root (vol) (need) =
     fat16-run-root-sectors vol need (vol.vol-root-start) (fat16-root-sector-count vol) 0
@@ -1522,6 +1445,7 @@ Section: Finding A Run Of Free Slots
   fat16-run-dir-walk : Fat16Volume, Integer, Integer, Integer, Integer, Integer -> [Device.Block] Integer
   fat16-run-dir-walk (vol) (cluster) (need) (saved) (power) (steps) =
     if fat16-is-end cluster then 0 - 1
+    else if fat16-cluster-ok vol cluster == False then 0 - 1
     else act
       found <- fat16-run-dir-sectors vol need (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster) 0
       fat16-run-dir-or-next vol cluster need found saved power steps
@@ -1562,10 +1486,11 @@ Section: Finding A Run Of Free Slots
   fat16-run-or-grow : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
   fat16-run-or-grow (vol) (cluster) (need) (found) =
     if found >= 0 then found
+    else if fat16-cluster-ok vol cluster == False then 0 - 1
     else if need * 32 > fat16-bytes-per-cluster vol then 0 - 1
     else act
       last <- fat16-last-cluster-of vol cluster
-      fat16-grow-dir-at vol last
+      if last == 0 then 0 - 1 else fat16-grow-dir-at vol last
     end
 
 Section: Writing A Long Name
@@ -1588,14 +1513,6 @@ Section: Writing A Long Name
   fat16-write-run : Fat16Volume, Text, Text, Integer, Integer -> [Device.Block] Integer
   fat16-write-run (vol) (name) (short) (slot) (records) =
     fat16-write-run-step vol name (fat16-short-checksum-of short) slot records 0
-
- block-write-sector answers 0 for SUCCESS, which is the convention
- fat16-claim-cluster and fat16-put-entry-and-write already test. A record
- write that fails and is not read leaves the run short while the short entry
- below it still lands, so the file comes back under its 8.3 alias and not
- under the name it was written with -- which is the write-and-read
- disagreement this whole section exists to remove, reintroduced one layer
- down. The status is threaded and the first failure stops the walk.
 
   fat16-write-run-step : Fat16Volume, Text, Integer, Integer, Integer, Integer -> [Device.Block] Integer
   fat16-write-run-step (vol) (name) (sum) (slot) (records) (j) =
@@ -1679,7 +1596,7 @@ Section: Root Directory Search
 
   fat16-find-in-root : Fat16Volume, Text -> [Device.Block] Maybe Fat16DirEntry
   fat16-find-in-root (vol) (name) =
-    let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
+    let root-sectors = fat16-root-sector-count vol
     in fat16-scan-root-sectors vol name (vol.vol-root-start) root-sectors 0 fat16-lfn-none
 
   fat16-scan-root-sectors : Fat16Volume, Text, Integer, Integer, Integer, Fat16Lfn -> [Device.Block] Maybe Fat16DirEntry
@@ -1698,15 +1615,6 @@ Section: Root Directory Search
     in when (r.sc-found)
       is Just (entry) -> Just entry
       is None -> fat16-scan-root-sectors vol name (sector + 1) (remaining - 1) (entries-checked + entries-per-sector) (r.sc-lfn)
-
- Two scanners over the same bytes, and the split is deliberate. The LFN one is
- this chapter's, and it carries the run state a long name needs. The 8.3 one
- below it is FAT32's -- `fat32-scan-dir-step` and `codex/test/fat32-parse`
- both call it, a FAT32 directory sector holding the same 32-byte entries a
- FAT16 one does. FAT32 does not thread run state across its sectors, so
- pointing it at the assembling scanner would assemble a run only when it
- happened to fall inside one sector and silently miss the rest, which is worse
- than answering 8.3 honestly.
 
   fat16-scan-sector-lfn : Integer, Text, Integer, Integer, Fat16Lfn -> Fat16Scan
   fat16-scan-sector-lfn (buf) (name) (i) (count) (st) =
@@ -1746,6 +1654,7 @@ Section: Cluster Directory Search
   fat16-find-in-cluster-walk : Fat16Volume, Integer, Text, Integer, Integer, Integer, Fat16Lfn -> [Device.Block] Maybe Fat16DirEntry
   fat16-find-in-cluster-walk (vol) (cluster) (name) (saved) (power) (steps) (st) =
     if fat16-is-end cluster then None
+    else if fat16-cluster-ok vol cluster == False then None
     else act
       r <- fat16-scan-cluster-sectors vol name (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster) st
       fat16-cluster-found-or-next vol cluster name saved power steps r
@@ -1873,11 +1782,6 @@ Section: Path Resolution
   fat16-split-path : Text -> List Text
   fat16-split-path (path) = fat16-split-loop path 0 (text-length path) 0 []
 
- The separator test compares CCE codes: `char-code` yields the internal
- CCE code, so the ASCII slash must be mapped with `from-unicode` first.
- Comparing against a bare 47 never matched, and every path resolved as a
- single name -- "EFI/BOOT/BOOTX64.EFI" was looked up verbatim in the root.
-
   fat16-split-loop : Text, Integer, Integer, Integer, List Text -> List Text
   fat16-split-loop (s) (i) (len) (start) (acc) =
     if i >= len then if i > start then list-push acc (substring s start (i - start)) else acc
@@ -1893,37 +1797,53 @@ Section: File Reading
  a medium we did not produce, and the read answers None unless the chain
  carries the whole size: a cluster outside the volume or an end-of-chain
  before the size is spent is a short chain, and a chain that returns to a
- cluster it has visited is Brent's cycle, as in the walkers above.
+ cluster it has visited is Brent's cycle, as in the walkers above. A whole-file
+ read also requires the cluster that spends the size to carry end-of-chain:
+ Brent's detector fires only after a delay, so a cycle shorter than the file is
+ otherwise read through and its clusters answered twice, and a cycle never
+ reaches end-of-chain. fat16-read-cluster-bytes reads a prefix and skips that
+ check.
 
   fat16-read-cluster-bytes : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
   fat16-read-cluster-bytes (vol) (cluster) (remaining) (sector-off) (acc) (saved) (power) (steps) =
+    fat16-read-chain vol cluster remaining sector-off acc saved power steps False
+
+  fat16-read-chain : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Boolean -> [Device.Block] Maybe (List Integer)
+  fat16-read-chain (vol) (cluster) (remaining) (sector-off) (acc) (saved) (power) (steps) (whole) =
     if remaining <= 0 then Just acc
     else if fat16-cluster-ok vol cluster == False then None
     else act
       buf <- block-read-sector (fat16-cluster-sector vol cluster + sector-off)
-      fat16-read-cluster-step vol cluster remaining sector-off acc buf saved power steps
+      fat16-read-cluster-step vol cluster remaining sector-off acc buf saved power steps whole
     end
 
-  fat16-read-cluster-step : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
-  fat16-read-cluster-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) (saved) (power) (steps) =
+  fat16-read-cluster-step : Fat16Volume, Integer, Integer, Integer, List Integer, Integer, Integer, Integer, Integer, Boolean -> [Device.Block] Maybe (List Integer)
+  fat16-read-cluster-step (vol) (cluster) (remaining) (sector-off) (acc) (buf) (saved) (power) (steps) (whole) =
     let bytes-this = if remaining < (vol.vol-bytes-per-sector) then
       remaining
     else (vol.vol-bytes-per-sector)
     in let acc2 = fat16-copy-bytes buf 0 bytes-this acc
     in let next-sector-off = sector-off + 1
-    in if remaining - bytes-this <= 0 then Just acc2
+    in if remaining - bytes-this <= 0 then
+      (if whole then fat16-read-chain-end vol cluster acc2 else Just acc2)
     else if next-sector-off >= (vol.vol-sectors-per-cluster)
-      then fat16-read-next-cluster vol cluster (remaining - bytes-this) acc2 saved power steps
+      then fat16-read-next-cluster vol cluster (remaining - bytes-this) acc2 saved power steps whole
     else
-      fat16-read-cluster-bytes vol cluster (remaining - bytes-this) next-sector-off acc2 saved power steps
+      fat16-read-chain vol cluster (remaining - bytes-this) next-sector-off acc2 saved power steps whole
 
-  fat16-read-next-cluster : Fat16Volume, Integer, Integer, List Integer, Integer, Integer, Integer -> [Device.Block] Maybe (List Integer)
-  fat16-read-next-cluster (vol) (cluster) (remaining) (acc) (saved) (power) (steps) = act
+  fat16-read-chain-end : Fat16Volume, Integer, List Integer -> [Device.Block] Maybe (List Integer)
+  fat16-read-chain-end (vol) (cluster) (acc) = act
+    nxt <- fat16-next-cluster vol cluster
+    if fat16-is-end nxt then Just acc else None
+  end
+
+  fat16-read-next-cluster : Fat16Volume, Integer, Integer, List Integer, Integer, Integer, Integer, Boolean -> [Device.Block] Maybe (List Integer)
+  fat16-read-next-cluster (vol) (cluster) (remaining) (acc) (saved) (power) (steps) (whole) = act
     nxt <- fat16-next-cluster vol cluster
     if nxt == saved then None
     else if steps + 1 == power then
-      fat16-read-cluster-bytes vol nxt remaining 0 acc nxt (power * 2) 0
-    else fat16-read-cluster-bytes vol nxt remaining 0 acc saved power (steps + 1)
+      fat16-read-chain vol nxt remaining 0 acc nxt (power * 2) 0 whole
+    else fat16-read-chain vol nxt remaining 0 acc saved power (steps + 1) whole
   end
 
   fat16-copy-bytes : Integer, Integer, Integer, List Integer -> List Integer
@@ -1931,18 +1851,11 @@ Section: File Reading
     if count <= 0 then acc
     else fat16-copy-bytes buf (off + 1) (count - 1) (list-push acc (peek-byte buf off))
 
- The unusable-volume check is the one the writes and the listings already
- make, and reading was the only entry without it. `fat16-find-in-root`
- divides by `vol-bytes-per-sector` to size the root directory, and a volume
- that did not parse carries 0 there, so a read on a machine with no disk
- attached divided by zero. RISC-V and ARM64 define that division and answer
- without trapping, which is why this reached x86-64 alone, as `!EXC=00`.
-
   fat16-read-bytes : Fat16Volume, Text -> [Device.Block] Maybe (List Integer)
   fat16-read-bytes (vol) (path) =
     if fat16-vol-is-usable vol == False then None
     else when fat16-resolve-path vol path
-      is Just (entry) -> fat16-read-cluster-bytes vol (entry.de-cluster) (entry.de-size) 0 [] (entry.de-cluster) 1 0
+      is Just (entry) -> fat16-read-chain vol (entry.de-cluster) (entry.de-size) 0 [] (entry.de-cluster) 1 0 True
       is None -> None
 
  The tier-0 table is threaded, not named here: a list constant is a definition,
@@ -1976,12 +1889,6 @@ Section: File Reading
       is Just (bs) -> Just (fat16-bytes-to-text bs 0 (list-length bs) "")
       is None -> None
 
- Byte 13 is dropped rather than mapped. It is the one byte in a text file that
- from-unicode answers -1 for, so code-to-char would place an invalid character
- where a line ending was. __bare_metal_read_serial drops the same byte before
- its own CCE lookup, so a source arriving over the wire and the same source
- arriving off a volume have to agree here or the two compiles differ.
-
   fat16-source-chars : List Integer, List Integer, Integer, Integer, List Text -> List Text
   fat16-source-chars (tbl) (bs) (i) (len) (acc) =
     if i >= len then acc
@@ -2002,49 +1909,6 @@ Section: File Reading
       is None -> False
 
 Section: Asking Whether A File Is There
-
- The disk is asked about first, and that guard is not politeness. With no
- disk attached the block device hands back zeroes, the boot record parses
- into a volume whose bytes-per-sector is zero, and the first thing that
- divides by it takes the machine down. No disk means no files: that is an
- answer, not a fault.
-
- The guard asked the wrong thing, and asking it wrongly cost the whole
- function. It called block-sector-count, which returned 0 on a disk that was
- attached and read perfectly, so the guard fired every time and file-exists
- answered False for every path on every disk. The builtin it replaced
- answered True for every path. Same disease, opposite constant, and the
- second one is harder to see, because a missing file is a believable answer.
-
- That counter is fixed now (2026-07-13). The cause was not the guest: the ATA
- IDENTIFY was always correct. codex-vm returned 0xFF for the LBA-mid and
- LBA-high registers, which is the floating-bus "no drive" answer, and reading
- 0x00/0x00 there after a drive select IS the ATA device signature -- so the
- drive detect concluded there was no disk and branched away before ever
- issuing IDENTIFY. Reads worked throughout, because READ SECTORS writes those
- registers and the write path was fine.
-
- The guard below still does not consult it, and should not. Whether the volume
- parses is the question this function actually needs answered, and it is the
- one that stays right no matter what the counter does.
-
- WHERE THE VOLUME STARTS IS A PROPERTY OF THE DISK, NOT A CONSTANT. This was
- 2048 everywhere, which is only ever right for an image our own GptWriter
- laid down -- it puts its one ESP at LBA 2048 and nothing else does. A stick
- partitioned by anyone else, a vendor ESP, or our own dual-boot install
- (DriveManager places its Codex partition after the last existing one, at a
- computed offset) all put the volume somewhere else, and every read then
- lands on the wrong sectors and parses garbage as a boot record.
-
- WHICH PARTITION IS THE ONE WE WANT IS NOT ANSWERED BY ITS TYPE GUID. A
- dual-boot disk carries a FAT32 vendor ESP and a FAT16 Codex partition, and
- both are "the boot partition" by some reading. The test that actually
- matters is the one this chapter already uses everywhere else: does the
- volume parse. fat16-init is total and fat16-vol-is-usable is the existing
- judgement, so walk the table and take the first partition that answers yes.
- That is self-validating -- it cannot pick a partition it then fails to read
- -- and it is the same reasoning the prose above gives for asking the volume
- rather than a counter.
 
  NO READABLE GPT DOES NOT MEAN LBA 2048. UEFI firmware hands a payload booted
  from a GPT disk its own PARTITION as the block device (LoadedImage's
@@ -2107,19 +1971,6 @@ Section: Asking Whether A File Is There
 
 Section: Saving A File
 
- The effect row is [Device.Block] and not [FileSystem.Write], because
- [Device.Block] is what it actually does. There is no filesystem beneath this
- -- there is a disk, and a FAT16 volume we parse ourselves, and the row says
- so. A caller that wanted the fiction can no longer have it.
-
- The names carry the fat16- prefix, and that is deliberate rather than
- timid. Foreword chapter FileSystem declares write-file as an *effect
- operation* -- the abstract, handler-dispatched interface -- and a bare
- write-file defined here would collide with it in any chapter citing both.
- That is the duplicate-name hazard described above; it is not
- worth spending on a shorter name. file-exists took the bare name because
- nothing else claims it.
-
   fat16-text-bytes : Text, Integer, Integer, List Integer -> List Integer
   fat16-text-bytes (s) (i) (n) (acc) =
     if i >= n then acc
@@ -2134,10 +1985,6 @@ Section: Saving A File
   fat16-write-binary-file : Text, List Integer -> [Device.Block] Boolean
   fat16-write-binary-file (path) (bytes) =
     fat16-write-source path (fat16-src-of-list bytes)
-
- fat16-write-segments is what a binary emitter wants: a leading list, a raw
- buffer, and a trailing list, written as one chain with no copy. The CDX sink
- uses it to put a header, a code buffer and a tail on the volume.
 
   fat16-write-segments : Text, List Integer, Integer, Integer, List Integer -> [Device.Block] Boolean
   fat16-write-segments (path) (head) (buf) (blen) (tail) =
@@ -2308,14 +2155,6 @@ Section: Root Listing
     if i >= n then acc
     else fat16-entry-names es (i + 1) n (list-push acc ((list-at es i).de-name))
 
- fat16-list-sector-entries has no caller in this chapter and is NOT dead:
- `fat32-list-dir-sectors` borrows it, because a FAT32 directory sector holds
- the same 32-byte entries a FAT16 one does. It answers 8.3 names and SKIPS
- long-name records rather than assembling them, which is what FAT32 wants:
- `Fat32.codex` has no long-name support of its own, so giving this one the
- assembling reader would hand FAT32 half a capability whose other half nothing
- over there implements.
-
   fat16-list-sector-entries : Integer, Integer, Integer, List Text -> List Text
   fat16-list-sector-entries (buf) (i) (count) (acc) =
     if i >= count then acc
@@ -2329,13 +2168,6 @@ Section: Root Listing
     in fat16-list-sector-entries buf (i + 1) count (list-push acc (entry.de-name))
 
 Section: Listing Any Directory
-
- A listing answers the LONG name where there is one, because a listing is what
- list-files filters by extension and an alias's extension is truncated: a
- directory of .codex chapters listed under its aliases answers .COD to every
- caller asking for .codex. The alias is still what fat16-read-dir-entry
- answers, and that is what the slot search and the alias search below need,
- so the two readings are separate functions rather than one with a flag.
 
   Fat16List = record {
     li-entries : List Fat16DirEntry,
@@ -2371,7 +2203,7 @@ Section: Listing Any Directory
   fat16-root-entries : Fat16Volume -> [Device.Block] List Fat16DirEntry
   fat16-root-entries (vol) =
     if fat16-scope-admits "/" == False then []
-    else let root-sectors = ((vol.vol-root-entry-count) * 32 + (vol.vol-bytes-per-sector) - 1) / (vol.vol-bytes-per-sector)
+    else let root-sectors = fat16-root-sector-count vol
     in fat16-root-entry-sectors vol (vol.vol-root-start) root-sectors 0 [] fat16-lfn-none
 
   fat16-root-entry-sectors : Fat16Volume, Integer, Integer, Integer, List Fat16DirEntry, Fat16Lfn -> [Device.Block] List Fat16DirEntry
@@ -2392,6 +2224,7 @@ Section: Listing Any Directory
   fat16-cluster-entries-walk : Fat16Volume, Integer, List Fat16DirEntry, Integer, Integer, Integer, Fat16Lfn -> [Device.Block] List Fat16DirEntry
   fat16-cluster-entries-walk (vol) (cluster) (acc) (saved) (power) (steps) (st) =
     if fat16-is-end cluster then acc
+    else if fat16-cluster-ok vol cluster == False then acc
     else act
       here <- fat16-cluster-entry-sectors vol (fat16-cluster-sector vol cluster) (vol.vol-sectors-per-cluster) acc st
       next <- fat16-next-cluster vol cluster
@@ -2432,13 +2265,6 @@ Section: Listing Any Directory
     end
 
 Section: Listing A Directory By Name
-
- No disk means no files, and the volume is what says so: with nothing
- attached the boot record parses out of zeroes and its bytes-per-sector is
- zero, which is the value the division would fault on. Ask the volume, not
- block-sector-count -- that counter reads 0 on a disk that works, and
- resting a filesystem answer on it is what made file-exists answer False
- for every path on every disk.
 
   list-files : Text, Text -> [Device.Block] List Text
   list-files (dir) (ext) = act

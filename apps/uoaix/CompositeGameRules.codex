@@ -331,7 +331,10 @@ Chapter: CompositeGameRules
     in if slot < 0 | slot >= list-length magic.actors then 20
     else let a = list-at magic.actors slot in if a.serial == serial then mgs-stat a 2 else 20
   cg-admit-wits : CompositeGame, Integer, Integer -> Boolean
-  cg-admit-wits (owner) (attacker) (target) = cg-admit owner.active attacker target & not (cg-fooled owner attacker target)
+  cg-admit-wits (owner) (attacker) (target) = if cg-pet-calm owner attacker then False
+    else cg-admit owner.active attacker target & not (cg-fooled owner attacker target)
+  cg-pet-calm : CompositeGame, Integer -> Boolean
+  cg-pet-calm (owner) (serial) = when owner.spawns is None -> False is Just (g) -> gws-calm g serial
   cg-install-core : CompositeGame, CompositeSetup -> Result Integer Text
   cg-install-core (owner) (setup) =
     let bound = __record-set owner "decoration" setup.decoration
@@ -463,7 +466,7 @@ Chapter: CompositeGameRules
           gate-cover = None, stages = alloc-bytes (cg-stage-count * 8), decay = sa-new 16 items.world.capacity, decay-at = cb-zeroed 8, save-faults = "", load-faults = "", faults-said = 0, alarms = cb-zeroed (cg-alarm-rows * 16), dead = sa-new cg-dead-bytes cg-dead-rows, incidents = True, quests = sa-new cg-quest-bytes cg-dead-rows,
           tick-map = WalkMap { x = 0, y = 0, width = 0, height = 0, land = 0, solids = 0, stride = 0, refused = 0 }, tick-held = False, tick-watcher = 0, store-due = 0, lumber-shun = cb-zeroed (cgl-shun-cells * 8), rot-log = cb-zeroed (8 + cg-rot-rows * 64), death-log = cb-zeroed (16 + cg-death-rows * 64), plays = plr-new 0,
           overlay = gmo-new 0, land = gld-new 0, alarm-log = cb-zeroed (16 + cg-alarm-log-rows * 72), history = 0, tavern = cb-zeroed (tbd-tavern-bytes + tch-tavern-bytes), fleet = cb-zeroed swb-bytes, pins = mpn-new 0, books = wbk-new 0, cards = cb-zeroed tcd-bytes, cities = ct-table 0, city-maps = [], city-navs = [], leisure = kl-new 0,
-          worker-cities = [], city-towns = [], city-workers = [], city-held = 0, kind-time = cb-zeroed cg-kind-bytes, keeper-said = cb-zeroed (bb-shop-count * 16), teleports = tp-load 0, housing = hs-new 0, durability = id-new checkpoint.game.world.capacity, fleet-hour = 0 - 1, foot-said = cb-zeroed (cg-foot-rows * 8), city-keepers = [], city-leisure = cb-zeroed ck-tally-bytes, powder-tally = cb-zeroed 64, fleet-tally = cb-zeroed 104, weather = wx-new 0, gov-hour = 0 - 1, economy-hour = 0 - 1, light = 0 - 1, reports = cb-zeroed (16 + cg-report-rows * 64), lots-seen = 0, flora-fills = 0 - 1, walk-spent = 0, wheel-total = cb-zeroed cg-kind-bytes, wheel-ticks = 0, entry-cells = cb-zeroed 40, appointments = cb-zeroed rsc-bytes }
+          worker-cities = [], city-towns = [], city-workers = [], city-held = 0, kind-time = cb-zeroed cg-kind-bytes, keeper-said = cb-zeroed (bb-shop-count * 16), teleports = tp-load 0, housing = hs-new 0, durability = id-new checkpoint.game.world.capacity, fleet-hour = 0 - 1, foot-said = cb-zeroed (cg-foot-rows * 8), city-keepers = [], city-leisure = cb-zeroed ck-tally-bytes, powder-tally = cb-zeroed 64, fleet-tally = cb-zeroed 104, weather = wx-new 0, gov-hour = 0 - 1, economy-hour = 0 - 1, light = 0 - 1, reports = cb-zeroed (16 + cg-report-rows * 64), lots-seen = 0, flora-fills = 0 - 1, walk-spent = 0, wheel-total = cb-zeroed cg-kind-bytes, wheel-ticks = 0, entry-cells = cb-zeroed 48, appointments = cb-zeroed rsc-bytes }
           in let traded = __record-set made.plays "trade" (cg-play-trade made)
           in let doored = __record-set made.plays "doors" (cg-play-doors made)
           in let venomous = __record-set combat "venom-hook" (cg-as-envenom made)
@@ -3980,6 +3983,12 @@ Chapter: CompositeGameRules
     & " powders-spent=" & show (peek-qword owner.powder-tally 16) & " smith-mended=" & show (peek-qword owner.powder-tally 0)
     & " smith-failed=" & show (peek-qword owner.powder-tally 8) & " gear-worn=" & show (peek-qword owner.powder-tally 40)
     & " smith-runs=" & show (peek-qword owner.powder-tally 48) & " smith-seen=" & show (peek-qword owner.powder-tally 56)
+ Items 31 iron ingots, 38 boards, 62 the hammer (stock/wear).
+  cg-tinker-said : CompositeGame -> Text
+  cg-tinker-said (owner) = let v = owner.vendor
+    in if v.vendor-count <= bb-tinker then "" else let p = ep-actor v.currency.world (list-at v.vendors bb-tinker).actor
+    in " tinker-ingots=" & show (ep-at p.stock 31) & " tinker-boards=" & show (ep-at p.stock 38) & " tinker-hammer=" & show (ep-at p.stock 62)
+      & "/" & show (ep-at p.wear 62) & " tinker-ready=" & (if bb-restock-ready v bb-tinker then "1" else "0")
   cg-as-durability : CompositeGame, Integer -> Integer
   cg-as-durability (owner) (serial) = when world-get owner.items.world serial is Err (_) -> 0 is Ok (o) -> id-read owner.durability owner.items.world serial o.graphic
   cg-as-herd : CompositeGame, Integer, Integer, Integer, Integer -> Boolean
@@ -4026,6 +4035,7 @@ Chapter: CompositeGameRules
     else let set = __record-set slot "order" order
     in let due = __record-set slot "due" g.combat.tick
     in let cleared = gws-uncommand slot
+    in let calm = if order == gws-order-guard then slot else __record-set slot "aim" gws-aim-calm
     in let at = world-slot game.world slot.serial
     in let calmed = if at < 0 then 0 else let a = list-at g.combat.actors at in if a.serial /= slot.serial then 0
       else let stopped = cb-stop g.combat a in let peace = __record-set a "war" False in 0
@@ -4450,13 +4460,14 @@ Chapter: CompositeGameRules
     in let a = when owner.town is None -> 0 is Just (t) -> cg-meter-set t.nav m
     in let b = cg-meter-towns owner.city-towns m 0
     in let c = cg-meter-navs owner.city-navs m 0
-    in when owner.staff is None -> 0 is Just (st) -> (when st.job is None -> 0 is Just (j) -> cg-meter-set j.nav m)
+    in let d = when owner.staff is None -> 0 is Just (st) -> (when st.job is None -> 0 is Just (j) -> cg-meter-set j.nav m)
+    in poke-qword owner.entry-cells 40 (peek-qword owner.entry-cells 40 + a + b + c + d)
   cg-meter-set : TlPath, Integer -> Integer
   cg-meter-set (p) (m) = if p.meter == m then 0 else let a = __record-set p "meter" m in 1
   cg-meter-towns : List TownLive, Integer, Integer -> Integer
-  cg-meter-towns (ts) (m) (i) = if i >= list-length ts then 0 else let a = cg-meter-set (list-at ts i).nav m in cg-meter-towns ts m (i + 1)
+  cg-meter-towns (ts) (m) (i) = if i >= list-length ts then 0 else let a = cg-meter-set (list-at ts i).nav m in a + cg-meter-towns ts m (i + 1)
   cg-meter-navs : List TlPath, Integer, Integer -> Integer
-  cg-meter-navs (ps) (m) (i) = if i >= list-length ps then 0 else let a = cg-meter-set (list-at ps i) m in cg-meter-navs ps m (i + 1)
+  cg-meter-navs (ps) (m) (i) = if i >= list-length ps then 0 else let a = cg-meter-set (list-at ps i) m in a + cg-meter-navs ps m (i + 1)
   cg-kind-begin : Integer, Integer, Integer -> Integer
   cg-kind-begin (b) (kind) (key) = let a = poke-qword b 0 (cg-kind-slot kind key) in poke-qword b 8 hpet-ticks
   cg-kind-switch : Integer, Integer -> Integer

@@ -1,0 +1,42 @@
+Chapter: UsbPadBoundsTest
+  cites Works chapter GopUsbPad
+  cites Foreword chapter Console
+
+ Device-supplied values the pad driver must refuse. A Report Count item of
+ 9000 (prefix 0x96, two data bytes) after Report Size 8. A config buffer of
+ 512 bytes whose interface descriptor at offset 250 has bLength 9, so the HID
+ descriptor it points at starts at 259, past byte 255; bytes 259 to 267 hold
+ a HID descriptor (type 33) naming a 64-byte report descriptor.
+
+Section: Fixtures
+
+  desc-huge : List Integer = [5, 1, 9, 5, 161, 1, 5, 1, 9, 48, 21, 129, 37, 127, 117, 8, 150, 40, 35, 129, 2, 192]
+
+  to-buf : List Integer -> Integer
+  to-buf (bs) = to-buf-loop (alloc-bytes (list-length bs + 8)) bs 0
+
+  to-buf-loop : Integer, List Integer, Integer -> Integer
+  to-buf-loop (b) (bs) (i) =
+    if i >= list-length bs then b
+    else let w = poke-byte b i (list-at bs i)
+    in to-buf-loop b bs (i + 1)
+
+  past-cfg : Integer
+  past-cfg =
+    let b = alloc-bytes 512
+    in let i0 = poke-byte b 250 9
+    in let h0 = poke-byte b 259 9
+    in let h1 = poke-byte b 260 33
+    in let h7 = poke-byte b 266 64
+    in let h8 = poke-byte b 267 0
+    in b
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let lh = pad-parse (to-buf desc-huge) (list-length desc-huge)
+    in act
+      print-line-uni ("maxpkt 0 8 64 1024 1025 65535: " & show (pad-packet-ok 0) & " " & show (pad-packet-ok 8) & " " & show (pad-packet-ok 64) & " " & show (pad-packet-ok 1024) & " " & show (pad-packet-ok 1025) & " " & show (pad-packet-ok 65535))
+      print-line-uni ("count 9000 poisons: " & show (lh.pl-bits >= pad-poison-bits))
+      print-line-uni ("HID descriptor past byte 255: " & show (pad-report-desc-len past-cfg 250))
+    end

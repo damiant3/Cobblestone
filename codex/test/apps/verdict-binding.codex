@@ -1,0 +1,37 @@
+Chapter: VerdictBindingTest
+
+  cites Foreword chapter Console
+  cites Works chapter KeyManager
+  cites Works chapter RepoProtocol
+
+Section: Helpers
+
+  kp : Keypair = generate-keypair (text-to-bytes "verdict-binding-test-seed")
+
+  ring : Keyring = keyring-add keyring-empty "author" (kp.public-key) 100
+
+  yn : Boolean -> Text
+  yn (b) = if b then "yes" else "no"
+
+  with-kind : Verdict, VerdictKind -> Verdict
+  with-kind (v) (k) = Verdict { id = v.id, proposal-id = v.proposal-id, author-fingerprint = v.author-fingerprint, kind = k, reason = v.reason, signature = v.signature, timestamp = v.timestamp }
+
+  with-ts : Verdict, Integer -> Verdict
+  with-ts (v) (ts) = Verdict { id = v.id, proposal-id = v.proposal-id, author-fingerprint = v.author-fingerprint, kind = v.kind, reason = v.reason, signature = v.signature, timestamp = ts }
+
+  with-reason : Verdict, Text -> Verdict
+  with-reason (v) (r) = Verdict { id = v.id, proposal-id = v.proposal-id, author-fingerprint = v.author-fingerprint, kind = v.kind, reason = r, signature = v.signature, timestamp = v.timestamp }
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let v = create-verdict kp "proposal-0001" (Amend "rename the field") "close" 100
+    in let shifted = create-verdict kp "proposal-0001" (Amend "rename the field|close") "" 100
+    in act
+      print-line-uni ("verdict control verifies: " & yn (verify-verdict-signature ring v))
+      print-line-uni ("amend note replaced verifies: " & yn (verify-verdict-signature ring (with-kind v (Amend "delete the module"))))
+      print-line-uni ("timestamp replaced verifies: " & yn (verify-verdict-signature ring (with-ts v 999)))
+      print-line-uni ("reason replaced verifies: " & yn (verify-verdict-signature ring (with-reason v "open")))
+      print-line-uni ("kind changed to accept verifies: " & yn (verify-verdict-signature ring (with-kind v Accept)))
+      print-line-uni ("note text moved into the reason verifies: " & yn (verify-verdict-signature ring (with-reason (with-kind shifted (Amend "rename the field")) "close")))
+    end

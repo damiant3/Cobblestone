@@ -1,0 +1,108 @@
+Chapter: FatFullWrite
+
+  cites Foreword chapter Fat32
+  cites Foreword chapter Fat16
+  cites Foreword chapter Maybe
+
+ A write the volume cannot hold must leave the free clusters free, not claimed
+ by the chain it abandoned. FAT32: formatted at sector 2048 for 20480 sectors.
+ FAT16: a BPB written at 26624 for 4096 sectors (512 bytes, 4 a cluster, 1
+ reserved, 2 FATs of 4 sectors, 512 root entries). On each, every cluster from
+ 10 to the last is marked used, leaving 3 to 9 free; an 8-cluster file is
+ refused, and a 7-cluster file then fits.
+
+Section: Helpers
+
+  zeros : Integer, List Integer -> List Integer
+  zeros (n) (acc) = if list-length acc >= n then acc else zeros n (list-push acc 0)
+
+  zero-fill : Integer, Integer, Integer -> Integer
+  zero-fill (b) (i) (n) =
+    if i >= n then 0 else let p = poke-byte b i 0 in zero-fill b (i + 1) n
+
+  put-u16 : Integer, Integer, Integer -> Integer
+  put-u16 (b) (o) (v) =
+    let lo = poke-byte b o (bit-and v 255)
+    in poke-byte b (o + 1) (bit-and (bit-shru v 8) 255)
+
+  yn : Boolean -> Text
+  yn (v) = if v then "yes" else "no"
+
+Section: FAT32
+
+  fill32 : Fat32Volume, Integer, Integer -> [Device.Block] Integer
+  fill32 (vol) (c) (last) =
+    if c > last then 0
+    else act
+      w <- fat32-set-fat-entry vol c 268435455
+      fill32 vol (c + 1) last
+    end
+
+  free32 : Fat32Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  free32 (vol) (c) (last) (acc) =
+    if c > last then acc
+    else act
+      v <- fat32-next-cluster vol c
+      free32 vol (c + 1) last (if v == 0 then acc + 1 else acc)
+    end
+
+  arm32 : [Console, Device.Block] Nothing
+  arm32 = act
+    fmt <- fat32-format 2048 20480 "CODEX"
+    vol <- fat32-init 2048
+    let per = (vol.f32-sectors-per-cluster) * 512
+    in act
+      f <- fill32 vol 10 (fat32-last-cluster vol)
+      before <- free32 vol 3 9 0
+      w1 <- fat32-write-file vol "BIG.BIN" (zeros (per * 8) [])
+      after <- free32 vol 3 9 0
+      print-line-uni ("fat32 free 3..9 before " & show before & " write 8 clusters " & yn w1 & " free after " & show after)
+      w2 <- fat32-write-file vol "FIT.BIN" (zeros (per * 7) [])
+      left <- free32 vol 3 9 0
+      print-line-uni ("fat32 write 7 clusters " & yn w2 & " free left " & show left)
+    end
+  end
+
+Section: FAT16
+
+  fill16 : Fat16Volume, Integer, Integer -> [Device.Block] Integer
+  fill16 (vol) (c) (last) =
+    if c > last then 0
+    else act
+      w <- fat16-write-fat-entry vol c 65535
+      fill16 vol (c + 1) last
+    end
+
+  free16 : Fat16Volume, Integer, Integer, Integer -> [Device.Block] Integer
+  free16 (vol) (c) (last) (acc) =
+    if c > last then acc
+    else act
+      v <- fat16-next-cluster vol c
+      free16 vol (c + 1) last (if v == 0 then acc + 1 else acc)
+    end
+
+  arm16 : [Console, Device.Block] Nothing
+  arm16 = act
+    let b = alloc-bytes 512
+    in let z = zero-fill b 0 512
+    in let w = put-u16 b 11 512 + poke-byte b 13 4 + put-u16 b 14 1 + poke-byte b 16 2 + put-u16 b 17 512 + put-u16 b 19 4096 + put-u16 b 22 4 + put-u16 b 510 43605
+    in act
+      bw <- block-write-sector 26624 b
+      vol <- fat16-init 26624
+      f <- fill16 vol 10 (fat16-last-cluster vol)
+      before <- free16 vol 2 9 0
+      w1 <- fat16-create-file vol "BIG.BIN" (fat16-src-of-list (zeros (2048 * 9) []))
+      after <- free16 vol 2 9 0
+      print-line-uni ("fat16 free 2..9 before " & show before & " write 9 clusters " & yn w1 & " free after " & show after)
+      w2 <- fat16-create-file vol "FIT.BIN" (fat16-src-of-list (zeros (2048 * 8) []))
+      left <- free16 vol 2 9 0
+      print-line-uni ("fat16 write 8 clusters " & yn w2 & " free left " & show left)
+    end
+  end
+
+Section: Entry
+
+  opening : [Console, Device.Block] Nothing = act
+    arm32
+    arm16
+  end

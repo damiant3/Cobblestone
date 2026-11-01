@@ -7,8 +7,6 @@ Chapter: WebMuxReassembly
   cites Works chapter Http
   cites Foreword chapter Console
 
- We say:
-
 Section: Wire Fixtures
   srv-mac : List Integer = [82, 84, 0, 18, 52, 86]
   cli-mac : List Integer = [82, 85, 10, 0, 2, 2]
@@ -36,10 +34,26 @@ Section: Wire Fixtures
   server-next (m) = ((((list-at (m.conns) (list-length (m.conns) - 1)).transport).session).conn).send-next
 
   a-syn : List Integer = mk 50000 a-ip 1000 tcp-flag-syn []
-  a-rest : List Integer = mk 50000 a-ip 1026 psh get-rest
 
   b-syn : List Integer = mk 50001 b-ip 2000 tcp-flag-syn []
-  b-body : List Integer = mk 50001 b-ip 2040 psh post-body
+
+ A seeded single-byte mutation sweep over a complete HTTP request, run through
+ the WebServer framing (wb-request-total, which calls wb-headers-end and
+ wb-content-length). Each must return a length and never read past the bytes.
+
+  wmr-req : List Integer = post-hdr & post-body
+
+  wmr-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  wmr-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else wmr-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  wmr-sweep : Integer, Integer, Integer -> Integer
+  wmr-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else let m = wmr-mutate wmr-req pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []
+    in let t = wb-request-total m (list-length m)
+    in wmr-sweep (pos + 1) n (acc + (if t > 0 then t else 0))
 
 Section: Route
   test-route : HttpRequest -> HttpResponse
@@ -52,13 +66,14 @@ Section: Entry
       m1 <- web-mux-feed test-route (\line -> 0) m0 a-syn 80
       m2 <- web-mux-feed test-route (\line -> 0) m1 (mk-acking 50000 a-ip 1001 (server-next m1) psh get-partial) 80
       print-line-uni ("afterPartial=" & show (m2.served))
-      m3 <- web-mux-feed test-route (\line -> 0) m2 a-rest 80
+      m3 <- web-mux-feed test-route (\line -> 0) m2 (mk-acking 50000 a-ip 1026 (server-next m2) psh get-rest) 80
       print-line-uni ("afterRest=" & show (m3.served))
       m4 <- web-mux-feed test-route (\line -> 0) m3 b-syn 80
       m5 <- web-mux-feed test-route (\line -> 0) m4 (mk-acking 50001 b-ip 2001 (server-next m4) psh post-hdr) 80
       print-line-uni ("afterPostHdr=" & show (m5.served))
-      m6 <- web-mux-feed test-route (\line -> 0) m5 b-body 80
+      m6 <- web-mux-feed test-route (\line -> 0) m5 (mk-acking 50001 b-ip 2040 (server-next m5) psh post-body) 80
       print-line-uni ("afterBody=" & show (m6.served))
       print-line-uni ("conns=" & show (list-length (m6.conns)))
+      print-line-uni ("framing-sweep completed=" & (if wmr-sweep 0 (list-length wmr-req) 0 >= 0 then "True" else "False"))
     end
   end

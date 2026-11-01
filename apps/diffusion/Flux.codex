@@ -12,8 +12,6 @@ Chapter: Flux
   cites Diffusion chapter UNet
   cites Diffusion chapter Sampler
 
- We say:
-
 Section: Weights
 
  The Flux transformer file (keys with no prefix, every tensor F8_E4M3):
@@ -63,11 +61,6 @@ Section: Weights
 
 Section: Operations
 
- Each answers a fresh f32 buffer, or 0 when an allocation or a launch was
- refused. A linear reads x from a byte offset and takes nn rows of the
- named weight from row wrow, which is how q, k, v and the MLP input come out
- of one fused matrix.
-
   fx-cast16 : Integer, Integer, Integer -> Integer
   fx-cast16 (x) (off) (n) =
     let h = un-temp (n * 2)
@@ -81,9 +74,15 @@ Section: Operations
     in let w = fx-w f (name & ".weight")
     in let b = fx-w f (name & ".bias")
     in let ok = if xh == 0 | w == 0 | b == 0 | y == 0 then False
-       else if kk - kk / 16 * 16 == 0 & mm * kk * 2 <= 41943040 then un-run 2 gemm-ptx "kernel_linear_fast_fp8_mfirst" (GpuGrid { gx = (mm + 127) / 128, gy = (nn + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0] >= 0
-       else if kk - kk / 16 * 16 == 0 then un-run 2 gemm-ptx "kernel_linear_fast_fp8" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0] >= 0
-       else un-run 2 gemm-ptx "kernel_linear_fp8" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0] >= 0
+       else if kk - kk / 16 * 16 == 0 & mm * kk * 2 <= 41943040 then
+         un-run 2 gemm-ptx "kernel_linear_fast_fp8_mfirst" (GpuGrid { gx = (mm + 127) / 128, gy = (nn + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [
+           un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0] >= 0
+       else if kk - kk / 16 * 16 == 0 then
+         un-run 2 gemm-ptx "kernel_linear_fast_fp8" (GpuGrid { gx = (nn + 127) / 128, gy = (mm + 127) / 128, gz = 1, bx = 256, by = 1, bz = 1, shared = 39936 }) [
+           un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0, un-int 0] >= 0
+       else
+         un-run 2 gemm-ptx "kernel_linear_fp8" (GpuGrid { gx = (nn + 63) / 64, gy = (mm + 63) / 64, gz = 1, bx = 128, by = 1, bz = 1, shared = 20480 }) [
+           un-buf xh, gpu-arg-buf w (wrow * kk), gpu-arg-buf b (wrow * 4), gpu-arg-buf y yoff, un-int mm, un-int nn, un-int kk, un-int 0] >= 0
     in let fr = un-tfree 0 xh (mm * kk * 2)
     in ok
 
@@ -108,19 +107,17 @@ Section: Operations
     in let part = un-temp (rows * 128 * 8)
     in let y = gpu-buf-alloc (rows * 3072 * 4)
     in let ok = if x == 0 | mod == 0 | st == 0 | part == 0 | y == 0 then False
-       else if un-rows "kernel_row_stats_wide" rows [gpu-arg-buf x xoff, un-buf st, un-buf part, un-int 3072, un-real 0.000001, un-int rows] then un-layer "kernel_layer_norm_mod" (rows * 3072) [gpu-arg-buf x xoff, un-buf st, gpu-arg-buf mod (scale * 12288), gpu-arg-buf mod (shift * 12288), un-buf y, un-int 3072, un-int (rows * 3072)]
+       else if un-rows "kernel_row_stats_wide" rows [gpu-arg-buf x xoff, un-buf st, un-buf part, un-int 3072, un-real 0.000001, un-int rows] then
+         un-layer "kernel_layer_norm_mod" (rows * 3072) [gpu-arg-buf x xoff, un-buf st, gpu-arg-buf mod (scale * 12288), gpu-arg-buf mod (shift * 12288),
+           un-buf y, un-int 3072, un-int (rows * 3072)]
        else False
     in un-tfree (un-tfree (un-out y ok) st (rows * 16)) part (rows * 128 * 8)
-
- x + gate y into a fresh buffer, the gate the chunk of mod at that index.
 
   fx-gated : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
   fx-gated (x) (xoff) (y) (mod) (gate) (rows) =
     let out = gpu-buf-alloc (rows * 3072 * 4)
     in if out == 0 | x == 0 | y == 0 | mod == 0 then un-free 0 out
     else un-out out (un-layer "kernel_gated_add" (rows * 3072) [gpu-arg-buf x xoff, un-buf y, gpu-arg-buf mod (gate * 12288), un-buf out, un-int 3072, un-int (rows * 3072)])
-
- RMSNorm of each 128-wide head in place, rows tokens from byte offset off.
 
   fx-qk-norm : FluxFile, Integer, Integer, Integer, Text -> Boolean
   fx-qk-norm (f) (q) (off) (rows) (name) =
@@ -129,7 +126,8 @@ Section: Operations
     in let part = un-temp (n * 128 * 8)
     in let g = fx-w f name
     in let ok = if q == 0 | g == 0 | st == 0 | part == 0 then False
-       else if un-rows "kernel_rms_stats_wide" n [gpu-arg-buf q off, un-buf st, un-buf part, un-int 128, un-real 0.000001, un-int n] then un-layer "kernel_rms_norm" (n * 128) [gpu-arg-buf q off, un-buf st, un-buf g, gpu-arg-buf q off, un-int 128, un-int (n * 128)]
+       else if un-rows "kernel_rms_stats_wide" n [gpu-arg-buf q off, un-buf st, un-buf part, un-int 128, un-real 0.000001, un-int n] then
+         un-layer "kernel_rms_norm" (n * 128) [gpu-arg-buf q off, un-buf st, un-buf g, gpu-arg-buf q off, un-int 128, un-int (n * 128)]
        else False
     in let fr = un-tfree (un-tfree 0 st (n * 16)) part (n * 128 * 8)
     in ok
@@ -184,7 +182,8 @@ Section: Attention
     in let vh = fx-cast16 v 0 (n * 3072)
     in let o = gpu-buf-alloc (n * 12288)
     in let ok = if qh == 0 | kh == 0 | vh == 0 | o == 0 then False
-       else un-run 2 gemm-ptx "kernel_attention_fused_128" (GpuGrid { gx = (n + 63) / 64, gy = 48, gz = 1, bx = 128, by = 1, bz = 1, shared = 49152 }) [un-buf qh, un-buf kh, un-buf vh, un-buf o, un-int n, un-int n, un-int 3072] >= 0
+       else un-run 2 gemm-ptx "kernel_attention_fused_128" (GpuGrid { gx = (n + 63) / 64, gy = 48, gz = 1, bx = 128, by = 1, bz = 1, shared = 49152 }) [
+         un-buf qh, un-buf kh, un-buf vh, un-buf o, un-int n, un-int n, un-int 3072] >= 0
     in un-tfree (un-tfree (un-tfree (un-out o ok) qh (n * 6144)) kh (n * 6144)) vh (n * 6144)
 
 Section: Blocks
@@ -193,9 +192,6 @@ Section: Blocks
     fp-img : Integer,
     fp-txt : Integer
   }
-
- A stream's half of a double block after the joint attention: the gated
- projection, then the gated MLP of its modulated LayerNorm.
 
   fx-stream : FluxFile, Integer, Integer, Integer, Integer, Integer, Text -> Integer
   fx-stream (f) (x) (o) (ooff) (rows) (mod) (p) =
@@ -259,13 +255,6 @@ Section: Blocks
     in un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free (un-free y m) xm) q) k) v) mlp) o) g) cat) out
 
 Section: Forward
-
- One call of the transformer on a 16 x h x w latent at sigma, ctx the T5
- context (txt x 4096 f32) and y CLIP-L's pooled 768. With keep, every module
- output stays and the list is build/flux-oracle.py's records in its order
- (img_in, time_in, vector_in, txt_in, each double block's img and txt, each
- single block, final, out); without, each is freed once used and the list is
- the output alone.
 
   FxRun = record {
     fr-a : Integer,
@@ -374,13 +363,17 @@ Section: Image
     in let fr = un-free 0 shift
     in a
 
- A bare VAE file, Flux's ae.safetensors, as one part holding every tensor.
-
   fx-bind-all : SafeTensorFile, Integer, List BoundTensor -> List BoundTensor
   fx-bind-all (file) (i) (acc) =
     if i >= list-length (file.st-tensors) then acc
     else let m = list-at (file.st-tensors) i
-    in fx-bind-all file (i + 1) (list-push acc (BoundTensor { bt-name = m.stm-name, bt-dtype = m.stm-dtype, bt-shape = m.stm-shape, bt-offset = file.st-data-offset + m.stm-offset-start, bt-bytes = m.stm-offset-end - m.stm-offset-start }))
+    in fx-bind-all file (i + 1) (list-push acc (BoundTensor {
+      bt-name = m.stm-name,
+      bt-dtype = m.stm-dtype,
+      bt-shape = m.stm-shape,
+      bt-offset = file.st-data-offset + m.stm-offset-start,
+      bt-bytes = m.stm-offset-end - m.stm-offset-start
+    }))
 
   flux-vae-part : Text -> PartBinding
   flux-vae-part (path) = PartBinding { pb-name = "vae", pb-required = 0, pb-bound = fx-bind-all (ckpt-open path) 0 [], pb-missing = [], pb-misshapen = [], pb-optional = 0 }

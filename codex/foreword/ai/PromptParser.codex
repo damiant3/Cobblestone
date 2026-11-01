@@ -11,8 +11,6 @@ Chapter: PromptParser
 
  Fixed-point (scale 1000). Weight 1000 = 1.0x.
 
- We say:
-
 Section: Types
   PromptToken = record {
     pt-text : Text,
@@ -57,7 +55,9 @@ Section: Parse Full Prompt
   pp-is-break : Text, Integer, Integer -> Boolean
   pp-is-break (s) (i) (len) =
     if i + 5 > len then False
-    else substring s i 5 == "BREAK"
+    else if substring s i 5 /= "BREAK" then False
+    else if i > 0 & substring s (i - 1) 1 /= " " then False
+    else i + 5 == len | substring s (i + 5) 1 == " "
 
 Section: Parse Segment
   pp-parse-segments : List Text, Integer, Integer, List PromptSegment -> List PromptSegment
@@ -118,7 +118,8 @@ Section: Weight Value Parsing
     if i >= len then pp-combine-decimal whole frac-digits has-dot
     else let cp = pp-codepoint s i
     in if cp >= 48 then if cp <= 57 then
-      if has-dot then pp-parse-decimal s (i + 1) len (whole * 10 + cp - 48) True (frac-digits + 1)
+      if whole > 1000000 then pp-parse-decimal s (i + 1) len whole has-dot frac-digits
+      else if has-dot then pp-parse-decimal s (i + 1) len (whole * 10 + cp - 48) True (frac-digits + 1)
       else pp-parse-decimal s (i + 1) len (whole * 10 + cp - 48) False frac-digits
     else pp-combine-decimal whole frac-digits has-dot
     else if cp == 46 then pp-parse-decimal s (i + 1) len whole True frac-digits
@@ -130,7 +131,8 @@ Section: Weight Value Parsing
     else if frac-digits == 0 then raw * 1000
     else if frac-digits == 1 then raw * 100
     else if frac-digits == 2 then raw * 10
-    else raw
+    else if frac-digits == 3 then raw
+    else pp-combine-decimal (raw / 10) (frac-digits - 1) True
 
 Section: Helper Functions
   pp-find-colon-weight : Text, Integer, Integer -> Integer
@@ -197,18 +199,28 @@ Section: Helper Functions
     else substring s 0 (i + 1)
 
 Section: Prompt to Weighted Embeddings
-  prompt-apply-weights : ParsedPrompt, Integer -> List Integer
-  prompt-apply-weights (prompt) (embed-dim) =
-    if prompt.pp-segment-count == 0 then []
-    else let first = list-at (prompt.pp-segments) 0
-    in prompt-weight-tokens (first.ps-tokens) embed-dim 0 (first.ps-token-count) []
+  prompt-apply-weights : ParsedPrompt, List Integer, Integer -> List Integer
+  prompt-apply-weights (prompt) (embeddings) (embed-dim) =
+    prompt-weight-segments (prompt.pp-segments) embeddings embed-dim 0 (prompt.pp-segment-count) 0 []
 
-  prompt-weight-tokens : List PromptToken, Integer, Integer, Integer, List Integer -> List Integer
-  prompt-weight-tokens (tokens) (dim) (i) (n) (acc) =
+  prompt-weight-segments : List PromptSegment, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  prompt-weight-segments (segs) (emb) (dim) (si) (sn) (row) (acc) =
+    if si >= sn then acc
+    else let seg = list-at segs si
+    in let out = prompt-weight-tokens (seg.ps-tokens) emb dim 0 (seg.ps-token-count) row acc
+    in prompt-weight-segments segs emb dim (si + 1) sn (row + seg.ps-token-count) out
+
+  prompt-weight-tokens : List PromptToken, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  prompt-weight-tokens (tokens) (emb) (dim) (i) (n) (row) (acc) =
     if i >= n then acc
-    else let tok = list-at tokens i
-    in let weighted = prompt-scale-embedding acc (tok.pt-weight) dim
-    in prompt-weight-tokens tokens dim (i + 1) n weighted
+    else let w = (list-at tokens i).pt-weight
+    in prompt-weight-tokens tokens emb dim (i + 1) n row (prompt-weight-row emb ((row + i) * dim) dim w 0 acc)
+
+  prompt-weight-row : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  prompt-weight-row (emb) (start) (dim) (w) (d) (acc) =
+    if d >= dim then acc
+    else let v = if start + d < list-length emb then list-at emb (start + d) else 0
+    in prompt-weight-row emb start dim w (d + 1) (list-push acc (v * w / 1000))
 
   prompt-scale-embedding : List Integer, Integer, Integer -> List Integer
   prompt-scale-embedding (embed) (weight) (dim) =

@@ -1,0 +1,56 @@
+Chapter: ClockZoneTable
+  cites Foreword chapter Console
+  cites Foreword chapter Maybe
+  cites Foreword chapter TzRules
+  cites Foreword chapter TzSource
+  cites Foreword chapter TzCompile
+  cites Foreword chapter TimeZone (Zone, zone-from-db)
+  cites Works chapter GopClock
+  cites Works chapter GopRtc
+  cites Works chapter GopZone
+  cites Works chapter GopZones (zone-find)
+  cites Works chapter GopLocale
+
+Section: Fixtures
+
+  block : Integer -> Integer
+  block (zid) =
+    let ks = alloc-zeroed clk-block-bytes 64
+    in let a = poke-32 ks clk-cfmt-cell loc-clock-24
+    in let b = poke-32 ks clk-dfmt-cell loc-date-ymd
+    in let c = clk-set-band ks zone-band-all
+    in let d = poke-32 ks clk-zid-cell zid
+    in let e = clk-set-zone ks 0
+    in ks
+
+  utc-of : Integer, Integer, Integer, Integer, Integer -> Integer
+  utc-of (y) (mo) (d) (h) (mi) = clk-civil-seconds h mi 0 y mo d
+
+  band : Integer, Integer, Integer, Integer, Integer, Integer -> Text
+  band (ks) (y) (mo) (d) (h) (mi) = clk-band-text ks h mi 0 d mo (y - 2000)
+
+Section: Entry
+
+  opening : [Console] Nothing =
+    let london = zone-from-db (tz-parse tz-sources) "Europe/London"
+    in let lid = zone-find "Europe/London"
+    in let t = block lid
+    in let f = clk-tz-apply t london (utc-of 2026 10 20 12 0) False
+    in let lt = block lid
+    in let lf = clk-tz-apply lt london (utc-of 2026 10 20 12 0) True
+    in let hand = block lid
+    in let none = block 0
+    in act
+      print-line-uni ("table entries        : " & show (clk-tz-n t))
+      print-line-uni ("summer evening       : " & band t 2026 10 24 20 0)
+      print-line-uni ("midnight moves date  : " & band t 2026 10 24 23 30)
+      print-line-uni ("before the fall-back : " & band t 2026 10 25 0 30)
+      print-line-uni ("after the fall-back  : " & band t 2026 10 25 1 30)
+      print-line-uni ("spring forward 2027  : " & band t 2027 3 28 1 30)
+      print-line-uni ("rtc holds local      : " & band lt 2026 7 1 12 0)
+      print-line-uni ("base offset, no table: " & band hand 2026 7 1 23 30)
+      print-line-uni ("no zone, no table    : " & band none 2026 7 1 23 30)
+      print-line-uni ("calendar today, zone : " & show (clk-local-ymd t (RtcCivil { rc-ok = True, rc-year = 2026, rc-month = 10, rc-day = 24, rc-hour = 23, rc-minute = 30, rc-second = 0 })))
+      print-line-uni ("calendar, no block   : " & show (clk-local-ymd 0 (RtcCivil { rc-ok = True, rc-year = 2026, rc-month = 10, rc-day = 24, rc-hour = 23, rc-minute = 30, rc-second = 0 })))
+      print-line-uni ("absent zone clears   : " & show (clk-tz-apply t None 0 False) & " " & show (clk-tz-n t))
+    end

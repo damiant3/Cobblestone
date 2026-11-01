@@ -31,16 +31,16 @@ Section: Fixtures
 
 Section: ClientHello
 
-  ch1 : List Integer = dtls-client-hello-body h-random h-sid h-pub []
-  ch2 : List Integer = dtls-client-hello-body h-random h-sid h-pub h-cookie
+  ch1 : List Integer = dtls13-client-hello-body h-random h-sid h-pub []
+  ch2 : List Integer = dtls13-client-hello-body h-random h-sid h-pub h-cookie
 
   test-ch : Text =
     "dh ch1=" & show (list-length ch1) & " ch2=" & show (list-length ch2) & " grew=" & show (list-length ch2 > list-length ch1)
 
 Section: ServerHello vs HelloRetryRequest
 
-  sh : List Integer = dtls-server-hello-body h-random h-sid h-pub
-  hrr : List Integer = dtls-hrr-body h-sid h-cookie
+  sh : List Integer = dtls13-server-hello-body h-random h-sid h-pub
+  hrr : List Integer = dtls13-hrr-body h-sid h-cookie
 
   test-sh-not-hrr : Text =
     "dh sh-is-hrr=" & show (dtls-is-hrr sh)
@@ -73,7 +73,7 @@ Section: Extraction
 Section: ClientHello key_share
 
   test-ch-key : Text =
-    when dtls-ch-key-share ch1
+    when dtls13-ch-key-share ch1
       is None -> "dh ch-key=NONE"
       is Just (k) -> "dh ch-key=" & x-hex k
 
@@ -109,10 +109,84 @@ Section: Lying Lengths
       is None -> "dh liar=REJECTED"
       is Just (k) -> "dh liar=ACCEPTED-" & show (list-length k)
 
+ A ClientHello truncated to 40 bytes: the find-extensions guard (40) is met,
+ but the 32-byte session_id length at offset 34 puts the cipher_suites length
+ field at offset 67, past the datagram. The extension-offset computation must
+ refuse rather than read there; before the bound it was an out-of-bounds read
+ on an unauthenticated ClientHello.
+
+  ch-liar : List Integer = dtls-take-at ch1 0 40
+
+  test-ch-liar : Text =
+    when dtls13-ch-key-share ch-liar
+      is None -> "dh ch-liar=REJECTED"
+      is Just (k) -> "dh ch-liar=ACCEPTED-" & show (list-length k)
+
+ A seeded single-byte mutation sweep over a valid ClientHello and ServerHello:
+ every byte is flipped and run through every hello parser, each of which must
+ return (None/False or a value), never read past the datagram and trap.
+
+  dh-mutate : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dh-mutate (xs) (pos) (v) (i) (n) (acc) =
+    if i >= n then acc
+    else dh-mutate xs pos v (i + 1) n (list-push acc (if i == pos then bit-xor (list-at xs i) v else list-at xs i))
+
+  dh-ch-touch : List Integer -> Integer
+  dh-ch-touch (m) =
+    (when dtls13-ch-key-share m is None -> 0 is Just (k) -> list-length k)
+    + (when dtls13-ch-cookie m is None -> 0 is Just (c) -> list-length c)
+    + (if dtls13-ch-offers-version m then 1 else 0) + (if dtls13-ch-fields-ok m then 1 else 0)
+
+  dh-sh-touch : List Integer -> Integer
+  dh-sh-touch (m) =
+    (when dtls-sh-key-share m is None -> 0 is Just (k) -> list-length k)
+    + (when dtls-hrr-cookie m is None -> 0 is Just (c) -> list-length c)
+    + (if dtls-is-hrr m then 1 else 0)
+
+  dh-ch-sweep : Integer, Integer, Integer -> Integer
+  dh-ch-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else dh-ch-sweep (pos + 1) n (acc + dh-ch-touch (dh-mutate ch1 pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []))
+
+  dh-sh-sweep : Integer, Integer, Integer -> Integer
+  dh-sh-sweep (pos) (n) (acc) =
+    if pos >= n then acc
+    else dh-sh-sweep (pos + 1) n (acc + dh-sh-touch (dh-mutate sh pos (1 + (pos * 37 - (pos * 37 / 255) * 255)) 0 n []))
+
+Section: Version Fields
+
+ RFC 9147 section 5.3: legacy_version fefd, and fefc in supported_versions. The TLS builders keep 0303 and 0304.
+
+  ext-hex : Maybe (List Integer) -> Text
+  ext-hex (m) = when m is None -> "NONE" is Just (v) -> x-hex v
+
+  test-versions : Text =
+    "dh ch legacy=" & x-hex (dtls-take-at ch1 0 2) & " versions=" & ext-hex (dtls13-ch-find-ext ch1 tls-ext-supported-versions)
+      & " sh legacy=" & x-hex (dtls-take-at sh 0 2) & " version=" & ext-hex (dtls-sh-find-ext sh tls-ext-supported-versions)
+      & " hrr legacy=" & x-hex (dtls-take-at hrr 0 2) & " version=" & ext-hex (dtls-sh-find-ext hrr tls-ext-supported-versions)
+
+  tls-ch : List Integer = dtls-client-hello-body h-random h-sid h-pub []
+  tls-sh : List Integer = dtls-server-hello-body h-random h-sid h-pub
+
+  test-tls-versions : Text =
+    "dh tls ch legacy=" & x-hex (dtls-take-at tls-ch 0 2) & " versions=" & ext-hex (dtls-ch-find-ext tls-ch tls-ext-supported-versions)
+      & " sh legacy=" & x-hex (dtls-take-at tls-sh 0 2) & " version=" & ext-hex (dtls-sh-find-ext tls-sh tls-ext-supported-versions)
+
+  test-ch-cookie-field : Text =
+    "dh ch legacy-cookie-len=" & show (list-at ch1 (35 + list-at ch1 34)) & " fields-ok=" & show (dtls13-ch-fields-ok ch1) & " cookie-ext=" & ext-hex (dtls13-ch-cookie ch2) & " tls-layout-fields-ok=" & show (dtls13-ch-fields-ok tls-ch)
+
+  test-version-checks : Text =
+    "dh checks ch=" & show (dtls13-ch-offers-version ch1) & " sh=" & show (dtls13-sh-version-ok sh) & " legacy=" & show (dtls13-legacy-ok sh)
+      & " tls-ch=" & show (dtls13-ch-offers-version tls-ch) & " tls-sh=" & show (dtls13-sh-version-ok tls-sh) & " tls-legacy=" & show (dtls13-legacy-ok tls-sh)
+
 Section: Entry
 
   opening : [Console] Nothing = act
     print-line-uni test-ch
+    print-line-uni test-versions
+    print-line-uni test-tls-versions
+    print-line-uni test-version-checks
+    print-line-uni test-ch-cookie-field
     print-line-uni test-sh-not-hrr
     print-line-uni test-hrr-is-hrr
     print-line-uni test-sh-key
@@ -120,9 +194,12 @@ Section: Entry
     print-line-uni test-sh-no-cookie
     print-line-uni test-hrr-no-key
     print-line-uni test-liar
+    print-line-uni test-ch-liar
     print-line-uni test-ch-key
     print-line-uni test-ks-grease
     print-line-uni test-ks-mlkem
     print-line-uni test-ks-none
     print-line-uni test-ks-short
+    print-line-uni ("dh ch-sweep completed=" & (if dh-ch-sweep 0 (list-length ch1) 0 >= 0 then "True" else "False"))
+    print-line-uni ("dh sh-sweep completed=" & (if dh-sh-sweep 0 (list-length sh) 0 >= 0 then "True" else "False"))
   end

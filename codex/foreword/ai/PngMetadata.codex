@@ -3,8 +3,9 @@ Chapter: PngMetadata
   cites Encode chapter Json
   cites Encode chapter Crc32
   cites Foreword chapter CCE
-
- We say:
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Foreword chapter Parse
 
 Section: Types
   GenParams = record {
@@ -86,17 +87,22 @@ Section: Embed Metadata into PNG
     in let after = pm-drop png iend-pos 0 (list-length png) []
     in before & chunks & after
 
+ A PNG is the 8-byte signature 137 80 78 71 13 10 26 10, then chunks of a
+ 4-byte big-endian data length, a 4-byte type, the data and a 4-byte CRC.
+
   pm-find-iend : List Integer, Integer, Integer -> Integer
   pm-find-iend (data) (i) (len) =
-    if i + 7 >= len then 0 - 1
-    else if list-at data (i + 4) == 73 then
-      if list-at data (i + 5) == 69 then
-        if list-at data (i + 6) == 78 then
-          if list-at data (i + 7) == 68 then i
-          else pm-find-iend data (i + 1) len
-        else pm-find-iend data (i + 1) len
-      else pm-find-iend data (i + 1) len
-    else pm-find-iend data (i + 1) len
+    if i == 0 then (if pm-has-signature data len then pm-find-iend data 8 len else 0 - 1)
+    else if i + 12 > len then 0 - 1
+    else if list-at data (i + 4) == 73 & list-at data (i + 5) == 69 & list-at data (i + 6) == 78 & list-at data (i + 7) == 68 then i
+    else let n = pm-read-be32 data i
+    in if n > len - i - 12 then 0 - 1
+    else pm-find-iend data (i + 12 + n) len
+
+  pm-has-signature : List Integer, Integer -> Boolean
+  pm-has-signature (data) (len) =
+    if len < 8 then False
+    else list-at data 0 == 137 & list-at data 1 == 80 & list-at data 2 == 78 & list-at data 3 == 71 & list-at data 4 == 13 & list-at data 5 == 10 & list-at data 6 == 26 & list-at data 7 == 10
 
 Section: JSON Metadata (alternative format)
   gen-params-to-json : GenParams -> Text
@@ -125,7 +131,9 @@ Section: Parse Metadata from PNG
   pm-find-text-chunk (data) (key) (pos) (len) =
     if pos + 12 >= len then None
     else let chunk-len = pm-read-be32 data pos
-    in let chunk-type-ok = list-at data (pos + 4) == 116
+    in if chunk-len < 0 then None
+    else if pos + 12 + chunk-len > len then None
+    else let chunk-type-ok = list-at data (pos + 4) == 116
     in if chunk-type-ok == False then pm-find-text-chunk data key (pos + 12 + chunk-len) len
     else if list-at data (pos + 5) /= 69 then pm-find-text-chunk data key (pos + 12 + chunk-len) len
     else let chunk-key = pm-read-until-null data (pos + 8) (pos + 8 + chunk-len) ""
@@ -139,13 +147,54 @@ Section: Parse Metadata from PNG
   pm-read-until-null : List Integer, Integer, Integer, Text -> Text
   pm-read-until-null (data) (pos) (stop) (acc) =
     if pos >= stop then acc
+    else if pos >= list-length data then acc
     else let b = list-at data pos
     in if b == 0 then acc
     else pm-read-until-null data (pos + 1) stop (acc & cce-foreign-byte-text b)
 
   pm-parse-param-string : Text -> GenParams
   pm-parse-param-string (s) =
-    gen-params s "" 0 20 7500 "euler" "unknown" 512 512
+    let steps-at = text-index-of s "\nSteps: "
+    in let head = if steps-at < 0 then s else substring s 0 steps-at
+    in let tail = if steps-at < 0 then "" else substring s (steps-at + 1) (text-length s - steps-at - 1)
+    in let neg-at = text-index-of head "\nNegative prompt: "
+    in let prompt = if neg-at < 0 then head else substring head 0 neg-at
+    in let neg = if neg-at < 0 then "" else substring head (neg-at + 18) (text-length head - neg-at - 18)
+    in let base = gen-params prompt neg 0 20 7500 "euler" "unknown" 512 512
+    in pm-apply-fields base (text-split tail ", ") 0
+
+  pm-apply-fields : GenParams, List Text, Integer -> GenParams
+  pm-apply-fields (p) (fields) (i) =
+    if i >= list-length fields then p
+    else let f = list-at fields i
+    in let colon = text-index-of f ": "
+    in if colon < 0 then pm-apply-fields p fields (i + 1)
+    else let key = substring f 0 colon
+    in let value = substring f (colon + 2) (text-length f - colon - 2)
+    in pm-apply-fields (pm-apply-field p key value) fields (i + 1)
+
+  pm-apply-field : GenParams, Text, Text -> GenParams
+  pm-apply-field (p) (key) (value) =
+    if key == "Steps" then __record-set p "gp-steps" ((text-to-int-or value 0))
+    else if key == "Sampler" then __record-set p "gp-sampler" value
+    else if key == "CFG scale" then __record-set p "gp-cfg-scale" (pm-parse-cfg value)
+    else if key == "Seed" then __record-set p "gp-seed" ((text-to-int-or value 0))
+    else if key == "Model" then __record-set p "gp-model" value
+    else if key == "Lora" then __record-set p "gp-lora-info" value
+    else if key == "Size" then
+      let x = text-index-of value "x"
+      in if x < 0 then p
+      else __record-set (__record-set p "gp-width" ((text-to-int-or (substring value 0 x) 0))) "gp-height" ((text-to-int-or (substring value (x + 1) (text-length value - x - 1)) 0))
+    else p
+
+  pm-parse-cfg : Text -> Integer
+  pm-parse-cfg (v) =
+    let dot = text-index-of v "."
+    in if dot < 0 then (text-to-int-or v 0) * 1000
+    else let frac = substring v (dot + 1) (text-length v - dot - 1)
+    in let digits = if text-length frac > 3 then substring frac 0 3 else frac
+    in let scale = if text-length digits == 1 then 100 else if text-length digits == 2 then 10 else 1
+    in (text-to-int-or (substring v 0 dot) 0) * 1000 + (if text-length digits == 0 then 0 else (text-to-int-or digits 0) * scale)
 
 Section: Byte Helpers
   pm-text-to-bytes : Text -> List Integer
@@ -160,6 +209,7 @@ Section: Byte Helpers
   pm-extract-text : List Integer, Integer, Integer, Text -> Text
   pm-extract-text (data) (pos) (remaining) (acc) =
     if remaining <= 0 then acc
+    else if pos >= list-length data then acc
     else
       pm-extract-text data (pos + 1) (remaining - 1) (acc & cce-foreign-byte-text (list-at data pos))
 

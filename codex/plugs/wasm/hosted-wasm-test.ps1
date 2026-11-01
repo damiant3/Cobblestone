@@ -77,7 +77,7 @@ if (-not $NoBaseline -and -not $Calibrate -and (Test-Path -PathType Leaf $Baseli
         if (-not $t -or $t.StartsWith('#')) { continue }
         $f = @($t -split '\s+', 3)
         if ($f.Count -lt 3) { Write-Host "REFUSE: baseline line needs subject, row and reason: $t"; exit 2 }
-        if (-not (Test-Path (Join-Path $TestDir "$($f[0]).expected"))) { Write-Host "REFUSE: baseline names no subject: $($f[0])"; exit 2 }
+        if (-not (Test-Path (Join-Path $TestDir "$($f[0]).expected")) -and -not (Test-Path (Join-Path $TestDir "$($f[0]).cross-fatal"))) { Write-Host "REFUSE: baseline names no subject: $($f[0])"; exit 2 }
         if ($backlog -notmatch ('(?m)^## ' + [regex]::Escape($f[1]) + ' ')) { Write-Host "REFUSE: baseline entry $($f[0]) cites plugs-backlog row $($f[1]), which does not exist"; exit 2 }
         $known[$f[0]] = $f[1]
     }
@@ -88,6 +88,12 @@ if (-not $NoBaseline -and -not $Calibrate -and (Test-Path -PathType Leaf $Baseli
 $refusalSubjects = @(Get-ChildItem $TestDir -Recurse -File -Filter '*.wasm-refusal' | ForEach-Object {
     [IO.Path]::GetRelativePath($TestDir, $_.FullName).Replace('\', '/') -replace '\.wasm-refusal$', ''
 })
+# A `<name>.cross-fatal` subject (with `.fatal`) has no `.expected` either: its
+# oracle is a fault, which here is a wasm trap. Every one joins every draw.
+$fatalSubjects = @(Get-ChildItem $TestDir -Recurse -File -Filter '*.cross-fatal' | ForEach-Object {
+    [IO.Path]::GetRelativePath($TestDir, $_.FullName).Replace('\', '/') -replace '\.cross-fatal$', ''
+} | Where-Object { Test-Path -PathType Leaf (Join-Path $TestDir "$_.fatal") })
+$refusalSubjects = @($refusalSubjects + $fatalSubjects | Select-Object -Unique)
 $hasPattern = @($Subject | Where-Object { $_ -match '[*?\[]' }).Count -gt 0
 if ($Subject.Count -gt 0 -and -not $hasPattern) {
     $subjects = $Subject
@@ -123,7 +129,7 @@ if ($Subject.Count -gt 0 -and -not $hasPattern) {
     }
     $extra = @($refusalSubjects | Where-Object { $subjects -notcontains $_ })
     $subjects = @($subjects + $extra)
-    $drawnFrom = "$($subjects.Count) selected of $($eligible.Count) eligible, $($extra.Count) refusal subject(s) added"
+    $drawnFrom = "$($subjects.Count) selected of $($eligible.Count) eligible, $($extra.Count) refusal or fatal subject(s) added"
 }
 
 # The rule's drops are counted here as they are there (plugs 2.88): a drop
@@ -184,6 +190,31 @@ $results = $subjects | ForEach-Object -ThrottleLimit $Jobs -Parallel {
         $miss = if ($missing.Count) { $missing -join ',' } else { 'none' }
         $mod = if ($assembled) { 'ASSEMBLED' } else { 'refused' }
         return [pscustomobject]@{ Name = $s; Ok = $false; Note = "REFUSAL NOT OBSERVED: tokens missing $miss; module $mod" }
+    }
+    # A fatal subject passes when the module assembles, runs, and wasmtime
+    # reports a trap; under -Calibrate the mangled subject must NOT trap.
+    $crossFatal = Join-Path $TestDir "$s.cross-fatal"
+    if ((Test-Path -PathType Leaf $crossFatal) -and (Test-Path -PathType Leaf (Join-Path $TestDir "$s.fatal")) -and (Test-Path -PathType Leaf $src)) {
+        $a = $s -replace '/', '_'
+        $wat  = Join-Path $WorkDir "$a.wat"
+        $wasm = Join-Path $WorkDir "$a.wasm"
+        Remove-Item $wat, $wasm -Force -ErrorAction SilentlyContinue
+        $useSrc = $src
+        if ($Calibrate) {
+            $useSrc = Join-Path $WorkDir "$a.calib.codex"
+            [System.IO.File]::WriteAllText($useSrc, ([System.IO.File]::ReadAllText($src) -replace '(?m)^(\s*)opening\b', '$1opening-calibrated'))
+        }
+        & pwsh -NoProfile -File $RunPs1 -Src $useSrc -Out $wat -Kernel $Kernel *> (Join-Path $WorkDir "$a.plug.log")
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wat)) { return [pscustomobject]@{ Name = $s; Ok = [bool]$Calibrate; Note = 'PLUG-REFUSED' } }
+        & wat2wasm --enable-tail-call $wat -o $wasm 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wasm)) { return [pscustomobject]@{ Name = $s; Ok = [bool]$Calibrate; Note = 'WAT2WASM-REFUSED' } }
+        $errFile = Join-Path $WorkDir "$a.err"
+        $p = Start-Process -FilePath 'wasmtime' -ArgumentList @('-W', 'max-wasm-stack=16777216', $wasm) -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $WorkDir "$a.out") -RedirectStandardError $errFile
+        if (-not $p.WaitForExit(120000)) { try { $p.Kill() } catch { }; return [pscustomobject]@{ Name = $s; Ok = $false; Note = 'WASMTIME-TIMEOUT 120s' } }
+        $trapped = ($p.ExitCode -ne 0) -and (Select-String -Path $errFile -Pattern 'wasm trap' -Quiet)
+        if ($Calibrate) { return [pscustomobject]@{ Name = $s; Ok = -not $trapped; Note = $(if ($trapped) { 'CALIBRATION FAILED: mangled subject still trapped' } else { '' }) } }
+        if ($trapped) { return [pscustomobject]@{ Name = $s; Ok = $true; Note = '' } }
+        return [pscustomobject]@{ Name = $s; Ok = $false; Note = "NO TRAP: exit $($p.ExitCode), a fatal subject ran to completion" }
     }
     if (-not (Test-Path $src) -or -not (Test-Path $exp)) {
         return [pscustomobject]@{ Name = $s; Ok = $false; Note = 'NO SUBJECT OR ORACLE' }

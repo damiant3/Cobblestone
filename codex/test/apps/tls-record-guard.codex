@@ -1,29 +1,6 @@
 Chapter: TlsRecordGuard
   cites Foreword chapter Tls
 
- Track D item 19, the Tls leg. tls-decode-record read five header bytes with
- five bare list-at calls and no length check at all, so any record shorter
- than its own header killed the guest before a single field was interpreted.
-
- Guarded because something runs it (red's ruling, extended to this leg
- 2026-08-16): tls-test:36 and :41 decode through it. The chapter itself is
- cited in production by DtlsHello, DtlsMessage, TlsCert, TlsEndpoint and
- os/net/DtlsEndpoint, though none of those call this function today.
-
- The existing test is a round trip through tls-encode-record, so the decoder
- had only ever been shown records our own encoder wrote. A five-byte header
- is exactly what a truncated read off a socket does not have (L-GAP).
-
- tls-slice:205 was already bounded and clamps, so the PAYLOAD was never the
- hazard; the header was. The declared length is now reported rather than
- trusted: tls-rec-valid is False when the record is shorter than its header
- and when the length field claims more payload than arrived, which is the
- truncated-record case a socket produces and the round trip cannot.
-
- Row 6 is the discriminator. A record declaring zero payload bytes is
- LEGITIMATE and must stay valid, so a guard that refused every short record
- would show up there.
-
 Section: Helpers
 
   show-bool : Boolean -> Text
@@ -41,14 +18,11 @@ Section: Records
 
   app-record : List Integer = tls-encode-record tls-content-application [72, 101, 108, 108, 111]
 
- One byte short of the five-byte header. Unguarded, list-at bytes 4 is out
- of range and the guest dies.
+ One byte short of the five-byte header.
 
   four-bytes : List Integer = [23, 3, 3, 0]
 
- A header claiming 100 payload bytes with none behind it. tls-slice clamps
- to nothing, so the old decoder answered a confident record with an empty
- payload and no way for a caller to tell.
+ A header claiming 100 payload bytes with none behind it.
 
   truncated-payload : List Integer = [23, 3, 3, 0, 100]
 

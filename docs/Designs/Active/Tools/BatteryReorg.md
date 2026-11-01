@@ -223,8 +223,8 @@ emitters) and `foreword/SourceDefWire` (2, repo protocol wire format), unowned.
 `shell/PowerShellEmit` ranks first at 48 and is PARKED: every consumer is a
 `codex/build/*Script.codex` shadow generator, and those do not produce the
 hand-maintained `build/*.ps1`, so the weight belongs to a parallel system rather
-than to the product. The ai/AssetForge cluster (ImageTo3d, DiffusionPipeline,
-UNet, SafeTensors, Tokenizer, TextEncoder) waits on whether assetforge is on the
+than to the product. The ai/AssetForge cluster (ImageTo3d, SafeTensors,
+Tokenizer, TextEncoder) waits on whether assetforge is on the
 bar.
 
 The UI cells in val's lane are answered (2026-10-20): `ui/RichText` and
@@ -286,7 +286,7 @@ The classifier's classes:
   from a wrong answer. The row's byte and line counts are what make the case
   investigable.
 
-Scope is `test-cross-batch.ps1`, both legs. The gate leg (`check-cross-smoke`)
+Scope is `test-cross-batch.ps1`, both legs. The hand check (`check-cross-smoke`, in no gate since 2026-10-31)
 keeps its 3 s budget: its two tests answer in under a second and it already has
 the silent-lane retry. `test-cross.ps1` single-runner parity is a follow-up.
 
@@ -358,7 +358,7 @@ construction (`build.ps1`), the plugs because their harnesses live beside them.
   `compiler` by the rule below. `foreword` is the name Damian's list does not
   give and it is the largest class by a distance.
 - **PHASE batteries** run named harnesses, because their subject has no corpus
-  to select: `plugs` (`plug-binary`, `plug-smoke`, `plug-selftest`) and `board`
+  to select: `plugs` (no gate runs a plug output, Damian 2026-10-31; its harnesses run by hand) and `board`
   (the chapters carrying a machine sidecar plus `boards-test`). The `hardware`
   tier already computes almost exactly the board set, so `board` is that tier
   renamed rather than new code, with one correction it needs anyway:

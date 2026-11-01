@@ -9,8 +9,6 @@ Chapter: VerifyCache
   cites Foreword chapter Hamt
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Cache Types
 
   VerifyCacheEntry = record {
@@ -49,9 +47,85 @@ Section: Cache Operations
 
 Section: Cached Verification
 
+  vc-field : Text -> Text
+  vc-field (t) = show (text-length t) & ":" & t
+
+  vc-cond-text : PolicyCondition -> Text
+  vc-cond-text (c) = when c
+    is CapabilityMatch (name) (dir) -> "C" & vc-field name & show dir & ";"
+    is TrustAbove (n) -> "T" & show n & ";"
+    is TimeWindow (a) (b) -> "W" & show a & "," & show b & ";"
+    is AgentIs (who) -> "A" & vc-field who
+    is AllOf (cs) -> "L" & show (list-length cs) & ";" & vc-conds-text cs 0
+    is AnyOf (cs) -> "Y" & show (list-length cs) & ";" & vc-conds-text cs 0
+    is NotCond (inner) -> "N" & vc-cond-text inner
+    is AlwaysTrue -> "1"
+
+  vc-conds-text : List PolicyCondition, Integer -> Text
+  vc-conds-text (cs) (i) =
+    if i >= list-length cs then ""
+    else vc-cond-text (list-at cs i) & vc-conds-text cs (i + 1)
+
+  vc-effect-text : PolicyEffect -> Text
+  vc-effect-text (e) = when e
+    is Allow -> "a"
+    is Deny (r) -> "d" & vc-field r
+    is AllowWithScope (s) -> "s" & vc-field s
+    is AllowWithDuration (n) -> "u" & show n & ";"
+    is AllowWithApproval (keys) (condition) (zone) -> "p" & show (list-length keys) & ";" & vc-keys-text keys 0 & vc-field (bytes-to-hex condition) & vc-field zone
+    is AllowWithQuota (minutes) (period) (inner) -> "q" & show minutes & ";" & vc-field period & vc-effect-text inner
+
+  vc-keys-text : List (List Integer), Integer -> Text
+  vc-keys-text (ks) (i) =
+    if i >= list-length ks then ""
+    else vc-field (bytes-to-hex (list-at ks i)) & vc-keys-text ks (i + 1)
+
+  vc-rules-text : List PolicyRule, Integer -> Text
+  vc-rules-text (rs) (i) =
+    if i >= list-length rs then ""
+    else let r = list-at rs i
+    in vc-field (r.name) & vc-cond-text (r.condition) & vc-effect-text (r.outcome) & vc-rules-text rs (i + 1)
+
+  vc-policy-text : Policy -> Text
+  vc-policy-text (p) = vc-field (p.name) & show (p.min-trust) & ";" & show (list-length (p.rules)) & ";" & vc-rules-text (p.rules) 0
+
+  vc-vouches-text : List Vouch, Integer -> Text
+  vc-vouches-text (vs) (i) =
+    if i >= list-length vs then ""
+    else let v = list-at vs i
+    in vc-field (v.from) & vc-field (v.target) & show (v.score) & ";" & vc-vouches-text vs (i + 1)
+
+  vc-entry-acc : Text, Text, TrustEntry -> Text
+  vc-entry-acc (acc) (k) (e) = acc & vc-field k & show (e.direct-score) & ";" & show (list-length (e.vouches)) & ";" & vc-vouches-text (e.vouches) 0
+
+  vc-lattice-text : TrustLattice -> Text
+  vc-lattice-text (lat) = show (hamt-size (lat.entries)) & ";" & hamt-fold vc-entry-acc "" (lat.entries)
+
+  vc-lookups-text : List CdxProofEntry, BareFactStore, Integer -> Text
+  vc-lookups-text (entries) (store) (i) =
+    if i >= list-length entries then ""
+    else let found = fact-load store (bytes-to-hex-range ((list-at entries i).hash-bytes) 0 32)
+    in let here = when found
+      is None -> "n;"
+      is Just (f) -> "f" & vc-field (fact-kind-name (f.kind)) & vc-field (fact-content-hash (f.content))
+    in here & vc-lookups-text entries store (i + 1)
+
+  vc-proofs-text : List Integer, BareFactStore -> Text
+  vc-proofs-text (binary) (store) =
+    if bit-and (cdx-read-le16 binary 6) cdx-flag-has-proofs == 0 then "-"
+    else let proof-off = read-le64 binary 184 + read-le64 binary 192
+    in if proof-off >= list-length binary then "oob"
+    else let entries = decode-proof-section binary proof-off
+    in show (list-length entries) & ";" & vc-lookups-text entries store 0
+
+  verify-cache-key : List Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> Text
+  verify-cache-key (binary) (lattice) (policy) (current-time) (store) (fuel) =
+    let context = vc-lattice-text lattice & "|" & vc-policy-text policy & "|" & show current-time & "|" & show fuel & "|" & vc-proofs-text binary store
+    in sha256-to-hex (sha256 binary) & "/" & sha256-to-hex (sha256 (text-to-bytes context))
+
   verify-cdx-cached : List Integer, TrustLattice, Policy, Integer, BareFactStore, Integer, VerifyCache -> CachedResult
   verify-cdx-cached (binary) (lattice) (policy) (current-time) (store) (fuel) (cache) =
-    let hash = cdx-content-hash-hex binary
+    let hash = verify-cache-key binary lattice policy current-time store fuel
     in let cached = verify-cache-lookup cache hash
     in when cached
       is Just (entry) -> CachedResult {

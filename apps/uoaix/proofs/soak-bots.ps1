@@ -94,7 +94,7 @@ $families=@('mint','walk','say','go','goto','vendor','bank','harvest','craft','c
     'camping','cartography','taste','forensics','spirit','poisoning','stealing','herding',
     'bard','tracking','healing','alchemy','inscription','arms','slay','cull','fallen','dungeons','smite','pick','pet','sell',
     'petname','mappins','book','decay','venom','speechbuy','trade','play','duel','eat','donate','gm','build','trinsic','cove','minoc','vesper','vesperwork','minocwork','covework','moonglowwork','yewwork','windwork','buccwork','bucc','jhelom','serpents','moonglow','yew','wind','skara','nujelm','ocllo','magincia','spells','wild',
-    'eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon','graded','castle','cheer','loom','fell','farm','reekgraded','festergraded','redgraded','load','widen','coroner','streetbuild')
+    'eights','gofish','poker','blackjack','battleship','chess','checkers','backgammon','graded','castle','cheer','loom','fell','farm','reekgraded','festergraded','redgraded','load','widen','coroner','streetbuild','moontheft')
 # UOAIX-254: -Only load gives every bot, British too, a draw from this mix; bot names soakbot and a letter cap -Bots at 26.
 $loadMix=@('walk','say','combat','craft','vendor','trade','bank','harvest')
 # -Only runs only the named families (a scenario run); British's own draw is limited to them too.
@@ -150,7 +150,7 @@ function Handle($B,[byte[]]$P){
         0x93{$B.BookHead=$P}
         0x66{$B.BookPages=$P}
         0x1A{$s=U32 $P 3;$g=U16 $P 7;$at=9;if($s -band 0x80000000){$at=11};$s=$s-band 0x7FFFFFFF;$x=(U16 $P $at)-band 0x7FFF;$y=(U16 $P ($at+2))-band 0x3FFF
-            if($g -eq 0x2006){$B.Corpses[$s]=@($x,$y)};if($g -eq 0x0B90){$B.Decor=$s};if($g -eq 0x1F14){$B.Runes[$s]=1};if(@(0x0FA2,0x0FA3,0x14F1,0x0FA6,0x0E1C,0x0FAD,0x0FA7,0x1061,0x1062) -contains $g){$B.Ground[$s]=@($x,$y,$g)};if($s -ge 0x7C000001 -and $s -lt 0x7D000000){$B.Flora[$s]=@($x,$y,$g)};if($s -ge 0x7D000001 -and $s -lt 0x7E000000){$B.Crops[$s]=@($x,$y,$g)};if($s -ge 0x7B000001 -and $s -lt 0x7C000000){$B.Sites[$s]=@($x,$y,$g)};if($g -ge 0x0DE3 -and $g -le 0x0DE8){$B.Fires[$s]=@($x,$y,$g)};if(($g -ge 0x0675 -and $g -le 0x06F4) -or ($g -ge 0x0839 -and $g -le 0x0848)){$B.Doors[$s]=@($x,$y,$g)}
+            if($g -eq 0x2006){$B.Corpses[$s]=@($x,$y)};if($g -eq 0x0B90){$B.Decor=$s};if($g -eq 0x1F14){$B.Runes[$s]=1};if(@(0x0FA2,0x0FA3,0x14F1,0x0FA6,0x0E1C,0x0FAD,0x0FA7,0x1061,0x1062) -contains $g){$B.Ground[$s]=@($x,$y,$g)};if($s -ge 0x7C000001 -and $s -lt 0x7D000000){$B.Flora[$s]=@($x,$y,$g)};if($s -ge 0x7D000001 -and $s -lt 0x7E000000){$B.Crops[$s]=@($x,$y,$g)};if($s -ge 0x7B000001 -and $s -lt 0x7C000000){$B.Sites[$s]=@($x,$y,$g)};if($g -ge 0x0DE3 -and $g -le 0x0DE8){$B.Fires[$s]=@($x,$y,$g)};if(Is-DoorArt $g){$B.Doors[$s]=@($x,$y,$g)}
             if(@(0x0082,0x398C,0x3996,0x3915,0x3922,0x3967,0x3979,0x3946,0x3956,0x0F6C) -contains $g){$B.Fields[$s]=@($x,$y,$g);[void]$B.FieldSeen.Add($s)}
             if($g -ge 0x0A97 -and $g -le 0x0A9C){$B.Cases[$s]=@($x,$y,$g)}
             $zAt=$at+4+$(if((U16 $P $at) -band 0x8000){1}else{0});if($g -eq 0x06F6 -and $zAt -lt $P.Length){$B.Gate[$s]=S8 $P[$zAt]};if($g -eq 0x1EAC){$B.Winch=$s}}
@@ -160,7 +160,9 @@ function Handle($B,[byte[]]$P){
         0x6C{$B.Cursor=U32 $P 2;$B.CursorAt=[datetime]::UtcNow;$B.CursorType=$P[1]}
         0x24{$B.Opens[(U32 $P 1)]=U16 $P 5}
         0x2C{$B.Dead=$true;$B.DeathAsked=$true}
-        0x74{$B.BuyFrom=U32 $P 3;$names=[Collections.Generic.List[object]]::new();$at=8;for($i=0;$i -lt $P[7] -and $at+5 -le $P.Length;$i++){$n=$P[$at+4];if($at+5+$n -gt $P.Length){break};$names.Add(@((U32 $P $at),[Text.Encoding]::ASCII.GetString($P,$at+5,$n).Trim([char]0)));$at+=5+$n};$B.BuyNames=$names}
+        0x74{$names=[Collections.Generic.List[object]]::new();$at=8;for($i=0;$i -lt $P[7] -and $at+5 -le $P.Length;$i++){$n=$P[$at+4];if($at+5+$n -gt $P.Length){break};$names.Add(@((U32 $P $at),[Text.Encoding]::ASCII.GetString($P,$at+5,$n).Trim([char]0)));$at+=5+$n}
+            # A buy menu sends the stock list, then the extra list; a Britain shop's goods all sit in stock (ss-fill), so an empty list never replaces lines already read.
+            if($names.Count -gt 0 -or $null -eq $B.BuyNames -or $B.BuyNames.Count -eq 0){$B.BuyFrom=U32 $P 3;$B.BuyNames=$names}}
         0x9E{$B.Sale=$P;$names=[Collections.Generic.List[object]]::new();$at=9;for($i=0;$i -lt (U16 $P 7) -and $at+14 -le $P.Length;$i++){$n=U16 $P ($at+12);if($at+14+$n -gt $P.Length){break};$names.Add(@((U16 $P ($at+10)),[Text.Encoding]::ASCII.GetString($P,$at+14,$n).Trim([char]0)));$at+=14+$n};$B.SellNames=$names}
         0x7C{$B.Menu=$P}
         0x11{if($P.Length -ge 41 -and (U32 $P 3) -eq $B.Serial){$B.Hits=U16 $P 37}}
@@ -187,6 +189,10 @@ function Pump-Bot($B,[int]$Max){
 function Owned($B,$Serial){$c=$B.Items[$Serial][1];for($i=0;$i -lt 4;$i++){if($B.Pack -ne 0 -and $c -eq $B.Pack){return $true};if(-not $B.Items.ContainsKey($c)){return $false};$c=$B.Items[$c][1]};return $false}
 function Item-Of($B,[int]$Graphic){$m=@($B.Items.Keys|Where-Object{$B.Items[$_][0] -eq $Graphic -and (Owned $B $_)});if($m.Count -eq 0){return 0};return $m[$rng.Next($m.Count)]}
 function Nearest($B,[scriptblock]$Want){$best=0;$far=99;foreach($k in $B.Mobiles.Keys){if($k -eq $B.Serial){continue};$m=$B.Mobiles[$k];if(-not (& $Want $m)){continue};$d=[Math]::Max([Math]::Abs($m[1]-$B.X),[Math]::Abs($m[2]-$B.Y));if($d -lt $far){$far=$d;$best=$k}};return $best}
+# A door's art: each ServUO door class (Doors.cs, SecretDoors.cs) spans its base and the 15 above it, the set
+# import-decoration.ps1 lays as doors.
+$doorBases=@(0x00E8,0x0314,0x0324,0x0334,0x0344,0x0354,0x0675,0x0685,0x0695,0x06A5,0x06B5,0x06C5,0x06D5,0x06E5,0x0824,0x0839,0x084C,0x0866,0x1FED)
+function Is-DoorArt([int]$G){foreach($b in $doorBases){if($G -ge $b -and $G -le $b+15){return $true}};return $false}
 function Walk($B,[int]$Dir){$B.Pending=$Dir;$seq=$B.Seq;$B.Seq=if($B.Seq -eq 255){1}else{$B.Seq+1};Send-Plain $B ([byte[]]@(2,$Dir,$seq))}
 function Skill-Use([int]$Skill){$t=[Text.Encoding]::ASCII.GetBytes("$Skill 0");$p=[byte[]]::new(5+$t.Length);$p[0]=0x12;Put16 $p 1 $p.Length;$p[3]=0x24;$t.CopyTo($p,4);return ,$p}
 function Use-Then-Target($B,[long]$Tool,[scriptblock]$Target,[string]$Family,[string]$Speech='',[byte[]]$Packet=$null){
@@ -543,6 +549,20 @@ $gradedSteps=[ordered]@{
         if($d -gt 3 -and $C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];$near=@($C.Mobiles.Keys|Where-Object{$_ -ne $t}|ForEach-Object{$o=$C.Mobiles[$_];if([Math]::Max([Math]::Abs($o[1]-$m[1]),[Math]::Abs($o[2]-$m[2])) -le 2){"$_ body $($o[0]) at $($o[1]),$($o[2])"}})
             Note "GRADE 221 fail summon $t body $($m[0]) British at $($C.X),$($C.Y) track $($track -join ' ') near: $($near -join '; ')"}
         if($C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];Use-Then-Target $C 0 {Target-Object $C $t $m[1] $m[2] 0 $m[0]} 'graded-remove' -Speech '[remove'}}
+    # UOAIX-221: two summons sent at bot 2 ("all kill") leave the fight on "all follow me" and both come within 3 tiles of
+    # British 8 tiles away (cg-pet-order-each replaces the attack command).
+    'followfight'={param($C) $o=@($fleet|Where-Object{$_.Index -ne 1 -and $_.Up -and -not $_.Dead -and $_.Serial})|Select-Object -First 1
+        if(-not $o){Count 'nofoe-221fight';return};Go-Wait $C 1420 1698;Send-Plain $o (Say '[go 1422 1698');Pump-Bot $o 64
+        $pets=@();for($n=0;$n -lt 2;$n++){$before=@($C.Mobiles.Keys);Spell-Cast $C 40 $null 'follow-summon';$t=New-Mobile $C $before 3;if($t){$pets+=$t}}
+        if($pets.Count -lt 2){Count 'nosummon-221fight';return}
+        Use-Then-Target $C 0 {Target-Object $C $o.Serial $o.X $o.Y $o.Z 400} 'graded-221fight' -Speech 'all kill'
+        $until=[datetime]::UtcNow.AddSeconds(3);while([datetime]::UtcNow -lt $until){Pump-Bot $C 16;Pump-Bot $o 16}
+        Go-Wait $C ($C.X-8) $C.Y;Send-Plain $C (Say 'all follow me')
+        $until=[datetime]::UtcNow.AddSeconds(15);$far=2
+        while([datetime]::UtcNow -lt $until -and $far -gt 0){Pump-Bot $C 16;Pump-Bot $o 16;$far=@($pets|Where-Object{-not $C.Mobiles.ContainsKey($_) -or [Math]::Max([Math]::Abs($C.Mobiles[$_][1]-$C.X),[Math]::Abs($C.Mobiles[$_][2]-$C.Y)) -gt 3}).Count}
+        $where=@($pets|ForEach-Object{if($C.Mobiles.ContainsKey($_)){$m=$C.Mobiles[$_];"$_ at $($m[1]),$($m[2])"}else{"$_ unseen"}}) -join '; '
+        Grade '221fight' $(if($far -eq 0){'pass'}else{'fail'}) "British at $($C.X),$($C.Y), foe bot at $($o.X),$($o.Y); pets: $where"
+        foreach($t in $pets){if($C.Mobiles.ContainsKey($t)){$m=$C.Mobiles[$t];Use-Then-Target $C 0 {Target-Object $C $t $m[1] $m[2] 0 $m[0]} 'graded-remove' -Speech '[remove'}}}
     # UOAIX-220: every field cast across a street lands the tiles that fit (Wall of Stone too) and never answers that the
     # spell requirements are no longer met. A field is graded on the tile's arrival (FieldSeen): at -ClockScale 30 a
     # 10 s stone wall stands 0.33 s of wall time and is gone before Spell-Cast returns.
@@ -839,7 +859,7 @@ $festerSteps=[ordered]@{
 # UOAIX-49 (red): graded checks of red's rows, one per British draw in a fixed cycle (-Only redgraded), each ending in one
 # Grade line; unreached means the step never reached the condition it grades (L-VACUOUS). Shops open from game hour 8 to
 # 20 (bsh-open-hour, bsh-close-hour); 229 and 224 move the testing clock into their window first.
-function Red-Label($C,[long]$K){$C.Labels.Remove($K);Send-Plain $C (Serial-Packet 9 $K);$until=[datetime]::UtcNow.AddSeconds(2);while(-not $C.Labels.ContainsKey($K) -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4};if($C.Labels.ContainsKey($K)){$C.Labels[$K]}else{''}}
+function Red-Label($C,[long]$K){$C.Labels.Remove($K);Send-Plain $C (Serial-Packet 9 $K);$until=[datetime]::UtcNow.AddSeconds(4);while(-not $C.Labels.ContainsKey($K) -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4};if($C.Labels.ContainsKey($K)){$C.Labels[$K]}else{''}}
 function Red-Hour{$h=[regex]::Matches((Read-Log),'ECONOMY ROWS hour=(\d+)')|Select-Object -Last 1;if($h){[int]$h.Groups[1].Value % 24}else{-1}}
 function Red-Open([int]$H){$H -ge 8 -and $H -lt 20}
 # Moves the town clock ("[time N", testing mode) so the economy hour lands at $Target, then waits for an ECONOMY ROWS
@@ -847,6 +867,11 @@ function Red-Open([int]$H){$H -ge 8 -and $H -lt 20}
 function Red-To-Hour($C,[bool]$Open,[int]$Target){$h=Red-Hour;if($h -ge 0 -and (Red-Open $h) -eq $Open){return $h}
     $n=($Target-[Math]::Max(0,$h)+24)%24;if($n -eq 0){$n=24};Send-Plain $C (Say "[time $n");$until=[datetime]::UtcNow.AddSeconds(120)
     while([datetime]::UtcNow -lt $until){Pump-All 2;$h=Red-Hour;if($h -ge 0 -and (Red-Open $h) -eq $Open){return $h}};return -1}
+# The server's own answer to "[where" ("You are at x y z"): a walk's ack (0x22) moves X and Y and never Z.
+function Red-Where($C){$C.Said.Clear();Send-Plain $C (Say '[where');$until=[datetime]::UtcNow.AddSeconds(4);$m=$null
+    while($null -eq $m -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4;foreach($s in $C.Said){$r=[regex]::Match($s,'You are at (\d+) (\d+) (-?\d+)');if($r.Success){$m=$r}}}
+    if($null -eq $m){return $null};$C.X=[int]$m.Groups[1].Value;$C.Y=[int]$m.Groups[2].Value;$C.Z=[int]$m.Groups[3].Value;return @($C.X,$C.Y,$C.Z)}
+function Red-Walk($C,[int]$Dir,[int]$Steps){for($i=0;$i -lt $Steps;$i++){Walk $C $Dir;$until=[datetime]::UtcNow.AddSeconds(2);while($C.Pending -ge 0 -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4}}}
 function Red-Close-Gump($C){if($C.Gump){$a=[byte[]]::new(23);$a[0]=0xB1;Put16 $a 1 23;Put32 $a 3 (U32 $C.Gump 3);Put32 $a 7 (U32 $C.Gump 7);Send-Plain $C $a;$C.Gump=$null}}
 $redTinkerBox=@(1422,1648,1429,1663)
 $redTinkerTools=@(0x1EB8,0x1EBC)
@@ -854,11 +879,19 @@ $redSteps=[ordered]@{
     # UOAIX-229: the Tinkers Guild keeper sells tinker's tools with no "quote absent or expired" refusal, and the bought
     # tool used from the pack opens the craft menu (not "The tool must be on your person").
     '229'={param($C) $h=Red-To-Hour $C $true 10;if($h -lt 0){Grade '229' 'unreached' "the clock reached no open hour (8 to 19) within 120 s, last hour $(Red-Hour)";return}
-        Go-Wait $C 1425 1655;Pump-All 2;$bots=@($fleet|ForEach-Object Serial);$v=0
-        foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -contains $k -or $m[0] -lt 400 -or $m[0] -gt 401 -or -not (In-Box $m $redTinkerBox)){continue};if((Red-Label $C $k) -match '(?i)tinker'){$v=$k;break}}
-        if(-not $v){Grade '229' 'unreached' "no NPC labelled tinker in the Tinkers Guild at game hour $h";return}
-        $C.Said.Clear();$C.BuyFrom=0;Send-Plain $C (Serial-Packet 9 $v);Send-Plain $C (Say 'vendor buy');$until=[datetime]::UtcNow.AddSeconds(3);while(-not $C.BuyFrom -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4}
-        if(-not $C.BuyFrom){Grade '229' 'unreached' "no buy list from $($C.Labels[$v]) (said: $(Said-Text $C))";return}
+        # After a clock move the keeper walks in from home or the tavern: wait for it, labelling each mobile once.
+        Go-Wait $C 1425 1655;$bots=@($fleet|ForEach-Object Serial);$v=0;$named=@{};$until=[datetime]::UtcNow.AddSeconds(90)
+        while(-not $v -and [datetime]::UtcNow -lt $until){Pump-All 1
+            foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -contains $k -or $m[0] -lt 400 -or $m[0] -gt 401 -or -not (In-Box $m $redTinkerBox)){continue};if(-not $named.ContainsKey($k)){$named[$k]=Red-Label $C $k};if($named[$k] -match '(?i)tinker'){$v=$k;break}}}
+        if(-not $v){$seen=@(foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -contains $k -or [Math]::Max([Math]::Abs($m[1]-$C.X),[Math]::Abs($m[2]-$C.Y)) -gt 12){continue};"$(if($named.ContainsKey($k)){$named[$k]}else{Red-Label $C $k})@$($m[1]),$($m[2]),$($m[3]) body $($m[0])"})
+            Grade '229' 'unreached' "no NPC labelled tinker in the Tinkers Guild within 90 s at game hour $h; British at $($C.X),$($C.Y); within 12: $($seen -join '; ')";return}
+        # The keeper wanders its whole shop and a vendor answers only within 4 tiles (gv-near): stand on its tile first.
+        $m=$C.Mobiles[$v];Go-Wait $C $m[1] $m[2]
+        $C.Said.Clear();$C.BuyFrom=0;$C.BuyNames=$null;Send-Plain $C (Serial-Packet 9 $v);Send-Plain $C (Say 'vendor buy');$until=[datetime]::UtcNow.AddSeconds(6);while(-not $C.BuyFrom -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4}
+        if(-not $C.BuyFrom){Grade '229' 'unreached' "no buy list from $($C.Labels[$v]) in 6 s (said: $(Said-Text $C))";return}
+        # The list's lots arrive as container content; read them once the list's line count is met or 2 s pass.
+        $want=@($C.BuyNames).Count;$until=[datetime]::UtcNow.AddSeconds(2);while(@($C.Items.Keys|Where-Object{$C.Items[$_][1] -eq $C.BuyFrom}).Count -lt $want -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4}
+        if($want -eq 0){Grade '229' 'unreached' "$($C.Labels[$v])'s buy list has no lines at game hour ${h}: nothing on sale, so the purchase was not tried";return}
         $lots=@($C.Items.Keys|Where-Object{$C.Items[$_][1] -eq $C.BuyFrom});$lot=@($lots|Where-Object{$redTinkerTools -contains $C.Items[$_][0]})|Select-Object -First 1
         $seller=if($C.Shop.ContainsKey($C.BuyFrom)){$C.Shop[$C.BuyFrom]}else{$v}
         if(-not $lot){Grade '229' 'fail' "$($C.Labels[$v]) lists $($lots.Count) lines and no tinker's tools";$shut=[byte[]]::new(8);$shut[0]=0x3B;Put16 $shut 1 8;Put32 $shut 3 $seller;Send-Plain $C $shut;return}
@@ -870,19 +903,33 @@ $redSteps=[ordered]@{
         $tool=@($C.Items.Keys|Where-Object{$redTinkerTools -contains $C.Items[$_][0] -and (Owned $C $_)})|Select-Object -First 1
         $C.Said.Clear();$C.Gump=$null;$C.Menu=$null;Send-Plain $C (Serial-Packet 6 $tool);$until=[datetime]::UtcNow.AddSeconds(4);while($null -eq $C.Gump -and $null -eq $C.Menu -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4}
         $menu=($null -ne $C.Gump -or $null -ne $C.Menu);$banked=Said-Has $C '(?i)must be on your person';Red-Close-Gump $C
+        # Sell the tool back, once: Britain's lumber lands about one lot in ten trips (trial-50056), so a tool bought every
+        # draw empties the shop of boards and tools (trial-50250: 4 bought, then 4 draws with none listed).
+        $C.Sale=$null;Send-Plain $C (Say 'vendor sell');$until=[datetime]::UtcNow.AddSeconds(3);while($null -eq $C.Sale -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4}
+        $s=$C.Sale;if($null -ne $s -and $s.Length -ge 9){$at=9;for($i=0;$i -lt (U16 $s 7) -and $at+14 -le $s.Length;$i++){if((U32 $s $at) -eq $tool){$q=[byte[]]::new(15);$q[0]=0x9F;Put16 $q 1 15;Put32 $q 3 (U32 $s 3);Put16 $q 7 1;Put32 $q 9 $tool;Put16 $q 13 1;Send-Plain $C $q;Pump-Bot $C 16;break};$at+=14+(U16 $s ($at+12))}}
         Grade '229' $(if(-not $refused -and $menu -and -not $banked){'pass'}else{'fail'}) "bought tinker's tools $had -> $now, quote refused=$refused; the tool from the pack opened a craft menu=$menu, told on-your-person=$banked (said: $(Said-Text $C))"}
     # UOAIX-224: at night a Tinkers Guild door answers when the shop opens ("... closed, till 8am (N minutes)").
-    '224'={param($C) $h=Red-To-Hour $C $false 22;if($h -lt 0){Grade '224' 'unreached' "the clock reached no shut hour (20 to 7) within 120 s, last hour $(Red-Hour)";return}
-        Go-Wait $C 1425 1655;Pump-All 2
-        $doors=@($C.Doors.Keys|Where-Object{$d=$C.Doors[$_];$d[0] -ge $redTinkerBox[0]-1 -and $d[0] -le $redTinkerBox[2]+1 -and $d[1] -ge $redTinkerBox[1]-1 -and $d[1] -le $redTinkerBox[3]+1})
-        if($doors.Count -eq 0){Grade '224' 'unreached' "no door item seen at the Tinkers Guild ($($C.Doors.Count) doors in view)";return}
+    '224'={param($C) $h=Red-To-Hour $C $false 1
+        # Keepers walk out from hour 20 and back in at hour 7 (trial-50243 failed at hour 7): grade the middle of the night.
+        if($h -ge 6 -and $h -le 22){Send-Plain $C (Say "[time $((1-$h+24)%24)");$until=[datetime]::UtcNow.AddSeconds(120);do{Pump-All 2;$h=Red-Hour}while(-not ($h -ge 23 -or ($h -ge 0 -and $h -le 5)) -and [datetime]::UtcNow -lt $until);if($h -ge 6 -and $h -le 22){$h=-1}}
+        if($h -lt 0){Grade '224' 'unreached' "the clock reached no night hour (23 to 5) within 120 s, last hour $(Red-Hour)";return}
+        # The keeper walks home through the door at the clock move, and an open door closes only after ServUO's 20 s
+        # (wd-close-ticks) and is barred only once shut (bsh-bar): wait that out, or a door just left open answers door-close.
+        Pump-All 25;Go-Wait $C 1425 1655;Pump-All 2
+        # A door within bsh-reach (4) of the shop region is the shop's (bsh-shop-of); the guild's east doors stand at x 1431.
+        $doors=@($C.Doors.Keys|Where-Object{$d=$C.Doors[$_];$d[0] -ge $redTinkerBox[0]-4 -and $d[0] -le $redTinkerBox[2]+4 -and $d[1] -ge $redTinkerBox[1]-4 -and $d[1] -le $redTinkerBox[3]+4})
+        if($doors.Count -eq 0){$near=@($C.Doors.Keys|ForEach-Object{$d=$C.Doors[$_];if([Math]::Max([Math]::Abs($d[0]-$C.X),[Math]::Abs($d[1]-$C.Y)) -le 12){"$($d[0]),$($d[1]) art $('{0:X4}' -f $d[2])"}})
+            Grade '224' 'unreached' "no door item seen at the Tinkers Guild ($($C.Doors.Count) doors in view; within 12 of British at $($C.X),$($C.Y): $($near -join ', '))";return}
         $C.Said.Clear();foreach($d in $doors){$at=$C.Doors[$d];Go-Wait $C $at[0] $at[1];Send-Plain $C (Serial-Packet 6 $d);Pump-All 1}
         $note=@($C.Said|Where-Object{$_ -match '(?i)closed' -and $_ -match '(?i)till'})
         Grade '224' $(if($note.Count -gt 0){'pass'}else{'fail'}) "game hour $h, $($doors.Count) doors used; said: $(Said-Text $C)"}
     # UOAIX-159: on Castle Britain's main floor at 1341,1612, a guard of the castle patrol comes within the 36-tile earshot
     # on British's floor within 90 s, so a call from there can be answered.
-    '159'={param($C) Go-Wait $C 1341 1612;Pump-All 2;$z=$C.Z;$bots=@($fleet|ForEach-Object Serial);$named=@{};$near=99;$seen=''
-        $until=[datetime]::UtcNow.AddSeconds(90)
+    # "[go" takes no z and stands British on the land under the floor (z 50), so he climbs the north stair (foot
+    # 1352,1621, top 1352,1616 on the z 72 floor, cv-castle-stair-x) and walks the floor to 1341,1612.
+    '159'={param($C) Go-Wait $C 1352 1621;Pump-All 1;Red-Walk $C 0 5;Red-Walk $C 7 4;Red-Walk $C 6 7;Pump-All 1
+        if($null -eq (Red-Where $C)){Grade '159' 'unreached' 'no answer to [where after the stair walk';return};$z=$C.Z;$bots=@($fleet|ForEach-Object Serial);$named=@{};$near=99;$seen=''
+        $until=[datetime]::UtcNow.AddSeconds(240)
         while([datetime]::UtcNow -lt $until -and $near -gt 36){Pump-All 1
             foreach($k in @($C.Mobiles.Keys)){$m=$C.Mobiles[$k];if($bots -contains $k -or $m[0] -lt 400 -or $m[0] -gt 401){continue};if(-not $named.ContainsKey($k)){$named[$k]=Red-Label $C $k}
                 if($named[$k] -match '(?i)guard' -and [Math]::Abs($m[3]-$z) -le 10){$d=[Math]::Max([Math]::Abs($m[1]-$C.X),[Math]::Abs($m[2]-$C.Y));if($d -lt $near){$near=$d;$seen="$($named[$k]) at $($m[1]),$($m[2]),$($m[3])"}}}}
@@ -912,11 +959,22 @@ $redSteps=[ordered]@{
     # UOAIX-40: ore from two successful swings at the mountainside merges into stacks of its grade: no more ore stacks
     # than grades (3), and more ore than stacks.
     '40'={param($C) Prime $C 'mining';Open-Pack $C;$pick=Ensure-Item $C '0E86' 0x0E86 1 'red-40';if(-not $pick){Grade '40' 'unreached' 'no pickaxe reached British';return}
-        Go-Wait $C 1404 1534;$yields=0;for($k=0;$k -lt 8 -and $yields -lt 2;$k++){$C.Said.Clear();Use-Then-Target $C $pick {Target-Ground $C 1404 1533 12} 'red-40'
-            $until=[datetime]::UtcNow.AddSeconds(6);while($C.Said.Count -eq 0 -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4};Pump-All 1;if(Said-Has $C '(?i)place some ore'){$yields++}}
-        if($yields -lt 2){Grade '40' 'unreached' "$yields ore yields in 8 swings";return}
+        # A vein empties (sites are per tile column, gh-site) and the town's miners empty the ones by the road too; only
+        # mountain land mines (cpr-land). A tile that answers no metal or cannot mine is left for the next and never swung
+        # at again (L-FUTILITY): the two by the road, then the rings round two miner nodes (cgg-rock-near stands them beside rock).
+        $yields=0;$tiles=@(@(1404,1534,1404,1533),@(1404,1534,1403,1533))
+        foreach($n in @(@(1409,1516),@(1456,1519))){for($r=0;$r -lt 8;$r++){$tiles+=,@($n[0],$n[1],($n[0]+(-1,0,1,1,1,0,-1,-1)[$r]),($n[1]+(-1,-1,-1,0,1,1,1,0)[$r]))}}
+        $t=0;$tried=@();$at=''
+        for($k=0;$k -lt 30 -and $yields -lt 2 -and $t -lt $tiles.Count;$k++){$tile=$tiles[$t];if($at -ne "$($tile[0]),$($tile[1])"){Go-Wait $C $tile[0] $tile[1];$at="$($tile[0]),$($tile[1])"}
+            $tx=$tile[2];$ty=$tile[3];$C.Said.Clear();Use-Then-Target $C $pick {Target-Ground $C $tx $ty 12} 'red-40'
+            $until=[datetime]::UtcNow.AddSeconds(6);while($C.Said.Count -eq 0 -and [datetime]::UtcNow -lt $until){Pump-Bot $C 4};Pump-All 1
+            if(Said-Has $C '(?i)place some ore'){$yields++}else{$tried+="$tx,$ty $(Said-Text $C)";$t++}}
+        if($yields -lt 2){Grade '40' 'unreached' "$yields ore yields in $k swings; tiles left: $($tried -join '; ')";return}
         $ore=@($C.Items.Keys|Where-Object{$C.Items[$_][0] -ge 0x19B7 -and $C.Items[$_][0] -le 0x19BA -and (Owned $C $_)});$amount=0;foreach($k in $ore){$amount+=[Math]::Max(1,$C.Items[$k][2])}
-        Grade '40' $(if($ore.Count -le 3 -and $amount -gt $ore.Count){'pass'}else{'fail'}) "$yields yields; $($ore.Count) ore stacks holding $amount ore"}
+        # Iron, gold and the two other coin ores share art 0x19B9 (gh-output-graphic) and a stack holds one of them: group
+        # the stacks by their click label (the amount stripped) and allow 3 grades of each.
+        $kinds=@{};foreach($k in $ore){$n=(Red-Label $C $k) -replace '^\s*\d+\s*','';$kinds[$n]=1+[int]$kinds[$n]};$over=@($kinds.Keys|Where-Object{$kinds[$_] -gt 3})
+        Grade '40' $(if($over.Count -eq 0 -and $amount -gt $ore.Count){'pass'}else{'fail'}) "$yields yields; $($ore.Count) ore stacks holding $amount ore by kind $(@($kinds.Keys|ForEach-Object{"$_ x$($kinds[$_])"}) -join ', ') ($(@($ore|ForEach-Object{'{0:X4} x{1} in {2}' -f $C.Items[$_][0],$C.Items[$_][2],$C.Items[$_][1]}) -join ', '); pack $($C.Pack))"}
 }
 # A tavern table (UOAIX-178, 188, 189, 190): the world item nearest a spot with one of the graphics. The live table is
 # a world item beside the scenery one; flora, crops and decoration (serials from 0x7C000000, WorldDecoration) are skipped.
@@ -1504,13 +1562,28 @@ function Act($B,[string]$Force=''){
             if(-not (Test-Path variable:script:gmNext)){$script:gmNext=0};$name=@($gmSteps.Keys)[($script:gmNext++) % $gmSteps.Count];& $gmSteps[$name] $B;Count "gm-$name"}
         # UOAIX-218: British stands in each themed wild area (a player's pulse spawns its window) and counts the themed
         # bodies in view: lizardmen 0x21/0x23/0x24 and snakes 0x34/0x15 in the swamps, polar bears 0xD5, walruses 0xDD and
-        # white wolves 0x25 on Dagger Isle, daemons 0x09/0x0A, dragons 0x0C/0x3B and drakes 0x3C/0x3D at Fire Isle Jungle 6.
+        # white wolves 0x25 on Dagger Isle, daemons 0x09/0x0A, dragons 0x0C/0x3B and drakes 0x3C/0x3D at the Fire Temple.
         'wild'{if($B.Index -ne 1){return};if(-not (Test-Path variable:script:wildNext)){$script:wildNext=0}
-            $p=@(@('swamp',2020,1020,@(0x21,0x23,0x24,0x34,0x15)),@('swamp',1180,2880,@(0x21,0x23,0x24,0x34,0x15)),@('ice',3960,400,@(0xD5,0xDD,0x25)),@('ice',4080,570,@(0xD5,0xDD,0x25)),@('fire',4290,3720,@(0x09,0x0A,0x0C,0x3B,0x3C,0x3D)))[($script:wildNext++) % 5]
+            $p=@(@('swamp',2020,1020,@(0x21,0x23,0x24,0x34,0x15)),@('swamp',1180,2880,@(0x21,0x23,0x24,0x34,0x15)),@('ice',3960,400,@(0xD5,0xDD,0x25)),@('ice',4080,570,@(0xD5,0xDD,0x25)),@('fire',4588,3568,@(0x09,0x0A,0x0C,0x3B,0x3C,0x3D)))[($script:wildNext++) % 5]
             Send-Plain $B (Say "[go $($p[1]) $($p[2])");$until=[datetime]::UtcNow.AddSeconds(20);while([datetime]::UtcNow -lt $until){Pump-Bot $B 16}
             $near=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $B.Mobiles[$_][0] -ne 400 -and $B.Mobiles[$_][0] -ne 401 -and [Math]::Max([Math]::Abs($B.Mobiles[$_][1]-$B.X),[Math]::Abs($B.Mobiles[$_][2]-$B.Y)) -le 18})
             $seen=@($near|Where-Object{$p[3] -contains $B.Mobiles[$_][0]})
             Count "visit-wild-$($p[0])";if($seen.Count -gt 0){Count "seen-wild-$($p[0])";Note "WILD $($p[0]) at $($B.X),$($B.Y): $($seen.Count) themed of $($near.Count) creatures within 18 tiles"}else{Count "none-wild-$($p[0])";Note "WILD $($p[0]) at $($B.X),$($B.Y): 0 themed of $($near.Count) creatures within 18 tiles"}}
+        # UOAIX-217: a city case reaches a guard only within earshot at the caller's z (lw-call 12 tiles for an NPC
+        # witness, cv-call 36 for a player's "guards"), so bot 2 waits beside Moonglow patrol 2's first waypoint, the carpenter (4410,1092), until a guard is in
+        # view and more than 3 tiles off, tries a theft from the nearest townsperson, and bot 1, beside it and so a witness,
+        # says "guards". A Moonglow guard must then come within 3 tiles of the thief in 120 s.
+        'moontheft'{if($B.Index -ne 2){return};$bots=@($fleet|ForEach-Object Serial);$W=@($fleet|Where-Object{$_.Index -eq 1})[0];$named=@{}
+            Send-Plain $B (Say '[go 4410 1092');Send-Plain $W (Say '[go 4411 1092');Pump-All 4
+            $guardNear={param($Q,[int]$R) foreach($k in @($Q.Mobiles.Keys)){$m=$Q.Mobiles[$k];if($bots -contains $k -or $m[0] -lt 400 -or $m[0] -gt 401){continue};if([Math]::Max([Math]::Abs($m[1]-$Q.X),[Math]::Abs($m[2]-$Q.Y)) -gt $R){continue};if(-not $named.ContainsKey($k)){$named[$k]=Red-Label $Q $k};if($named[$k] -match '(?i)guard'){return "$($named[$k]) at $($m[1]),$($m[2])"}};return ''}
+            $until=[datetime]::UtcNow.AddSeconds(180);$inview='';while([datetime]::UtcNow -lt $until -and -not $inview){Pump-All 1;if(-not (& $guardNear $B 3)){$inview=& $guardNear $B 18}}
+            if(-not $inview){Grade '217theft' 'unreached' "no guard came into view more than 3 tiles from $($B.X),$($B.Y) in 180 s";return}
+            $people=@($B.Mobiles.Keys|Where-Object{$_ -ne $B.Serial -and $bots -notcontains $_ -and $B.Mobiles[$_][0] -ge 400 -and $B.Mobiles[$_][0] -le 401 -and [Math]::Max([Math]::Abs($B.Mobiles[$_][1]-$B.X),[Math]::Abs($B.Mobiles[$_][2]-$B.Y)) -le 12}|Where-Object{-not $named.ContainsKey($_) -or $named[$_] -notmatch '(?i)guard'})
+            if($people.Count -eq 0){Grade '217theft' 'unreached' "no townsperson within 12 tiles of $($B.X),$($B.Y)";return}
+            $t=$people[0];$m=$B.Mobiles[$t];Use-Then-Target $B 0 {Target-Object $B $t $m[1] $m[2] 0 $m[0]} 'moontheft' -Packet (Skill-Use 33)
+            Pump-All 2;Send-Plain $W (Say 'guards')
+            $until=[datetime]::UtcNow.AddSeconds(120);$after='';while([datetime]::UtcNow -lt $until -and -not $after){Pump-All 1;$after=& $guardNear $B 3}
+            Grade '217theft' $(if($after){'pass'}else{'fail'}) "thief at $($B.X),$($B.Y) tried $t with $inview in view; guard within 3 tiles: $(if($after){$after}else{'none in 120 s'})"}
         'spells'{if($B.Index -ne 1){return};Prime $B 'magery';Send-Plain $B (Say '[attr int 100')
             if(-not (Test-Path variable:script:spellStep)){$script:spellStep=0};$name=@($spellSteps.Keys)[($script:spellStep++) % $spellSteps.Count];& $spellSteps[$name] $B;Count "spells-$name"}
         {@('castle','cheer','loom','fell','farm') -contains $_}{if($B.Index -eq 1){& $bluSteps[$f] $B}}

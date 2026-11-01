@@ -1,0 +1,63 @@
+Chapter: ProofDegenerateTest
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ test-sk is RFC 8032 section 7.1 test vector 1, as in codex/test/apps/verifier-phase5-test.
+
+Section: Helpers
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  verdict : VerifyResult -> Text
+  verdict (r) = if r.accepted then "accepted" else "refused, " & r.reason
+
+  bin-with : CdxProofEntry -> List Integer
+  bin-with (pe) = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk [pe]
+
+
+  text-to-hash-bytes : Text -> List Integer
+  text-to-hash-bytes (hex) = hex-to-bytes-loop hex 0 64 []
+
+  hex-to-bytes-loop : Text, Integer, Integer, List Integer -> List Integer
+  hex-to-bytes-loop (hex) (i) (len) (acc) =
+    if i >= len then acc
+    else if i + 1 >= text-length hex then list-push acc 0
+    else let hi = hex-nibble (to-unicode (char-code (char-at hex i)))
+    in let lo = hex-nibble (to-unicode (char-code (char-at hex (i + 1))))
+    in hex-to-bytes-loop hex (i + 2) len (list-push acc (hi * 16 + lo))
+
+  hex-nibble : Integer -> Integer
+  hex-nibble (c) =
+    if c >= 48 & c <= 57 then c - 48
+    else if c >= 97 & c <= 102 then c - 87
+    else if c >= 65 & c <= 70 then c - 55
+    else 0
+
+Section: Body
+
+  opening : [Console] Nothing =
+    let genuine = fact-create ProofFact "termination-proof" "author" 0
+    in let replaced = Fact { hash = genuine.hash, kind = ProofFact, content = "a different body", author = "author", timestamp = 0 }
+    in let pe = CdxProofEntry { kind = cdx-proof-termination, hash-bytes = text-to-hash-bytes (genuine.hash) }
+    in let bin = bin-with pe
+    in act
+      print-line-uni ("proof control, genuine fact = " & verdict (verify-proofs bin (fact-store fact-store-empty genuine) 100))
+      print-line-uni ("proof fact with replaced content under the genuine hash = " & verdict (verify-proofs bin (fact-store fact-store-empty replaced) 100))
+      print-line-uni ("proof absent from the store = " & verdict (verify-proofs bin fact-store-empty 100))
+    end

@@ -1,7 +1,5 @@
 Chapter: Ethernet
 
- We say:
-
 Section: Constants
   eth-type-ipv4 : Integer = 2048
   eth-type-arp : Integer = 2054
@@ -120,9 +118,21 @@ Section: ARP
     let payload = (write-be16 arp-hw-ethernet & write-be16 eth-type-ipv4 & [6, 4] & write-be16 arp-op-reply & reply-mac & src-ip & dst-mac & dst-ip)
     in eth-build-frame dst-mac src-mac eth-type-arp payload
 
+ RFC 826: hardware type, protocol type and both address lengths fix the layout
+ every offset below assumes, and `op` is narrowed into 1..2, which traps on any
+ other value; a payload failing any of them is not parsed.
+
+  arp-valid : List Integer -> Boolean
+  arp-valid (payload) =
+    if list-length payload < arp-packet-size then False
+    else if read-be16 payload 0 /= arp-hw-ethernet then False
+    else if read-be16 payload 2 /= eth-type-ipv4 then False
+    else if list-at payload 4 /= 6 | list-at payload 5 /= 4 then False
+    else read-be16 payload 6 == arp-op-request | read-be16 payload 6 == arp-op-reply
+
   arp-parse : List Integer -> ArpPacket
   arp-parse (payload) =
-    if list-length payload < 28 then ArpPacket {
+    if arp-valid payload == False then ArpPacket {
       op = __narrow 1, sender-mac = [0, 0, 0, 0, 0, 0], sender-ip = [0, 0, 0, 0],
       target-mac = [0, 0, 0, 0, 0, 0], target-ip = [0, 0, 0, 0]
     }
@@ -165,12 +175,6 @@ Section: IPv4
     if i >= len then sum
     else if i + 1 >= len then sum + bit-shl (bit-and (list-at buf i) 255) 8
     else ip-sum buf (i + 2) len (sum + ip-word buf i)
-
- The unfolded sum is a separate function so a caller summing two ranges can
- carry the accumulator across them rather than concatenating the ranges into
- one list. The pseudo-header a TCP checksum covers is 12 bytes, an even count,
- so a second range starting at index 0 keeps every 16-bit word on the same
- boundary the concatenation gave it.
 
   ip-checksum : List Integer, Integer, Integer, Integer -> Integer
   ip-checksum (hdr) (i) (len) (sum) =

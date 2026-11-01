@@ -2,8 +2,6 @@ Chapter: PolicyEngine
   cites Trust chapter TrustLattice
   cites Foreword chapter Maybe
 
- We say:
-
 Section: Policy Rules
 
   PolicyCondition =
@@ -21,6 +19,8 @@ Section: Policy Rules
     | Deny (Text)
     | AllowWithScope (Text)
     | AllowWithDuration (Integer)
+    | AllowWithApproval (List (List Integer)) (List Integer) (Text)
+    | AllowWithQuota (Integer) (Text) (PolicyEffect)
 
   PolicyRule = record {
     name : Text,
@@ -41,7 +41,8 @@ Section: Evaluation Context
     direction : Integer between 0 and 255,
     trust-score : Integer between 0 and 65535,
     current-time : Integer,
-    agent-id : Text
+    agent-id : Text,
+    scope : Text
   }
 
 Section: Condition Evaluation
@@ -74,7 +75,10 @@ Section: Policy Evaluation
   PolicyDecision = record {
     allowed : Boolean,
     matched-rule : Text,
-    reason : Text
+    reason : Text,
+    quota-minutes : Integer,
+    quota-period : Text,
+    needs-approval : Boolean
   }
 
   eval-policy : Policy, PolicyContext -> PolicyDecision
@@ -82,28 +86,115 @@ Section: Policy Evaluation
 
   eval-rules : List PolicyRule, PolicyContext, Integer, Integer -> PolicyDecision
   eval-rules (rules) (ctx) (i) (len) =
-    if i == len then
-      PolicyDecision { allowed = False, matched-rule = "default-deny", reason = "no matching rule" }
+    if i == len then pe-decision False "default-deny" "no matching rule"
     else let r = list-at rules i
-    in if eval-condition (r.condition) ctx
-      then when r.outcome
-        is Allow -> PolicyDecision { allowed = True, matched-rule = r.name, reason = "allowed" }
-        is Deny (reason) -> PolicyDecision {
-          allowed = False,
-          matched-rule = r.name,
-          reason = reason
-        }
-        is AllowWithScope (scope) -> PolicyDecision {
-          allowed = True,
-          matched-rule = r.name,
-          reason = "allowed within " & scope
-        }
-        is AllowWithDuration (dur) -> PolicyDecision {
-          allowed = True,
-          matched-rule = r.name,
-          reason = "allowed for " & show dur & " ticks"
-        }
+    in if eval-condition (r.condition) ctx then pe-decide (r.name) (r.outcome) ctx
     else eval-rules rules ctx (i + 1) len
+
+  pe-decision : Boolean, Text, Text -> PolicyDecision
+  pe-decision (allowed) (rule) (reason) = PolicyDecision {
+    allowed = allowed,
+    matched-rule = rule,
+    reason = reason,
+    quota-minutes = 0 - 1,
+    quota-period = "",
+    needs-approval = False
+  }
+
+ A quota decides as the outcome it wraps decides, and an allowed decision
+ carries the quota for the caller that keeps the count. Wrapped quotas keep
+ the smaller.
+
+  pe-decide : Text, PolicyEffect, PolicyContext -> PolicyDecision
+  pe-decide (name) (outcome) (ctx) = when outcome
+    is Allow -> pe-decision True name "allowed"
+    is Deny (reason) -> pe-decision False name reason
+    is AllowWithScope (scope) ->
+      if policy-scope-within (ctx.capability) scope (ctx.scope) then pe-decision True name ("allowed within " & scope)
+      else pe-decision False name ("outside scope " & scope)
+    is AllowWithDuration (dur) -> pe-decision True name ("allowed for " & show dur & " ticks")
+    is AllowWithApproval (keys) (condition) (zone) -> pe-needs-approval (pe-decision True name "allowed with approval")
+    is AllowWithQuota (minutes) (period) (inner) -> pe-quota (pe-decide name inner ctx) minutes period
+
+ An allowed decision that needs approval is allowed only through an approval
+ gate; a caller with no gate must refuse it.
+
+  pe-needs-approval : PolicyDecision -> PolicyDecision
+  pe-needs-approval (d) = PolicyDecision {
+    allowed = d.allowed,
+    matched-rule = d.matched-rule,
+    reason = d.reason,
+    quota-minutes = d.quota-minutes,
+    quota-period = d.quota-period,
+    needs-approval = True
+  }
+
+  pe-quota : PolicyDecision, Integer, Text -> PolicyDecision
+  pe-quota (d) (minutes) (period) =
+    if d.allowed == False then d
+    else let keep = d.quota-minutes >= 0 & d.quota-minutes < minutes
+    in PolicyDecision {
+      allowed = True,
+      matched-rule = d.matched-rule,
+      reason = d.reason & " within a quota of " & show minutes & " minutes per " & period,
+      quota-minutes = if keep then d.quota-minutes else minutes,
+      quota-period = if keep then d.quota-period else period,
+      needs-approval = d.needs-approval
+    }
+
+Section: Scope
+
+ A scoped allow decides the request either way: a request outside the scope is
+ denied by that rule, never passed to a later and wider one. The relation is
+ the type checker's scope-subsumes, rewritten here because a trust chapter
+ cannot cite the compiler: a FileSystem scope is a path that admits itself and
+ what lies beneath it at a separator, a Network scope is an authority whose
+ port, when it names one, must match, and a Console scope is a channel.
+
+  policy-scope-within : Text, Text, Text -> Boolean
+  policy-scope-within (cap) (outer) (inner) =
+    if pe-starts cap "Network" then pe-authority-within outer inner
+    else if pe-starts cap "Console" then inner == outer
+    else pe-path-within outer inner
+
+  pe-starts : Text, Text -> Boolean
+  pe-starts (s) (p) =
+    if text-length p > text-length s then False
+    else substring s 0 (text-length p) == p
+
+  pe-path-within : Text, Text -> Boolean
+  pe-path-within (outer) (inner) =
+    if inner == outer then True
+    else if pe-starts inner outer == False then False
+    else if text-length outer == 0 then True
+    else if pe-slash-at outer (text-length outer - 1) then True
+    else pe-slash-at inner (text-length outer)
+
+  pe-slash-at : Text, Integer -> Boolean
+  pe-slash-at (s) (i) = char-code (char-at s i) == char-code (char-at "/" 0)
+
+  pe-authority-within : Text, Text -> Boolean
+  pe-authority-within (outer) (inner) =
+    if pe-host outer /= pe-host inner then False
+    else let op = pe-port outer
+    in if text-length op == 0 then True
+    else pe-port inner == op
+
+  pe-colon : Text, Integer -> Integer
+  pe-colon (s) (i) =
+    if i >= text-length s then 0 - 1
+    else if char-code (char-at s i) == char-code (char-at ":" 0) then i
+    else pe-colon s (i + 1)
+
+  pe-host : Text -> Text
+  pe-host (a) =
+    let p = pe-colon a 0
+    in if p < 0 then a else substring a 0 p
+
+  pe-port : Text -> Text
+  pe-port (a) =
+    let p = pe-colon a 0
+    in if p < 0 then "" else substring a (p + 1) (text-length a - p - 1)
 
 Section: Policy Builders
 
@@ -136,6 +227,25 @@ Section: Policy Builders
     name = name,
     condition = cond,
     outcome = Deny reason
+  }
+
+ The approvers are Ed25519 public keys, the condition is its Approval-chapter
+ encoding (approval-condition-bytes), and the zone names the clock the
+ condition's week windows read. This chapter cites no Approval chapter, so
+ the condition travels as bytes.
+
+  rule-allow-approved : Text, PolicyCondition, List (List Integer), List Integer, Text -> PolicyRule
+  rule-allow-approved (name) (cond) (keys) (condition) (zone) = PolicyRule {
+    name = name,
+    condition = cond,
+    outcome = AllowWithApproval keys condition zone
+  }
+
+  rule-with-quota : PolicyRule, Integer, Text -> PolicyRule
+  rule-with-quota (r) (minutes) (period) = PolicyRule {
+    name = r.name,
+    condition = r.condition,
+    outcome = AllowWithQuota minutes period (r.outcome)
   }
 
   rule-allow-scoped : Text, PolicyCondition, Text -> PolicyRule

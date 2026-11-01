@@ -1,0 +1,109 @@
+Chapter: VerifyCacheContextTest
+  cites Verify chapter VerifyCache
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+  cites Foreword chapter CCE
+
+Section: Helpers
+  show-bool : Boolean -> Text
+  show-bool (b) = if b then "True" else "False"
+
+  vcc-line : Text, CachedResult -> Text
+  vcc-line (label) (cr) = label & ": cached=" & show-bool (cr.was-cached) & " accepted=" & show-bool ((cr.result).accepted)
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+Section: Body
+  opening : [Console] Nothing =
+    let bin = cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+    in let author-key = read-author-key bin
+    in let lat = lattice-add-direct lattice-empty author-key 8000
+    in let allow = policy-add-rule (policy-empty "allow") (rule-allow "allow-console" (CapabilityMatch "Console" 2))
+    in let deny = policy-add-rule (policy-empty "deny") (rule-deny "no-console" (CapabilityMatch "Console" 2) "console refused")
+    in let window = policy-add-rule (policy-empty "window") (rule-allow "console-early" (AllOf [CapabilityMatch "Console" 2, TimeWindow 0 10]))
+    in let warm = verify-cdx-cached bin lat allow 0 fact-store-empty 100 verify-cache-empty
+    in let same = verify-cdx-cached bin lat allow 0 fact-store-empty 100 (warm.cache)
+    in let untrusted = verify-cdx-cached bin lattice-empty allow 0 fact-store-empty 100 (warm.cache)
+    in let denied = verify-cdx-cached bin lat deny 0 fact-store-empty 100 (warm.cache)
+    in let early = verify-cdx-cached bin lat window 5 fact-store-empty 100 verify-cache-empty
+    in let late = verify-cdx-cached bin lat window 100 fact-store-empty 100 (early.cache)
+    in let fresh-late = verify-cdx-cached bin lat window 100 fact-store-empty 100 verify-cache-empty
+    in let pf1 = fact-create ProofFact "termination-proof" "author" 0
+    in let pf2 = fact-create ProofFact "memory-safety-proof" "author" 0
+    in let other = fact-create DefinitionFact "some-definition" "author" 0
+    in let proofs = fact-store (fact-store fact-store-empty pf1) pf2
+    in let proofs-plus = fact-store proofs other
+    in let one-proof = fact-store fact-store-empty pf1
+    in let pbin = cdx-encode-signed-with-proofs (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [],
+      effects = [],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 0
+    }) test-sk [CdxProofEntry { kind = cdx-proof-termination, hash-bytes = vcc-hash-bytes (pf1.hash) }, CdxProofEntry { kind = cdx-proof-memory-safety, hash-bytes = vcc-hash-bytes (pf2.hash) }]
+    in let pwarm = verify-cdx-cached pbin lat allow 0 proofs 100 verify-cache-empty
+    in let psame = verify-cdx-cached pbin lat allow 0 proofs 100 (pwarm.cache)
+    in let pextra = verify-cdx-cached pbin lat allow 0 proofs-plus 100 (pwarm.cache)
+    in let pempty = verify-cdx-cached pbin lat allow 0 fact-store-empty 100 (pwarm.cache)
+    in let pshort = verify-cdx-cached pbin lat allow 0 one-proof 100 (pwarm.cache)
+    in let pfuel = verify-cdx-cached pbin lat allow 0 proofs 1 (pwarm.cache)
+    in let pfresh = verify-cdx-cached pbin lat allow 0 fact-store-empty 100 verify-cache-empty
+    in act
+      print-line-uni (vcc-line "warm" warm)
+      print-line-uni (vcc-line "same context" same)
+      print-line-uni (vcc-line "author not in the lattice" untrusted)
+      print-line-uni (vcc-line "policy denies console" denied)
+      print-line-uni (vcc-line "inside the time window" early)
+      print-line-uni (vcc-line "past the time window" late)
+      print-line-uni (vcc-line "past the time window, empty cache" fresh-late)
+      print-line-uni (vcc-line "proofs in the store" pwarm)
+      print-line-uni (vcc-line "proofs, same store" psame)
+      print-line-uni (vcc-line "proofs, store with an unrelated fact more" pextra)
+      print-line-uni (vcc-line "proofs, empty store" pempty)
+      print-line-uni (vcc-line "proofs, store missing one" pshort)
+      print-line-uni (vcc-line "proofs, fuel for one of two" pfuel)
+      print-line-uni (vcc-line "proofs, empty store, empty cache" pfresh)
+    end
+
+  vcc-hash-bytes : Text -> List Integer
+  vcc-hash-bytes (hex) = vcc-hex-loop hex 0 []
+
+  vcc-hex-loop : Text, Integer, List Integer -> List Integer
+  vcc-hex-loop (hex) (i) (acc) =
+    if i + 1 >= text-length hex then acc
+    else let hi = vcc-nibble (to-unicode (char-code (char-at hex i)))
+    in let lo = vcc-nibble (to-unicode (char-code (char-at hex (i + 1))))
+    in vcc-hex-loop hex (i + 2) (list-push acc (hi * 16 + lo))
+
+  vcc-nibble : Integer -> Integer
+  vcc-nibble (c) =
+    if c >= 48 & c <= 57 then c - 48
+    else if c >= 97 & c <= 102 then c - 87
+    else if c >= 65 & c <= 70 then c - 55
+    else 0
+
+Page 1

@@ -18,7 +18,7 @@ cluster against the belief this sentence encouraged. When
 you relocate a foreword definition, budget a `cites` line for each
 caller of the old chapter.
 
-### codex.foreword (134 modules, measured 2026-09-25) -- Core
+### codex.foreword (138 modules, measured 2026-09-25) -- Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -93,7 +93,7 @@ and never depended on the deleted set.
 | Huffman | **yes** | Frequency-built optimal prefix codes. Own format. |
 | Rle | **yes**, weakly | Run-length only. |
 
-### codex.foreword.encode (78 modules, measured 2026-09-24) -- Encoding and Codecs
+### codex.foreword.encode (80 modules, measured 2026-09-24) -- Encoding and Codecs
 
 Data formats, image codecs, audio codecs, video codecs, protocols.
 
@@ -205,7 +205,7 @@ The self-hosted compiler, in `codex/compiler/`. Subdirectories: Ast,
 Core, Emit, IR, Semantics, Syntax, Types. Do not modify without reading
 the code first and passing both gates (sample battery + pingpong).
 
-### codex.os (187 modules) -- Operating System
+### codex.os (183 modules) -- Operating System
 
 Split across sub-quires. Re-measured 2026-07-29, when adding one kernel
 chapter turned `check-doc-counts.ps1` red and showed the table had
@@ -217,13 +217,13 @@ internally inconsistent.
 | Sub-quire | Modules | Purpose |
 |-----------|---------|---------|
 | codex.os.core | 4 | Core OS abstractions |
-| codex.os.dev | 38 | Device management |
-| codex.os.kernel | 57 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
+| codex.os.dev | 32 | Device management |
+| codex.os.kernel | 55 | Hardware drivers (PCI, xHCI, NE2K, e1000e, VGA, IDE, HDA, USB HID, and Hpet, the monotonic clock) |
 | codex.os.net | 44 | Networking stack (incl. HttpFetch -- the Network effect -- DtlsEndpoint, CoapsEndpoint and Lwm2mCoaps, which carry CoAP and the LwM2M client as DTLS application data, UdpIO, the datagram send/poll pair, and DhcpIO, which acquires an address) |
 | codex.os.observe | 8 | Observability |
 | codex.os.replay | 3 | Deterministic replay |
 | codex.os.sched | 10 | Scheduling |
-| codex.os.trust | 16 | Trust lattice |
+| codex.os.trust | 20 | Trust lattice |
 | codex.os.verify | 7 | Verification |
 
 Both the header count and the rows above were measured 2026-09-08. The

@@ -1,0 +1,136 @@
+Chapter: VirtioBlkGuardsTest
+  cites Kernel chapter VirtioBlkX86
+  cites Kernel chapter VirtioPciX86
+  cites Kernel chapter Pci
+  cites Foreword chapter Result
+
+Section: Entry
+  vbg-state : Boolean, Boolean -> VbxState
+  vbg-state (readonly) (flush) =
+    let common = alloc-bytes 64
+    in let c0 = vpx-zero common 64 0
+    in let config = alloc-bytes 8
+    in let lo = poke-32 config 0 100
+    in let hi = poke-32 config 4 0
+    in let memory = alloc-bytes 4096
+    in let m0 = vpx-zero memory 4096 0
+    in let raw = alloc-bytes 560
+    in let buffer = bit-and (raw + 15) (0 - 16)
+    in let b0 = vpx-zero buffer 544 0
+    in let bulk-raw = alloc-bytes (vbx-max-sectors * 512 + 16)
+    in VbxState {
+      device = VpxDevice { pci = PciDevice { pci-bus = 0, pci-dev = 0, pci-func = 0,
+          pci-vendor = 6900, pci-device-id = 4162, pci-class = 1, pci-subclass = 0, pci-header-type = 0 },
+        common = common, notify = memory + 3072, notify-size = 2, notify-multiplier = 0,
+        isr = memory + 3584, config = config, config-size = 8 },
+      queue = VpxQueue { desc = memory, avail = memory + 1024, used = memory + 2048, size = 8,
+        notify = memory + 3072, index = 0, avail-index = 0, last-used = 0, fault = 0 },
+      request = buffer, data = buffer + 16, status = buffer + 528, completion = buffer + 536,
+      capacity = 100, readonly = readonly, flush = flush,
+      bulk = bit-and (bulk-raw + 15) (0 - 16) }
+
+  vbg-res : Result Integer Text -> Text
+  vbg-res (r) = when r
+    is Ok (n) -> "ok " & show n
+    is Err (e) -> e
+
+  vbg-complete : VbxState, Integer, Integer -> Integer
+  vbg-complete (st) (id) (length) =
+    let a = poke-32 st.queue.used 4 id
+    in let b = poke-32 st.queue.used 8 length
+    in poke-16 st.queue.used 2 1
+
+  vbg-tag : VbxState, Integer -> Text
+  vbg-tag (st) (address) =
+    if address == st.request then "req"
+    else if address == st.data then "data"
+    else if address == st.status then "status"
+    else if address == st.bulk then "bulk"
+    else "other"
+
+  vbg-desc : VbxState, Integer -> Text
+  vbg-desc (st) (i) =
+    let at = st.queue.desc + i * 16
+    in vbg-tag st (peek-qword at 0) & "/" & show (bit-and (peek-32 at 8) #FFFFFFFF) & "/" & show (peek-16 at 12) & "/" & show (peek-16 at 14)
+
+  vbg-header : VbxState -> Text
+  vbg-header (st) =
+    "type " & show (bit-and (peek-32 st.request 0) #FFFFFFFF) & " sector " & show (peek-qword st.request 8)
+
+  vbg-cap : Integer, Integer -> Integer
+  vbg-cap (high) (left) =
+    let st = vbg-state False False
+    in let h = poke-32 st.device.config 4 high
+    in vbx-capacity st.device left
+
+  vbg-refusals : Integer -> Text
+  vbg-refusals (unused) =
+    let st = vbg-state False False
+    in let out = alloc-bytes (vbx-max-sectors * 512)
+    in let a = vbg-res (vbx-request st 2 0)
+    in let b = vbg-res (vbx-read st (-1) out)
+    in let c = vbg-res (vbx-read st 100 out)
+    in let d = vbg-res (vbx-request st 4 0)
+    in let e = vbg-res (vbx-read-many st 0 out 65)
+    in let f = vbg-res (vbx-request-at st 0 37 st.bulk 64)
+    in a & " | " & b & " | " & c & " | " & d & " | " & e & " | " & f & " | published " & show st.queue.avail-index
+
+  vbg-readonly : Integer -> Text
+  vbg-readonly (unused) =
+    let st = vbg-state True True
+    in let src = alloc-bytes 512
+    in let a = vbg-res (vbx-write st 0 src)
+    in let b = vbg-res (vbx-request st 1 0)
+    in a & " | " & b & " | published " & show st.queue.avail-index
+
+  vbg-read : Integer -> Text
+  vbg-read (unused) =
+    let st = vbg-state False False
+    in let out = alloc-bytes 512
+    in let posted = vbg-complete st 0 1
+    in let r = vbg-res (vbx-read st 99 out)
+    in let chain = vbg-desc st 0 & " " & vbg-desc st 1 & " " & vbg-desc st 2
+    in let after = vbg-res (vbx-read st 0 out)
+    in r & " | " & chain & " " & vbg-header st & " published " & show st.queue.avail-index & " fault " & show st.queue.fault & " | " & after
+
+  vbg-write : Integer -> Text
+  vbg-write (unused) =
+    let st = vbg-state False True
+    in let src = alloc-bytes 512
+    in let posted = vbg-complete st 3 1
+    in let r = vbg-res (vbx-write st 7 src)
+    in r & " | " & vbg-desc st 0 & " " & vbg-desc st 1 & " " & vbg-desc st 2 & " " & vbg-header st & " fault " & show st.queue.fault
+
+  vbg-long : Integer -> Text
+  vbg-long (unused) =
+    let st = vbg-state False False
+    in let out = alloc-bytes 512
+    in let posted = vbg-complete st 0 514
+    in vbg-res (vbx-read st 5 out) & " fault " & show st.queue.fault
+
+  vbg-flush : Integer -> Text
+  vbg-flush (unused) =
+    let st = vbg-state False True
+    in let posted = vbg-complete st 0 1
+    in let r = vbg-res (vbx-request st 4 55)
+    in r & " | " & vbg-desc st 0 & " " & vbg-desc st 1 & " " & vbg-header st
+
+  vbg-bulk : Integer -> Text
+  vbg-bulk (unused) =
+    let st = vbg-state False False
+    in let out = alloc-bytes (vbx-max-sectors * 512)
+    in let posted = vbg-complete st 0 1
+    in let r = vbg-res (vbx-read-many st 36 out 64)
+    in r & " | " & vbg-desc st 1 & " " & vbg-desc st 2 & " " & vbg-header st
+
+  opening : [Console] Nothing = act
+    print-line-uni ("capacity " & show (vbg-cap 0 8) & " " & show (vbg-cap 1 8) & " " & show (vbg-cap #80000000 8) & " " & show (vbg-cap 0 0))
+    print-line-uni ("refuse " & vbg-refusals 0)
+    print-line-uni ("readonly " & vbg-readonly 0)
+    print-line-uni ("read " & vbg-read 0)
+    print-line-uni ("write " & vbg-write 0)
+    print-line-uni ("long " & vbg-long 0)
+    print-line-uni ("flush " & vbg-flush 0)
+    print-line-uni ("bulk " & vbg-bulk 0)
+  end
+Page 1

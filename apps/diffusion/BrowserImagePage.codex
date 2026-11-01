@@ -2,8 +2,6 @@ Chapter: ImageGenBrowser
   cites WebApp chapter WebRuntime
   cites Diffusion chapter BrowserSdxlLoad
 
- We say:
-
   IpModel = record {
     im-family : Text,
     im-width : Integer,
@@ -154,7 +152,9 @@ Chapter: ImageGenBrowser
     in let opened = state-set "bl-gpu" 1
     in bl-bpe-then (state-get-text "vocab-file") (state-get-text "merges-file") (\why -> ip-failed rows why) (\bpe ->
       if clip-bpe-status bpe /= 0 then ip-failed rows "The CLIP tokenizer did not load."
-      else if family == "SDXL" then browser-sdxl-open (json-obj-field row "name") (text-to-integer (json-obj-field row "size")) (page-data "bk") (page-data "clip") (\m -> ip-xl-ready rows bpe m) (\why -> ip-failed rows why)
+      else if family == "SDXL" then
+        browser-sdxl-open (json-obj-field row "name") (text-to-integer (json-obj-field row "size")) (page-data "bk") (page-data "clip") (\m ->
+          ip-xl-ready rows bpe m) (\why -> ip-failed rows why)
       else bl-load-then (json-obj-field row "name") ip-progress (\why -> ip-failed rows why) (\m -> ip-sd-ready rows bpe m))
 
   ip-progress : Integer, Integer -> Integer
@@ -163,17 +163,30 @@ Chapter: ImageGenBrowser
   ip-sd-ready : List (List Text), ClipBpe, BrowserModel -> Integer
   ip-sd-ready (rows) (bpe) (m) =
     let handles = bl-list ("[" & state-get-text "bl-weights" & "]")
-    in ip-ready rows (IpModel { im-family = "SD1.5", im-width = 512, im-height = 512, im-close = \z -> bl-free-weights handles 0, im-run = \p n seed steps cfg w h log made -> bl-run m bpe p n seed steps cfg log made })
+    in ip-ready rows (IpModel {
+      im-family = "SD1.5",
+      im-width = 512,
+      im-height = 512,
+      im-close = \z -> bl-free-weights handles 0,
+      im-run = \p n seed steps cfg w h log made -> bl-run m bpe p n seed steps cfg log made
+    })
 
   ip-xl-run : BrowserSdxlModel, ClipBpe, Text, Text, Text, Text, Text, Integer, Integer, (Text -> Integer), (Integer, Text -> Integer) -> Integer
   ip-xl-run (m) (bpe) (prompt) (negative) (seed) (steps) (cfg) (width) (height) (log) (made) =
     let start = clock-ms 0
     in let settings = BrowserSdxlSettings { bs-width = width, bs-height = height, bs-seed = bl-digits seed, bs-steps = bl-digits steps, bs-cfg = bl-real cfg }
-    in browser-sdxl-euler-then m bpe prompt negative settings (\phase current total -> log (phase & ": " & show current & "/" & show total)) (\img -> made img ("total " & show (clock-ms 0 - start) & " ms")) (\why -> made (0 - 3) why)
+    in browser-sdxl-euler-then m bpe prompt negative settings (\phase current total ->
+      log (phase & ": " & show current & "/" & show total)) (\img -> made img ("total " & show (clock-ms 0 - start) & " ms")) (\why -> made (0 - 3) why)
 
   ip-xl-ready : List (List Text), ClipBpe, BrowserSdxlModel -> Integer
   ip-xl-ready (rows) (bpe) (m) =
-    ip-ready rows (IpModel { im-family = "SDXL", im-width = 1024, im-height = 1024, im-close = \z -> if browser-sdxl-close m then 0 else 0 - 1, im-run = \p n seed steps cfg w h log made -> ip-xl-run m bpe p n seed steps cfg w h log made })
+    ip-ready rows (IpModel {
+      im-family = "SDXL",
+      im-width = 1024,
+      im-height = 1024,
+      im-close = \z -> if browser-sdxl-close m then 0 else 0 - 1,
+      im-run = \p n seed steps cfg w h log made -> ip-xl-run m bpe p n seed steps cfg w h log made
+    })
 
   ip-ready : List (List Text), IpModel -> Integer
   ip-ready (rows) (m) =

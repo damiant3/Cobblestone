@@ -17,6 +17,9 @@ param(
     # parks the guest before `opening` runs. See CL 8221.
     [switch]$Smp,
     [switch]$Darwin,
+    # Emit __start for a Raspberry Pi 4 (QEMU raspi4b): UART0 at #FE201000,
+    # RAM ending at #80000000, cores 1-3 parked, EL3 dropped to EL1.
+    [switch]$Raspi4b,
     [int]$MemMB = 3072
 )
 
@@ -28,6 +31,12 @@ $ErrorActionPreference = 'Stop'
 $Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx  = Join-Path $PlugDir 'build-output\arm64-plug.cdx'
+
+# The same freshness rule test-cross-batch.ps1 applies: a plug built before its
+# sources changed answers with the old codegen, and a single-subject run
+# (test-cross.ps1) reached this runner with no rebuild.
+. (Join-Path $PSScriptRoot '..' 'common' 'plug-fresh.ps1')
+Update-StalePlug -PlugDir $PlugDir -PlugCdx $PlugCdx -ExtraDirs @('codex\compiler', 'codex\foreword')
 
 if (-not (Test-Path -PathType Leaf $PlugCdx)) {
     [Console]::Error.WriteLine("MISSING: $PlugCdx -- run plugs/arm64/build.ps1 first")
@@ -47,6 +56,7 @@ $hdrList = [System.Collections.Generic.List[byte]]::new()
 $modeParts = @('IR-CCE')
 if ($Smp) { $modeParts += 'smp' }
 if ($Darwin) { $modeParts += 'darwin' }
+if ($Raspi4b) { $modeParts += 'raspi4b' }
 $modeText = $modeParts -join ' '
 foreach ($ch in $modeText.ToCharArray()) {
     $u = [int]$ch

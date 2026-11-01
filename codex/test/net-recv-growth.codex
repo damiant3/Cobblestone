@@ -1,0 +1,94 @@
+Chapter: NetRecvGrowthTest
+
+  cites Foreword chapter Console
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Net chapter NetCompact
+  cites Net chapter MessageFraming
+
+Section: Fixtures
+
+ The bodies are a ramp, never zeros: a fresh region is already zero, so a zero body cannot tell a copied buffer
+ from one that was never written.
+
+  ramp : Integer, Integer, List Integer -> List Integer
+  ramp (i) (len) (acc) = if i >= len then acc else ramp (i + 1) len (list-push acc (bit-and (i * 13 + 5) 255))
+
+  sess : Integer -> NetSession
+  sess (port) = net-session-new [1, 2, 3, 4, 5, 6] [10, 0, 0, 2] [10, 0, 0, 1] port 7 [10, 0, 0, 1] 1000
+
+  same : List Integer, List Integer, Integer -> Boolean
+  same (a) (b) (i) =
+    if list-length a /= list-length b then False
+    else if i >= list-length a then True
+    else if list-at a i /= list-at b i then False
+    else same a b (i + 1)
+
+  feed-chunks : TcpTransportState, List Integer, Integer, Integer -> TcpTransportState
+  feed-chunks (ts) (wire) (off) (step) =
+    if off >= list-length wire then ts
+    else let stop = if off + step > list-length wire then list-length wire else off + step
+    in feed-chunks (transport-feed-range ts (ts.session) wire off stop) wire stop step
+
+  open-many : Integer, Integer, List Integer -> Integer
+  open-many (n) (got) (msg) =
+    if n <= 0 then got
+    else let ts = transport-feed-range (transport-new (sess (5000 + n))) (sess (5000 + n)) msg 0 (list-length msg)
+    in let r = transport-try-recv ts
+    in open-many (n - 1) (got + (if r.has-message & list-length (r.body) == 99 then 1 else 0)) msg
+
+  many-cost : Integer -> Integer
+  many-cost (n) =
+    let msg = frame-encode 9 (ramp 0 99 [])
+    in let a = __heap-save
+    in let got = open-many n 0 msg
+    in let b = __heap-save
+    in if got /= n then 0 - 1 else b - a
+
+  big-round-trip : Integer -> Boolean
+  big-round-trip (len) =
+    let body = ramp 0 len []
+    in let ts = feed-chunks (transport-new (sess 4000)) (frame-encode 9 body) 0 1460
+    in let r = transport-try-recv ts
+    in r.has-message & same (r.body) body 0
+
+  limited : Integer, Integer -> Boolean
+  limited (limit) (len) =
+    let ts = feed-chunks (transport-new-growing (sess 4001) 4096 limit) (frame-encode 9 (ramp 0 len [])) 0 1460
+    in (transport-try-recv ts).has-message
+
+  fixed-refuses : Integer -> Integer
+  fixed-refuses (len) =
+    let ts = transport-feed-range (transport-new-with-cap (sess 4002) 4096) (sess 4002) (ramp 0 len []) 0 len
+    in ts.recv-len
+
+ THE MARK ARM. The transport grows above the loop's mark, the loop compacts to the mark, and the heap the
+ compaction handed back is written over before the message is read.
+
+  clobber : Integer, List Integer -> List Integer
+  clobber (n) (acc) = if n <= 0 then acc else clobber (n - 1) (list-push acc 170)
+
+  grown-across-compact : Integer -> Boolean
+  grown-across-compact (len) =
+    let body = ramp 0 len []
+    in let wire = frame-encode 9 body
+    in let ts0 = transport-arenas (transport-new (sess 4003))
+    in let mark = __heap-save
+    in let ts1 = feed-chunks ts0 wire 0 1460
+    in let ts2 = transport-compact ts1 mark
+    in let junk = clobber 200000 []
+    in let r = transport-try-recv ts2
+    in r.has-message & same (r.body) body 0 & list-length junk > 0
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni ("64 connections each take one 99-byte message: " & show (many-cost 64 > 0))
+    print-line-uni ("and together cost less than 64 x 8 KiB, where each reserved 32 MiB: " & show (many-cost 64 < 64 * 8192))
+    print-line-uni ("a 1 MiB message fed 1,460 bytes at a time grows the buffer and reads back byte for byte: " & show (big-round-trip 1048576))
+    print-line-uni ("a message within the limit is taken and one a byte past it is refused: " & show (limited 65536 65531 & limited 65536 65532 == False))
+    print-line-uni ("a fixed transport-new-with-cap buffer refuses a feed past its cap as before: " & show (fixed-refuses 4097 == 0 & fixed-refuses 4096 == 4096))
+    print-line-uni ("a buffer grown above a compacting loop's mark survives the compaction and the reuse of the heap after it: " & show (grown-across-compact 200000))
+  end
+
+Page 1

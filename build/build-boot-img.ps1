@@ -193,6 +193,7 @@ $ImageSectors = 32768
 if (((-not $PSBoundParameters.ContainsKey('Font')) -or $PSBoundParameters.ContainsKey('FontName'))) {
     . (Join-Path $Repo 'build/lib/font-pack.ps1')
     $FontExtras = (New-FontImageExtras -Repo $Repo -OutDir (Join-Path $BuildOut 'font-pack') -FontName $FontName)
+    $FontExtras += ([string]'TZDB.BIN=' + (Join-Path $Repo 'codex/foreword/core/tzdata/2026f/TZDB.BIN'))
     $FontPackArgs = @('-Extra', ($FontExtras -join ';'))
     $ImageSectors = 65536
 }

@@ -23,8 +23,6 @@ Chapter: GopXhci
  has no IDT, so nothing here may rely on an interrupt or hang on a
  register that never changes.
 
- We say:
-
 Section: Capability and Operational Registers
 
   xhci-pci-class : Integer = 12
@@ -291,24 +289,18 @@ Section: Diagnostics
  controller yielded one rather than controller zero did.
 
  87 is the last index in use, so the block spans 352 bytes from its base.
- It was 69 and 280 until the ladder was added on 2026-08-03, then 79 and
- 320 until the ESP mount telemetry was added on 2026-08-07 (cell 80 in
- GopFat16, 81-82 in GopUsbMsc). This line said 82 and 332 until 2026-08-09
- and was already wrong when it was read: GopFat16 took 83 for the write
- stage. Re-measure the maximum rather than trusting it (L-COUNT). 83 is
- GopFat16, 84 the fuel-left publication here, 85-87 the fuel low-water,
- failing LBA and retry outcome in GopUsbMsc.
+ 80 and 83 are GopFat16, 81-82 GopUsbMsc, 84 the fuel-left publication
+ here, 85-87 the fuel low-water, failing LBA and retry outcome in
+ GopUsbMsc.
 
  The base is 0x1D000: the hole between the IST emergency stacks
  ([0x15000, 0x1D000), sixteen 2 KB stacks) and the AP idle stacks at
  0x20000. Nothing can grow into it without first overrunning the AP idle
  stacks, which is a bound the layout already defends.
 
- The hole has THREE tenants and this block no longer owns it to the top.
- fester's GOP handoff block took 0x1F000 (126976), 48 bytes, on
- 2026-07-30, and KbdDiagProbe's `kx-cell` took 119808 to 119875 -- inside
- what this paragraph used to call free, placed deliberately a kilobyte
- past the 96 dwords `xdiag-zero` claims. So the map is: this block 118784
+ The hole has three tenants. The GOP handoff block holds 0x1F000
+ (126976), 48 bytes, and KbdDiagProbe's `kx-cell` holds 119808 to 119875,
+ a kilobyte past the 96 dwords `xdiag-zero` claims. The map: this block 118784
  to 119135, free to 119807, kx-cell to 119875, free to 126975, the
  handoff block, then 4048 free bytes below the AP idle stacks.
 
@@ -316,14 +308,6 @@ Section: Diagnostics
  96-dword wipe is the real ceiling for anything that must be zeroed on
  metal: a cell above index 95 is never cleared and reads firmware
  residue.
-
- It was at 36200 until 2026-07-30, inside the PML4 page, where indices
- 0-15 aliased eight X86_64Boot runtime cells at 36200-36263: a bring-up
- wrote the PCI vendor id over uefi-systab, raised fs-elevated, and
- disturbed ap-id-next. 36200 was picked by grepping tools/codex-vm.c,
- which answers half the question -- the host does claim 36152, 36160 and
- 36168 in that band, but this collision was with the GUEST. Grep both
- sides before claiming a fixed cell.
 
   xhci-diag : Integer = 118784
   xhci-diag-magic : Integer = #58444731
@@ -659,21 +643,6 @@ Section: Ownership Handback
     in let w = xdiag-put 29 (xhci-reclaim-wait addr xhci-release-fuel)
     in xdiag-put 28 1
 
- THE SNAPSHOT OWNS EIGHT CELLS AND MUST NOT WRITE A NINTH. The band is
- 20-27; 28-29 are the handback, 30-32 the BAR verdict. This loop stopped
- at port 16 and wrote `20 + port`, so on any controller with more than
- eight root ports it laid PORTSC over all of them. The ASUS reports
- ports=26 and photographed `BAR verdict=672`, which is not one of the
- three values a verdict can take: 672 is 0x2A0, port 10's PORTSC, sitting
- in cell 30.
-
- Cell 28 is the one that costs something. `kbd-pump` stops dead on
- `xhci-released /= 0`, and cell 28 was receiving port 8's PORTSC, whose
- Port Power bit alone makes it non-zero. The chapter above blamed that on
- firmware residue in unzeroed metal RAM; `xhci-reset-handback` already
- zeroes 28 and 29 on the way in, so residue was never the mechanism. It
- was this loop, and it wrote the cell AFTER the wipe.
-
   xhci-port-cells : Integer = 8
 
   xhci-conn-mask : Integer = 46
@@ -716,14 +685,6 @@ Section: Ownership Handback
  STATE, they gate the USB pump, and a machine that comes up with cell 28
  already non-zero believes it has handed the controller back. It then
  prints that it has, and stops pumping the keyboard it never released.
-
- This zeroing is correct and stays. What it does NOT do is explain the
- ASUS, and this block used to claim it did. Cell 28 was being written
- after the wipe by `xhci-diag-ports`, which stopped at port 16 while the
- snapshot owns only 20-27, so port 8's PORTSC landed on the handback flag
- on any controller with more than eight ports. Fixed 2026-08-03 at that
- loop. The tell was in the first photograph of the board: `BAR verdict=672`,
- a value the verdict cannot hold, which is port 10's PORTSC in cell 30.
 
   xhci-reset-handback : Integer -> Integer
   xhci-reset-handback (d) =
@@ -1430,6 +1391,20 @@ Section: Standard Requests
   usb-cfg-total (cfg) (cap) =
     let claimed = bit-or (peek-byte cfg 2) (bit-shl (peek-byte cfg 3) 8)
     in if claimed > cap then cap else claimed
+
+ USB 2.0 9.5-9.6: a descriptor is bLength bytes, byte 1 its type; an
+ interface (type 4) is 9 bytes and an endpoint (type 5) 7, which is as far as
+ the walkers read. A descriptor shorter than its type or running past the
+ fetched total ends the walk.
+
+  usb-desc-ok : Integer, Integer, Integer -> Boolean
+  usb-desc-ok (cfg) (off) (total) =
+    let len = peek-byte cfg off
+    in if len < 2 | off + len > total then False
+    else let ty = peek-byte cfg (off + 1)
+    in if ty == 4 then len >= 9
+    else if ty == 5 then len >= 7
+    else True
 
   usb-set-configuration-code : XhciHost, UsbDev, Integer -> Integer
   usb-set-configuration-code (xh) (dev) (config) =

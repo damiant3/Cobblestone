@@ -1,7 +1,7 @@
 # Market -- open capabilities
 
 App-domain backlog. The shape and priority order for the platform live in
-`docs/PM/CurrentPlan.md`; there is no platform-wide register any more.
+`docs/PM/CurrentPlan.md`; there is no platform-wide register.
 Anything that is this application's own behaviour lives here.
 
 The rules are the standing ones: an entry says what is still missing and
@@ -14,3 +14,7 @@ is still real is never quietly dropped.
 |---|---|
 | `MarketWeb.codex:177`, `:189` | Health inserts the store name raw; `products-json-loop` inserts product IDs/names raw. JSON quote/backslash/control escaping is absent. The current active-product provider returns an empty list, so the product branch is a helper-contract gap until populated. Source-inspected 2026-10-01 at main 33668. |
 | `MarketDb.codex` `market-read-users`, `MarketWeb.codex` `handle-register` | Users have no write path: `market-read-users` serves `sample-users` (placeholder hashes no login can match), and `handle-register` drops the user `register-user` returns. `migrate-password-hash` (MarketAuth) therefore upgrades a legacy hash at login with no store to write it to; the login handler calls it once a user table is read and written. |
+
+## Test coverage
+
+8 of 17 library chapters are reached by no computing test. `pwsh build/coverage-census.ps1 -Tree apps/market -List` names them (2026-10-26). Open: a computing test for each, or a deletion.

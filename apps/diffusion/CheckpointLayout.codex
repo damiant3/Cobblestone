@@ -10,8 +10,6 @@ Chapter: CheckpointLayout
  (position_ids, logit_scale, the CLIP-L text_projection SDXL never reads, and
  the SD1.5 noise-schedule buffers).
 
- We say:
-
 Section: Types
 
   LayoutTensor = record {
@@ -76,10 +74,32 @@ Section: The Configurations
  context 768, a 1x1 conv proj_in.
 
   sdxl-unet-layout-config : UNetLayoutConfig
-  sdxl-unet-layout-config = UNetLayoutConfig { ul-channels = 320, ul-mults = [1, 2, 4], ul-depths = [0, 2, 10], ul-mid-depth = 10, ul-res-blocks = 2, ul-context = 2048, ul-adm = 2816, ul-linear-proj = True, ul-in = 4, ul-out = 4 }
+  sdxl-unet-layout-config = UNetLayoutConfig {
+    ul-channels = 320,
+    ul-mults = [1, 2, 4],
+    ul-depths = [0, 2, 10],
+    ul-mid-depth = 10,
+    ul-res-blocks = 2,
+    ul-context = 2048,
+    ul-adm = 2816,
+    ul-linear-proj = True,
+    ul-in = 4,
+    ul-out = 4
+  }
 
   sd15-unet-layout-config : UNetLayoutConfig
-  sd15-unet-layout-config = UNetLayoutConfig { ul-channels = 320, ul-mults = [1, 2, 4, 4], ul-depths = [1, 1, 1, 0], ul-mid-depth = 1, ul-res-blocks = 2, ul-context = 768, ul-adm = 0, ul-linear-proj = False, ul-in = 4, ul-out = 4 }
+  sd15-unet-layout-config = UNetLayoutConfig {
+    ul-channels = 320,
+    ul-mults = [1, 2, 4, 4],
+    ul-depths = [1, 1, 1, 0],
+    ul-mid-depth = 1,
+    ul-res-blocks = 2,
+    ul-context = 768,
+    ul-adm = 0,
+    ul-linear-proj = False,
+    ul-in = 4,
+    ul-out = 4
+  }
 
 Section: UNet
 
@@ -422,14 +442,44 @@ Section: Binding
     else let want = list-at ts i
     in let full = prefix & want.lt-name
     in let v = name-find idx full
-    in let next = if v < 0 then PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = pb.pb-bound, pb-missing = list-push (pb.pb-missing) full, pb-misshapen = pb.pb-misshapen, pb-optional = pb.pb-optional } else bind-one file full want (list-at (file.st-tensors) v) pb
+    in let next = if v < 0 then
+      PartBinding {
+        pb-name = pb.pb-name,
+        pb-required = pb.pb-required,
+        pb-bound = pb.pb-bound,
+        pb-missing = list-push (pb.pb-missing) full,
+        pb-misshapen = pb.pb-misshapen,
+        pb-optional = pb.pb-optional
+      }
+    else bind-one file full want (list-at (file.st-tensors) v) pb
     in bind-required idx file prefix ts (i + 1) next
 
   bind-one : SafeTensorFile, Text, LayoutTensor, StTensorMeta, PartBinding -> PartBinding
   bind-one (file) (full) (want) (meta) (pb) =
-    if tensor-fits want meta == False then PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = pb.pb-bound, pb-missing = pb.pb-missing, pb-misshapen = list-push (pb.pb-misshapen) full, pb-optional = pb.pb-optional }
-    else let bt = BoundTensor { bt-name = full, bt-dtype = meta.stm-dtype, bt-shape = meta.stm-shape, bt-offset = file.st-data-offset + meta.stm-offset-start, bt-bytes = meta.stm-offset-end - meta.stm-offset-start }
-    in PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = list-push (pb.pb-bound) bt, pb-missing = pb.pb-missing, pb-misshapen = pb.pb-misshapen, pb-optional = pb.pb-optional }
+    if tensor-fits want meta == False then
+      PartBinding {
+        pb-name = pb.pb-name,
+        pb-required = pb.pb-required,
+        pb-bound = pb.pb-bound,
+        pb-missing = pb.pb-missing,
+        pb-misshapen = list-push (pb.pb-misshapen) full,
+        pb-optional = pb.pb-optional
+      }
+    else let bt = BoundTensor {
+      bt-name = full,
+      bt-dtype = meta.stm-dtype,
+      bt-shape = meta.stm-shape,
+      bt-offset = file.st-data-offset + meta.stm-offset-start,
+      bt-bytes = meta.stm-offset-end - meta.stm-offset-start
+    }
+    in PartBinding {
+      pb-name = pb.pb-name,
+      pb-required = pb.pb-required,
+      pb-bound = list-push (pb.pb-bound) bt,
+      pb-missing = pb.pb-missing,
+      pb-misshapen = pb.pb-misshapen,
+      pb-optional = pb.pb-optional
+    }
 
   count-present : NameIndex, Text, List Text, Integer, Integer -> Integer
   count-present (idx) (prefix) (names) (i) (acc) =
@@ -441,7 +491,14 @@ Section: Binding
     let req = part.lp-required
     in let pb0 = PartBinding { pb-name = part.lp-name, pb-required = list-length req, pb-bound = [], pb-missing = [], pb-misshapen = [], pb-optional = 0 }
     in let pb = bind-required idx file (part.lp-prefix) req 0 pb0
-    in PartBinding { pb-name = pb.pb-name, pb-required = pb.pb-required, pb-bound = pb.pb-bound, pb-missing = pb.pb-missing, pb-misshapen = pb.pb-misshapen, pb-optional = count-present idx (part.lp-prefix) (part.lp-optional) 0 0 }
+    in PartBinding {
+      pb-name = pb.pb-name,
+      pb-required = pb.pb-required,
+      pb-bound = pb.pb-bound,
+      pb-missing = pb.pb-missing,
+      pb-misshapen = pb.pb-misshapen,
+      pb-optional = count-present idx (part.lp-prefix) (part.lp-optional) 0 0
+    }
 
   bind-parts : NameIndex, SafeTensorFile, List LayoutPart, Integer, List PartBinding -> List PartBinding
   bind-parts (idx) (file) (parts) (i) (acc) =
@@ -476,12 +533,19 @@ Section: Binding
     let idx = name-index (tensor-names (file.st-tensors) 0 (__list-with-capacity (file.st-tensor-count + 1)))
     in let parts = layout.cl-parts
     in let known = name-index (prefixed "" (layout.cl-extra) 0 (layout-names parts 0 []))
-    in LayoutBinding { lb-family = layout.cl-family, lb-parts = bind-parts idx file parts 0 [], lb-extra = count-present idx "" (layout.cl-extra) 0 0, lb-unknown = unknown-names (file.st-tensors) 0 known [] }
+    in LayoutBinding {
+      lb-family = layout.cl-family,
+      lb-parts = bind-parts idx file parts 0 [],
+      lb-extra = count-present idx "" (layout.cl-extra) 0 0,
+      lb-unknown = unknown-names (file.st-tensors) 0 known []
+    }
 Section: Queries
 
   format-part-binding : PartBinding -> Text
   format-part-binding (pb) =
-    pb.pb-name & ": " & show (pb.pb-required) & " required, " & show (list-length (pb.pb-bound)) & " bound, " & show (list-length (pb.pb-missing)) & " missing, " & show (list-length (pb.pb-misshapen)) & " misshapen, " & show (pb.pb-optional) & " optional"
+    pb.pb-name & ": " & show (pb.pb-required) & " required, " & show (list-length (pb.pb-bound)) & " bound, "
+    & show (list-length (pb.pb-missing)) & " missing, " & show (list-length (pb.pb-misshapen)) & " misshapen, "
+    & show (pb.pb-optional) & " optional"
 
   layout-bound-bytes : List PartBinding, Integer, Integer -> Integer
   layout-bound-bytes (parts) (i) (acc) =
@@ -497,10 +561,6 @@ Section: Queries
 
   layout-complete : LayoutBinding -> Boolean
   layout-complete (lb) = list-length (lb.lb-unknown) == 0 & parts-complete (lb.lb-parts) 0
-
- A browser page keeps a tensor of rank 2 or more as packed f16 on the device,
- as the native UNet does, except CLIP's token and position embeddings, whose
- rows the encoder copies as f32.
 
   bt-half : BoundTensor -> Boolean
   bt-half (t) = list-length (t.bt-shape) >= 2 & text-contains (t.bt-name) ".embeddings." == False

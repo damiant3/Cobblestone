@@ -13,14 +13,13 @@ Chapter: Sampler
  the clean latent; a noise source maps a draw index to a buffer of standard
  normal draws. Latents are n f32 elements on the device.
 
- We say:
-
 Section: Kernels
 
   sm-lincomb : Integer, Integer, Integer, Integer, Real, Real, Real, Integer -> Integer
   sm-lincomb (x) (y) (z) (out) (a) (b) (c) (n) =
     let g = GpuGrid { gx = (n + 127) / 128, gy = 1, gz = 1, bx = 128, by = 1, bz = 1, shared = 0 }
-    in gm-launch gm-slot-sampler sampler-kernels-ptx "kernel_lincomb3" g [gpu-arg-buf x 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-buf out 0, gpu-arg-u64 (real-to-bits a), gpu-arg-u64 (real-to-bits b), gpu-arg-u64 (real-to-bits c), gpu-arg-u64 n]
+    in gm-launch gm-slot-sampler sampler-kernels-ptx "kernel_lincomb3" g [gpu-arg-buf x 0, gpu-arg-buf y 0, gpu-arg-buf z 0, gpu-arg-buf out 0,
+      gpu-arg-u64 (real-to-bits a), gpu-arg-u64 (real-to-bits b), gpu-arg-u64 (real-to-bits c), gpu-arg-u64 n]
 
 Section: Euler
 
@@ -447,7 +446,9 @@ Section: IPNDM
   ipndmv-temp1 (h) (h1) (h2) = (1.0 - ((h / (3.0 * (h + h1))) * (h * (h + h1))) / (h1 * (h1 + h2))) / 2.0
 
   ipndmv-temp2 : Real, Real, Real, Real -> Real
-  ipndmv-temp2 (h) (h1) (h2) (h3) = (((1.0 - h / (3.0 * (h + h1))) / 2.0 + ((1.0 - h / (2.0 * (h + h1))) * h) / (6.0 * (h + h1 + h2))) * (h * (h + h1) * (h + h1 + h2))) / (h1 * (h1 + h2) * (h1 + h2 + h3))
+  ipndmv-temp2 (h) (h1) (h2) (h3) =
+    let coef = (1.0 - h / (3.0 * (h + h1))) / 2.0 + ((1.0 - h / (2.0 * (h + h1))) * h) / (6.0 * (h + h1 + h2))
+    in (coef * (h * (h + h1) * (h + h1 + h2))) / (h1 * (h1 + h2) * (h1 + h2 + h3))
 
   ipndmv-c : Real, Real, Real, Real, Integer, Integer -> Real
   ipndmv-c (h) (h1) (h2) (h3) (ord) (j) =
@@ -888,8 +889,6 @@ Section: Restart
     in let mx = sm-argmin sig 2.0
     in let a2 = if i + 1 == at & mx < i + 1 then rs-times (karras-sigmas rsteps (list-at sig (i + 1)) (list-at sig mx)) rtimes a1 else a1
     in rs-plan-loop sig (i + 1) at rsteps rtimes a2
-
- The plan is the step list flattened, from and to of each step in turn.
 
   restart-plan : List Real -> List Real
   restart-plan (sig) =
